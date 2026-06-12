@@ -14,12 +14,14 @@ import java.io.FileOutputStream
 class MainActivity : AppCompatActivity() {
 
     private lateinit var drawingView: DrawingView
+    private lateinit var btnFill: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         drawingView = findViewById(R.id.drawingView)
+        btnFill = findViewById(R.id.btnFill)
 
         findViewById<Button>(R.id.btnPen).setOnClickListener {
             drawingView.currentTool = Tool.PEN
@@ -38,6 +40,13 @@ class MainActivity : AppCompatActivity() {
         }
         findViewById<Button>(R.id.btnColor).setOnClickListener {
             showColorPicker()
+        }
+        findViewById<Button>(R.id.btnFill).setOnClickListener {
+            drawingView.fillShapes = !drawingView.fillShapes
+            btnFill.text = if (drawingView.fillShapes) "Fill: On" else "Fill: Off"
+        }
+        findViewById<Button>(R.id.btnSize).setOnClickListener {
+            showSizePicker()
         }
         findViewById<Button>(R.id.btnUndo).setOnClickListener {
             drawingView.undo()
@@ -64,6 +73,18 @@ class MainActivity : AppCompatActivity() {
             .setItems(names.toTypedArray()) { _, index ->
                 drawingView.currentColor = colors[index]
                 drawingView.currentTool = Tool.PEN
+            }
+            .show()
+    }
+
+    private fun showSizePicker() {
+        val sizes = listOf(2f, 4f, 6f, 10f, 16f, 24f)
+        val names = listOf("Extra Thin", "Thin", "Medium", "Thick", "Extra Thick", "Marker")
+
+        AlertDialog.Builder(this)
+            .setTitle("Stroke Thickness")
+            .setItems(names.toTypedArray()) { _, index ->
+                drawingView.currentStrokeWidth = sizes[index]
             }
             .show()
     }
