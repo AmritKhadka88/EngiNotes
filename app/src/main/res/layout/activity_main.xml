@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#EEEEEE">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="4dp">
+
+            <Button android:id="@+id/btnPen" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Pen" />
+            <Button android:id="@+id/btnEraser" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Eraser" />
+            <Button android:id="@+id/btnLine" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Line" />
+            <Button android:id="@+id/btnRectangle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Rect" />
+            <Button android:id="@+id/btnCircle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Circle" />
+            <Button android:id="@+id/btnColor" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Color" />
+            <Button android:id="@+id/btnUndo" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Undo" />
+            <Button android:id="@+id/btnClear" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Clear" />
+            <Button android:id="@+id/btnSave" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Save" />
+
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <com.enginotes.app.DrawingView
+        android:id="@+id/drawingView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+</LinearLayout>
