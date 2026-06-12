@@ -21,6 +21,8 @@
             <Button android:id="@+id/btnRectangle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Rect" />
             <Button android:id="@+id/btnCircle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Circle" />
             <Button android:id="@+id/btnColor" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Color" />
+            <Button android:id="@+id/btnFill" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Fill: Off" />
+            <Button android:id="@+id/btnSize" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Size" />
             <Button android:id="@+id/btnUndo" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Undo" />
             <Button android:id="@+id/btnClear" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Clear" />
             <Button android:id="@+id/btnSave" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Save" />
