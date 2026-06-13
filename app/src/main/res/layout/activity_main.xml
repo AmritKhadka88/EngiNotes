@@ -13,7 +13,8 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:padding="4dp">
+            android:padding="4dp"
+            android:gravity="center_vertical">
 
             <Button android:id="@+id/btnPen" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Pen" />
             <Button android:id="@+id/btnEraser" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Eraser" />
@@ -23,9 +24,13 @@
             <Button android:id="@+id/btnColor" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Color" />
             <Button android:id="@+id/btnFill" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Fill: Off" />
             <Button android:id="@+id/btnSize" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Size" />
+            <TextView android:id="@+id/tvSize" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="6px" android:padding="8dp" android:textSize="14sp" />
+            <Button android:id="@+id/btnPaper" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Paper" />
             <Button android:id="@+id/btnUndo" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Undo" />
             <Button android:id="@+id/btnClear" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Clear" />
             <Button android:id="@+id/btnSave" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Save" />
+            <Button android:id="@+id/btnLoad" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Load" />
+            <Button android:id="@+id/btnExport" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Export" />
 
         </LinearLayout>
     </HorizontalScrollView>
