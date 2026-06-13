@@ -427,7 +427,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showPaperPicker() {
-    private fun showPaperPicker() {
+    
         val types = arrayOf("Blank White", "Lined Paper", "Graph Paper", "Dot Grid", "Engineering Grid")
         AlertDialog.Builder(this)
             .setTitle("Paper Type")
