@@ -114,7 +114,7 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.btnDraw).setOnClickListener {
             closeInlineEditor(commit = true)
-            val options = listOf("👆 Select", "🪣 Fill", "✏ Pen", "⌇ Arc") + shapeSymbols
+            val options = listOf("👆 Select", "🪣 Fill", "✏ Pen", "⌇ Arc", "🔲 AutoSelect") + shapeSymbols
             AlertDialog.Builder(this)
                 .setTitle("Draw")
                 .setItems(options.toTypedArray()) { _, index ->
@@ -126,7 +126,8 @@ class MainActivity : AppCompatActivity() {
                         }
                         2 -> drawingView.currentTool = Tool.PEN
                         3 -> drawingView.currentTool = Tool.ARC
-                        else -> drawingView.currentTool = shapeTools[index - 4]
+                        4 -> showAutoSelectModeDialog()
+                        else -> drawingView.currentTool = shapeTools[index - 5]
                     }
                     if (drawingView.currentTool == Tool.PEN) collapseToolbar()
                 }
@@ -135,7 +136,7 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.btnTools).setOnClickListener {
             closeInlineEditor(commit = true)
-            val options = arrayOf("🧹 Eraser", "🎨 Color", "🪣 Fill", "📏 Size", "📄 Paper Style")
+            val options = arrayOf("🧹 Eraser", "🎨 Color", "🪣 Fill", "📏 Size", "📄 Paper Style", "📐 Page Setup")
             AlertDialog.Builder(this)
                 .setTitle("Tools")
                 .setItems(options) { _, index ->
@@ -157,7 +158,8 @@ class MainActivity : AppCompatActivity() {
                             Toast.makeText(this, if (drawingView.fillShapes) "Fill: On" else "Fill: Off", Toast.LENGTH_SHORT).show()
                         }
                         3 -> showSizePicker()
-                        else -> showPaperPicker()
+                        4 -> showPaperPicker()
+                        else -> showPageSetupDialog()
                     }
                 }
                 .show()
@@ -425,6 +427,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showPaperPicker() {
+    private fun showPaperPicker() {
         val types = arrayOf("Blank White", "Lined Paper", "Graph Paper", "Dot Grid", "Engineering Grid")
         AlertDialog.Builder(this)
             .setTitle("Paper Type")
@@ -440,6 +443,103 @@ class MainActivity : AppCompatActivity() {
             }
             .show()
     }
+
+    private fun showAutoSelectModeDialog() {
+        val modes = arrayOf("▭ Rectangle - Whole Objects", "▭ Rectangle - Divided", "✏ Freeform - Whole Objects", "✏ Freeform - Divided")
+        AlertDialog.Builder(this)
+            .setTitle("AutoSelect Mode")
+            .setItems(modes) { _, modeIdx ->
+                when (modeIdx) {
+                    0 -> { drawingView.autoSelectShape = AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide = AutoSelectDivide.WHOLE }
+                    1 -> { drawingView.autoSelectShape = AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide = AutoSelectDivide.DIVIDED }
+                    2 -> { drawingView.autoSelectShape = AutoSelectShape.FREEFORM; drawingView.autoSelectDivide = AutoSelectDivide.WHOLE }
+                    else -> { drawingView.autoSelectShape = AutoSelectShape.FREEFORM; drawingView.autoSelectDivide = AutoSelectDivide.DIVIDED }
+                }
+                drawingView.currentTool = Tool.AUTOSELECT
+                Toast.makeText(this, "Draw a region to select", Toast.LENGTH_SHORT).show()
+            }
+            .show()
+    }
+
+    private fun showPageSetupDialog() {
+        val container = LinearLayout(this)
+        container.orientation = LinearLayout.VERTICAL
+        container.setPadding(dp(20), dp(10), dp(20), dp(10))
+
+        val modeLabel = TextView(this)
+        container.addView(modeLabel)
+        val sizeLabel = TextView(this)
+        container.addView(sizeLabel)
+        val orientLabel = TextView(this)
+        container.addView(orientLabel)
+
+        fun refreshLabels() {
+            val modeName = when (drawingView.canvasMode) {
+                CanvasMode.INFINITE -> "Infinite Canvas"
+                CanvasMode.FIXED -> "Fixed Page"
+                CanvasMode.PAGINATED -> "Paginated (Document)"
+            }
+            modeLabel.text = "Canvas Mode: $modeName  (tap to change)"
+            sizeLabel.text = "Paper Size: ${drawingView.paperSize.name}  (tap to change)"
+            val orientName = if (drawingView.pageOrientation == Orientation.PORTRAIT) "Portrait" else "Landscape"
+            orientLabel.text = "Orientation: $orientName  (tap to change)"
+        }
+        refreshLabels()
+
+        val padding = dp(12)
+        for (label in listOf(modeLabel, sizeLabel, orientLabel)) {
+            label.setPadding(0, padding, 0, padding)
+            label.textSize = 16f
+        }
+
+        modeLabel.setOnClickListener {
+            val options = arrayOf("Infinite Canvas", "Fixed Page", "Paginated (Document)")
+            AlertDialog.Builder(this)
+                .setTitle("Canvas Mode")
+                .setItems(options) { _, i ->
+                    drawingView.canvasMode = when (i) {
+                        0 -> CanvasMode.INFINITE
+                        1 -> CanvasMode.FIXED
+                        else -> CanvasMode.PAGINATED
+                    }
+                    drawingView.invalidate()
+                    refreshLabels()
+                }
+                .show()
+        }
+
+        sizeLabel.setOnClickListener {
+            val sizes = PaperSizeOption.values()
+            val options = sizes.map { it.name }.toTypedArray()
+            AlertDialog.Builder(this)
+                .setTitle("Paper Size")
+                .setItems(options) { _, i ->
+                    drawingView.paperSize = sizes[i]
+                    drawingView.invalidate()
+                    refreshLabels()
+                }
+                .show()
+        }
+
+        orientLabel.setOnClickListener {
+            val options = arrayOf("Portrait", "Landscape")
+            AlertDialog.Builder(this)
+                .setTitle("Orientation")
+                .setItems(options) { _, i ->
+                    drawingView.pageOrientation = if (i == 0) Orientation.PORTRAIT else Orientation.LANDSCAPE
+                    drawingView.invalidate()
+                    refreshLabels()
+                }
+                .show()
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Page Setup")
+            .setView(container)
+            .setPositiveButton("Done", null)
+            .show()
+    }
+    
 
     // ---------- Inline text editing ----------
 
