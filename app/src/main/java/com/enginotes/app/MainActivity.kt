@@ -57,9 +57,21 @@ class MainActivity : AppCompatActivity() {
             drawingView.currentTool = Tool.PEN
             updateSizeLabel()
         }
-        findViewById<Button>(R.id.btnEraser).setOnClickListener {
-            drawingView.currentTool = Tool.ERASER
-            updateSizeLabel()
+        findViewById<Button>(R.id.btnEraser).setOnClickListener { btn ->
+            if (drawingView.currentTool == Tool.ERASER) {
+                val options = arrayOf("🧹 Object Eraser (erase whole line/shape)", "🧼 Area Eraser (erase only touched part)")
+                AlertDialog.Builder(this)
+                    .setTitle("Eraser Mode")
+                    .setItems(options) { _, index ->
+                        drawingView.eraserMode = if (index == 0) EraserMode.OBJECT else EraserMode.AREA
+                        (btn as Button).text = if (index == 0) "🧹" else "🧼"
+                    }
+                    .show()
+            } else {
+                drawingView.currentTool = Tool.ERASER
+                updateSizeLabel()
+            }
+        
         }
         btnShapes.setOnClickListener {
             AlertDialog.Builder(this)
