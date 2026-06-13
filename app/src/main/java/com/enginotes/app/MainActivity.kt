@@ -19,6 +19,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var drawingView: DrawingView
     private lateinit var btnFill: Button
+    private lateinit var btnShapes: Button
     private lateinit var tvSize: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -27,7 +28,10 @@ class MainActivity : AppCompatActivity() {
 
         drawingView = findViewById(R.id.drawingView)
         btnFill = findViewById(R.id.btnFill)
+        btnShapes = findViewById(R.id.btnShapes)
         tvSize = findViewById(R.id.tvSize)
+
+        drawingView.onTextTapListener = { x, y -> showTextDialog(x, y) }
 
         findViewById<Button>(R.id.btnPen).setOnClickListener {
             drawingView.currentTool = Tool.PEN
@@ -37,16 +41,23 @@ class MainActivity : AppCompatActivity() {
             drawingView.currentTool = Tool.ERASER
             updateSizeLabel()
         }
-        findViewById<Button>(R.id.btnLine).setOnClickListener {
-            drawingView.currentTool = Tool.LINE
-            updateSizeLabel()
+        btnShapes.setOnClickListener {
+            val shapes = arrayOf("Line", "Rectangle", "Circle")
+            AlertDialog.Builder(this)
+                .setTitle("Select Shape")
+                .setItems(shapes) { _, index ->
+                    drawingView.currentTool = when (index) {
+                        0 -> Tool.LINE
+                        1 -> Tool.RECTANGLE
+                        else -> Tool.CIRCLE
+                    }
+                    btnShapes.text = "Shapes: " + shapes[index]
+                    updateSizeLabel()
+                }
+                .show()
         }
-        findViewById<Button>(R.id.btnRectangle).setOnClickListener {
-            drawingView.currentTool = Tool.RECTANGLE
-            updateSizeLabel()
-        }
-        findViewById<Button>(R.id.btnCircle).setOnClickListener {
-            drawingView.currentTool = Tool.CIRCLE
+        findViewById<Button>(R.id.btnText).setOnClickListener {
+            drawingView.currentTool = Tool.TEXT
             updateSizeLabel()
         }
         findViewById<Button>(R.id.btnColor).setOnClickListener {
@@ -82,7 +93,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateSizeLabel() {
-        val size = if (drawingView.currentTool == Tool.ERASER) drawingView.eraserSize else drawingView.currentStrokeWidth
+        val size = when (drawingView.currentTool) {
+            Tool.ERASER -> drawingView.eraserSize
+            Tool.TEXT -> drawingView.defaultTextSize
+            else -> drawingView.currentStrokeWidth
+        }
         tvSize.text = size.toInt().toString() + "px"
     }
 
@@ -99,16 +114,24 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Choose Color")
             .setItems(names.toTypedArray()) { _, index ->
                 drawingView.currentColor = colors[index]
-                drawingView.currentTool = Tool.PEN
+                if (drawingView.currentTool == Tool.ERASER || drawingView.currentTool == Tool.TEXT) {
+                    drawingView.currentTool = Tool.PEN
+                    btnShapes.text = "Shapes: Line"
+                }
                 updateSizeLabel()
             }
             .show()
     }
 
     private fun showSizePicker() {
-        val isEraser = drawingView.currentTool == Tool.ERASER
-        val current = if (isEraser) drawingView.eraserSize else drawingView.currentStrokeWidth
-        val maxSize = if (isEraser) 200 else 100
+        val tool = drawingView.currentTool
+        val current: Float
+        val maxSize: Int
+        when (tool) {
+            Tool.ERASER -> { current = drawingView.eraserSize; maxSize = 200 }
+            Tool.TEXT -> { current = drawingView.defaultTextSize; maxSize = 150 }
+            else -> { current = drawingView.currentStrokeWidth; maxSize = 100 }
+        }
 
         val container = LinearLayout(this)
         container.orientation = LinearLayout.VERTICAL
@@ -126,10 +149,10 @@ class MainActivity : AppCompatActivity() {
             override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
                 val v = if (value < 1) 1 else value
                 label.text = "Size: " + v + "px"
-                if (isEraser) {
-                    drawingView.eraserSize = v.toFloat()
-                } else {
-                    drawingView.currentStrokeWidth = v.toFloat()
+                when (tool) {
+                    Tool.ERASER -> drawingView.eraserSize = v.toFloat()
+                    Tool.TEXT -> drawingView.defaultTextSize = v.toFloat()
+                    else -> drawingView.currentStrokeWidth = v.toFloat()
                 }
                 updateSizeLabel()
             }
@@ -138,25 +161,94 @@ class MainActivity : AppCompatActivity() {
         })
         container.addView(seekBar)
 
+        val title = when (tool) {
+            Tool.ERASER -> "Eraser Size (1 - $maxSize px)"
+            Tool.TEXT -> "Default Text Size (1 - $maxSize px)"
+            else -> "Pen Thickness (1 - $maxSize px)"
+        }
+
         AlertDialog.Builder(this)
-            .setTitle(if (isEraser) "Eraser Size (1 - " + maxSize + "px)" else "Pen Thickness (1 - " + maxSize + "px)")
+            .setTitle(title)
             .setView(container)
             .setPositiveButton("Done", null)
             .show()
     }
 
     private fun showPaperPicker() {
-        val types = arrayOf("Blank White", "Lined Paper", "Graph Paper")
+        val types = arrayOf("Blank White", "Lined Paper", "Graph Paper", "Dot Grid", "Engineering Grid")
         AlertDialog.Builder(this)
             .setTitle("Paper Type")
             .setItems(types) { _, index ->
                 drawingView.paperType = when (index) {
                     0 -> PaperType.BLANK
                     1 -> PaperType.LINED
-                    else -> PaperType.GRID
+                    2 -> PaperType.GRID
+                    3 -> PaperType.DOTS
+                    else -> PaperType.ENGINEERING
                 }
                 drawingView.invalidate()
             }
+            .show()
+    }
+
+    private fun showTextDialog(worldX: Float, worldY: Float) {
+        val container = LinearLayout(this)
+        container.orientation = LinearLayout.VERTICAL
+        container.setPadding(50, 20, 50, 10)
+
+        val input = EditText(this)
+        input.hint = "Enter text"
+        container.addView(input)
+
+        val sizeLabel = TextView(this)
+        sizeLabel.text = "Font size: " + drawingView.defaultTextSize.toInt() + "px"
+        container.addView(sizeLabel)
+
+        var sizeValue = drawingView.defaultTextSize
+        val sizeSeek = SeekBar(this)
+        sizeSeek.max = 150
+        sizeSeek.progress = drawingView.defaultTextSize.toInt().coerceIn(10, 150)
+        sizeSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
+                val v = if (value < 10) 10 else value
+                sizeValue = v.toFloat()
+                sizeLabel.text = "Font size: " + v + "px"
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+        container.addView(sizeSeek)
+
+        val rotLabel = TextView(this)
+        rotLabel.text = "Rotation: 0°"
+        container.addView(rotLabel)
+
+        var rotValue = 0f
+        val rotSeek = SeekBar(this)
+        rotSeek.max = 360
+        rotSeek.progress = 0
+        rotSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
+                rotValue = value.toFloat()
+                rotLabel.text = "Rotation: " + value + "°"
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+        container.addView(rotSeek)
+
+        AlertDialog.Builder(this)
+            .setTitle("Add Text")
+            .setView(container)
+            .setPositiveButton("Add") { _, _ ->
+                val text = input.text.toString()
+                if (text.isNotBlank()) {
+                    drawingView.defaultTextSize = sizeValue
+                    drawingView.addText(text, worldX, worldY, sizeValue, rotValue, drawingView.currentColor)
+                    updateSizeLabel()
+                }
+            }
+            .setNegativeButton("Cancel", null)
             .show()
     }
 
