@@ -42,6 +42,8 @@ class MainActivity : AppCompatActivity() {
 
     private var currentFileName: String? = null
 
+    private val SIZE_SCALE = 3f
+
     private val shapeSymbols = listOf("╱ Line", "▭ Rectangle", "▢ Rounded Rect", "○ Circle", "⬭ Ellipse", "△ Triangle", "◇ Diamond", "➔ Arrow", "★ Star", "⬠ Pentagon", "⬡ Hexagon", "〜 Curve", "✛ Cross")
     private val shapeTools = listOf(Tool.LINE, Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.CIRCLE, Tool.ELLIPSE, Tool.TRIANGLE, Tool.DIAMOND, Tool.ARROW, Tool.STAR, Tool.PENTAGON, Tool.HEXAGON, Tool.CURVE, Tool.CROSS)
 
@@ -189,8 +191,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
-    private val SIZE_SCALE = 3f
-
     private fun addPressEffect(view: View) {
         view.setOnTouchListener { v, event ->
             when (event.actionMasked) {
@@ -203,7 +203,6 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- Color grid (MS Word style) ----------
 
-    private fun showColorGridDialog(onPicked: (Int) -> Unit) {
     private fun showColorGridDialog(onPicked: (Int) -> Unit) {
         val grid = GridLayout(this)
         grid.columnCount = 10
@@ -406,6 +405,8 @@ class MainActivity : AppCompatActivity() {
                 when (sp.type) {
                     'S' -> spannable.setSpan(StyleSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                     'C' -> spannable.setSpan(ForegroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    'U' -> spannable.setSpan(UnderlineSpan(), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    'H' -> spannable.setSpan(BackgroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
             }
         }
@@ -431,6 +432,7 @@ class MainActivity : AppCompatActivity() {
             }
             override fun afterTextChanged(s: Editable?) {}
         })
+
         val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         params.leftMargin = screenX.toInt()
         params.topMargin = (screenY - sizePx).toInt().coerceAtLeast(0)
