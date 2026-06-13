@@ -18,9 +18,8 @@
 
             <Button android:id="@+id/btnPen" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Pen" />
             <Button android:id="@+id/btnEraser" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Eraser" />
-            <Button android:id="@+id/btnLine" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Line" />
-            <Button android:id="@+id/btnRectangle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Rect" />
-            <Button android:id="@+id/btnCircle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Circle" />
+            <Button android:id="@+id/btnShapes" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Shapes: Line" />
+            <Button android:id="@+id/btnText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Text" />
             <Button android:id="@+id/btnColor" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Color" />
             <Button android:id="@+id/btnFill" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Fill: Off" />
             <Button android:id="@+id/btnSize" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Size" />
