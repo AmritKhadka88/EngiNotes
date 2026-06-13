@@ -7,11 +7,19 @@ import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.text.Spannable
+import android.text.SpannableStringBuilder
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
+import android.view.Gravity
+import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.GridLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
@@ -33,14 +41,11 @@ class MainActivity : AppCompatActivity() {
     private val shapeSymbols = listOf("╱ Line", "▭ Rectangle", "▢ Rounded Rect", "○ Circle", "⬭ Ellipse", "△ Triangle", "◇ Diamond", "➔ Arrow", "★ Star", "⬠ Pentagon", "⬡ Hexagon", "〜 Curve", "✛ Cross")
     private val shapeTools = listOf(Tool.LINE, Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.CIRCLE, Tool.ELLIPSE, Tool.TRIANGLE, Tool.DIAMOND, Tool.ARROW, Tool.STAR, Tool.PENTAGON, Tool.HEXAGON, Tool.CURVE, Tool.CROSS)
 
-    // Inline text editor state
     private var activeEditText: EditText? = null
     private var activeToolbar: LinearLayout? = null
     private var editingItem: TextItem? = null
     private var editWorldX = 0f
     private var editWorldY = 0f
-    private var editBold = false
-    private var editItalic = false
     private var editRotation = 0f
     private var editColor = Color.BLACK
     private var editSize = 30f
@@ -98,7 +103,32 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.btnTools).setOnClickListener {
             closeInlineEditor(commit = true)
-            showToolsDialog()
+            val options = arrayOf("🧹 Eraser", "🎨 Color", "🪣 Fill", "📏 Size", "📄 Paper Style")
+            AlertDialog.Builder(this)
+                .setTitle("Tools")
+                .setItems(options) { _, index ->
+                    when (index) {
+                        0 -> {
+                            if (drawingView.currentTool == Tool.ERASER) {
+                                drawingView.eraserMode = if (drawingView.eraserMode == EraserMode.OBJECT) EraserMode.AREA else EraserMode.OBJECT
+                                Toast.makeText(this, if (drawingView.eraserMode == EraserMode.OBJECT) "Object Eraser" else "Area Eraser", Toast.LENGTH_SHORT).show()
+                            } else {
+                                drawingView.currentTool = Tool.ERASER
+                            }
+                        }
+                        1 -> showColorGridDialog { color ->
+                            drawingView.currentColor = color
+                            if (drawingView.currentTool == Tool.ERASER) drawingView.currentTool = Tool.PEN
+                        }
+                        2 -> {
+                            drawingView.fillShapes = !drawingView.fillShapes
+                            Toast.makeText(this, if (drawingView.fillShapes) "Fill: On" else "Fill: Off", Toast.LENGTH_SHORT).show()
+                        }
+                        3 -> showSizePicker()
+                        else -> showPaperPicker()
+                    }
+                }
+                .show()
         }
 
         findViewById<Button>(R.id.btnInsert).setOnClickListener {
@@ -146,79 +176,43 @@ class MainActivity : AppCompatActivity() {
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
-    private fun showToolsDialog() {
-        val container = LinearLayout(this)
-        container.orientation = LinearLayout.HORIZONTAL
-        container.setPadding(dp(20), dp(20), dp(20), dp(20))
+    // ---------- Color grid (MS Word style) ----------
 
-        lateinit var dialog: AlertDialog
+    private fun showColorGridDialog(onPicked: (Int) -> Unit) {
+        val grid = GridLayout(this)
+        grid.columnCount = 10
+        grid.setPadding(dp(10), dp(10), dp(10), dp(10))
 
-        val btnEraserDlg = Button(this)
-        btnEraserDlg.text = if (drawingView.eraserMode == EraserMode.OBJECT) "🧹" else "🧼"
-        btnEraserDlg.setOnClickListener {
-            if (drawingView.currentTool == Tool.ERASER) {
-                drawingView.eraserMode = if (drawingView.eraserMode == EraserMode.OBJECT) EraserMode.AREA else EraserMode.OBJECT
-                Toast.makeText(this, if (drawingView.eraserMode == EraserMode.OBJECT) "Object Eraser" else "Area Eraser", Toast.LENGTH_SHORT).show()
-            } else {
-                drawingView.currentTool = Tool.ERASER
+        fun addSwatch(color: Int) {
+            val swatch = View(this)
+            val params = GridLayout.LayoutParams()
+            params.width = dp(28)
+            params.height = dp(28)
+            params.setMargins(dp(2), dp(2), dp(2), dp(2))
+            swatch.layoutParams = params
+            swatch.setBackgroundColor(color)
+            swatch.setOnClickListener { onPicked(color) }
+            grid.addView(swatch)
+        }
+
+        for (i in 0..9) {
+            val v = i / 9f
+            addSwatch(Color.HSVToColor(floatArrayOf(0f, 0f, 1f - v)))
+        }
+        val hues = listOf(0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330)
+        val values = listOf(1.0f, 0.85f, 0.7f, 0.5f, 0.3f)
+        for (value in values) {
+            for (hue in hues) {
+                addSwatch(Color.HSVToColor(floatArrayOf(hue.toFloat(), 0.65f, value)))
             }
-            dialog.dismiss()
         }
-        container.addView(btnEraserDlg)
 
-        val colorSwatch = Button(this)
-        colorSwatch.text = ""
-        colorSwatch.setBackgroundColor(drawingView.currentColor)
-        val swatchParams = LinearLayout.LayoutParams(dp(40), dp(40))
-        swatchParams.setMargins(dp(8), 0, dp(8), 0)
-        colorSwatch.layoutParams = swatchParams
-        colorSwatch.setOnClickListener {
-            dialog.dismiss()
-            showColorPicker()
-        }
-        container.addView(colorSwatch)
-
-        val btnFillDlg = Button(this)
-        btnFillDlg.text = "🪣"
-        btnFillDlg.setOnClickListener {
-            drawingView.fillShapes = !drawingView.fillShapes
-            Toast.makeText(this, if (drawingView.fillShapes) "Fill: On" else "Fill: Off", Toast.LENGTH_SHORT).show()
-            dialog.dismiss()
-        }
-        container.addView(btnFillDlg)
-
-        val btnSizeDlg = Button(this)
-        btnSizeDlg.text = "📏"
-        btnSizeDlg.setOnClickListener { dialog.dismiss(); showSizePicker() }
-        container.addView(btnSizeDlg)
-
-        val btnPaperDlg = Button(this)
-        btnPaperDlg.text = "📄"
-        btnPaperDlg.setOnClickListener { dialog.dismiss(); showPaperPicker() }
-        container.addView(btnPaperDlg)
-
-        dialog = AlertDialog.Builder(this)
-            .setTitle("Tools")
-            .setView(container)
-            .create()
-        dialog.show()
-    }
-
-    private fun showColorPicker() {
-        val colors = listOf(
-            Color.BLACK, Color.RED, Color.BLUE, Color.GREEN,
-            Color.MAGENTA, Color.CYAN,
-            Color.parseColor("#FFA500"),
-            Color.parseColor("#800080")
-        )
-        val names = listOf("Black", "Red", "Blue", "Green", "Magenta", "Cyan", "Orange", "Purple")
+        val scroll = ScrollView(this)
+        scroll.addView(grid)
 
         AlertDialog.Builder(this)
-            .setTitle("Choose Color")
-            .setItems(names.toTypedArray()) { _, index ->
-                drawingView.currentColor = colors[index]
-                if (drawingView.currentTool == Tool.ERASER) drawingView.currentTool = Tool.PEN
-            }
+            .setTitle("Color")
+            .setView(scroll)
             .show()
     }
 
@@ -285,13 +279,34 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- Inline text editing ----------
 
-    private fun applyStyle(editText: EditText) {
-        var style = Typeface.NORMAL
-        if (editBold && editItalic) style = Typeface.BOLD_ITALIC
-        else if (editBold) style = Typeface.BOLD
-        else if (editItalic) style = Typeface.ITALIC
-        editText.setTypeface(Typeface.DEFAULT, style)
-        editText.rotation = editRotation
+    private fun toggleStyleOnSelection(editText: EditText, styleFlag: Int) {
+        val start = editText.selectionStart
+        val end = editText.selectionEnd
+        if (start == end) {
+            Toast.makeText(this, "Select text first to format", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val from = minOf(start, end); val to = maxOf(start, end)
+        val editable = editText.text
+        val existing = editable.getSpans(from, to, StyleSpan::class.java)
+            .filter { it.style == styleFlag && editable.getSpanStart(it) <= from && editable.getSpanEnd(it) >= to }
+        if (existing.isNotEmpty()) {
+            for (sp in existing) editable.removeSpan(sp)
+        } else {
+            editable.setSpan(StyleSpan(styleFlag), from, to, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+    }
+
+    private fun applyColorToSelection(editText: EditText, color: Int) {
+        val start = editText.selectionStart
+        val end = editText.selectionEnd
+        if (start == end) {
+            editColor = color
+            editText.setTextColor(color)
+            return
+        }
+        val from = minOf(start, end); val to = maxOf(start, end)
+        editText.text.setSpan(ForegroundColorSpan(color), from, to, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
     }
 
     private fun showInlineTextEditor(item: TextItem?, screenX: Float, screenY: Float, worldX: Float, worldY: Float) {
@@ -300,8 +315,6 @@ class MainActivity : AppCompatActivity() {
         editingItem = item
         editWorldX = item?.x ?: worldX
         editWorldY = item?.y ?: worldY
-        editBold = item?.isBold ?: false
-        editItalic = item?.isItalic ?: false
         editRotation = item?.rotation ?: 0f
         editColor = item?.color ?: drawingView.currentColor
         editSize = item?.size ?: drawingView.defaultTextSize
@@ -310,13 +323,24 @@ class MainActivity : AppCompatActivity() {
         val sizePx = editSize * drawingView.getScaleFactor()
 
         val editText = EditText(this)
-        editText.setText(item?.text ?: "")
+        val spannable = SpannableStringBuilder(item?.text ?: "")
+        item?.spans?.forEach { sp ->
+            val s = sp.start.coerceIn(0, spannable.length)
+            val e = sp.end.coerceIn(s, spannable.length)
+            if (s < e) {
+                when (sp.type) {
+                    'S' -> spannable.setSpan(StyleSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    'C' -> spannable.setSpan(ForegroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+            }
+        }
+        editText.setText(spannable, EditText.BufferType.SPANNABLE)
         editText.setTextColor(editColor)
         editText.textSize = (sizePx / density).coerceAtLeast(8f)
         editText.setBackgroundColor(Color.TRANSPARENT)
         editText.setPadding(dp(4), dp(4), dp(4), dp(4))
         editText.minWidth = dp(120)
-        applyStyle(editText)
+        editText.rotation = editRotation
 
         val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         params.leftMargin = screenX.toInt()
@@ -325,30 +349,34 @@ class MainActivity : AppCompatActivity() {
 
         val toolbar = LinearLayout(this)
         toolbar.orientation = LinearLayout.HORIZONTAL
-        toolbar.setBackgroundColor(0xFF333333.toInt())
+        toolbar.setBackgroundColor(0xAA222222.toInt())
+        toolbar.setPadding(dp(4), dp(4), dp(4), dp(4))
 
         fun toolBtn(label: String, action: () -> Unit) {
             val b = Button(this)
             b.text = label
             b.textSize = 14f
             b.setTextColor(Color.WHITE)
-            b.setBackgroundColor(0xFF333333.toInt())
-            b.setPadding(dp(10), dp(2), dp(10), dp(2))
+            b.setBackgroundColor(0x55FFFFFF)
+            val p = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            p.setMargins(dp(2), 0, dp(2), 0)
+            b.layoutParams = p
+            b.setPadding(dp(10), dp(6), dp(10), dp(6))
+            b.minWidth = 0
+            b.minimumWidth = 0
             b.setOnClickListener { action() }
             toolbar.addView(b)
         }
 
-        toolBtn("B") { editBold = !editBold; applyStyle(editText) }
-        toolBtn("I") { editItalic = !editItalic; applyStyle(editText) }
-        toolBtn("🎨") { showColorPickerForText(editText) }
-        toolBtn("↺") { editRotation -= 15f; applyStyle(editText) }
-        toolBtn("↻") { editRotation += 15f; applyStyle(editText) }
+        toolBtn("B") { toggleStyleOnSelection(editText, Typeface.BOLD) }
+        toolBtn("I") { toggleStyleOnSelection(editText, Typeface.ITALIC) }
+        toolBtn("🎨") { showColorGridDialog { color -> applyColorToSelection(editText, color) } }
+        toolBtn("↺") { editRotation -= 15f; editText.rotation = editRotation }
+        toolBtn("↻") { editRotation += 15f; editText.rotation = editRotation }
         toolBtn("✓") { closeInlineEditor(commit = true) }
         toolBtn("🗑") { closeInlineEditor(commit = false, delete = true) }
 
-        val toolbarParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        toolbarParams.leftMargin = screenX.toInt().coerceAtLeast(0)
-        toolbarParams.topMargin = (screenY - sizePx - dp(48)).toInt().coerceAtLeast(0)
+        val toolbarParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
         canvasContainer.addView(toolbar, toolbarParams)
 
         activeEditText = editText
@@ -361,18 +389,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showColorPickerForText(editText: EditText) {
-        val colors = listOf(Color.BLACK, Color.RED, Color.BLUE, Color.GREEN, Color.MAGENTA, Color.CYAN, Color.parseColor("#FFA500"), Color.parseColor("#800080"))
-        val names = listOf("Black", "Red", "Blue", "Green", "Magenta", "Cyan", "Orange", "Purple")
-        AlertDialog.Builder(this)
-            .setTitle("Text Color")
-            .setItems(names.toTypedArray()) { _, index ->
-                editColor = colors[index]
-                editText.setTextColor(editColor)
-            }
-            .show()
-    }
-
     private fun closeInlineEditor(commit: Boolean, delete: Boolean = false) {
         val editText = activeEditText ?: return
         val toolbar = activeToolbar
@@ -381,6 +397,18 @@ class MainActivity : AppCompatActivity() {
         imm.hideSoftInputFromWindow(editText.windowToken, 0)
 
         val text = editText.text.toString()
+        val spans = mutableListOf<TextSpanData>()
+        val editable = editText.text
+        for (span in editable.getSpans(0, editable.length, Any::class.java)) {
+            val s = editable.getSpanStart(span)
+            val e = editable.getSpanEnd(span)
+            if (s < 0 || e < 0 || s >= e) continue
+            when (span) {
+                is StyleSpan -> spans.add(TextSpanData(s, e, 'S', span.style))
+                is ForegroundColorSpan -> spans.add(TextSpanData(s, e, 'C', span.foregroundColor))
+            }
+        }
+
         canvasContainer.removeView(editText)
         if (toolbar != null) canvasContainer.removeView(toolbar)
 
@@ -391,11 +419,10 @@ class MainActivity : AppCompatActivity() {
                 item.color = editColor
                 item.size = editSize
                 item.rotation = editRotation
-                item.isBold = editBold
-                item.isItalic = editItalic
+                item.spans = spans
                 item.isEditing = false
             } else {
-                drawingView.addText(text, editWorldX, editWorldY, editSize, editRotation, editColor, editBold, editItalic)
+                drawingView.addText(text, editWorldX, editWorldY, editSize, editRotation, editColor, spans)
             }
         } else {
             if (item != null) drawingView.removeTextItem(item)
