@@ -1233,7 +1233,7 @@ class DrawingView @JvmOverloads constructor(
             else -> {}
         }
     }
-    }
+    
 
     fun screenToWorldX(x: Float): Float = (x - translateX) / scaleFactor
     fun screenToWorldY(y: Float): Float = (y - translateY) / scaleFactor
