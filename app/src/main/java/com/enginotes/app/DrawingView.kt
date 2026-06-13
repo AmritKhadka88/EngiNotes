@@ -11,8 +11,21 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
 
-enum class Tool { PEN, ERASER, RECTANGLE, CIRCLE, LINE, TEXT }
+enum class Tool {
+    PEN, ERASER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
+    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, TEXT
+}
 enum class PaperType { BLANK, LINED, GRID, DOTS, ENGINEERING }
+
+val SHAPE_TOOLS = setOf(
+    Tool.LINE, Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.CIRCLE, Tool.ELLIPSE,
+    Tool.TRIANGLE, Tool.DIAMOND, Tool.ARROW, Tool.STAR, Tool.PENTAGON, Tool.HEXAGON, Tool.CURVE, Tool.CROSS
+)
+
+val CLOSED_SHAPES = setOf(
+    Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.CIRCLE, Tool.ELLIPSE,
+    Tool.TRIANGLE, Tool.DIAMOND, Tool.STAR, Tool.PENTAGON, Tool.HEXAGON
+)
 
 class StrokeData(
     val type: Tool,
@@ -23,52 +36,107 @@ class StrokeData(
 ) {
     fun buildPath(): Path {
         val path = Path()
+        if (type == Tool.PEN || type == Tool.ERASER) {
+            if (points.size >= 2) {
+                path.moveTo(points[0], points[1])
+                var i = 2
+                while (i + 1 < points.size) {
+                    path.lineTo(points[i], points[i + 1])
+                    i += 2
+                }
+            }
+            return path
+        }
+        if (points.size < 4) return path
+
+        val x1 = points[0]; val y1 = points[1]
+        val x2 = points[2]; val y2 = points[3]
+        val left = minOf(x1, x2); val right = maxOf(x1, x2)
+        val top = minOf(y1, y2); val bottom = maxOf(y1, y2)
+        val cx = (left + right) / 2f
+        val cy = (top + bottom) / 2f
+
         when (type) {
-            Tool.PEN, Tool.ERASER -> {
-                if (points.size >= 2) {
-                    path.moveTo(points[0], points[1])
-                    var i = 2
-                    while (i + 1 < points.size) {
-                        path.lineTo(points[i], points[i + 1])
-                        i += 2
-                    }
-                }
-            }
-            Tool.LINE -> {
-                if (points.size >= 4) {
-                    path.moveTo(points[0], points[1])
-                    path.lineTo(points[2], points[3])
-                }
-            }
-            Tool.RECTANGLE -> {
-                if (points.size >= 4) {
-                    path.addRect(
-                        RectF(
-                            minOf(points[0], points[2]),
-                            minOf(points[1], points[3]),
-                            maxOf(points[0], points[2]),
-                            maxOf(points[1], points[3])
-                        ),
-                        Path.Direction.CW
-                    )
-                }
+            Tool.LINE -> { path.moveTo(x1, y1); path.lineTo(x2, y2) }
+            Tool.RECTANGLE -> path.addRect(RectF(left, top, right, bottom), Path.Direction.CW)
+            Tool.ROUNDED_RECT -> {
+                val rx = ((right - left) * 0.15f).coerceAtMost(40f)
+                val ry = ((bottom - top) * 0.15f).coerceAtMost(40f)
+                path.addRoundRect(RectF(left, top, right, bottom), rx, ry, Path.Direction.CW)
             }
             Tool.CIRCLE -> {
-                if (points.size >= 4) {
-                    val radius = kotlin.math.hypot((points[2] - points[0]).toDouble(), (points[3] - points[1]).toDouble()).toFloat()
-                    path.addCircle(points[0], points[1], radius, Path.Direction.CW)
-                }
+                val radius = kotlin.math.hypot((x2 - x1).toDouble(), (y2 - y1).toDouble()).toFloat()
+                path.addCircle(x1, y1, radius, Path.Direction.CW)
             }
-            Tool.TEXT -> {}
+            Tool.ELLIPSE -> path.addOval(RectF(left, top, right, bottom), Path.Direction.CW)
+            Tool.TRIANGLE -> {
+                path.moveTo(cx, top)
+                path.lineTo(right, bottom)
+                path.lineTo(left, bottom)
+                path.close()
+            }
+            Tool.DIAMOND -> {
+                path.moveTo(cx, top)
+                path.lineTo(right, cy)
+                path.lineTo(cx, bottom)
+                path.lineTo(left, cy)
+                path.close()
+            }
+            Tool.ARROW -> {
+                path.moveTo(x1, y1)
+                path.lineTo(x2, y2)
+                val angle = kotlin.math.atan2((y2 - y1).toDouble(), (x2 - x1).toDouble())
+                val arrowLen = 20f
+                val arrowAngle = Math.PI / 7
+                val ax1 = x2 - (arrowLen * kotlin.math.cos(angle - arrowAngle)).toFloat()
+                val ay1 = y2 - (arrowLen * kotlin.math.sin(angle - arrowAngle)).toFloat()
+                val ax2 = x2 - (arrowLen * kotlin.math.cos(angle + arrowAngle)).toFloat()
+                val ay2 = y2 - (arrowLen * kotlin.math.sin(angle + arrowAngle)).toFloat()
+                path.moveTo(x2, y2); path.lineTo(ax1, ay1)
+                path.moveTo(x2, y2); path.lineTo(ax2, ay2)
+            }
+            Tool.CURVE -> {
+                val dx = x2 - x1
+                val dy = y2 - y1
+                val ctrlX = cx - dy * 0.25f
+                val ctrlY = cy + dx * 0.25f
+                path.moveTo(x1, y1)
+                path.quadTo(ctrlX, ctrlY, x2, y2)
+            }
+            Tool.CROSS -> {
+                path.moveTo(left, cy); path.lineTo(right, cy)
+                path.moveTo(cx, top); path.lineTo(cx, bottom)
+            }
+            Tool.STAR -> addPolygon(path, left, top, right, bottom, 5, true)
+            Tool.PENTAGON -> addPolygon(path, left, top, right, bottom, 5, false)
+            Tool.HEXAGON -> addPolygon(path, left, top, right, bottom, 6, false)
+            else -> {}
         }
         return path
+    }
+
+    private fun addPolygon(path: Path, left: Float, top: Float, right: Float, bottom: Float, sides: Int, isStar: Boolean) {
+        val cx = (left + right) / 2f
+        val cy = (top + bottom) / 2f
+        val radiusX = (right - left) / 2f
+        val radiusY = (bottom - top) / 2f
+        val pointCount = if (isStar) sides * 2 else sides
+        val angleStep = 2 * Math.PI / pointCount
+        val startAngle = -Math.PI / 2
+        for (i in 0 until pointCount) {
+            val r = if (isStar && i % 2 == 1) 0.5f else 1f
+            val angle = startAngle + i * angleStep
+            val px = cx + (kotlin.math.cos(angle) * radiusX * r).toFloat()
+            val py = cy + (kotlin.math.sin(angle) * radiusY * r).toFloat()
+            if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
+        }
+        path.close()
     }
 
     fun toPaint(): Paint {
         val p = Paint()
         p.color = color
-        val isShape = type == Tool.RECTANGLE || type == Tool.CIRCLE
-        p.style = if (fill && isShape) Paint.Style.FILL_AND_STROKE else Paint.Style.STROKE
+        p.style = if (fill && CLOSED_SHAPES.contains(type)) Paint.Style.FILL_AND_STROKE else Paint.Style.STROKE
         p.strokeWidth = strokeWidth
         p.isAntiAlias = true
         p.strokeJoin = Paint.Join.ROUND
@@ -100,9 +168,6 @@ class DrawingView @JvmOverloads constructor(
     private var scaleFactor = 1f
     private var translateX = 0f
     private var translateY = 0f
-
-    private var shapeStartXWorld = 0f
-    private var shapeStartYWorld = 0f
 
     private var prevFocusX = 0f
     private var prevFocusY = 0f
@@ -216,10 +281,7 @@ class DrawingView @JvmOverloads constructor(
                 p.strokeWidth = 1f
                 val spacing = 60f
                 var y = (top / spacing).toInt() * spacing
-                while (y < bottom) {
-                    canvas.drawLine(left, y, right, y, p)
-                    y += spacing
-                }
+                while (y < bottom) { canvas.drawLine(left, y, right, y, p); y += spacing }
             }
             PaperType.GRID -> {
                 val p = Paint()
@@ -239,21 +301,13 @@ class DrawingView @JvmOverloads constructor(
                 var x = (left / spacing).toInt() * spacing
                 while (x < right) {
                     var y = (top / spacing).toInt() * spacing
-                    while (y < bottom) {
-                        canvas.drawCircle(x, y, 2f, p)
-                        y += spacing
-                    }
+                    while (y < bottom) { canvas.drawCircle(x, y, 2f, p); y += spacing }
                     x += spacing
                 }
             }
             PaperType.ENGINEERING -> {
-                val minorPaint = Paint()
-                minorPaint.color = Color.parseColor("#E0E8F5")
-                minorPaint.strokeWidth = 1f
-                val majorPaint = Paint()
-                majorPaint.color = Color.parseColor("#A8C0E8")
-                majorPaint.strokeWidth = 1.5f
-
+                val minorPaint = Paint(); minorPaint.color = Color.parseColor("#E0E8F5"); minorPaint.strokeWidth = 1f
+                val majorPaint = Paint(); majorPaint.color = Color.parseColor("#A8C0E8"); majorPaint.strokeWidth = 1.5f
                 val minorSpacing = 20f
                 val majorEvery = 5
 
@@ -262,41 +316,30 @@ class DrawingView @JvmOverloads constructor(
                 while (x < right) {
                     val paint = if (i % majorEvery == 0) majorPaint else minorPaint
                     canvas.drawLine(x, top, x, bottom, paint)
-                    i++
-                    x = i * minorSpacing
+                    i++; x = i * minorSpacing
                 }
                 var j = (top / minorSpacing).toInt()
                 var y = j * minorSpacing
                 while (y < bottom) {
                     val paint = if (j % majorEvery == 0) majorPaint else minorPaint
                     canvas.drawLine(left, y, right, y, paint)
-                    j++
-                    y = j * minorSpacing
+                    j++; y = j * minorSpacing
                 }
             }
             else -> {}
         }
     }
 
-    private fun screenToWorldX(x: Float): Float {
-        return (x - translateX) / scaleFactor
-    }
-
-    private fun screenToWorldY(y: Float): Float {
-        return (y - translateY) / scaleFactor
-    }
+    private fun screenToWorldX(x: Float): Float = (x - translateX) / scaleFactor
+    private fun screenToWorldY(y: Float): Float = (y - translateY) / scaleFactor
 
     override fun onHoverEvent(event: MotionEvent): Boolean {
         when (event.action) {
             MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
-                hoverX = event.x
-                hoverY = event.y
-                invalidate()
+                hoverX = event.x; hoverY = event.y; invalidate()
             }
             MotionEvent.ACTION_HOVER_EXIT -> {
-                hoverX = null
-                hoverY = null
-                invalidate()
+                hoverX = null; hoverY = null; invalidate()
             }
         }
         return true
@@ -322,12 +365,10 @@ class DrawingView @JvmOverloads constructor(
     }
 
     private fun handleTextTap(event: MotionEvent) {
-        hoverX = event.x
-        hoverY = event.y
+        hoverX = event.x; hoverY = event.y
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                textDownX = event.x
-                textDownY = event.y
+                textDownX = event.x; textDownY = event.y
                 textDownTime = System.currentTimeMillis()
                 invalidate()
             }
@@ -346,8 +387,7 @@ class DrawingView @JvmOverloads constructor(
     }
 
     private fun handleDrawing(event: MotionEvent) {
-        hoverX = event.x
-        hoverY = event.y
+        hoverX = event.x; hoverY = event.y
 
         val worldX = screenToWorldX(event.x)
         val worldY = screenToWorldY(event.y)
@@ -355,20 +395,14 @@ class DrawingView @JvmOverloads constructor(
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                shapeStartXWorld = worldX
-                shapeStartYWorld = worldY
-
                 if (currentTool == Tool.ERASER) {
                     eraseAt(worldX, worldY)
                     invalidate()
                     return
                 }
-
-                val data: StrokeData = when (currentTool) {
-                    Tool.PEN -> StrokeData(Tool.PEN, mutableListOf(worldX, worldY), currentColor, currentStrokeWidth * pressure, false)
-                    Tool.LINE -> StrokeData(Tool.LINE, mutableListOf(worldX, worldY, worldX, worldY), currentColor, currentStrokeWidth, false)
-                    Tool.RECTANGLE -> StrokeData(Tool.RECTANGLE, mutableListOf(worldX, worldY, worldX, worldY), currentColor, currentStrokeWidth, fillShapes)
-                    Tool.CIRCLE -> StrokeData(Tool.CIRCLE, mutableListOf(worldX, worldY, worldX, worldY), currentColor, currentStrokeWidth, fillShapes)
+                val data: StrokeData = when {
+                    currentTool == Tool.PEN -> StrokeData(Tool.PEN, mutableListOf(worldX, worldY), currentColor, currentStrokeWidth * pressure, false)
+                    SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(worldX, worldY, worldX, worldY), currentColor, currentStrokeWidth, fillShapes)
                     else -> StrokeData(Tool.PEN, mutableListOf(worldX, worldY), currentColor, currentStrokeWidth * pressure, false)
                 }
                 currentItem = StrokeItem(data, data.buildPath(), data.toPaint())
@@ -381,16 +415,12 @@ class DrawingView @JvmOverloads constructor(
                     return
                 }
                 val item = currentItem ?: return
-                when (currentTool) {
-                    Tool.PEN -> {
-                        item.data.points.add(worldX)
-                        item.data.points.add(worldY)
-                    }
-                    Tool.LINE, Tool.RECTANGLE, Tool.CIRCLE -> {
-                        item.data.points[2] = worldX
-                        item.data.points[3] = worldY
-                    }
-                    else -> {}
+                if (currentTool == Tool.PEN) {
+                    item.data.points.add(worldX)
+                    item.data.points.add(worldY)
+                } else if (SHAPE_TOOLS.contains(currentTool)) {
+                    item.data.points[2] = worldX
+                    item.data.points[3] = worldY
                 }
                 item.path = item.data.buildPath()
                 invalidate()
@@ -419,16 +449,10 @@ class DrawingView @JvmOverloads constructor(
 
     private fun strokeHitTest(data: StrokeData, x: Float, y: Float, radius: Float): Boolean {
         if (data.type == Tool.PEN || data.type == Tool.ERASER) {
-            if (data.points.size == 2) {
-                return distance(x, y, data.points[0], data.points[1]) <= radius
-            }
+            if (data.points.size == 2) return distance(x, y, data.points[0], data.points[1]) <= radius
             var i = 0
             while (i + 3 < data.points.size) {
-                val x1 = data.points[i]
-                val y1 = data.points[i + 1]
-                val x2 = data.points[i + 2]
-                val y2 = data.points[i + 3]
-                if (distanceToSegment(x, y, x1, y1, x2, y2) <= radius) return true
+                if (distanceToSegment(x, y, data.points[i], data.points[i + 1], data.points[i + 2], data.points[i + 3]) <= radius) return true
                 i += 2
             }
             return false
@@ -453,9 +477,7 @@ class DrawingView @JvmOverloads constructor(
         val dy = y2 - y1
         if (dx == 0f && dy == 0f) return distance(px, py, x1, y1)
         val t = (((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)).coerceIn(0f, 1f)
-        val closestX = x1 + t * dx
-        val closestY = y1 + t * dy
-        return distance(px, py, closestX, closestY)
+        return distance(px, py, x1 + t * dx, y1 + t * dy)
     }
 
     fun addText(text: String, x: Float, y: Float, size: Float, rotation: Float, color: Int) {
