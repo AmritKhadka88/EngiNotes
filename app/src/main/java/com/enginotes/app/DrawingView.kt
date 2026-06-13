@@ -21,15 +21,36 @@ import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import android.graphics.Rect
+import android.graphics.Region
 import java.io.File
 import java.io.FileOutputStream
 
 enum class Tool {
     SELECT, FILL, PEN, ERASER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
-    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT
+    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT, AUTOSELECT
 }
 enum class PaperType { BLANK, LINED, GRID, DOTS, ENGINEERING }
 enum class EraserMode { OBJECT, AREA }
+enum class AutoSelectShape { RECTANGLE, FREEFORM }
+enum class AutoSelectDivide { WHOLE, DIVIDED }
+enum class CanvasMode { INFINITE, FIXED, PAGINATED }
+enum class Orientation { PORTRAIT, LANDSCAPE }
+
+enum class PaperSizeOption(val widthMM: Float, val heightMM: Float) {
+    A4(210f, 297f),
+    LETTER(215.9f, 279.4f),
+    A3(297f, 420f),
+    A5(148f, 210f),
+    LEGAL(215.9f, 355.6f),
+    TABLOID(279.4f, 431.8f),
+    A2(420f, 594f),
+    A1(594f, 841f),
+    A0(841f, 1189f),
+    B4(250f, 353f),
+    B5(176f, 250f),
+    EXECUTIVE(184.1f, 266.7f)
+}
 
 val SHAPE_TOOLS = setOf(
     Tool.LINE, Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.CIRCLE, Tool.ELLIPSE,
@@ -190,6 +211,11 @@ class DrawingView @JvmOverloads constructor(
         set(value) {
             if (field == Tool.SELECT && value != Tool.SELECT) selectedItem = null
             if (field == Tool.ARC && value != Tool.ARC) activeArcItem = null
+            if (field == Tool.AUTOSELECT && value != Tool.AUTOSELECT) {
+                selectedGroup = null
+                regionPath = null
+                regionStart = null
+            }
             field = value
             invalidate()
         }
@@ -204,6 +230,17 @@ class DrawingView @JvmOverloads constructor(
     var paperType: PaperType = PaperType.GRID
     var defaultTextSize: Float = 36f
 
+    var autoSelectShape: AutoSelectShape = AutoSelectShape.RECTANGLE
+    var autoSelectDivide: AutoSelectDivide = AutoSelectDivide.WHOLE
+    var canvasMode: CanvasMode = CanvasMode.INFINITE
+    var paperSize: PaperSizeOption = PaperSizeOption.A4
+    var pageOrientation: Orientation = Orientation.PORTRAIT
+
+    var selectedGroup: MutableList<Any>? = null
+    private var regionPath: Path? = null
+    private var regionStart: Pair<Float, Float>? = null
+    private var groupMoveStartX = 0f
+    private var groupMoveStartY = 0f
     var selectedItem: Any? = null
     private enum class HandleType { NONE, MOVE, ROTATE, TL, TM, TR, ML, MR, BL, BM, BR }
     private var activeHandle = HandleType.NONE
@@ -359,6 +396,7 @@ class DrawingView @JvmOverloads constructor(
         drawSelection(canvas)
         drawArcHandles(canvas)
         drawLeakMarkers(canvas)
+        drawAutoSelectOverlay(canvas)
 
         canvas.restore()
 
@@ -860,6 +898,196 @@ class DrawingView @JvmOverloads constructor(
         }
     }
 
+    // ---------- AutoSelect ----------
+
+    private fun groupBounds(group: List<Any>): FloatArray? {
+        var result: FloatArray? = null
+        for (item in group) {
+            val b = getBounds(item) ?: continue
+            result = if (result == null) b.copyOf() else floatArrayOf(
+                minOf(result[0], b[0]), minOf(result[1], b[1]),
+                maxOf(result[2], b[2]), maxOf(result[3], b[3])
+            )
+        }
+        return result
+    }
+
+    private fun buildRegion(path: Path): Region {
+        val rectF = RectF()
+        path.computeBounds(rectF, true)
+        val clip = Rect(
+            kotlin.math.floor(rectF.left).toInt() - 1,
+            kotlin.math.floor(rectF.top).toInt() - 1,
+            kotlin.math.ceil(rectF.right).toInt() + 1,
+            kotlin.math.ceil(rectF.bottom).toInt() + 1
+        )
+        val region = Region()
+        region.setPath(path, Region(clip))
+        return region
+    }
+
+    private fun splitStrokeByRegion(data: StrokeData, region: Region): Pair<List<StrokeItem>, List<StrokeItem>> {
+        val pts = data.points
+        if (pts.size < 4) return Pair(emptyList(), listOf(StrokeItem(data, data.buildPath(), data.toPaint())))
+
+        val insideSegs = mutableListOf<MutableList<Float>>()
+        val outsideSegs = mutableListOf<MutableList<Float>>()
+        var curInside = mutableListOf<Float>()
+        var curOutside = mutableListOf<Float>()
+        var lastState: Boolean? = null
+        var i = 0
+        while (i + 1 < pts.size) {
+            val x = pts[i]; val y = pts[i + 1]
+            val isIn = region.contains(x.toInt(), y.toInt())
+            if (lastState != null && lastState != isIn) {
+                if (lastState) { if (curInside.size >= 4) insideSegs.add(curInside); curInside = mutableListOf() }
+                else { if (curOutside.size >= 4) outsideSegs.add(curOutside); curOutside = mutableListOf() }
+            }
+            if (isIn) { curInside.add(x); curInside.add(y) } else { curOutside.add(x); curOutside.add(y) }
+            lastState = isIn
+            i += 2
+        }
+        if (curInside.size >= 4) insideSegs.add(curInside)
+        if (curOutside.size >= 4) outsideSegs.add(curOutside)
+
+        val inside = insideSegs.map {
+            val d = StrokeData(data.type, it, data.color, data.strokeWidth, data.fill)
+            StrokeItem(d, d.buildPath(), d.toPaint())
+        }
+        val outside = outsideSegs.map {
+            val d = StrokeData(data.type, it, data.color, data.strokeWidth, data.fill)
+            StrokeItem(d, d.buildPath(), d.toPaint())
+        }
+        return Pair(inside, outside)
+    }
+
+    private fun selectItemsInRegion(region: Region) {
+        val group = mutableListOf<Any>()
+        val newActions = mutableListOf<Any>()
+
+        for (action in actions) {
+            if (action is FillItem) { newActions.add(action); continue }
+
+            if (action is StrokeItem && (action.data.type == Tool.PEN || action.data.type == Tool.ERASER || action.data.type == Tool.ARC) && autoSelectDivide == AutoSelectDivide.DIVIDED) {
+                val (inside, outside) = splitStrokeByRegion(action.data, region)
+                newActions.addAll(outside)
+                group.addAll(inside)
+                continue
+            }
+
+            val b = getBounds(action)
+            if (b == null) { newActions.add(action); continue }
+            val cx = (b[0] + b[2]) / 2f
+            val cy = (b[1] + b[3]) / 2f
+            if (region.contains(cx.toInt(), cy.toInt())) group.add(action) else newActions.add(action)
+        }
+
+        newActions.addAll(group)
+        actions.clear()
+        actions.addAll(newActions)
+        redoStack.clear()
+        selectedGroup = if (group.isNotEmpty()) group else null
+    }
+
+    private fun handleAutoSelect(event: MotionEvent) {
+        val worldX = screenToWorldX(event.x)
+        val worldY = screenToWorldY(event.y)
+        val handleRadius = 14f / scaleFactor
+        val hitRadius = 30f / scaleFactor
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val group = selectedGroup
+                if (group != null && group.isNotEmpty()) {
+                    val gb = groupBounds(group)
+                    if (gb != null) {
+                        val delX = gb[2] + handleRadius * 2.5f
+                        val delY = gb[1] - handleRadius * 2.5f
+                        if (distance(worldX, worldY, delX, delY) <= hitRadius) {
+                            for (it in group) actions.remove(it)
+                            selectedGroup = null
+                            invalidate()
+                            return
+                        }
+                        if (worldX in gb[0]..gb[2] && worldY in gb[1]..gb[3]) {
+                            groupMoveStartX = worldX
+                            groupMoveStartY = worldY
+                            invalidate()
+                            return
+                        }
+                    }
+                    selectedGroup = null
+                }
+                regionStart = Pair(worldX, worldY)
+                regionPath = Path().apply { moveTo(worldX, worldY) }
+                invalidate()
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val group = selectedGroup
+                if (group != null && group.isNotEmpty()) {
+                    val dx = worldX - groupMoveStartX
+                    val dy = worldY - groupMoveStartY
+                    for (it in group) moveItem(it, dx, dy)
+                    groupMoveStartX = worldX
+                    groupMoveStartY = worldY
+                    invalidate()
+                    return
+                }
+                if (autoSelectShape == AutoSelectShape.RECTANGLE) {
+                    val start = regionStart ?: return
+                    regionPath = Path().apply {
+                        addRect(minOf(start.first, worldX), minOf(start.second, worldY), maxOf(start.first, worldX), maxOf(start.second, worldY), Path.Direction.CW)
+                    }
+                } else {
+                    regionPath?.lineTo(worldX, worldY)
+                }
+                invalidate()
+            }
+            MotionEvent.ACTION_UP -> {
+                val group = selectedGroup
+                if (group != null && group.isNotEmpty()) return
+
+                val rp = regionPath
+                if (rp != null) {
+                    if (autoSelectShape == AutoSelectShape.FREEFORM) rp.close()
+                    selectItemsInRegion(buildRegion(rp))
+                }
+                regionPath = null
+                regionStart = null
+                invalidate()
+            }
+        }
+    }
+
+    private fun drawAutoSelectOverlay(canvas: Canvas) {
+        regionPath?.let { rp ->
+            val fillP = Paint(); fillP.color = Color.parseColor("#332196F3"); fillP.style = Paint.Style.FILL
+            val strokeP = Paint(); strokeP.color = Color.parseColor("#2196F3"); strokeP.style = Paint.Style.STROKE
+            strokeP.strokeWidth = 2f / scaleFactor
+            strokeP.pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f / scaleFactor, 6f / scaleFactor), 0f)
+            canvas.drawPath(rp, fillP)
+            canvas.drawPath(rp, strokeP)
+        }
+
+        val group = selectedGroup
+        if (group != null && group.isNotEmpty()) {
+            val highlightP = Paint(); highlightP.color = Color.parseColor("#552196F3"); highlightP.style = Paint.Style.FILL
+            for (item in group) {
+                val b = getBounds(item) ?: continue
+                canvas.drawRect(b[0], b[1], b[2], b[3], highlightP)
+            }
+            val gb = groupBounds(group)
+            if (gb != null) {
+                val borderP = Paint(); borderP.color = Color.parseColor("#2196F3"); borderP.style = Paint.Style.STROKE
+                borderP.strokeWidth = 2f / scaleFactor
+                canvas.drawRect(gb[0], gb[1], gb[2], gb[3], borderP)
+                val r = 14f / scaleFactor
+                val delP = Paint(); delP.color = Color.parseColor("#F44336"); delP.style = Paint.Style.FILL
+                canvas.drawCircle(gb[2] + r * 2.5f, gb[1] - r * 2.5f, r, delP)
+            }
+        }
+    }
+
     private fun drawCursor(canvas: Canvas) {
         val hx = hoverX ?: return
         val hy = hoverY ?: return
@@ -893,14 +1121,69 @@ class DrawingView @JvmOverloads constructor(
         }
     }
 
+    private fun pageWidthPx(): Float {
+        val mmToPx = 3.7795f
+        return if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * mmToPx else paperSize.heightMM * mmToPx
+    }
+
+    private fun pageHeightPx(): Float {
+        val mmToPx = 3.7795f
+        return if (pageOrientation == Orientation.PORTRAIT) paperSize.heightMM * mmToPx else paperSize.widthMM * mmToPx
+    }
+
     private fun drawBackground(canvas: Canvas) {
-        if (paperType == PaperType.BLANK) return
+        val visLeft = -translateX / scaleFactor
+        val visTop = -translateY / scaleFactor
+        val visRight = visLeft + width / scaleFactor
+        val visBottom = visTop + height / scaleFactor
 
-        val left = (-translateX / scaleFactor) - 2000f
-        val top = (-translateY / scaleFactor) - 2000f
-        val right = left + (width / scaleFactor) + 4000f
-        val bottom = top + (height / scaleFactor) + 4000f
+        when (canvasMode) {
+            CanvasMode.INFINITE -> {
+                if (paperType != PaperType.BLANK) {
+                    drawPaperPattern(canvas, visLeft - 2000f, visTop - 2000f, visRight + 2000f, visBottom + 2000f)
+                }
+            }
+            CanvasMode.FIXED -> {
+                val pageW = pageWidthPx(); val pageH = pageHeightPx()
+                val grayP = Paint(); grayP.color = Color.parseColor("#D5D5D5")
+                canvas.drawRect(visLeft - 2000f, visTop - 2000f, visRight + 2000f, visBottom + 2000f, grayP)
+                val whiteP = Paint(); whiteP.color = Color.WHITE
+                canvas.drawRect(0f, 0f, pageW, pageH, whiteP)
+                if (paperType != PaperType.BLANK) {
+                    canvas.save(); canvas.clipRect(0f, 0f, pageW, pageH)
+                    drawPaperPattern(canvas, 0f, 0f, pageW, pageH)
+                    canvas.restore()
+                }
+                val borderP = Paint(); borderP.color = Color.parseColor("#909090"); borderP.style = Paint.Style.STROKE
+                borderP.strokeWidth = 2f / scaleFactor
+                canvas.drawRect(0f, 0f, pageW, pageH, borderP)
+            }
+            CanvasMode.PAGINATED -> {
+                val pageW = pageWidthPx(); val pageH = pageHeightPx()
+                val gap = 40f
+                val grayP = Paint(); grayP.color = Color.parseColor("#D5D5D5")
+                canvas.drawRect(visLeft - 2000f, visTop - 2000f, visRight + 2000f, visBottom + 2000f, grayP)
+                val whiteP = Paint(); whiteP.color = Color.WHITE
+                val borderP = Paint(); borderP.color = Color.parseColor("#909090"); borderP.style = Paint.Style.STROKE
+                borderP.strokeWidth = 2f / scaleFactor
+                val period = pageH + gap
+                val startIdx = (kotlin.math.floor(visTop / period).toInt() - 1).coerceAtLeast(0)
+                val endIdx = kotlin.math.ceil(visBottom / period).toInt() + 1
+                for (i in startIdx..endIdx) {
+                    val top = i * period
+                    canvas.drawRect(0f, top, pageW, top + pageH, whiteP)
+                    if (paperType != PaperType.BLANK) {
+                        canvas.save(); canvas.clipRect(0f, top, pageW, top + pageH)
+                        drawPaperPattern(canvas, 0f, top, pageW, top + pageH)
+                        canvas.restore()
+                    }
+                    canvas.drawRect(0f, top, pageW, top + pageH, borderP)
+                }
+            }
+        }
+    }
 
+    private fun drawPaperPattern(canvas: Canvas, left: Float, top: Float, right: Float, bottom: Float) {
         when (paperType) {
             PaperType.LINED -> {
                 val p = Paint(); p.color = Color.parseColor("#C8D6F0"); p.strokeWidth = 1f
@@ -950,6 +1233,7 @@ class DrawingView @JvmOverloads constructor(
             else -> {}
         }
     }
+    }
 
     fun screenToWorldX(x: Float): Float = (x - translateX) / scaleFactor
     fun screenToWorldY(y: Float): Float = (y - translateY) / scaleFactor
@@ -987,6 +1271,11 @@ class DrawingView @JvmOverloads constructor(
 
         if (currentTool == Tool.ARC) {
             handleArc(event)
+            return true
+        }
+
+        if (currentTool == Tool.AUTOSELECT) {
+            handleAutoSelect(event)
             return true
         }
 
@@ -1333,6 +1622,7 @@ class DrawingView @JvmOverloads constructor(
 
     fun serialize(): String {
         val sb = StringBuilder()
+        sb.append("META\u0001").append(paperType.name).append("\u0001").append(canvasMode.name).append("\u0001").append(paperSize.name).append("\u0001").append(pageOrientation.name).append("\n")
         for (action in actions) {
             when (action) {
                 is StrokeItem -> {
@@ -1389,7 +1679,13 @@ class DrawingView @JvmOverloads constructor(
         for (line in content.lines()) {
             if (line.isBlank()) continue
             try {
-                if (line.startsWith("TEXT\u0001")) {
+                if (line.startsWith("META\u0001")) {
+                    val parts = line.split("\u0001")
+                    try { if (parts.size > 1 && parts[1].isNotBlank()) paperType = PaperType.valueOf(parts[1]) } catch (e: Exception) {}
+                    try { if (parts.size > 2 && parts[2].isNotBlank()) canvasMode = CanvasMode.valueOf(parts[2]) } catch (e: Exception) {}
+                    try { if (parts.size > 3 && parts[3].isNotBlank()) paperSize = PaperSizeOption.valueOf(parts[3]) } catch (e: Exception) {}
+                    try { if (parts.size > 4 && parts[4].isNotBlank()) pageOrientation = Orientation.valueOf(parts[4]) } catch (e: Exception) {}
+                } else if (line.startsWith("TEXT\u0001")) {
                     val parts = line.split("\u0001")
                     if (parts.size < 7) continue
                     val x = parts[1].toFloat()
