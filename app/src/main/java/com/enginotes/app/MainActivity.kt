@@ -7,10 +7,14 @@ import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.text.Editable
 import android.text.Spannable
 import android.text.SpannableStringBuilder
+import android.text.TextWatcher
+import android.text.style.BackgroundColorSpan
 import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
+import android.text.style.UnderlineSpan
 import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.InputMethodManager
@@ -49,6 +53,10 @@ class MainActivity : AppCompatActivity() {
     private var editRotation = 0f
     private var editColor = Color.BLACK
     private var editSize = 30f
+    private var pendingBold = false
+    private var pendingItalic = false
+    private var pendingUnderline = false
+    private var pendingHighlight: Int? = null
 
     private val pickImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) insertImage(uri)
@@ -88,14 +96,15 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.btnDraw).setOnClickListener {
             closeInlineEditor(commit = true)
-            val options = listOf("👆 Select", "✏ Pen") + shapeSymbols
+            val options = listOf("👆 Select", "🪣 Fill (tap a shape)", "✏ Pen") + shapeSymbols
             AlertDialog.Builder(this)
                 .setTitle("Draw")
                 .setItems(options.toTypedArray()) { _, index ->
                     drawingView.currentTool = when (index) {
                         0 -> Tool.SELECT
-                        1 -> Tool.PEN
-                        else -> shapeTools[index - 2]
+                        1 -> Tool.FILL
+                        2 -> Tool.PEN
+                        else -> shapeTools[index - 3]
                     }
                 }
                 .show()
@@ -309,8 +318,32 @@ class MainActivity : AppCompatActivity() {
         editText.text.setSpan(ForegroundColorSpan(color), from, to, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
     }
 
+    private fun toggleUnderlineOnSelection(editText: EditText) {
+        val start = editText.selectionStart; val end = editText.selectionEnd
+        val from = minOf(start, end); val to = maxOf(start, end)
+        val editable = editText.text
+        val existing = editable.getSpans(from, to, UnderlineSpan::class.java)
+            .filter { editable.getSpanStart(it) <= from && editable.getSpanEnd(it) >= to }
+        if (existing.isNotEmpty()) {
+            for (sp in existing) editable.removeSpan(sp)
+        } else {
+            editable.setSpan(UnderlineSpan(), from, to, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+    }
+
+    private fun applyHighlightToSelection(editText: EditText, color: Int) {
+        val start = editText.selectionStart; val end = editText.selectionEnd
+        val from = minOf(start, end); val to = maxOf(start, end)
+        editText.text.setSpan(BackgroundColorSpan(color), from, to, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+    }
+
     private fun showInlineTextEditor(item: TextItem?, screenX: Float, screenY: Float, worldX: Float, worldY: Float) {
         closeInlineEditor(commit = true)
+
+        pendingBold = false
+        pendingItalic = false
+        pendingUnderline = false
+        pendingHighlight = null
 
         editingItem = item
         editWorldX = item?.x ?: worldX
@@ -342,6 +375,20 @@ class MainActivity : AppCompatActivity() {
         editText.minWidth = dp(120)
         editText.rotation = editRotation
 
+        editText.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                if (count > 0) {
+                    val editable = editText.text
+                    val end = start + count
+                    if (pendingBold) editable.setSpan(StyleSpan(Typeface.BOLD), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    if (pendingItalic) editable.setSpan(StyleSpan(Typeface.ITALIC), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    if (pendingUnderline) editable.setSpan(UnderlineSpan(), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    pendingHighlight?.let { editable.setSpan(BackgroundColorSpan(it), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
+                }
+            }
+            override fun afterTextChanged(s: Editable?) {}
+        })
         val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         params.leftMargin = screenX.toInt()
         params.topMargin = (screenY - sizePx).toInt().coerceAtLeast(0)
@@ -352,7 +399,7 @@ class MainActivity : AppCompatActivity() {
         toolbar.setBackgroundColor(0xAA222222.toInt())
         toolbar.setPadding(dp(4), dp(4), dp(4), dp(4))
 
-        fun toolBtn(label: String, action: () -> Unit) {
+        fun toolBtn(label: String, action: (Button) -> Unit): Button {
             val b = Button(this)
             b.text = label
             b.textSize = 14f
@@ -364,12 +411,45 @@ class MainActivity : AppCompatActivity() {
             b.setPadding(dp(10), dp(6), dp(10), dp(6))
             b.minWidth = 0
             b.minimumWidth = 0
-            b.setOnClickListener { action() }
+            b.setOnClickListener { action(b) }
             toolbar.addView(b)
+            return b
         }
 
-        toolBtn("B") { toggleStyleOnSelection(editText, Typeface.BOLD) }
-        toolBtn("I") { toggleStyleOnSelection(editText, Typeface.ITALIC) }
+        toolBtn("B") { btn ->
+            if (editText.selectionStart != editText.selectionEnd) {
+                toggleStyleOnSelection(editText, Typeface.BOLD)
+            } else {
+                pendingBold = !pendingBold
+                btn.setBackgroundColor(if (pendingBold) 0xFF2196F3.toInt() else 0x55FFFFFF)
+            }
+        }
+        toolBtn("I") { btn ->
+            if (editText.selectionStart != editText.selectionEnd) {
+                toggleStyleOnSelection(editText, Typeface.ITALIC)
+            } else {
+                pendingItalic = !pendingItalic
+                btn.setBackgroundColor(if (pendingItalic) 0xFF2196F3.toInt() else 0x55FFFFFF)
+            }
+        }
+        toolBtn("U") { btn ->
+            if (editText.selectionStart != editText.selectionEnd) {
+                toggleUnderlineOnSelection(editText)
+            } else {
+                pendingUnderline = !pendingUnderline
+                btn.setBackgroundColor(if (pendingUnderline) 0xFF2196F3.toInt() else 0x55FFFFFF)
+            }
+        }
+        toolBtn("🖍") { btn ->
+            showColorGridDialog { color ->
+                if (editText.selectionStart != editText.selectionEnd) {
+                    applyHighlightToSelection(editText, color)
+                } else {
+                    pendingHighlight = color
+                    btn.setBackgroundColor(color)
+                }
+            }
+        }
         toolBtn("🎨") { showColorGridDialog { color -> applyColorToSelection(editText, color) } }
         toolBtn("↺") { editRotation -= 15f; editText.rotation = editRotation }
         toolBtn("↻") { editRotation += 15f; editText.rotation = editRotation }
@@ -406,6 +486,8 @@ class MainActivity : AppCompatActivity() {
             when (span) {
                 is StyleSpan -> spans.add(TextSpanData(s, e, 'S', span.style))
                 is ForegroundColorSpan -> spans.add(TextSpanData(s, e, 'C', span.foregroundColor))
+                is UnderlineSpan -> spans.add(TextSpanData(s, e, 'U', 0))
+                is BackgroundColorSpan -> spans.add(TextSpanData(s, e, 'H', span.backgroundColor))
             }
         }
 
