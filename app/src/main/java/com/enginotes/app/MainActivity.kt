@@ -19,6 +19,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridLayout
@@ -31,6 +32,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.PopupMenu
+import androidx.core.content.FileProvider
 import java.io.File
 import java.io.FileOutputStream
 
@@ -41,6 +43,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvTitle: TextView
 
     private var currentFileName: String? = null
+    private var lastSavedContent: String = ""
 
     private val SIZE_SCALE = 3f
 
@@ -60,8 +63,16 @@ class MainActivity : AppCompatActivity() {
     private var pendingUnderline = false
     private var pendingHighlight: Int? = null
 
+    private var cameraImageFile: File? = null
+
     private val pickImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) insertImage(uri)
+    }
+
+    private val takePictureLauncher = registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        if (success) {
+            cameraImageFile?.let { addImageFromFile(it) }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -81,6 +92,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             tvTitle.text = "New Note"
         }
+        lastSavedContent = drawingView.serialize()
 
         drawingView.onTextEditRequest = { item, screenX, screenY, worldX, worldY ->
             showInlineTextEditor(item, screenX, screenY, worldX, worldY)
@@ -91,8 +103,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         findViewById<Button>(R.id.btnBack).setOnClickListener {
-            closeInlineEditor(commit = true)
-            finish()
+            confirmThenExit()
         }
 
         findViewById<Button>(R.id.btnText).setOnClickListener {
@@ -112,6 +123,7 @@ class MainActivity : AppCompatActivity() {
                         2 -> Tool.PEN
                         else -> shapeTools[index - 3]
                     }
+                    if (drawingView.currentTool == Tool.PEN) collapseToolbar()
                 }
                 .show()
         }
@@ -150,8 +162,12 @@ class MainActivity : AppCompatActivity() {
             closeInlineEditor(commit = true)
             AlertDialog.Builder(this)
                 .setTitle("Insert")
-                .setItems(arrayOf("🖼 Image from Gallery")) { _, _ ->
-                    pickImageLauncher.launch("image/*")
+                .setItems(arrayOf("🖼 Image from Gallery", "📷 Take Photo")) { _, index ->
+                    if (index == 0) {
+                        pickImageLauncher.launch("image/*")
+                    } else {
+                        launchCamera()
+                    }
                 }
                 .show()
         }
@@ -165,6 +181,16 @@ class MainActivity : AppCompatActivity() {
             drawingView.redo()
         }
 
+        findViewById<Button>(R.id.btnExpand).setOnClickListener { expandToolbar() }
+        findViewById<Button>(R.id.btnQuickColor).setOnClickListener {
+            showColorGridDialog { c -> drawingView.currentColor = c }
+        }
+        findViewById<Button>(R.id.btnQuickSize).setOnClickListener { showSizePicker() }
+        findViewById<Button>(R.id.btnQuickEraser).setOnClickListener {
+            drawingView.currentTool = Tool.ERASER
+            expandToolbar()
+        }
+
         findViewById<Button>(R.id.btnMenu).setOnClickListener { anchor ->
             closeInlineEditor(commit = true)
             val popup = PopupMenu(this, anchor)
@@ -173,15 +199,17 @@ class MainActivity : AppCompatActivity() {
             popup.menu.add("Export as Image")
             popup.menu.add("Clear Canvas")
             if (currentFileName != null) popup.menu.add("Delete This Note")
+            popup.menu.add("Settings")
             popup.menu.add("Exit")
             popup.setOnMenuItemClickListener { item ->
                 when (item.title) {
                     "Save" -> saveCurrent()
                     "Save As" -> saveAsNew()
                     "Export as Image" -> exportImage()
-                    "Clear Canvas" -> drawingView.clearAll()
+                    "Clear Canvas" -> confirmThenClear()
                     "Delete This Note" -> deleteCurrentNote()
-                    "Exit" -> finish()
+                    "Settings" -> showSettingsDialog()
+                    "Exit" -> confirmThenExit()
                 }
                 true
             }
@@ -198,6 +226,73 @@ class MainActivity : AppCompatActivity() {
                 android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> v.setBackgroundColor(Color.TRANSPARENT)
             }
             false
+        }
+    }
+
+    // ---------- Collapsible Pen toolbar ----------
+
+    private fun collapseToolbar() {
+        findViewById<View>(R.id.toolbarScroll).visibility = View.GONE
+        findViewById<View>(R.id.collapsedBar).visibility = View.VISIBLE
+    }
+
+    private fun expandToolbar() {
+        findViewById<View>(R.id.toolbarScroll).visibility = View.VISIBLE
+        findViewById<View>(R.id.collapsedBar).visibility = View.GONE
+    }
+
+    // ---------- Settings & confirm dialogs ----------
+
+    private fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
+
+    private fun showSettingsDialog() {
+        val confirmPref = getPrefs().getBoolean("confirm_exit_clear", true)
+
+        val container = LinearLayout(this)
+        container.orientation = LinearLayout.VERTICAL
+        container.setPadding(dp(20), dp(10), dp(20), dp(10))
+
+        val checkbox = CheckBox(this)
+        checkbox.text = "Confirm before exiting unsaved note or clearing canvas"
+        checkbox.isChecked = confirmPref
+        container.addView(checkbox)
+
+        AlertDialog.Builder(this)
+            .setTitle("Settings")
+            .setView(container)
+            .setPositiveButton("Done") { _, _ ->
+                getPrefs().edit().putBoolean("confirm_exit_clear", checkbox.isChecked).apply()
+            }
+            .show()
+    }
+
+    private fun confirmThenExit() {
+        closeInlineEditor(commit = true)
+        val confirmEnabled = getPrefs().getBoolean("confirm_exit_clear", true)
+        val changed = drawingView.serialize() != lastSavedContent
+        if (confirmEnabled && changed && drawingView.hasContent()) {
+            AlertDialog.Builder(this)
+                .setTitle("Exit without saving?")
+                .setMessage("You have unsaved changes. Are you sure you want to exit?")
+                .setPositiveButton("Exit") { _, _ -> finish() }
+                .setNegativeButton("Cancel", null)
+                .show()
+        } else {
+            finish()
+        }
+    }
+
+    private fun confirmThenClear() {
+        val confirmEnabled = getPrefs().getBoolean("confirm_exit_clear", true)
+        if (confirmEnabled && drawingView.hasContent()) {
+            AlertDialog.Builder(this)
+                .setTitle("Clear Canvas?")
+                .setMessage("This will remove everything on this canvas.")
+                .setPositiveButton("Clear") { _, _ -> drawingView.clearAll() }
+                .setNegativeButton("Cancel", null)
+                .show()
+        } else {
+            drawingView.clearAll()
         }
     }
 
@@ -574,6 +669,28 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- Image insert ----------
 
+    private fun launchCamera() {
+        val imagesFolder = File(filesDir, "images")
+        if (!imagesFolder.exists()) imagesFolder.mkdirs()
+        val photoFile = File(imagesFolder, "camera_" + System.currentTimeMillis() + ".jpg")
+        cameraImageFile = photoFile
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", photoFile)
+        takePictureLauncher.launch(uri)
+    }
+
+    private fun addImageFromFile(file: File) {
+        try {
+            val bitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath) ?: return
+            val maxDim = 300f
+            val ratio = bitmap.width.toFloat() / bitmap.height.toFloat()
+            val w: Float; val h: Float
+            if (ratio >= 1f) { w = maxDim; h = maxDim / ratio } else { h = maxDim; w = maxDim * ratio }
+            drawingView.addImage(file.absolutePath, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), w, h)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Photo insert failed: " + e.message, Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun insertImage(uri: Uri) {
         try {
             val inputStream = contentResolver.openInputStream(uri) ?: return
@@ -609,6 +726,7 @@ class MainActivity : AppCompatActivity() {
     private fun writeCurrentFile() {
         val name = currentFileName ?: return
         File(getDrawingsFolder(), name + ".eng").writeText(drawingView.serialize())
+        lastSavedContent = drawingView.serialize()
     }
 
     private fun saveCurrent() {
