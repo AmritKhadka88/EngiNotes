@@ -93,6 +93,7 @@ class MainActivity : AppCompatActivity() {
             tvTitle.text = "New Note"
         }
         lastSavedContent = drawingView.serialize()
+        drawingView.arcDivisions = getPrefs().getInt("arc_divisions", 4)
 
         drawingView.onTextEditRequest = { item, screenX, screenY, worldX, worldY ->
             showInlineTextEditor(item, screenX, screenY, worldX, worldY)
@@ -112,16 +113,21 @@ class MainActivity : AppCompatActivity() {
         }
 
         findViewById<Button>(R.id.btnDraw).setOnClickListener {
+        findViewById<Button>(R.id.btnDraw).setOnClickListener {
             closeInlineEditor(commit = true)
-            val options = listOf("👆 Select", "🪣 Fill (tap a shape)", "✏ Pen") + shapeSymbols
+            val options = listOf("👆 Select", "🪣 Fill", "✏ Pen", "⌇ Arc") + shapeSymbols
             AlertDialog.Builder(this)
                 .setTitle("Draw")
                 .setItems(options.toTypedArray()) { _, index ->
-                    drawingView.currentTool = when (index) {
-                        0 -> Tool.SELECT
-                        1 -> Tool.FILL
-                        2 -> Tool.PEN
-                        else -> shapeTools[index - 3]
+                    when (index) {
+                        0 -> drawingView.currentTool = Tool.SELECT
+                        1 -> {
+                            drawingView.currentTool = Tool.FILL
+                            showColorGridDialog { color -> drawingView.fillColor = color }
+                        }
+                        2 -> drawingView.currentTool = Tool.PEN
+                        3 -> drawingView.currentTool = Tool.ARC
+                        else -> drawingView.currentTool = shapeTools[index - 4]
                     }
                     if (drawingView.currentTool == Tool.PEN) collapseToolbar()
                 }
@@ -247,6 +253,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showSettingsDialog() {
         val confirmPref = getPrefs().getBoolean("confirm_exit_clear", true)
+        val arcDivPref = getPrefs().getInt("arc_divisions", 4)
 
         val container = LinearLayout(this)
         container.orientation = LinearLayout.VERTICAL
@@ -257,11 +264,24 @@ class MainActivity : AppCompatActivity() {
         checkbox.isChecked = confirmPref
         container.addView(checkbox)
 
+        val label = TextView(this)
+        label.text = "Arc divisions (2-12):"
+        label.setPadding(0, dp(10), 0, 0)
+        container.addView(label)
+
+        val input = EditText(this)
+        input.inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        input.setText(arcDivPref.toString())
+        container.addView(input)
+
         AlertDialog.Builder(this)
             .setTitle("Settings")
             .setView(container)
             .setPositiveButton("Done") { _, _ ->
                 getPrefs().edit().putBoolean("confirm_exit_clear", checkbox.isChecked).apply()
+                val n = (input.text.toString().toIntOrNull() ?: 4).coerceIn(2, 12)
+                getPrefs().edit().putInt("arc_divisions", n).apply()
+                drawingView.arcDivisions = n
             }
             .show()
     }
