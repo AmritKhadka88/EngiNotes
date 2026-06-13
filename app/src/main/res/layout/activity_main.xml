@@ -42,6 +42,7 @@
     </LinearLayout>
 
     <HorizontalScrollView
+        android:id="@+id/toolbarScroll"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="#EEEEEE">
@@ -62,6 +63,36 @@
 
         </LinearLayout>
     </HorizontalScrollView>
+
+    <LinearLayout
+        android:id="@+id/collapsedBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="#22000000"
+        android:padding="4dp"
+        android:gravity="center_vertical"
+        android:visibility="gone">
+
+        <Button
+            android:id="@+id/btnExpand"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="›"
+            android:textSize="18sp"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#882196F3" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <Button android:id="@+id/btnQuickColor" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🎨" android:textSize="18sp" android:backgroundTint="#55FFFFFF" />
+        <Button android:id="@+id/btnQuickSize" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="📏" android:textSize="18sp" android:backgroundTint="#55FFFFFF" />
+        <Button android:id="@+id/btnQuickEraser" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🧹" android:textSize="18sp" android:backgroundTint="#55FFFFFF" />
+
+    </LinearLayout>
 
     <FrameLayout
         android:id="@+id/canvasContainer"
