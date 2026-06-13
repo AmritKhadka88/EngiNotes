@@ -6,7 +6,9 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.graphics.Typeface
 import android.util.AttributeSet
+import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
@@ -71,21 +73,13 @@ class StrokeData(
             }
             Tool.ELLIPSE -> path.addOval(RectF(left, top, right, bottom), Path.Direction.CW)
             Tool.TRIANGLE -> {
-                path.moveTo(cx, top)
-                path.lineTo(right, bottom)
-                path.lineTo(left, bottom)
-                path.close()
+                path.moveTo(cx, top); path.lineTo(right, bottom); path.lineTo(left, bottom); path.close()
             }
             Tool.DIAMOND -> {
-                path.moveTo(cx, top)
-                path.lineTo(right, cy)
-                path.lineTo(cx, bottom)
-                path.lineTo(left, cy)
-                path.close()
+                path.moveTo(cx, top); path.lineTo(right, cy); path.lineTo(cx, bottom); path.lineTo(left, cy); path.close()
             }
             Tool.ARROW -> {
-                path.moveTo(x1, y1)
-                path.lineTo(x2, y2)
+                path.moveTo(x1, y1); path.lineTo(x2, y2)
                 val angle = kotlin.math.atan2((y2 - y1).toDouble(), (x2 - x1).toDouble())
                 val arrowLen = 20f
                 val arrowAngle = Math.PI / 7
@@ -97,12 +91,10 @@ class StrokeData(
                 path.moveTo(x2, y2); path.lineTo(ax2, ay2)
             }
             Tool.CURVE -> {
-                val dx = x2 - x1
-                val dy = y2 - y1
+                val dx = x2 - x1; val dy = y2 - y1
                 val ctrlX = cx - dy * 0.25f
                 val ctrlY = cy + dx * 0.25f
-                path.moveTo(x1, y1)
-                path.quadTo(ctrlX, ctrlY, x2, y2)
+                path.moveTo(x1, y1); path.quadTo(ctrlX, ctrlY, x2, y2)
             }
             Tool.CROSS -> {
                 path.moveTo(left, cy); path.lineTo(right, cy)
@@ -147,13 +139,24 @@ class StrokeData(
 }
 
 class StrokeItem(val data: StrokeData, var path: Path, var paint: Paint)
-class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var size: Float, var rotation: Float)
+
+class TextItem(
+    var text: String, var x: Float, var y: Float, var color: Int, var size: Float,
+    var rotation: Float, var isBold: Boolean = false, var isItalic: Boolean = false
+) {
+    var isEditing: Boolean = false
+}
+
+class ImageItem(var path: String, var x: Float, var y: Float, var w: Float, var h: Float, var rotation: Float) {
+    var bitmap: android.graphics.Bitmap? = null
+}
 
 class DrawingView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null
 ) : View(context, attrs) {
 
     private val actions = mutableListOf<Any>()
+    private val redoStack = mutableListOf<Any>()
     private var currentItem: StrokeItem? = null
 
     var currentTool: Tool = Tool.PEN
@@ -165,7 +168,8 @@ class DrawingView @JvmOverloads constructor(
     var paperType: PaperType = PaperType.GRID
     var defaultTextSize: Float = 30f
 
-    var onTextTapListener: ((Float, Float) -> Unit)? = null
+    // (existingItem, screenX, screenY, worldX, worldY)
+    var onTextEditRequest: ((TextItem?, Float, Float, Float, Float) -> Unit)? = null
 
     private var scaleFactor = 1f
     private var translateX = 0f
@@ -176,10 +180,6 @@ class DrawingView @JvmOverloads constructor(
 
     private var hoverX: Float? = null
     private var hoverY: Float? = null
-
-    private var textDownX = 0f
-    private var textDownY = 0f
-    private var textDownTime = 0L
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
@@ -206,6 +206,33 @@ class DrawingView @JvmOverloads constructor(
         }
     })
 
+    private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onDown(e: MotionEvent): Boolean = true
+
+        override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+            if (currentTool == Tool.TEXT) {
+                onTextEditRequest?.invoke(null, e.x, e.y, screenToWorldX(e.x), screenToWorldY(e.y))
+            }
+            return true
+        }
+
+        override fun onDoubleTap(e: MotionEvent): Boolean {
+            if (currentTool == Tool.TEXT) {
+                val worldX = screenToWorldX(e.x)
+                val worldY = screenToWorldY(e.y)
+                val hit = findTextItemAt(worldX, worldY)
+                if (hit != null) {
+                    hit.isEditing = true
+                    invalidate()
+                    onTextEditRequest?.invoke(hit, e.x, e.y, worldX, worldY)
+                } else {
+                    onTextEditRequest?.invoke(null, e.x, e.y, worldX, worldY)
+                }
+            }
+            return true
+        }
+    })
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         canvas.drawColor(Color.WHITE)
@@ -220,15 +247,35 @@ class DrawingView @JvmOverloads constructor(
             when (action) {
                 is StrokeItem -> canvas.drawPath(action.path, action.paint)
                 is TextItem -> {
-                    val paint = Paint()
-                    paint.color = action.color
-                    paint.textSize = action.size
-                    paint.isAntiAlias = true
-                    canvas.save()
-                    canvas.translate(action.x, action.y)
-                    canvas.rotate(action.rotation)
-                    canvas.drawText(action.text, 0f, 0f, paint)
-                    canvas.restore()
+                    if (!action.isEditing) {
+                        val paint = Paint()
+                        paint.color = action.color
+                        paint.textSize = action.size
+                        paint.isAntiAlias = true
+                        var style = Typeface.NORMAL
+                        if (action.isBold && action.isItalic) style = Typeface.BOLD_ITALIC
+                        else if (action.isBold) style = Typeface.BOLD
+                        else if (action.isItalic) style = Typeface.ITALIC
+                        paint.typeface = Typeface.create(Typeface.DEFAULT, style)
+                        canvas.save()
+                        canvas.translate(action.x, action.y)
+                        canvas.rotate(action.rotation)
+                        canvas.drawText(action.text, 0f, 0f, paint)
+                        canvas.restore()
+                    }
+                }
+                is ImageItem -> {
+                    if (action.bitmap == null) {
+                        try { action.bitmap = android.graphics.BitmapFactory.decodeFile(action.path) } catch (e: Exception) {}
+                    }
+                    val bmp = action.bitmap
+                    if (bmp != null) {
+                        canvas.save()
+                        canvas.translate(action.x, action.y)
+                        canvas.rotate(action.rotation)
+                        canvas.drawBitmap(bmp, null, RectF(0f, 0f, action.w, action.h), null)
+                        canvas.restore()
+                    }
                 }
             }
         }
@@ -237,6 +284,20 @@ class DrawingView @JvmOverloads constructor(
         canvas.restore()
 
         drawCursor(canvas)
+    }
+
+    private fun findTextItemAt(x: Float, y: Float): TextItem? {
+        for (action in actions.reversed()) {
+            if (action is TextItem) {
+                val approxWidth = action.size * action.text.length * 0.55f
+                val approxHeight = action.size * 1.2f
+                if (x >= action.x - 10 && x <= action.x + approxWidth + 10 &&
+                    y >= action.y - approxHeight && y <= action.y + 10) {
+                    return action
+                }
+            }
+        }
+        return null
     }
 
     private fun drawCursor(canvas: Canvas) {
@@ -282,17 +343,13 @@ class DrawingView @JvmOverloads constructor(
 
         when (paperType) {
             PaperType.LINED -> {
-                val p = Paint()
-                p.color = Color.parseColor("#C8D6F0")
-                p.strokeWidth = 1f
+                val p = Paint(); p.color = Color.parseColor("#C8D6F0"); p.strokeWidth = 1f
                 val spacing = 60f
                 var y = (top / spacing).toInt() * spacing
                 while (y < bottom) { canvas.drawLine(left, y, right, y, p); y += spacing }
             }
             PaperType.GRID -> {
-                val p = Paint()
-                p.color = Color.parseColor("#D0D0D0")
-                p.strokeWidth = 1f
+                val p = Paint(); p.color = Color.parseColor("#D0D0D0"); p.strokeWidth = 1f
                 val spacing = 50f
                 var x = (left / spacing).toInt() * spacing
                 while (x < right) { canvas.drawLine(x, top, x, bottom, p); x += spacing }
@@ -300,9 +357,7 @@ class DrawingView @JvmOverloads constructor(
                 while (y < bottom) { canvas.drawLine(left, y, right, y, p); y += spacing }
             }
             PaperType.DOTS -> {
-                val p = Paint()
-                p.color = Color.parseColor("#B0B0B0")
-                p.style = Paint.Style.FILL
+                val p = Paint(); p.color = Color.parseColor("#B0B0B0"); p.style = Paint.Style.FILL
                 val spacing = 50f
                 var x = (left / spacing).toInt() * spacing
                 while (x < right) {
@@ -336,8 +391,11 @@ class DrawingView @JvmOverloads constructor(
         }
     }
 
-    private fun screenToWorldX(x: Float): Float = (x - translateX) / scaleFactor
-    private fun screenToWorldY(y: Float): Float = (y - translateY) / scaleFactor
+    fun screenToWorldX(x: Float): Float = (x - translateX) / scaleFactor
+    fun screenToWorldY(y: Float): Float = (y - translateY) / scaleFactor
+    fun screenCenterWorldX(): Float = screenToWorldX(width / 2f)
+    fun screenCenterWorldY(): Float = screenToWorldY(height / 2f)
+    fun getScaleFactor(): Float = scaleFactor
 
     override fun onHoverEvent(event: MotionEvent): Boolean {
         when (event.action) {
@@ -358,7 +416,7 @@ class DrawingView @JvmOverloads constructor(
         }
 
         if (currentTool == Tool.TEXT) {
-            handleTextTap(event)
+            gestureDetector.onTouchEvent(event)
             return true
         }
 
@@ -368,28 +426,6 @@ class DrawingView @JvmOverloads constructor(
         }
 
         return true
-    }
-
-    private fun handleTextTap(event: MotionEvent) {
-        hoverX = event.x; hoverY = event.y
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                textDownX = event.x; textDownY = event.y
-                textDownTime = System.currentTimeMillis()
-                invalidate()
-            }
-            MotionEvent.ACTION_UP -> {
-                val dx = event.x - textDownX
-                val dy = event.y - textDownY
-                val dist = kotlin.math.hypot(dx.toDouble(), dy.toDouble())
-                val dt = System.currentTimeMillis() - textDownTime
-                if (dist < 25 && dt < 600) {
-                    val worldX = screenToWorldX(event.x)
-                    val worldY = screenToWorldY(event.y)
-                    onTextTapListener?.invoke(worldX, worldY)
-                }
-            }
-        }
     }
 
     private fun handleDrawing(event: MotionEvent) {
@@ -432,7 +468,10 @@ class DrawingView @JvmOverloads constructor(
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                currentItem?.let { actions.add(it) }
+                currentItem?.let {
+                    actions.add(it)
+                    redoStack.clear()
+                }
                 currentItem = null
                 invalidate()
             }
@@ -449,6 +488,7 @@ class DrawingView @JvmOverloads constructor(
                 val hit = when (action) {
                     is StrokeItem -> strokeHitTest(action.data, x, y, radius)
                     is TextItem -> distance(x, y, action.x, action.y) <= radius + action.size
+                    is ImageItem -> distance(x, y, action.x + action.w / 2f, action.y + action.h / 2f) <= radius + maxOf(action.w, action.h) / 2f
                     else -> false
                 }
                 if (hit) iterator.remove()
@@ -466,6 +506,9 @@ class DrawingView @JvmOverloads constructor(
                     }
                     is TextItem -> {
                         if (distance(x, y, action.x, action.y) > radius + action.size) newActions.add(action)
+                    }
+                    is ImageItem -> {
+                        if (distance(x, y, action.x + action.w / 2f, action.y + action.h / 2f) > radius + maxOf(action.w, action.h) / 2f) newActions.add(action)
                     }
                     else -> newActions.add(action)
                 }
@@ -530,28 +573,47 @@ class DrawingView @JvmOverloads constructor(
     }
 
     private fun distanceToSegment(px: Float, py: Float, x1: Float, y1: Float, x2: Float, y2: Float): Float {
-        val dx = x2 - x1
-        val dy = y2 - y1
+        val dx = x2 - x1; val dy = y2 - y1
         if (dx == 0f && dy == 0f) return distance(px, py, x1, y1)
         val t = (((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)).coerceIn(0f, 1f)
         return distance(px, py, x1 + t * dx, y1 + t * dy)
     }
 
-    fun addText(text: String, x: Float, y: Float, size: Float, rotation: Float, color: Int) {
+    fun addText(text: String, x: Float, y: Float, size: Float, rotation: Float, color: Int, bold: Boolean = false, italic: Boolean = false) {
         if (text.isBlank()) return
-        actions.add(TextItem(text, x, y, color, size, rotation))
+        actions.add(TextItem(text, x, y, color, size, rotation, bold, italic))
+        redoStack.clear()
+        invalidate()
+    }
+
+    fun removeTextItem(item: TextItem) {
+        actions.remove(item)
+        invalidate()
+    }
+
+    fun addImage(path: String, worldX: Float, worldY: Float, w: Float, h: Float) {
+        actions.add(ImageItem(path, worldX - w / 2f, worldY - h / 2f, w, h, 0f))
+        redoStack.clear()
         invalidate()
     }
 
     fun undo() {
         if (actions.isNotEmpty()) {
-            actions.removeAt(actions.size - 1)
+            redoStack.add(actions.removeAt(actions.size - 1))
+            invalidate()
+        }
+    }
+
+    fun redo() {
+        if (redoStack.isNotEmpty()) {
+            actions.add(redoStack.removeAt(redoStack.size - 1))
             invalidate()
         }
     }
 
     fun clearAll() {
         actions.clear()
+        redoStack.clear()
         invalidate()
     }
 
@@ -582,7 +644,19 @@ class DrawingView @JvmOverloads constructor(
                     sb.append(action.color).append("\u0001")
                     sb.append(action.size).append("\u0001")
                     sb.append(action.rotation).append("\u0001")
+                    sb.append(action.isBold).append("\u0001")
+                    sb.append(action.isItalic).append("\u0001")
                     sb.append(action.text.replace("\n", "\u0002"))
+                    sb.append("\n")
+                }
+                is ImageItem -> {
+                    sb.append("IMAGE\u0001")
+                    sb.append(action.path).append("\u0001")
+                    sb.append(action.x).append("\u0001")
+                    sb.append(action.y).append("\u0001")
+                    sb.append(action.w).append("\u0001")
+                    sb.append(action.h).append("\u0001")
+                    sb.append(action.rotation)
                     sb.append("\n")
                 }
             }
@@ -592,6 +666,7 @@ class DrawingView @JvmOverloads constructor(
 
     fun loadFromString(content: String) {
         actions.clear()
+        redoStack.clear()
         for (line in content.lines()) {
             if (line.isBlank()) continue
             try {
@@ -603,8 +678,25 @@ class DrawingView @JvmOverloads constructor(
                     val color = parts[3].toInt()
                     val size = parts[4].toFloat()
                     val rotation = parts[5].toFloat()
-                    val text = parts[6].replace("\u0002", "\n")
-                    actions.add(TextItem(text, x, y, color, size, rotation))
+                    if (parts.size >= 9) {
+                        val bold = parts[6].toBoolean()
+                        val italic = parts[7].toBoolean()
+                        val text = parts[8].replace("\u0002", "\n")
+                        actions.add(TextItem(text, x, y, color, size, rotation, bold, italic))
+                    } else {
+                        val text = parts[6].replace("\u0002", "\n")
+                        actions.add(TextItem(text, x, y, color, size, rotation))
+                    }
+                } else if (line.startsWith("IMAGE\u0001")) {
+                    val parts = line.split("\u0001")
+                    if (parts.size < 7) continue
+                    val path = parts[1]
+                    val x = parts[2].toFloat()
+                    val y = parts[3].toFloat()
+                    val w = parts[4].toFloat()
+                    val h = parts[5].toFloat()
+                    val rotation = parts[6].toFloat()
+                    actions.add(ImageItem(path, x, y, w, h, rotation))
                 } else {
                     val parts = line.split("|")
                     if (parts.size < 5) continue
