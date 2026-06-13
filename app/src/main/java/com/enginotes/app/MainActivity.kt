@@ -113,7 +113,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         findViewById<Button>(R.id.btnDraw).setOnClickListener {
-        findViewById<Button>(R.id.btnDraw).setOnClickListener {
             closeInlineEditor(commit = true)
             val options = listOf("👆 Select", "🪣 Fill", "✏ Pen", "⌇ Arc") + shapeSymbols
             AlertDialog.Builder(this)
