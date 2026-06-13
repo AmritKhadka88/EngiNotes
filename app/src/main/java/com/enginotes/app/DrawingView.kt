@@ -14,7 +14,7 @@ import android.view.ScaleGestureDetector
 import android.view.View
 
 enum class Tool {
-    PEN, ERASER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
+    SELECT, PEN, ERASER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
     TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, TEXT
 }
 enum class PaperType { BLANK, LINED, GRID, DOTS, ENGINEERING }
@@ -160,6 +160,19 @@ class DrawingView @JvmOverloads constructor(
     private var currentItem: StrokeItem? = null
 
     var currentTool: Tool = Tool.PEN
+        set(value) {
+            if (field == Tool.SELECT && value != Tool.SELECT) selectedItem = null
+            field = value
+            invalidate()
+        }
+
+    var selectedItem: Any? = null
+    private enum class HandleType { NONE, MOVE, RESIZE, ROTATE }
+    private var activeHandle = HandleType.NONE
+    private var dragStartWorldX = 0f
+    private var dragStartWorldY = 0f
+    private var dragStartAngle = 0f
+    private var dragStartRotation = 0f
     var currentColor: Int = Color.BLACK
     var currentStrokeWidth: Float = 6f
     var eraserSize: Float = 40f
@@ -281,9 +294,226 @@ class DrawingView @JvmOverloads constructor(
         }
         currentItem?.let { canvas.drawPath(it.path, it.paint) }
 
+        selectedItem?.let { item ->
+            val bounds = getBounds(item)
+            if (bounds != null) {
+                val rotation = getRotation(item)
+                val (pivotX, pivotY) = getPivot(item, bounds)
+                canvas.save()
+                canvas.rotate(rotation, pivotX, pivotY)
+
+                val selPaint = Paint()
+                selPaint.color = Color.BLUE
+                selPaint.style = Paint.Style.STROKE
+                selPaint.strokeWidth = 2f / scaleFactor
+                canvas.drawRect(bounds[0], bounds[1], bounds[2], bounds[3], selPaint)
+
+                val handleRadius = 16f / scaleFactor
+                val canTransform = !(item is StrokeItem && item.data.type == Tool.PEN)
+                val handlePaint = Paint()
+                handlePaint.style = Paint.Style.FILL
+
+                if (canTransform) {
+                    handlePaint.color = Color.BLUE
+                    canvas.drawCircle(bounds[2], bounds[3], handleRadius, handlePaint)
+                    if (item is ImageItem || item is TextItem) {
+                        handlePaint.color = Color.GREEN
+                        canvas.drawCircle((bounds[0] + bounds[2]) / 2f, bounds[1], handleRadius, handlePaint)
+                    }
+                }
+                handlePaint.color = Color.RED
+                canvas.drawCircle(bounds[2], bounds[1], handleRadius, handlePaint)
+
+                canvas.restore()
+            }
+        }
+
         canvas.restore()
 
         drawCursor(canvas)
+    }
+
+    private fun getBounds(item: Any): FloatArray? {
+        return when (item) {
+            is ImageItem -> floatArrayOf(item.x, item.y, item.x + item.w, item.y + item.h)
+            is TextItem -> {
+                val w = item.size * item.text.length * 0.55f
+                val h = item.size * 1.2f
+                floatArrayOf(item.x, item.y - h, item.x + w, item.y + 0.2f * h)
+            }
+            is StrokeItem -> {
+                val pts = item.data.points
+                if (pts.size < 2) return null
+                if (SHAPE_TOOLS.contains(item.data.type) && pts.size >= 4) {
+                    floatArrayOf(minOf(pts[0], pts[2]), minOf(pts[1], pts[3]), maxOf(pts[0], pts[2]), maxOf(pts[1], pts[3]))
+                } else {
+                    var minX = pts[0]; var maxX = pts[0]; var minY = pts[1]; var maxY = pts[1]
+                    var i = 0
+                    while (i + 1 < pts.size) {
+                        minX = minOf(minX, pts[i]); maxX = maxOf(maxX, pts[i])
+                        minY = minOf(minY, pts[i + 1]); maxY = maxOf(maxY, pts[i + 1])
+                        i += 2
+                    }
+                    floatArrayOf(minX, minY, maxX, maxY)
+                }
+            }
+            else -> null
+        }
+    }
+
+    private fun getRotation(item: Any): Float = when (item) {
+        is ImageItem -> item.rotation
+        is TextItem -> item.rotation
+        else -> 0f
+    }
+
+    private fun setRotation(item: Any, rotation: Float) {
+        when (item) {
+            is ImageItem -> item.rotation = rotation
+            is TextItem -> item.rotation = rotation
+            else -> {}
+        }
+    }
+
+    private fun getPivot(item: Any, bounds: FloatArray): Pair<Float, Float> {
+        return when (item) {
+            is ImageItem -> Pair(item.x, item.y)
+            is TextItem -> Pair(item.x, item.y)
+            else -> Pair((bounds[0] + bounds[2]) / 2f, (bounds[1] + bounds[3]) / 2f)
+        }
+    }
+
+    private fun rotatePoint(x: Float, y: Float, pivotX: Float, pivotY: Float, angleDeg: Float): Pair<Float, Float> {
+        val angle = Math.toRadians(angleDeg.toDouble())
+        val dx = x - pivotX
+        val dy = y - pivotY
+        val cos = kotlin.math.cos(angle)
+        val sin = kotlin.math.sin(angle)
+        val rx = (dx * cos - dy * sin).toFloat() + pivotX
+        val ry = (dx * sin + dy * cos).toFloat() + pivotY
+        return Pair(rx, ry)
+    }
+
+    private fun computeAngle(item: Any, worldX: Float, worldY: Float): Float {
+        val bounds = getBounds(item) ?: return 0f
+        val (pivotX, pivotY) = getPivot(item, bounds)
+        return Math.toDegrees(kotlin.math.atan2((worldY - pivotY).toDouble(), (worldX - pivotX).toDouble())).toFloat()
+    }
+
+    private fun moveItem(item: Any, dx: Float, dy: Float) {
+        when (item) {
+            is ImageItem -> { item.x += dx; item.y += dy }
+            is TextItem -> { item.x += dx; item.y += dy }
+            is StrokeItem -> {
+                val pts = item.data.points
+                var i = 0
+                while (i + 1 < pts.size) { pts[i] += dx; pts[i + 1] += dy; i += 2 }
+                item.path = item.data.buildPath()
+            }
+        }
+    }
+
+    private fun resizeItem(item: Any, lx: Float, ly: Float) {
+        when (item) {
+            is ImageItem -> {
+                item.w = (lx - item.x).coerceAtLeast(20f)
+                item.h = (ly - item.y).coerceAtLeast(20f)
+            }
+            is TextItem -> {
+                val newSize = (lx - item.x) / (item.text.length.coerceAtLeast(1) * 0.55f)
+                item.size = newSize.coerceIn(10f, 300f)
+            }
+            is StrokeItem -> {
+                if (SHAPE_TOOLS.contains(item.data.type) && item.data.points.size >= 4) {
+                    item.data.points[2] = lx
+                    item.data.points[3] = ly
+                    item.path = item.data.buildPath()
+                }
+            }
+        }
+    }
+
+    private fun findItemAt(x: Float, y: Float): Any? {
+        val pad = 15f / scaleFactor
+        for (action in actions.reversed()) {
+            val bounds = getBounds(action) ?: continue
+            if (x in (bounds[0] - pad)..(bounds[2] + pad) && y in (bounds[1] - pad)..(bounds[3] + pad)) return action
+        }
+        return null
+    }
+
+    private fun handleSelect(event: MotionEvent) {
+        val worldX = screenToWorldX(event.x)
+        val worldY = screenToWorldY(event.y)
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val item = selectedItem
+                var handled = false
+                if (item != null) {
+                    val bounds = getBounds(item)
+                    if (bounds != null) {
+                        val rotation = getRotation(item)
+                        val (pivotX, pivotY) = getPivot(item, bounds)
+                        val (lx, ly) = rotatePoint(worldX, worldY, pivotX, pivotY, -rotation)
+                        val handleRadius = 16f / scaleFactor
+                        val canTransform = !(item is StrokeItem && item.data.type == Tool.PEN)
+
+                        if (distance(lx, ly, bounds[2], bounds[1]) <= handleRadius) {
+                            actions.remove(item)
+                            selectedItem = null
+                            handled = true
+                        } else if (canTransform && (item is ImageItem || item is TextItem) &&
+                            distance(lx, ly, (bounds[0] + bounds[2]) / 2f, bounds[1]) <= handleRadius) {
+                            activeHandle = HandleType.ROTATE
+                            dragStartAngle = computeAngle(item, worldX, worldY)
+                            dragStartRotation = rotation
+                            handled = true
+                        } else if (canTransform && distance(lx, ly, bounds[2], bounds[3]) <= handleRadius) {
+                            activeHandle = HandleType.RESIZE
+                            handled = true
+                        } else if (lx >= bounds[0] - handleRadius && lx <= bounds[2] + handleRadius &&
+                            ly >= bounds[1] - handleRadius && ly <= bounds[3] + handleRadius) {
+                            activeHandle = HandleType.MOVE
+                            dragStartWorldX = worldX
+                            dragStartWorldY = worldY
+                            handled = true
+                        }
+                    }
+                }
+                if (!handled) {
+                    activeHandle = HandleType.NONE
+                    selectedItem = findItemAt(worldX, worldY)
+                }
+                invalidate()
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val item = selectedItem ?: return
+                when (activeHandle) {
+                    HandleType.MOVE -> {
+                        moveItem(item, worldX - dragStartWorldX, worldY - dragStartWorldY)
+                        dragStartWorldX = worldX
+                        dragStartWorldY = worldY
+                    }
+                    HandleType.RESIZE -> {
+                        val bounds = getBounds(item) ?: return
+                        val rotation = getRotation(item)
+                        val (pivotX, pivotY) = getPivot(item, bounds)
+                        val (lx, ly) = rotatePoint(worldX, worldY, pivotX, pivotY, -rotation)
+                        resizeItem(item, lx, ly)
+                    }
+                    HandleType.ROTATE -> {
+                        val currentAngle = computeAngle(item, worldX, worldY)
+                        setRotation(item, dragStartRotation + (currentAngle - dragStartAngle))
+                    }
+                    else -> return
+                }
+                invalidate()
+            }
+            MotionEvent.ACTION_UP -> {
+                activeHandle = HandleType.NONE
+            }
+        }
     }
 
     private fun findTextItemAt(x: Float, y: Float): TextItem? {
@@ -417,6 +647,11 @@ class DrawingView @JvmOverloads constructor(
 
         if (currentTool == Tool.TEXT) {
             gestureDetector.onTouchEvent(event)
+            return true
+        }
+
+        if (currentTool == Tool.SELECT) {
+            handleSelect(event)
             return true
         }
 
