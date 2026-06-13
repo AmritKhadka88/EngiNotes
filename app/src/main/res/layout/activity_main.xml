@@ -50,26 +50,29 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:padding="4dp"
+            android:padding="6dp"
             android:gravity="center_vertical">
 
-            <Button android:id="@+id/btnPen" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="✏" android:textSize="18sp" />
-            <Button android:id="@+id/btnEraser" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🧹" android:textSize="18sp" />
-            <Button android:id="@+id/btnShapes" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="▭" android:textSize="18sp" />
-            <Button android:id="@+id/btnText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🔤" android:textSize="18sp" />
-            <Button android:id="@+id/btnColor" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🎨" android:textSize="18sp" />
-            <Button android:id="@+id/btnFill" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🪣" android:textSize="18sp" />
-            <Button android:id="@+id/btnSize" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="📏" android:textSize="18sp" />
-            <TextView android:id="@+id/tvSize" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="6px" android:padding="8dp" android:textSize="14sp" />
+            <Button android:id="@+id/btnText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🔤 Text" android:textSize="14sp" />
+            <Button android:id="@+id/btnDraw" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="✏ Draw ▾" android:textSize="14sp" />
+            <Button android:id="@+id/btnTools" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🛠 Tools ▾" android:textSize="14sp" />
+            <Button android:id="@+id/btnInsert" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="📎 Insert ▾" android:textSize="14sp" />
             <Button android:id="@+id/btnUndo" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="↩" android:textSize="18sp" />
-            <Button android:id="@+id/btnSave" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="💾" android:textSize="18sp" />
+            <Button android:id="@+id/btnRedo" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="↪" android:textSize="18sp" />
 
         </LinearLayout>
     </HorizontalScrollView>
 
-    <com.enginotes.app.DrawingView
-        android:id="@+id/drawingView"
+    <FrameLayout
+        android:id="@+id/canvasContainer"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent">
+
+        <com.enginotes.app.DrawingView
+            android:id="@+id/drawingView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+    </FrameLayout>
 
 </LinearLayout>
