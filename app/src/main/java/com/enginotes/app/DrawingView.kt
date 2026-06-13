@@ -11,22 +11,86 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
 
-data class Stroke(val path: Path, val paint: Paint)
-
 enum class Tool { PEN, ERASER, RECTANGLE, CIRCLE, LINE }
+enum class PaperType { BLANK, LINED, GRID }
+
+class StrokeData(
+    val type: Tool,
+    val points: MutableList<Float>,
+    var color: Int,
+    var strokeWidth: Float,
+    var fill: Boolean
+) {
+    fun buildPath(): Path {
+        val path = Path()
+        when (type) {
+            Tool.PEN, Tool.ERASER -> {
+                if (points.size >= 2) {
+                    path.moveTo(points[0], points[1])
+                    var i = 2
+                    while (i + 1 < points.size) {
+                        path.lineTo(points[i], points[i + 1])
+                        i += 2
+                    }
+                }
+            }
+            Tool.LINE -> {
+                if (points.size >= 4) {
+                    path.moveTo(points[0], points[1])
+                    path.lineTo(points[2], points[3])
+                }
+            }
+            Tool.RECTANGLE -> {
+                if (points.size >= 4) {
+                    path.addRect(
+                        RectF(
+                            minOf(points[0], points[2]),
+                            minOf(points[1], points[3]),
+                            maxOf(points[0], points[2]),
+                            maxOf(points[1], points[3])
+                        ),
+                        Path.Direction.CW
+                    )
+                }
+            }
+            Tool.CIRCLE -> {
+                if (points.size >= 4) {
+                    val radius = kotlin.math.hypot((points[2] - points[0]).toDouble(), (points[3] - points[1]).toDouble()).toFloat()
+                    path.addCircle(points[0], points[1], radius, Path.Direction.CW)
+                }
+            }
+        }
+        return path
+    }
+
+    fun toPaint(): Paint {
+        val p = Paint()
+        p.color = color
+        val isShape = type == Tool.RECTANGLE || type == Tool.CIRCLE
+        p.style = if (fill && isShape) Paint.Style.FILL_AND_STROKE else Paint.Style.STROKE
+        p.strokeWidth = strokeWidth
+        p.isAntiAlias = true
+        p.strokeJoin = Paint.Join.ROUND
+        p.strokeCap = Paint.Cap.ROUND
+        return p
+    }
+}
+
+class StrokeItem(val data: StrokeData, var path: Path, var paint: Paint)
 
 class DrawingView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null
 ) : View(context, attrs) {
 
-    private val strokes = mutableListOf<Stroke>()
-    private var currentPath: Path? = null
-    private var currentPaint: Paint = createPaint(Color.BLACK, 6f, Paint.Style.STROKE)
+    private val strokes = mutableListOf<StrokeItem>()
+    private var currentItem: StrokeItem? = null
 
     var currentTool: Tool = Tool.PEN
     var currentColor: Int = Color.BLACK
     var currentStrokeWidth: Float = 6f
+    var eraserSize: Float = 40f
     var fillShapes: Boolean = false
+    var paperType: PaperType = PaperType.GRID
 
     private var scaleFactor = 1f
     private var translateX = 0f
@@ -38,6 +102,9 @@ class DrawingView @JvmOverloads constructor(
     private var prevFocusX = 0f
     private var prevFocusY = 0f
 
+    private var hoverX: Float? = null
+    private var hoverY: Float? = null
+
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
             prevFocusX = detector.focusX
@@ -46,7 +113,7 @@ class DrawingView @JvmOverloads constructor(
         }
 
         override fun onScale(detector: ScaleGestureDetector): Boolean {
-            val newScale = (scaleFactor * detector.scaleFactor).coerceIn(0.2f, 5f)
+            val newScale = (scaleFactor * detector.scaleFactor).coerceIn(0.2f, 6f)
             val factor = newScale / scaleFactor
 
             translateX = detector.focusX - (detector.focusX - translateX) * factor
@@ -63,17 +130,6 @@ class DrawingView @JvmOverloads constructor(
         }
     })
 
-    private fun createPaint(color: Int, strokeWidth: Float, style: Paint.Style): Paint {
-        val p = Paint()
-        p.color = color
-        p.style = style
-        p.strokeWidth = strokeWidth
-        p.isAntiAlias = true
-        p.strokeJoin = Paint.Join.ROUND
-        p.strokeCap = Paint.Cap.ROUND
-        return p
-    }
-
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         canvas.drawColor(Color.WHITE)
@@ -82,36 +138,78 @@ class DrawingView @JvmOverloads constructor(
         canvas.translate(translateX, translateY)
         canvas.scale(scaleFactor, scaleFactor)
 
-        drawGrid(canvas)
+        drawBackground(canvas)
 
-        for (stroke in strokes) {
-            canvas.drawPath(stroke.path, stroke.paint)
+        for (item in strokes) {
+            canvas.drawPath(item.path, item.paint)
         }
-        currentPath?.let { canvas.drawPath(it, currentPaint) }
+        currentItem?.let { canvas.drawPath(it.path, it.paint) }
 
         canvas.restore()
+
+        drawCursor(canvas)
     }
 
-    private fun drawGrid(canvas: Canvas) {
-        val gridPaint = Paint()
-        gridPaint.color = Color.LTGRAY
-        gridPaint.strokeWidth = 1f
+    private fun drawCursor(canvas: Canvas) {
+        val hx = hoverX ?: return
+        val hy = hoverY ?: return
 
-        val spacing = 50f
+        val cursorPaint = Paint()
+        cursorPaint.isAntiAlias = true
+
+        when (currentTool) {
+            Tool.PEN -> {
+                cursorPaint.color = currentColor
+                cursorPaint.style = Paint.Style.FILL
+                val radius = (currentStrokeWidth * scaleFactor / 2f).coerceAtLeast(2f)
+                canvas.drawCircle(hx, hy, radius, cursorPaint)
+            }
+            Tool.ERASER -> {
+                cursorPaint.color = Color.DKGRAY
+                cursorPaint.style = Paint.Style.STROKE
+                cursorPaint.strokeWidth = 2f
+                val half = (eraserSize * scaleFactor) / 2f
+                canvas.drawRect(hx - half, hy - half, hx + half, hy + half, cursorPaint)
+            }
+            Tool.LINE, Tool.RECTANGLE, Tool.CIRCLE -> {
+                cursorPaint.color = Color.DKGRAY
+                cursorPaint.style = Paint.Style.FILL
+                canvas.drawCircle(hx, hy, 5f, cursorPaint)
+            }
+        }
+    }
+
+    private fun drawBackground(canvas: Canvas) {
+        if (paperType == PaperType.BLANK) return
+
+        val linePaint = Paint()
+        linePaint.color = Color.parseColor("#D0D0D0")
+        linePaint.strokeWidth = 1f
+
         val left = (-translateX / scaleFactor) - 2000f
         val top = (-translateY / scaleFactor) - 2000f
         val right = left + (width / scaleFactor) + 4000f
         val bottom = top + (height / scaleFactor) + 4000f
 
-        var x = (left / spacing).toInt() * spacing
-        while (x < right) {
-            canvas.drawLine(x, top, x, bottom, gridPaint)
-            x += spacing
-        }
-        var y = (top / spacing).toInt() * spacing
-        while (y < bottom) {
-            canvas.drawLine(left, y, right, y, gridPaint)
-            y += spacing
+        if (paperType == PaperType.GRID) {
+            val spacing = 50f
+            var x = (left / spacing).toInt() * spacing
+            while (x < right) {
+                canvas.drawLine(x, top, x, bottom, linePaint)
+                x += spacing
+            }
+            var y = (top / spacing).toInt() * spacing
+            while (y < bottom) {
+                canvas.drawLine(left, y, right, y, linePaint)
+                y += spacing
+            }
+        } else if (paperType == PaperType.LINED) {
+            val spacing = 60f
+            var y = (top / spacing).toInt() * spacing
+            while (y < bottom) {
+                canvas.drawLine(left, y, right, y, linePaint)
+                y += spacing
+            }
         }
     }
 
@@ -121,6 +219,22 @@ class DrawingView @JvmOverloads constructor(
 
     private fun screenToWorldY(y: Float): Float {
         return (y - translateY) / scaleFactor
+    }
+
+    override fun onHoverEvent(event: MotionEvent): Boolean {
+        when (event.action) {
+            MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
+                hoverX = event.x
+                hoverY = event.y
+                invalidate()
+            }
+            MotionEvent.ACTION_HOVER_EXIT -> {
+                hoverX = null
+                hoverY = null
+                invalidate()
+            }
+        }
+        return true
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -139,66 +253,46 @@ class DrawingView @JvmOverloads constructor(
     }
 
     private fun handleDrawing(event: MotionEvent) {
+        hoverX = event.x
+        hoverY = event.y
+
         val worldX = screenToWorldX(event.x)
         val worldY = screenToWorldY(event.y)
-        val pressure = event.pressure.coerceIn(0.2f, 1.5f)
+        val pressure = event.pressure.coerceIn(0.3f, 1.5f)
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 shapeStartXWorld = worldX
                 shapeStartYWorld = worldY
 
-                when (currentTool) {
-                    Tool.PEN, Tool.ERASER -> {
-                        currentPath = Path()
-                        currentPath?.moveTo(worldX, worldY)
-                        val color = if (currentTool == Tool.ERASER) Color.WHITE else currentColor
-                        val strokeW = if (currentTool == Tool.ERASER) currentStrokeWidth * 4 else currentStrokeWidth * pressure
-                        currentPaint = createPaint(color, strokeW, Paint.Style.STROKE)
-                    }
-                    Tool.RECTANGLE, Tool.CIRCLE, Tool.LINE -> {
-                        currentPath = Path()
-                        val style = if (fillShapes && currentTool != Tool.LINE) Paint.Style.FILL_AND_STROKE else Paint.Style.STROKE
-                        currentPaint = createPaint(currentColor, currentStrokeWidth, style)
-                    }
+                val data: StrokeData = when (currentTool) {
+                    Tool.PEN -> StrokeData(Tool.PEN, mutableListOf(worldX, worldY), currentColor, currentStrokeWidth * pressure, false)
+                    Tool.ERASER -> StrokeData(Tool.ERASER, mutableListOf(worldX, worldY), Color.WHITE, eraserSize, false)
+                    Tool.LINE -> StrokeData(Tool.LINE, mutableListOf(worldX, worldY, worldX, worldY), currentColor, currentStrokeWidth, false)
+                    Tool.RECTANGLE -> StrokeData(Tool.RECTANGLE, mutableListOf(worldX, worldY, worldX, worldY), currentColor, currentStrokeWidth, fillShapes)
+                    Tool.CIRCLE -> StrokeData(Tool.CIRCLE, mutableListOf(worldX, worldY, worldX, worldY), currentColor, currentStrokeWidth, fillShapes)
                 }
+                currentItem = StrokeItem(data, data.buildPath(), data.toPaint())
+                invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
+                val item = currentItem ?: return
                 when (currentTool) {
                     Tool.PEN, Tool.ERASER -> {
-                        currentPath?.lineTo(worldX, worldY)
+                        item.data.points.add(worldX)
+                        item.data.points.add(worldY)
                     }
-                    Tool.RECTANGLE -> {
-                        val newPath = Path()
-                        newPath.addRect(
-                            RectF(
-                                minOf(shapeStartXWorld, worldX),
-                                minOf(shapeStartYWorld, worldY),
-                                maxOf(shapeStartXWorld, worldX),
-                                maxOf(shapeStartYWorld, worldY)
-                            ),
-                            Path.Direction.CW
-                        )
-                        currentPath = newPath
-                    }
-                    Tool.CIRCLE -> {
-                        val newPath = Path()
-                        val radius = kotlin.math.hypot((worldX - shapeStartXWorld).toDouble(), (worldY - shapeStartYWorld).toDouble()).toFloat()
-                        newPath.addCircle(shapeStartXWorld, shapeStartYWorld, radius, Path.Direction.CW)
-                        currentPath = newPath
-                    }
-                    Tool.LINE -> {
-                        val newPath = Path()
-                        newPath.moveTo(shapeStartXWorld, shapeStartYWorld)
-                        newPath.lineTo(worldX, worldY)
-                        currentPath = newPath
+                    Tool.LINE, Tool.RECTANGLE, Tool.CIRCLE -> {
+                        item.data.points[2] = worldX
+                        item.data.points[3] = worldY
                     }
                 }
+                item.path = item.data.buildPath()
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                currentPath?.let { strokes.add(Stroke(it, currentPaint)) }
-                currentPath = null
+                currentItem?.let { strokes.add(it) }
+                currentItem = null
                 invalidate()
             }
         }
@@ -221,5 +315,39 @@ class DrawingView @JvmOverloads constructor(
         val canvas = Canvas(bitmap)
         draw(canvas)
         return bitmap
+    }
+
+    fun serialize(): String {
+        val sb = StringBuilder()
+        for (item in strokes) {
+            val d = item.data
+            sb.append(d.type.name).append("|")
+            sb.append(d.color).append("|")
+            sb.append(d.strokeWidth).append("|")
+            sb.append(d.fill).append("|")
+            sb.append(d.points.joinToString(","))
+            sb.append("\n")
+        }
+        return sb.toString()
+    }
+
+    fun loadFromString(content: String) {
+        strokes.clear()
+        for (line in content.lines()) {
+            if (line.isBlank()) continue
+            val parts = line.split("|")
+            if (parts.size < 5) continue
+            try {
+                val type = Tool.valueOf(parts[0])
+                val color = parts[1].toInt()
+                val strokeWidth = parts[2].toFloat()
+                val fill = parts[3].toBoolean()
+                val pts = if (parts[4].isBlank()) mutableListOf() else parts[4].split(",").map { it.toFloat() }.toMutableList()
+                val data = StrokeData(type, pts, color, strokeWidth, fill)
+                strokes.add(StrokeItem(data, data.buildPath(), data.toPaint()))
+            } catch (e: Exception) {
+            }
+        }
+        invalidate()
     }
 }
