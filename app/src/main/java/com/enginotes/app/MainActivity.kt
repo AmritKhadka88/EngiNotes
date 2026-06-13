@@ -84,6 +84,10 @@ class MainActivity : AppCompatActivity() {
             showInlineTextEditor(item, screenX, screenY, worldX, worldY)
         }
 
+        for (id in listOf(R.id.btnText, R.id.btnDraw, R.id.btnTools, R.id.btnInsert, R.id.btnUndo, R.id.btnRedo, R.id.btnBack, R.id.btnMenu)) {
+            addPressEffect(findViewById(id))
+        }
+
         findViewById<Button>(R.id.btnBack).setOnClickListener {
             closeInlineEditor(commit = true)
             finish()
@@ -185,12 +189,28 @@ class MainActivity : AppCompatActivity() {
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
+    private val SIZE_SCALE = 3f
+
+    private fun addPressEffect(view: View) {
+        view.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> v.setBackgroundColor(0x4D2196F3)
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> v.setBackgroundColor(Color.TRANSPARENT)
+            }
+            false
+        }
+    }
+
     // ---------- Color grid (MS Word style) ----------
 
+    private fun showColorGridDialog(onPicked: (Int) -> Unit) {
     private fun showColorGridDialog(onPicked: (Int) -> Unit) {
         val grid = GridLayout(this)
         grid.columnCount = 10
         grid.setPadding(dp(10), dp(10), dp(10), dp(10))
+
+        lateinit var dialog: AlertDialog
+        var previewPopup: android.widget.PopupWindow? = null
 
         fun addSwatch(color: Int) {
             val swatch = View(this)
@@ -200,7 +220,28 @@ class MainActivity : AppCompatActivity() {
             params.setMargins(dp(2), dp(2), dp(2), dp(2))
             swatch.layoutParams = params
             swatch.setBackgroundColor(color)
-            swatch.setOnClickListener { onPicked(color) }
+            swatch.setOnTouchListener { v, event ->
+                when (event.actionMasked) {
+                    android.view.MotionEvent.ACTION_DOWN -> {
+                        val preview = View(this)
+                        preview.setBackgroundColor(color)
+                        val pw = android.widget.PopupWindow(preview, dp(40), dp(40))
+                        pw.showAsDropDown(v, 0, -dp(70))
+                        previewPopup = pw
+                    }
+                    android.view.MotionEvent.ACTION_UP -> {
+                        previewPopup?.dismiss()
+                        previewPopup = null
+                        onPicked(color)
+                        dialog.dismiss()
+                    }
+                    android.view.MotionEvent.ACTION_CANCEL -> {
+                        previewPopup?.dismiss()
+                        previewPopup = null
+                    }
+                }
+                true
+            }
             grid.addView(swatch)
         }
 
@@ -219,10 +260,11 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this)
         scroll.addView(grid)
 
-        AlertDialog.Builder(this)
+        dialog = AlertDialog.Builder(this)
             .setTitle("Color")
             .setView(scroll)
-            .show()
+            .create()
+        dialog.show()
     }
 
     private fun showSizePicker() {
@@ -451,6 +493,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
         toolBtn("🎨") { showColorGridDialog { color -> applyColorToSelection(editText, color) } }
+        toolBtn(((editSize / SIZE_SCALE).toInt().coerceIn(1, 100)).toString()) { btn ->
+            val numbers = (1..100).map { it.toString() }.toTypedArray()
+            AlertDialog.Builder(this)
+                .setTitle("Font Size")
+                .setItems(numbers) { _, idx ->
+                    val n = idx + 1
+                    editSize = n * SIZE_SCALE
+                    editText.textSize = (editSize * drawingView.getScaleFactor() / density).coerceAtLeast(8f)
+                    btn.text = n.toString()
+                }
+                .show()
+        }
         toolBtn("↺") { editRotation -= 15f; editText.rotation = editRotation }
         toolBtn("↻") { editRotation += 15f; editText.rotation = editRotation }
         toolBtn("✓") { closeInlineEditor(commit = true) }
