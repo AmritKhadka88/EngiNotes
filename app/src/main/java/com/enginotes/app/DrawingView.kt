@@ -11,8 +11,10 @@ import android.text.Spannable
 import android.text.SpannableString
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.text.style.BackgroundColorSpan
 import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
+import android.text.style.UnderlineSpan
 import android.util.AttributeSet
 import android.view.GestureDetector
 import android.view.MotionEvent
@@ -20,7 +22,7 @@ import android.view.ScaleGestureDetector
 import android.view.View
 
 enum class Tool {
-    SELECT, PEN, ERASER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
+    SELECT, FILL, PEN, ERASER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
     TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, TEXT
 }
 enum class PaperType { BLANK, LINED, GRID, DOTS, ENGINEERING }
@@ -50,7 +52,8 @@ class StrokeData(
     val points: MutableList<Float>,
     var color: Int,
     var strokeWidth: Float,
-    var fill: Boolean
+    var fill: Boolean,
+    var rotation: Float = 0f
 ) {
     fun buildPath(): Path {
         val path = Path()
@@ -238,6 +241,15 @@ class DrawingView @JvmOverloads constructor(
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
             if (currentTool == Tool.TEXT) {
                 onTextEditRequest?.invoke(null, e.x, e.y, screenToWorldX(e.x), screenToWorldY(e.y))
+            } else if (currentTool == Tool.FILL) {
+                val worldX = screenToWorldX(e.x)
+                val worldY = screenToWorldY(e.y)
+                val item = findItemAt(worldX, worldY)
+                if (item is StrokeItem && CLOSED_SHAPES.contains(item.data.type)) {
+                    item.data.fill = !item.data.fill
+                    item.paint = item.data.toPaint()
+                    invalidate()
+                }
             }
             return true
         }
@@ -271,7 +283,23 @@ class DrawingView @JvmOverloads constructor(
 
         for (action in actions) {
             when (action) {
-                is StrokeItem -> canvas.drawPath(action.path, action.paint)
+                is StrokeItem -> {
+                    if (action.data.rotation != 0f) {
+                        val b = getBounds(action)
+                        if (b != null) {
+                            val cx = (b[0] + b[2]) / 2f
+                            val cy = (b[1] + b[3]) / 2f
+                            canvas.save()
+                            canvas.rotate(action.data.rotation, cx, cy)
+                            canvas.drawPath(action.path, action.paint)
+                            canvas.restore()
+                        } else {
+                            canvas.drawPath(action.path, action.paint)
+                        }
+                    } else {
+                        canvas.drawPath(action.path, action.paint)
+                    }
+                }
                 is TextItem -> {
                     if (!action.isEditing) drawTextItem(canvas, action)
                 }
@@ -313,6 +341,8 @@ class DrawingView @JvmOverloads constructor(
                 when (sp.type) {
                     'S' -> spannable.setSpan(StyleSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                     'C' -> spannable.setSpan(ForegroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    'U' -> spannable.setSpan(UnderlineSpan(), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    'H' -> spannable.setSpan(BackgroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
             }
         }
@@ -381,7 +411,8 @@ class DrawingView @JvmOverloads constructor(
             canvas.drawCircle(item.data.points[2], item.data.points[3], handleRadius, handleStroke)
         }
 
-        if (item is ImageItem || item is TextItem) {
+        val canRotate = item is ImageItem || item is TextItem || (item is StrokeItem && item.data.type != Tool.PEN)
+        if (canRotate) {
             val cx = (bounds[0] + bounds[2]) / 2f
             val rotY = bounds[1] - 50f / scaleFactor
             canvas.drawLine(cx, bounds[1], cx, rotY, handleStroke)
@@ -390,13 +421,8 @@ class DrawingView @JvmOverloads constructor(
             canvas.drawCircle(cx, rotY, handleRadius, handleStroke)
         }
 
-        if (!isPen) {
-            handleFill.color = Color.parseColor("#F44336")
-            canvas.drawCircle(bounds[2] + handleRadius * 2.5f, bounds[1] - handleRadius * 2.5f, handleRadius, handleFill)
-        } else {
-            handleFill.color = Color.parseColor("#F44336")
-            canvas.drawCircle(bounds[2] + handleRadius * 2.5f, bounds[1] - handleRadius * 2.5f, handleRadius, handleFill)
-        }
+        handleFill.color = Color.parseColor("#F44336")
+        canvas.drawCircle(bounds[2] + handleRadius * 2.5f, bounds[1] - handleRadius * 2.5f, handleRadius, handleFill)
 
         canvas.restore()
     }
@@ -433,6 +459,7 @@ class DrawingView @JvmOverloads constructor(
     private fun getRotation(item: Any): Float = when (item) {
         is ImageItem -> item.rotation
         is TextItem -> item.rotation
+        is StrokeItem -> item.data.rotation
         else -> 0f
     }
 
@@ -440,6 +467,7 @@ class DrawingView @JvmOverloads constructor(
         when (item) {
             is ImageItem -> item.rotation = rotation
             is TextItem -> item.rotation = rotation
+            is StrokeItem -> item.data.rotation = rotation
             else -> {}
         }
     }
@@ -581,23 +609,25 @@ class DrawingView @JvmOverloads constructor(
                         val rotation = getRotation(item)
                         val (pivotX, pivotY) = getPivot(item, bounds)
                         val (lx, ly) = rotatePoint(worldX, worldY, pivotX, pivotY, -rotation)
-                        val handleRadius = 18f / scaleFactor
+                        val handleRadius = 14f / scaleFactor
+                        val hitRadius = 30f / scaleFactor
                         val isPen = item is StrokeItem && item.data.type == Tool.PEN
                         val isBbox = item is ImageItem || item is TextItem || (item is StrokeItem && BBOX_RESIZE_SHAPES.contains(item.data.type))
                         val isEndpoint = item is StrokeItem && ENDPOINT_RESIZE_SHAPES.contains(item.data.type)
 
                         val delX = bounds[2] + handleRadius * 2.5f
                         val delY = bounds[1] - handleRadius * 2.5f
-                        if (distance(lx, ly, delX, delY) <= handleRadius) {
+                        if (distance(lx, ly, delX, delY) <= hitRadius) {
                             actions.remove(item)
                             selectedItem = null
                             handled = true
                         }
 
-                        if (!handled && (item is ImageItem || item is TextItem)) {
+                        val canRotate = item is ImageItem || item is TextItem || (item is StrokeItem && item.data.type != Tool.PEN)
+                        if (!handled && canRotate) {
                             val cx = (bounds[0] + bounds[2]) / 2f
                             val rotY = bounds[1] - 50f / scaleFactor
-                            if (distance(lx, ly, cx, rotY) <= handleRadius) {
+                            if (distance(lx, ly, cx, rotY) <= hitRadius) {
                                 activeHandle = HandleType.ROTATE
                                 dragStartAngle = computeAngle(item, worldX, worldY)
                                 dragStartRotation = rotation
@@ -607,7 +637,7 @@ class DrawingView @JvmOverloads constructor(
 
                         if (!handled && isBbox) {
                             for ((type, pos) in bboxHandlePositions(bounds)) {
-                                if (distance(lx, ly, pos.first, pos.second) <= handleRadius) {
+                                if (distance(lx, ly, pos.first, pos.second) <= hitRadius) {
                                     activeHandle = type
                                     handled = true
                                     break
@@ -616,17 +646,17 @@ class DrawingView @JvmOverloads constructor(
                         }
 
                         if (!handled && isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
-                            if (distance(lx, ly, item.data.points[0], item.data.points[1]) <= handleRadius) {
+                            if (distance(lx, ly, item.data.points[0], item.data.points[1]) <= hitRadius) {
                                 activeHandle = HandleType.TL
                                 handled = true
-                            } else if (distance(lx, ly, item.data.points[2], item.data.points[3]) <= handleRadius) {
+                            } else if (distance(lx, ly, item.data.points[2], item.data.points[3]) <= hitRadius) {
                                 activeHandle = HandleType.BR
                                 handled = true
                             }
                         }
 
                         if (!handled) {
-                            val pad = handleRadius
+                            val pad = hitRadius
                             if (lx >= bounds[0] - pad && lx <= bounds[2] + pad && ly >= bounds[1] - pad && ly <= bounds[3] + pad) {
                                 activeHandle = HandleType.MOVE
                                 dragStartWorldX = worldX
@@ -785,7 +815,7 @@ class DrawingView @JvmOverloads constructor(
             return true
         }
 
-        if (currentTool == Tool.TEXT) {
+        if (currentTool == Tool.TEXT || currentTool == Tool.FILL) {
             gestureDetector.onTouchEvent(event)
             return true
         }
@@ -1012,6 +1042,7 @@ class DrawingView @JvmOverloads constructor(
                     sb.append(d.color).append("|")
                     sb.append(d.strokeWidth).append("|")
                     sb.append(d.fill).append("|")
+                    sb.append(d.rotation).append("|")
                     sb.append(d.points.joinToString(","))
                     sb.append("\n")
                 }
@@ -1068,19 +1099,16 @@ class DrawingView @JvmOverloads constructor(
                         else if (italic) style = Typeface.ITALIC
                         if (style >= 0) item.spans.add(TextSpanData(0, item.text.length, 'S', style))
                     } else {
-                        item.text = parts[6].replace("\u0002", "\n")
-                        if (parts.size >= 8) {
-                            val spansStr = parts[7]
-                            if (spansStr.isNotBlank()) {
-                                for (token in spansStr.split(";")) {
-                                    val sp = token.split(",")
-                                    if (sp.size == 4) {
-                                        item.spans.add(TextSpanData(sp[0].toInt(), sp[1].toInt(), sp[2][0], sp[3].toInt()))
-                                    }
+                        val spansStr = parts[6]
+                        if (spansStr.isNotBlank()) {
+                            for (token in spansStr.split(";")) {
+                                val sp = token.split(",")
+                                if (sp.size == 4) {
+                                    item.spans.add(TextSpanData(sp[0].toInt(), sp[1].toInt(), sp[2][0], sp[3].toInt()))
                                 }
                             }
-                            item.text = parts[7 + 1].replace("\u0002", "\n")
                         }
+                        item.text = parts[7].replace("\u0002", "\n")
                     }
                     actions.add(item)
                 } else if (line.startsWith("IMAGE\u0001")) {
@@ -1100,9 +1128,16 @@ class DrawingView @JvmOverloads constructor(
                     val color = parts[1].toInt()
                     val strokeWidth = parts[2].toFloat()
                     val fill = parts[3].toBoolean()
-                    val pts = if (parts[4].isBlank()) mutableListOf() else parts[4].split(",").map { it.toFloat() }.toMutableList()
-                    val data = StrokeData(type, pts, color, strokeWidth, fill)
-                    actions.add(StrokeItem(data, data.buildPath(), data.toPaint()))
+                    if (parts.size >= 6) {
+                        val rotation = parts[4].toFloat()
+                        val pts = if (parts[5].isBlank()) mutableListOf() else parts[5].split(",").map { it.toFloat() }.toMutableList()
+                        val data = StrokeData(type, pts, color, strokeWidth, fill, rotation)
+                        actions.add(StrokeItem(data, data.buildPath(), data.toPaint()))
+                    } else {
+                        val pts = if (parts[4].isBlank()) mutableListOf() else parts[4].split(",").map { it.toFloat() }.toMutableList()
+                        val data = StrokeData(type, pts, color, strokeWidth, fill)
+                        actions.add(StrokeItem(data, data.buildPath(), data.toPaint()))
+                    }
                 }
             } catch (e: Exception) {
             }
