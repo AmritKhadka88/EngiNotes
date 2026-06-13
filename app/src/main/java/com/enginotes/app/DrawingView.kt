@@ -7,6 +7,12 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.text.Spannable
+import android.text.SpannableString
+import android.text.StaticLayout
+import android.text.TextPaint
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
 import android.util.AttributeSet
 import android.view.GestureDetector
 import android.view.MotionEvent
@@ -29,6 +35,15 @@ val CLOSED_SHAPES = setOf(
     Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.CIRCLE, Tool.ELLIPSE,
     Tool.TRIANGLE, Tool.DIAMOND, Tool.STAR, Tool.PENTAGON, Tool.HEXAGON
 )
+
+val BBOX_RESIZE_SHAPES = setOf(
+    Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.ELLIPSE, Tool.TRIANGLE,
+    Tool.DIAMOND, Tool.STAR, Tool.PENTAGON, Tool.HEXAGON, Tool.CROSS
+)
+
+val ENDPOINT_RESIZE_SHAPES = setOf(Tool.LINE, Tool.CIRCLE, Tool.ARROW, Tool.CURVE)
+
+data class TextSpanData(val start: Int, val end: Int, val type: Char, val value: Int)
 
 class StrokeData(
     val type: Tool,
@@ -140,10 +155,8 @@ class StrokeData(
 
 class StrokeItem(val data: StrokeData, var path: Path, var paint: Paint)
 
-class TextItem(
-    var text: String, var x: Float, var y: Float, var color: Int, var size: Float,
-    var rotation: Float, var isBold: Boolean = false, var isItalic: Boolean = false
-) {
+class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var size: Float, var rotation: Float) {
+    var spans: MutableList<TextSpanData> = mutableListOf()
     var isEditing: Boolean = false
 }
 
@@ -166,13 +179,6 @@ class DrawingView @JvmOverloads constructor(
             invalidate()
         }
 
-    var selectedItem: Any? = null
-    private enum class HandleType { NONE, MOVE, RESIZE, ROTATE }
-    private var activeHandle = HandleType.NONE
-    private var dragStartWorldX = 0f
-    private var dragStartWorldY = 0f
-    private var dragStartAngle = 0f
-    private var dragStartRotation = 0f
     var currentColor: Int = Color.BLACK
     var currentStrokeWidth: Float = 6f
     var eraserSize: Float = 40f
@@ -181,7 +187,14 @@ class DrawingView @JvmOverloads constructor(
     var paperType: PaperType = PaperType.GRID
     var defaultTextSize: Float = 30f
 
-    // (existingItem, screenX, screenY, worldX, worldY)
+    var selectedItem: Any? = null
+    private enum class HandleType { NONE, MOVE, ROTATE, TL, TM, TR, ML, MR, BL, BM, BR }
+    private var activeHandle = HandleType.NONE
+    private var dragStartWorldX = 0f
+    private var dragStartWorldY = 0f
+    private var dragStartAngle = 0f
+    private var dragStartRotation = 0f
+
     var onTextEditRequest: ((TextItem?, Float, Float, Float, Float) -> Unit)? = null
 
     private var scaleFactor = 1f
@@ -260,22 +273,7 @@ class DrawingView @JvmOverloads constructor(
             when (action) {
                 is StrokeItem -> canvas.drawPath(action.path, action.paint)
                 is TextItem -> {
-                    if (!action.isEditing) {
-                        val paint = Paint()
-                        paint.color = action.color
-                        paint.textSize = action.size
-                        paint.isAntiAlias = true
-                        var style = Typeface.NORMAL
-                        if (action.isBold && action.isItalic) style = Typeface.BOLD_ITALIC
-                        else if (action.isBold) style = Typeface.BOLD
-                        else if (action.isItalic) style = Typeface.ITALIC
-                        paint.typeface = Typeface.create(Typeface.DEFAULT, style)
-                        canvas.save()
-                        canvas.translate(action.x, action.y)
-                        canvas.rotate(action.rotation)
-                        canvas.drawText(action.text, 0f, 0f, paint)
-                        canvas.restore()
-                    }
+                    if (!action.isEditing) drawTextItem(canvas, action)
                 }
                 is ImageItem -> {
                     if (action.bitmap == null) {
@@ -294,52 +292,123 @@ class DrawingView @JvmOverloads constructor(
         }
         currentItem?.let { canvas.drawPath(it.path, it.paint) }
 
-        selectedItem?.let { item ->
-            val bounds = getBounds(item)
-            if (bounds != null) {
-                val rotation = getRotation(item)
-                val (pivotX, pivotY) = getPivot(item, bounds)
-                canvas.save()
-                canvas.rotate(rotation, pivotX, pivotY)
-
-                val selPaint = Paint()
-                selPaint.color = Color.BLUE
-                selPaint.style = Paint.Style.STROKE
-                selPaint.strokeWidth = 2f / scaleFactor
-                canvas.drawRect(bounds[0], bounds[1], bounds[2], bounds[3], selPaint)
-
-                val handleRadius = 16f / scaleFactor
-                val canTransform = !(item is StrokeItem && item.data.type == Tool.PEN)
-                val handlePaint = Paint()
-                handlePaint.style = Paint.Style.FILL
-
-                if (canTransform) {
-                    handlePaint.color = Color.BLUE
-                    canvas.drawCircle(bounds[2], bounds[3], handleRadius, handlePaint)
-                    if (item is ImageItem || item is TextItem) {
-                        handlePaint.color = Color.GREEN
-                        canvas.drawCircle((bounds[0] + bounds[2]) / 2f, bounds[1], handleRadius, handlePaint)
-                    }
-                }
-                handlePaint.color = Color.RED
-                canvas.drawCircle(bounds[2], bounds[1], handleRadius, handlePaint)
-
-                canvas.restore()
-            }
-        }
+        drawSelection(canvas)
 
         canvas.restore()
 
         drawCursor(canvas)
     }
 
+    private fun drawTextItem(canvas: Canvas, item: TextItem) {
+        val tp = TextPaint()
+        tp.color = item.color
+        tp.textSize = item.size
+        tp.isAntiAlias = true
+
+        val spannable = SpannableString(item.text)
+        for (sp in item.spans) {
+            val s = sp.start.coerceIn(0, item.text.length)
+            val e = sp.end.coerceIn(s, item.text.length)
+            if (s < e) {
+                when (sp.type) {
+                    'S' -> spannable.setSpan(StyleSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    'C' -> spannable.setSpan(ForegroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+            }
+        }
+
+        val width = (tp.measureText(item.text).toInt() + 10).coerceAtLeast(1)
+        val layout = StaticLayout.Builder.obtain(spannable, 0, spannable.length, tp, width).build()
+
+        canvas.save()
+        canvas.translate(item.x, item.y - layout.height)
+        canvas.rotate(item.rotation, 0f, layout.height.toFloat())
+        layout.draw(canvas)
+        canvas.restore()
+    }
+
+    private fun bboxHandlePositions(bounds: FloatArray): List<Pair<HandleType, Pair<Float, Float>>> {
+        val cx = (bounds[0] + bounds[2]) / 2f
+        val cy = (bounds[1] + bounds[3]) / 2f
+        return listOf(
+            HandleType.TL to Pair(bounds[0], bounds[1]),
+            HandleType.TM to Pair(cx, bounds[1]),
+            HandleType.TR to Pair(bounds[2], bounds[1]),
+            HandleType.ML to Pair(bounds[0], cy),
+            HandleType.MR to Pair(bounds[2], cy),
+            HandleType.BL to Pair(bounds[0], bounds[3]),
+            HandleType.BM to Pair(cx, bounds[3]),
+            HandleType.BR to Pair(bounds[2], bounds[3])
+        )
+    }
+
+    private fun drawSelection(canvas: Canvas) {
+        val item = selectedItem ?: return
+        val bounds = getBounds(item) ?: return
+        val rotation = getRotation(item)
+        val (pivotX, pivotY) = getPivot(item, bounds)
+
+        canvas.save()
+        canvas.rotate(rotation, pivotX, pivotY)
+
+        val selPaint = Paint()
+        selPaint.color = Color.parseColor("#2196F3")
+        selPaint.style = Paint.Style.STROKE
+        selPaint.strokeWidth = 2f / scaleFactor
+        canvas.drawRect(bounds[0], bounds[1], bounds[2], bounds[3], selPaint)
+
+        val handleRadius = 14f / scaleFactor
+        val handleFill = Paint(); handleFill.style = Paint.Style.FILL
+        val handleStroke = Paint(); handleStroke.style = Paint.Style.STROKE
+        handleStroke.color = Color.parseColor("#2196F3")
+        handleStroke.strokeWidth = 2f / scaleFactor
+
+        val isPen = item is StrokeItem && item.data.type == Tool.PEN
+        val isBbox = item is ImageItem || item is TextItem || (item is StrokeItem && BBOX_RESIZE_SHAPES.contains(item.data.type))
+        val isEndpoint = item is StrokeItem && ENDPOINT_RESIZE_SHAPES.contains(item.data.type)
+
+        if (isBbox) {
+            for ((_, pos) in bboxHandlePositions(bounds)) {
+                handleFill.color = Color.WHITE
+                canvas.drawCircle(pos.first, pos.second, handleRadius, handleFill)
+                canvas.drawCircle(pos.first, pos.second, handleRadius, handleStroke)
+            }
+        } else if (isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
+            handleFill.color = Color.WHITE
+            canvas.drawCircle(item.data.points[0], item.data.points[1], handleRadius, handleFill)
+            canvas.drawCircle(item.data.points[0], item.data.points[1], handleRadius, handleStroke)
+            canvas.drawCircle(item.data.points[2], item.data.points[3], handleRadius, handleFill)
+            canvas.drawCircle(item.data.points[2], item.data.points[3], handleRadius, handleStroke)
+        }
+
+        if (item is ImageItem || item is TextItem) {
+            val cx = (bounds[0] + bounds[2]) / 2f
+            val rotY = bounds[1] - 50f / scaleFactor
+            canvas.drawLine(cx, bounds[1], cx, rotY, handleStroke)
+            handleFill.color = Color.WHITE
+            canvas.drawCircle(cx, rotY, handleRadius, handleFill)
+            canvas.drawCircle(cx, rotY, handleRadius, handleStroke)
+        }
+
+        if (!isPen) {
+            handleFill.color = Color.parseColor("#F44336")
+            canvas.drawCircle(bounds[2] + handleRadius * 2.5f, bounds[1] - handleRadius * 2.5f, handleRadius, handleFill)
+        } else {
+            handleFill.color = Color.parseColor("#F44336")
+            canvas.drawCircle(bounds[2] + handleRadius * 2.5f, bounds[1] - handleRadius * 2.5f, handleRadius, handleFill)
+        }
+
+        canvas.restore()
+    }
+
     private fun getBounds(item: Any): FloatArray? {
         return when (item) {
             is ImageItem -> floatArrayOf(item.x, item.y, item.x + item.w, item.y + item.h)
             is TextItem -> {
-                val w = item.size * item.text.length * 0.55f
+                val tp = TextPaint(); tp.textSize = item.size
+                val w = tp.measureText(item.text).coerceAtLeast(10f)
                 val h = item.size * 1.2f
-                floatArrayOf(item.x, item.y - h, item.x + w, item.y + 0.2f * h)
+                floatArrayOf(item.x, item.y - h, item.x + w, item.y)
             }
             is StrokeItem -> {
                 val pts = item.data.points
@@ -413,22 +482,68 @@ class DrawingView @JvmOverloads constructor(
         }
     }
 
-    private fun resizeItem(item: Any, lx: Float, ly: Float) {
+    private fun resizeItem(item: Any, handle: HandleType, lx: Float, ly: Float) {
+        val minSize = 10f
         when (item) {
             is ImageItem -> {
-                item.w = (lx - item.x).coerceAtLeast(20f)
-                item.h = (ly - item.y).coerceAtLeast(20f)
-            }
-            is TextItem -> {
-                val newSize = (lx - item.x) / (item.text.length.coerceAtLeast(1) * 0.55f)
-                item.size = newSize.coerceIn(10f, 300f)
+                var left = item.x; var top = item.y; var right = item.x + item.w; var bottom = item.y + item.h
+                when (handle) {
+                    HandleType.TL -> { left = lx; top = ly }
+                    HandleType.TM -> top = ly
+                    HandleType.TR -> { right = lx; top = ly }
+                    HandleType.ML -> left = lx
+                    HandleType.MR -> right = lx
+                    HandleType.BL -> { left = lx; bottom = ly }
+                    HandleType.BM -> bottom = ly
+                    HandleType.BR -> { right = lx; bottom = ly }
+                    else -> {}
+                }
+                if (right - left < minSize) {
+                    if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) left = right - minSize else right = left + minSize
+                }
+                if (bottom - top < minSize) {
+                    if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) top = bottom - minSize else bottom = top + minSize
+                }
+                item.x = left; item.y = top; item.w = right - left; item.h = bottom - top
             }
             is StrokeItem -> {
-                if (SHAPE_TOOLS.contains(item.data.type) && item.data.points.size >= 4) {
-                    item.data.points[2] = lx
-                    item.data.points[3] = ly
+                if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
+                    var left = minOf(item.data.points[0], item.data.points[2])
+                    var top = minOf(item.data.points[1], item.data.points[3])
+                    var right = maxOf(item.data.points[0], item.data.points[2])
+                    var bottom = maxOf(item.data.points[1], item.data.points[3])
+                    when (handle) {
+                        HandleType.TL -> { left = lx; top = ly }
+                        HandleType.TM -> top = ly
+                        HandleType.TR -> { right = lx; top = ly }
+                        HandleType.ML -> left = lx
+                        HandleType.MR -> right = lx
+                        HandleType.BL -> { left = lx; bottom = ly }
+                        HandleType.BM -> bottom = ly
+                        HandleType.BR -> { right = lx; bottom = ly }
+                        else -> {}
+                    }
+                    if (right - left < minSize) {
+                        if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) left = right - minSize else right = left + minSize
+                    }
+                    if (bottom - top < minSize) {
+                        if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) top = bottom - minSize else bottom = top + minSize
+                    }
+                    item.data.points[0] = left; item.data.points[1] = top
+                    item.data.points[2] = right; item.data.points[3] = bottom
+                    item.path = item.data.buildPath()
+                } else if (ENDPOINT_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
+                    when (handle) {
+                        HandleType.TL -> { item.data.points[0] = lx; item.data.points[1] = ly }
+                        HandleType.BR -> { item.data.points[2] = lx; item.data.points[3] = ly }
+                        else -> {}
+                    }
                     item.path = item.data.buildPath()
                 }
+            }
+            is TextItem -> {
+                val d = distance(item.x, item.y, lx, ly)
+                item.size = (d / (item.text.length.coerceAtLeast(1) * 0.4f)).coerceIn(10f, 300f)
             }
         }
     }
@@ -438,6 +553,16 @@ class DrawingView @JvmOverloads constructor(
         for (action in actions.reversed()) {
             val bounds = getBounds(action) ?: continue
             if (x in (bounds[0] - pad)..(bounds[2] + pad) && y in (bounds[1] - pad)..(bounds[3] + pad)) return action
+        }
+        return null
+    }
+
+    private fun findTextItemAt(x: Float, y: Float): TextItem? {
+        for (action in actions.reversed()) {
+            if (action is TextItem) {
+                val bounds = getBounds(action) ?: continue
+                if (x in (bounds[0] - 10f)..(bounds[2] + 10f) && y in (bounds[1] - 10f)..(bounds[3] + 10f)) return action
+            }
         }
         return null
     }
@@ -456,28 +581,58 @@ class DrawingView @JvmOverloads constructor(
                         val rotation = getRotation(item)
                         val (pivotX, pivotY) = getPivot(item, bounds)
                         val (lx, ly) = rotatePoint(worldX, worldY, pivotX, pivotY, -rotation)
-                        val handleRadius = 16f / scaleFactor
-                        val canTransform = !(item is StrokeItem && item.data.type == Tool.PEN)
+                        val handleRadius = 18f / scaleFactor
+                        val isPen = item is StrokeItem && item.data.type == Tool.PEN
+                        val isBbox = item is ImageItem || item is TextItem || (item is StrokeItem && BBOX_RESIZE_SHAPES.contains(item.data.type))
+                        val isEndpoint = item is StrokeItem && ENDPOINT_RESIZE_SHAPES.contains(item.data.type)
 
-                        if (distance(lx, ly, bounds[2], bounds[1]) <= handleRadius) {
+                        val delX = bounds[2] + handleRadius * 2.5f
+                        val delY = bounds[1] - handleRadius * 2.5f
+                        if (distance(lx, ly, delX, delY) <= handleRadius) {
                             actions.remove(item)
                             selectedItem = null
                             handled = true
-                        } else if (canTransform && (item is ImageItem || item is TextItem) &&
-                            distance(lx, ly, (bounds[0] + bounds[2]) / 2f, bounds[1]) <= handleRadius) {
-                            activeHandle = HandleType.ROTATE
-                            dragStartAngle = computeAngle(item, worldX, worldY)
-                            dragStartRotation = rotation
-                            handled = true
-                        } else if (canTransform && distance(lx, ly, bounds[2], bounds[3]) <= handleRadius) {
-                            activeHandle = HandleType.RESIZE
-                            handled = true
-                        } else if (lx >= bounds[0] - handleRadius && lx <= bounds[2] + handleRadius &&
-                            ly >= bounds[1] - handleRadius && ly <= bounds[3] + handleRadius) {
-                            activeHandle = HandleType.MOVE
-                            dragStartWorldX = worldX
-                            dragStartWorldY = worldY
-                            handled = true
+                        }
+
+                        if (!handled && (item is ImageItem || item is TextItem)) {
+                            val cx = (bounds[0] + bounds[2]) / 2f
+                            val rotY = bounds[1] - 50f / scaleFactor
+                            if (distance(lx, ly, cx, rotY) <= handleRadius) {
+                                activeHandle = HandleType.ROTATE
+                                dragStartAngle = computeAngle(item, worldX, worldY)
+                                dragStartRotation = rotation
+                                handled = true
+                            }
+                        }
+
+                        if (!handled && isBbox) {
+                            for ((type, pos) in bboxHandlePositions(bounds)) {
+                                if (distance(lx, ly, pos.first, pos.second) <= handleRadius) {
+                                    activeHandle = type
+                                    handled = true
+                                    break
+                                }
+                            }
+                        }
+
+                        if (!handled && isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
+                            if (distance(lx, ly, item.data.points[0], item.data.points[1]) <= handleRadius) {
+                                activeHandle = HandleType.TL
+                                handled = true
+                            } else if (distance(lx, ly, item.data.points[2], item.data.points[3]) <= handleRadius) {
+                                activeHandle = HandleType.BR
+                                handled = true
+                            }
+                        }
+
+                        if (!handled) {
+                            val pad = handleRadius
+                            if (lx >= bounds[0] - pad && lx <= bounds[2] + pad && ly >= bounds[1] - pad && ly <= bounds[3] + pad) {
+                                activeHandle = HandleType.MOVE
+                                dragStartWorldX = worldX
+                                dragStartWorldY = worldY
+                                handled = true
+                            }
                         }
                     }
                 }
@@ -492,21 +647,20 @@ class DrawingView @JvmOverloads constructor(
                 when (activeHandle) {
                     HandleType.MOVE -> {
                         moveItem(item, worldX - dragStartWorldX, worldY - dragStartWorldY)
-                        dragStartWorldX = worldX
-                        dragStartWorldY = worldY
-                    }
-                    HandleType.RESIZE -> {
-                        val bounds = getBounds(item) ?: return
-                        val rotation = getRotation(item)
-                        val (pivotX, pivotY) = getPivot(item, bounds)
-                        val (lx, ly) = rotatePoint(worldX, worldY, pivotX, pivotY, -rotation)
-                        resizeItem(item, lx, ly)
+                        dragStartWorldX = worldX; dragStartWorldY = worldY
                     }
                     HandleType.ROTATE -> {
                         val currentAngle = computeAngle(item, worldX, worldY)
                         setRotation(item, dragStartRotation + (currentAngle - dragStartAngle))
                     }
-                    else -> return
+                    HandleType.NONE -> return
+                    else -> {
+                        val bounds = getBounds(item) ?: return
+                        val rotation = getRotation(item)
+                        val (pivotX, pivotY) = getPivot(item, bounds)
+                        val (lx, ly) = rotatePoint(worldX, worldY, pivotX, pivotY, -rotation)
+                        resizeItem(item, activeHandle, lx, ly)
+                    }
                 }
                 invalidate()
             }
@@ -514,20 +668,6 @@ class DrawingView @JvmOverloads constructor(
                 activeHandle = HandleType.NONE
             }
         }
-    }
-
-    private fun findTextItemAt(x: Float, y: Float): TextItem? {
-        for (action in actions.reversed()) {
-            if (action is TextItem) {
-                val approxWidth = action.size * action.text.length * 0.55f
-                val approxHeight = action.size * 1.2f
-                if (x >= action.x - 10 && x <= action.x + approxWidth + 10 &&
-                    y >= action.y - approxHeight && y <= action.y + 10) {
-                    return action
-                }
-            }
-        }
-        return null
     }
 
     private fun drawCursor(canvas: Canvas) {
@@ -814,9 +954,11 @@ class DrawingView @JvmOverloads constructor(
         return distance(px, py, x1 + t * dx, y1 + t * dy)
     }
 
-    fun addText(text: String, x: Float, y: Float, size: Float, rotation: Float, color: Int, bold: Boolean = false, italic: Boolean = false) {
+    fun addText(text: String, x: Float, y: Float, size: Float, rotation: Float, color: Int, spans: MutableList<TextSpanData> = mutableListOf()) {
         if (text.isBlank()) return
-        actions.add(TextItem(text, x, y, color, size, rotation, bold, italic))
+        val item = TextItem(text, x, y, color, size, rotation)
+        item.spans = spans
+        actions.add(item)
         redoStack.clear()
         invalidate()
     }
@@ -849,6 +991,7 @@ class DrawingView @JvmOverloads constructor(
     fun clearAll() {
         actions.clear()
         redoStack.clear()
+        selectedItem = null
         invalidate()
     }
 
@@ -873,14 +1016,14 @@ class DrawingView @JvmOverloads constructor(
                     sb.append("\n")
                 }
                 is TextItem -> {
+                    val spansEncoded = action.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }
                     sb.append("TEXT\u0001")
                     sb.append(action.x).append("\u0001")
                     sb.append(action.y).append("\u0001")
                     sb.append(action.color).append("\u0001")
                     sb.append(action.size).append("\u0001")
                     sb.append(action.rotation).append("\u0001")
-                    sb.append(action.isBold).append("\u0001")
-                    sb.append(action.isItalic).append("\u0001")
+                    sb.append(spansEncoded).append("\u0001")
                     sb.append(action.text.replace("\n", "\u0002"))
                     sb.append("\n")
                 }
@@ -902,6 +1045,7 @@ class DrawingView @JvmOverloads constructor(
     fun loadFromString(content: String) {
         actions.clear()
         redoStack.clear()
+        selectedItem = null
         for (line in content.lines()) {
             if (line.isBlank()) continue
             try {
@@ -913,15 +1057,32 @@ class DrawingView @JvmOverloads constructor(
                     val color = parts[3].toInt()
                     val size = parts[4].toFloat()
                     val rotation = parts[5].toFloat()
+                    val item = TextItem("", x, y, color, size, rotation)
                     if (parts.size >= 9) {
                         val bold = parts[6].toBoolean()
                         val italic = parts[7].toBoolean()
-                        val text = parts[8].replace("\u0002", "\n")
-                        actions.add(TextItem(text, x, y, color, size, rotation, bold, italic))
+                        item.text = parts[8].replace("\u0002", "\n")
+                        var style = -1
+                        if (bold && italic) style = Typeface.BOLD_ITALIC
+                        else if (bold) style = Typeface.BOLD
+                        else if (italic) style = Typeface.ITALIC
+                        if (style >= 0) item.spans.add(TextSpanData(0, item.text.length, 'S', style))
                     } else {
-                        val text = parts[6].replace("\u0002", "\n")
-                        actions.add(TextItem(text, x, y, color, size, rotation))
+                        item.text = parts[6].replace("\u0002", "\n")
+                        if (parts.size >= 8) {
+                            val spansStr = parts[7]
+                            if (spansStr.isNotBlank()) {
+                                for (token in spansStr.split(";")) {
+                                    val sp = token.split(",")
+                                    if (sp.size == 4) {
+                                        item.spans.add(TextSpanData(sp[0].toInt(), sp[1].toInt(), sp[2][0], sp[3].toInt()))
+                                    }
+                                }
+                            }
+                            item.text = parts[7 + 1].replace("\u0002", "\n")
+                        }
                     }
+                    actions.add(item)
                 } else if (line.startsWith("IMAGE\u0001")) {
                     val parts = line.split("\u0001")
                     if (parts.size < 7) continue
