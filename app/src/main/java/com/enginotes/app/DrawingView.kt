@@ -16,6 +16,7 @@ enum class Tool {
     TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, TEXT
 }
 enum class PaperType { BLANK, LINED, GRID, DOTS, ENGINEERING }
+enum class EraserMode { OBJECT, AREA }
 
 val SHAPE_TOOLS = setOf(
     Tool.LINE, Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.CIRCLE, Tool.ELLIPSE,
@@ -159,6 +160,7 @@ class DrawingView @JvmOverloads constructor(
     var currentColor: Int = Color.BLACK
     var currentStrokeWidth: Float = 6f
     var eraserSize: Float = 40f
+    var eraserMode: EraserMode = EraserMode.OBJECT
     var fillShapes: Boolean = false
     var paperType: PaperType = PaperType.GRID
     var defaultTextSize: Float = 30f
@@ -252,11 +254,15 @@ class DrawingView @JvmOverloads constructor(
                 canvas.drawCircle(hx, hy, radius, cursorPaint)
             }
             Tool.ERASER -> {
-                cursorPaint.color = Color.DKGRAY
+                cursorPaint.color = if (eraserMode == EraserMode.OBJECT) Color.DKGRAY else Color.RED
                 cursorPaint.style = Paint.Style.STROKE
                 cursorPaint.strokeWidth = 2f
                 val half = (eraserSize * scaleFactor) / 2f
-                canvas.drawRect(hx - half, hy - half, hx + half, hy + half, cursorPaint)
+                if (eraserMode == EraserMode.OBJECT) {
+                    canvas.drawRect(hx - half, hy - half, hx + half, hy + half, cursorPaint)
+                } else {
+                    canvas.drawCircle(hx, hy, half, cursorPaint)
+                }
             }
             else -> {
                 cursorPaint.color = Color.DKGRAY
@@ -435,15 +441,66 @@ class DrawingView @JvmOverloads constructor(
 
     private fun eraseAt(x: Float, y: Float) {
         val radius = eraserSize / 2f
-        val iterator = actions.iterator()
-        while (iterator.hasNext()) {
-            val action = iterator.next()
-            val hit = when (action) {
-                is StrokeItem -> strokeHitTest(action.data, x, y, radius)
-                is TextItem -> distance(x, y, action.x, action.y) <= radius + action.size
-                else -> false
+
+        if (eraserMode == EraserMode.OBJECT) {
+            val iterator = actions.iterator()
+            while (iterator.hasNext()) {
+                val action = iterator.next()
+                val hit = when (action) {
+                    is StrokeItem -> strokeHitTest(action.data, x, y, radius)
+                    is TextItem -> distance(x, y, action.x, action.y) <= radius + action.size
+                    else -> false
+                }
+                if (hit) iterator.remove()
             }
-            if (hit) iterator.remove()
+        } else {
+            val newActions = mutableListOf<Any>()
+            for (action in actions) {
+                when (action) {
+                    is StrokeItem -> {
+                        if (action.data.type == Tool.PEN || action.data.type == Tool.ERASER) {
+                            newActions.addAll(splitStrokeAroundEraser(action.data, x, y, radius))
+                        } else {
+                            if (!strokeHitTest(action.data, x, y, radius)) newActions.add(action)
+                        }
+                    }
+                    is TextItem -> {
+                        if (distance(x, y, action.x, action.y) > radius + action.size) newActions.add(action)
+                    }
+                    else -> newActions.add(action)
+                }
+            }
+            actions.clear()
+            actions.addAll(newActions)
+        }
+    }
+
+    private fun splitStrokeAroundEraser(data: StrokeData, ex: Float, ey: Float, radius: Float): List<StrokeItem> {
+        val pts = data.points
+        if (pts.size < 4) {
+            if (pts.size >= 2 && distance(ex, ey, pts[0], pts[1]) <= radius) return emptyList()
+            return listOf(StrokeItem(data, data.buildPath(), data.toPaint()))
+        }
+
+        val segments = mutableListOf<MutableList<Float>>()
+        var current = mutableListOf<Float>()
+        var i = 0
+        while (i + 1 < pts.size) {
+            val px = pts[i]; val py = pts[i + 1]
+            val erased = distance(ex, ey, px, py) <= radius
+            if (erased) {
+                if (current.size >= 4) segments.add(current)
+                current = mutableListOf()
+            } else {
+                current.add(px); current.add(py)
+            }
+            i += 2
+        }
+        if (current.size >= 4) segments.add(current)
+
+        return segments.map { segPts ->
+            val newData = StrokeData(data.type, segPts, data.color, data.strokeWidth, data.fill)
+            StrokeItem(newData, newData.buildPath(), newData.toPaint())
         }
     }
 
