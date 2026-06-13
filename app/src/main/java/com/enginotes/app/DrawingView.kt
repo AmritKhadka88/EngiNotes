@@ -1,6 +1,7 @@
 package com.enginotes.app
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -20,10 +21,12 @@ import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import java.io.File
+import java.io.FileOutputStream
 
 enum class Tool {
     SELECT, FILL, PEN, ERASER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
-    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, TEXT
+    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT
 }
 enum class PaperType { BLANK, LINED, GRID, DOTS, ENGINEERING }
 enum class EraserMode { OBJECT, AREA }
@@ -57,7 +60,7 @@ class StrokeData(
 ) {
     fun buildPath(): Path {
         val path = Path()
-        if (type == Tool.PEN || type == Tool.ERASER) {
+        if (type == Tool.PEN || type == Tool.ERASER || type == Tool.ARC) {
             if (points.size >= 2) {
                 path.moveTo(points[0], points[1])
                 var i = 2
@@ -164,20 +167,29 @@ class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var
 }
 
 class ImageItem(var path: String, var x: Float, var y: Float, var w: Float, var h: Float, var rotation: Float) {
-    var bitmap: android.graphics.Bitmap? = null
+    var bitmap: Bitmap? = null
 }
+
+class FillItem(var path: String, var x: Float, var y: Float, var w: Float, var h: Float) {
+    var bitmap: Bitmap? = null
+}
+
+class LeakMarker(var x: Float, var y: Float)
 
 class DrawingView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null
 ) : View(context, attrs) {
 
+    private val ctx = context
     private val actions = mutableListOf<Any>()
     private val redoStack = mutableListOf<Any>()
     private var currentItem: StrokeItem? = null
+    val leakMarkers = mutableListOf<LeakMarker>()
 
     var currentTool: Tool = Tool.PEN
         set(value) {
             if (field == Tool.SELECT && value != Tool.SELECT) selectedItem = null
+            if (field == Tool.ARC && value != Tool.ARC) activeArcItem = null
             field = value
             invalidate()
         }
@@ -187,6 +199,8 @@ class DrawingView @JvmOverloads constructor(
     var eraserSize: Float = 40f
     var eraserMode: EraserMode = EraserMode.OBJECT
     var fillShapes: Boolean = false
+    var fillColor: Int = Color.RED
+    var arcDivisions: Int = 4
     var paperType: PaperType = PaperType.GRID
     var defaultTextSize: Float = 36f
 
@@ -199,6 +213,9 @@ class DrawingView @JvmOverloads constructor(
     private var dragStartRotation = 0f
     private var dragStartPivotX = 0f
     private var dragStartPivotY = 0f
+
+    private var activeArcItem: StrokeItem? = null
+    private var arcDragPointIndex = -1
 
     var onTextEditRequest: ((TextItem?, Float, Float, Float, Float) -> Unit)? = null
 
@@ -246,11 +263,18 @@ class DrawingView @JvmOverloads constructor(
             } else if (currentTool == Tool.FILL) {
                 val worldX = screenToWorldX(e.x)
                 val worldY = screenToWorldY(e.y)
-                val item = findItemAt(worldX, worldY)
-                if (item is StrokeItem && CLOSED_SHAPES.contains(item.data.type)) {
-                    item.data.fill = !item.data.fill
-                    item.paint = item.data.toPaint()
-                    invalidate()
+                if (removeLeakMarkerAt(worldX, worldY)) {
+                    // dismissed leak marker
+                } else {
+                    val item = findItemAt(worldX, worldY)
+                    if (item is StrokeItem && CLOSED_SHAPES.contains(item.data.type)) {
+                        item.data.fill = !item.data.fill
+                        item.data.color = fillColor
+                        item.paint = item.data.toPaint()
+                        invalidate()
+                    } else {
+                        performFill(e.x, e.y)
+                    }
                 }
             }
             return true
@@ -273,6 +297,52 @@ class DrawingView @JvmOverloads constructor(
         }
     })
 
+    private fun drawActionItem(canvas: Canvas, action: Any, includeFills: Boolean) {
+        when (action) {
+            is FillItem -> {
+                if (!includeFills) return
+                if (action.bitmap == null) {
+                    try { action.bitmap = android.graphics.BitmapFactory.decodeFile(action.path) } catch (e: Exception) {}
+                }
+                action.bitmap?.let { bmp ->
+                    canvas.drawBitmap(bmp, null, RectF(action.x, action.y, action.x + action.w, action.y + action.h), null)
+                }
+            }
+            is StrokeItem -> {
+                if (action.data.rotation != 0f) {
+                    val b = getBounds(action)
+                    if (b != null) {
+                        val cx = (b[0] + b[2]) / 2f
+                        val cy = (b[1] + b[3]) / 2f
+                        canvas.save()
+                        canvas.rotate(action.data.rotation, cx, cy)
+                        canvas.drawPath(action.path, action.paint)
+                        canvas.restore()
+                    } else {
+                        canvas.drawPath(action.path, action.paint)
+                    }
+                } else {
+                    canvas.drawPath(action.path, action.paint)
+                }
+            }
+            is TextItem -> {
+                if (!action.isEditing) drawTextItem(canvas, action)
+            }
+            is ImageItem -> {
+                if (action.bitmap == null) {
+                    try { action.bitmap = android.graphics.BitmapFactory.decodeFile(action.path) } catch (e: Exception) {}
+                }
+                action.bitmap?.let { bmp ->
+                    canvas.save()
+                    canvas.translate(action.x, action.y)
+                    canvas.rotate(action.rotation)
+                    canvas.drawBitmap(bmp, null, RectF(0f, 0f, action.w, action.h), null)
+                    canvas.restore()
+                }
+            }
+        }
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         canvas.drawColor(Color.WHITE)
@@ -283,50 +353,35 @@ class DrawingView @JvmOverloads constructor(
 
         drawBackground(canvas)
 
-        for (action in actions) {
-            when (action) {
-                is StrokeItem -> {
-                    if (action.data.rotation != 0f) {
-                        val b = getBounds(action)
-                        if (b != null) {
-                            val cx = (b[0] + b[2]) / 2f
-                            val cy = (b[1] + b[3]) / 2f
-                            canvas.save()
-                            canvas.rotate(action.data.rotation, cx, cy)
-                            canvas.drawPath(action.path, action.paint)
-                            canvas.restore()
-                        } else {
-                            canvas.drawPath(action.path, action.paint)
-                        }
-                    } else {
-                        canvas.drawPath(action.path, action.paint)
-                    }
-                }
-                is TextItem -> {
-                    if (!action.isEditing) drawTextItem(canvas, action)
-                }
-                is ImageItem -> {
-                    if (action.bitmap == null) {
-                        try { action.bitmap = android.graphics.BitmapFactory.decodeFile(action.path) } catch (e: Exception) {}
-                    }
-                    val bmp = action.bitmap
-                    if (bmp != null) {
-                        canvas.save()
-                        canvas.translate(action.x, action.y)
-                        canvas.rotate(action.rotation)
-                        canvas.drawBitmap(bmp, null, RectF(0f, 0f, action.w, action.h), null)
-                        canvas.restore()
-                    }
-                }
-            }
-        }
+        for (action in actions) drawActionItem(canvas, action, true)
         currentItem?.let { canvas.drawPath(it.path, it.paint) }
 
         drawSelection(canvas)
+        drawArcHandles(canvas)
+        drawLeakMarkers(canvas)
 
         canvas.restore()
 
         drawCursor(canvas)
+    }
+
+    private fun drawArcHandles(canvas: Canvas) {
+        if (currentTool != Tool.ARC) return
+        val arc = activeArcItem ?: return
+        val p = Paint(); p.color = Color.parseColor("#2196F3"); p.style = Paint.Style.FILL
+        val r = 12f / scaleFactor
+        var i = 0
+        while (i + 1 < arc.data.points.size) {
+            canvas.drawCircle(arc.data.points[i], arc.data.points[i + 1], r, p)
+            i += 2
+        }
+    }
+
+    private fun drawLeakMarkers(canvas: Canvas) {
+        if (leakMarkers.isEmpty()) return
+        val p = Paint(); p.color = Color.RED; p.style = Paint.Style.STROKE; p.strokeWidth = 4f / scaleFactor
+        val r = 25f / scaleFactor
+        for (m in leakMarkers) canvas.drawCircle(m.x, m.y, r, p)
     }
 
     private fun drawTextItem(canvas: Canvas, item: TextItem) {
@@ -415,7 +470,7 @@ class DrawingView @JvmOverloads constructor(
             canvas.drawCircle(item.data.points[2], item.data.points[3], handleRadius, handleStroke)
         }
 
-        val canRotate = item is ImageItem || item is TextItem || (item is StrokeItem && item.data.type != Tool.PEN)
+        val canRotate = item is ImageItem || item is TextItem || (item is StrokeItem && item.data.type != Tool.PEN && item.data.type != Tool.ARC)
         if (canRotate) {
             val cx = (bounds[0] + bounds[2]) / 2f
             val rotY = bounds[1] - 50f / scaleFactor
@@ -434,6 +489,7 @@ class DrawingView @JvmOverloads constructor(
     private fun getBounds(item: Any): FloatArray? {
         return when (item) {
             is ImageItem -> floatArrayOf(item.x, item.y, item.x + item.w, item.y + item.h)
+            is FillItem -> floatArrayOf(item.x, item.y, item.x + item.w, item.y + item.h)
             is TextItem -> {
                 val tp = TextPaint(); tp.textSize = item.size
                 val w = tp.measureText(item.text).coerceAtLeast(10f)
@@ -507,6 +563,7 @@ class DrawingView @JvmOverloads constructor(
     private fun moveItem(item: Any, dx: Float, dy: Float) {
         when (item) {
             is ImageItem -> { item.x += dx; item.y += dy }
+            is FillItem -> { item.x += dx; item.y += dy }
             is TextItem -> { item.x += dx; item.y += dy }
             is StrokeItem -> {
                 val pts = item.data.points
@@ -586,6 +643,7 @@ class DrawingView @JvmOverloads constructor(
     private fun findItemAt(x: Float, y: Float): Any? {
         val pad = 15f / scaleFactor
         for (action in actions.reversed()) {
+            if (action is FillItem) continue
             val bounds = getBounds(action) ?: continue
             if (x in (bounds[0] - pad)..(bounds[2] + pad) && y in (bounds[1] - pad)..(bounds[3] + pad)) return action
         }
@@ -635,7 +693,7 @@ class DrawingView @JvmOverloads constructor(
                             handled = true
                         }
 
-                        val canRotate = item is ImageItem || item is TextItem || (item is StrokeItem && item.data.type != Tool.PEN)
+                        val canRotate = item is ImageItem || item is TextItem || (item is StrokeItem && item.data.type != Tool.PEN && item.data.type != Tool.ARC)
                         if (!handled && canRotate) {
                             val cx = (bounds[0] + bounds[2]) / 2f
                             val rotY = bounds[1] - 50f / scaleFactor
@@ -728,6 +786,76 @@ class DrawingView @JvmOverloads constructor(
             MotionEvent.ACTION_UP -> {
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
                 activeHandle = HandleType.NONE
+            }
+        }
+    }
+
+    private fun handleArc(event: MotionEvent) {
+        val worldX = screenToWorldX(event.x)
+        val worldY = screenToWorldY(event.y)
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val arc = activeArcItem
+                if (arc != null) {
+                    val radius = 30f / scaleFactor
+                    var found = -1
+                    var i = 0
+                    while (i + 1 < arc.data.points.size) {
+                        if (distance(worldX, worldY, arc.data.points[i], arc.data.points[i + 1]) <= radius) { found = i; break }
+                        i += 2
+                    }
+                    if (found >= 0) {
+                        arcDragPointIndex = found
+                    } else {
+                        activeArcItem = null
+                        val data = StrokeData(Tool.ARC, mutableListOf(worldX, worldY, worldX, worldY), currentColor, currentStrokeWidth, false)
+                        currentItem = StrokeItem(data, data.buildPath(), data.toPaint())
+                    }
+                } else {
+                    val data = StrokeData(Tool.ARC, mutableListOf(worldX, worldY, worldX, worldY), currentColor, currentStrokeWidth, false)
+                    currentItem = StrokeItem(data, data.buildPath(), data.toPaint())
+                }
+                invalidate()
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (arcDragPointIndex >= 0) {
+                    val arc = activeArcItem ?: return
+                    arc.data.points[arcDragPointIndex] = worldX
+                    arc.data.points[arcDragPointIndex + 1] = worldY
+                    arc.path = arc.data.buildPath()
+                } else {
+                    val item = currentItem ?: return
+                    item.data.points[2] = worldX
+                    item.data.points[3] = worldY
+                    item.path = item.data.buildPath()
+                }
+                invalidate()
+            }
+            MotionEvent.ACTION_UP -> {
+                if (arcDragPointIndex >= 0) {
+                    arcDragPointIndex = -1
+                } else {
+                    val item = currentItem
+                    if (item != null) {
+                        val p0x = item.data.points[0]; val p0y = item.data.points[1]
+                        val p1x = item.data.points[2]; val p1y = item.data.points[3]
+                        val n = arcDivisions.coerceIn(1, 20)
+                        val newPoints = mutableListOf<Float>()
+                        for (i in 0..n) {
+                            val t = i.toFloat() / n
+                            newPoints.add(p0x + (p1x - p0x) * t)
+                            newPoints.add(p0y + (p1y - p0y) * t)
+                        }
+                        val data = StrokeData(Tool.ARC, newPoints, item.data.color, item.data.strokeWidth, false)
+                        val newItem = StrokeItem(data, data.buildPath(), data.toPaint())
+                        actions.add(newItem)
+                        redoStack.clear()
+                        activeArcItem = newItem
+                        currentItem = null
+                    }
+                }
+                invalidate()
             }
         }
     }
@@ -857,6 +985,11 @@ class DrawingView @JvmOverloads constructor(
             return true
         }
 
+        if (currentTool == Tool.ARC) {
+            handleArc(event)
+            return true
+        }
+
         handleDrawing(event)
 
         return true
@@ -923,6 +1056,7 @@ class DrawingView @JvmOverloads constructor(
                     is StrokeItem -> strokeHitTest(action.data, x, y, radius)
                     is TextItem -> distance(x, y, action.x, action.y) <= radius + action.size
                     is ImageItem -> distance(x, y, action.x + action.w / 2f, action.y + action.h / 2f) <= radius + maxOf(action.w, action.h) / 2f
+                    is FillItem -> distance(x, y, action.x + action.w / 2f, action.y + action.h / 2f) <= radius + maxOf(action.w, action.h) / 2f
                     else -> false
                 }
                 if (hit) iterator.remove()
@@ -942,6 +1076,9 @@ class DrawingView @JvmOverloads constructor(
                         if (distance(x, y, action.x, action.y) > radius + action.size) newActions.add(action)
                     }
                     is ImageItem -> {
+                        if (distance(x, y, action.x + action.w / 2f, action.y + action.h / 2f) > radius + maxOf(action.w, action.h) / 2f) newActions.add(action)
+                    }
+                    is FillItem -> {
                         if (distance(x, y, action.x + action.w / 2f, action.y + action.h / 2f) > radius + maxOf(action.w, action.h) / 2f) newActions.add(action)
                     }
                     else -> newActions.add(action)
@@ -982,7 +1119,7 @@ class DrawingView @JvmOverloads constructor(
     }
 
     private fun strokeHitTest(data: StrokeData, x: Float, y: Float, radius: Float): Boolean {
-        if (data.type == Tool.PEN || data.type == Tool.ERASER) {
+        if (data.type == Tool.PEN || data.type == Tool.ERASER || data.type == Tool.ARC) {
             if (data.points.size == 2) return distance(x, y, data.points[0], data.points[1]) <= radius
             var i = 0
             while (i + 3 < data.points.size) {
@@ -1051,16 +1188,147 @@ class DrawingView @JvmOverloads constructor(
         actions.clear()
         redoStack.clear()
         selectedItem = null
+        leakMarkers.clear()
         invalidate()
     }
 
     fun hasContent(): Boolean = actions.isNotEmpty()
 
-    fun exportBitmap(): android.graphics.Bitmap {
-        val bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
+    fun exportBitmap(): Bitmap {
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         draw(canvas)
         return bitmap
+    }
+
+    // ---------- Fill (MS Paint style) ----------
+
+    fun renderStrokesOnly(scale: Float): Bitmap {
+        val w = (width * scale).toInt().coerceAtLeast(1)
+        val h = (height * scale).toInt().coerceAtLeast(1)
+        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        canvas.save()
+        canvas.scale(scale, scale)
+        canvas.translate(translateX, translateY)
+        canvas.scale(scaleFactor, scaleFactor)
+        for (action in actions) drawActionItem(canvas, action, false)
+        canvas.restore()
+        return bitmap
+    }
+
+    fun removeLeakMarkerAt(worldX: Float, worldY: Float): Boolean {
+        val r = 30f / scaleFactor
+        val it = leakMarkers.iterator()
+        while (it.hasNext()) {
+            val m = it.next()
+            if (distance(worldX, worldY, m.x, m.y) <= r) {
+                it.remove()
+                invalidate()
+                return true
+            }
+        }
+        return false
+    }
+
+    fun zoomTo(worldX: Float, worldY: Float, scale: Float) {
+        scaleFactor = scale.coerceIn(0.2f, 6f)
+        translateX = width / 2f - worldX * scaleFactor
+        translateY = height / 2f - worldY * scaleFactor
+        invalidate()
+    }
+
+    private fun clusterEdgePoints(points: List<Pair<Int, Int>>): List<Pair<Int, Int>> {
+        val clusters = mutableListOf<MutableList<Pair<Int, Int>>>()
+        for (p in points) {
+            var added = false
+            for (cluster in clusters) {
+                val c0 = cluster[0]
+                if (kotlin.math.abs(c0.first - p.first) < 30 && kotlin.math.abs(c0.second - p.second) < 30) {
+                    cluster.add(p); added = true; break
+                }
+            }
+            if (!added) clusters.add(mutableListOf(p))
+        }
+        return clusters.map { cl ->
+            Pair(cl.map { it.first }.average().toInt(), cl.map { it.second }.average().toInt())
+        }
+    }
+
+    fun performFill(screenX: Float, screenY: Float) {
+        leakMarkers.clear()
+        val scale = 0.4f
+        val bitmap = renderStrokesOnly(scale)
+        val w = bitmap.width; val h = bitmap.height
+        val px = (screenX * scale).toInt().coerceIn(0, w - 1)
+        val py = (screenY * scale).toInt().coerceIn(0, h - 1)
+
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+
+        fun isEmpty(x: Int, y: Int): Boolean = ((pixels[y * w + x] ushr 24) and 0xFF) < 10
+
+        if (!isEmpty(px, py)) {
+            invalidate()
+            return
+        }
+
+        val visited = BooleanArray(w * h)
+        val queue = ArrayDeque<Int>()
+        val start = py * w + px
+        queue.add(start)
+        visited[start] = true
+        var filledCount = 0
+        val edgeHits = mutableListOf<Pair<Int, Int>>()
+        val maxFill = (w * h * 0.7f).toInt()
+        var leaked = false
+
+        while (queue.isNotEmpty()) {
+            val idx = queue.removeFirst()
+            val x = idx % w; val y = idx / w
+            filledCount++
+            if (x == 0 || x == w - 1 || y == 0 || y == h - 1) edgeHits.add(Pair(x, y))
+            if (filledCount > maxFill) { leaked = true; break }
+            if (x > 0) { val n = idx - 1; if (!visited[n] && isEmpty(x - 1, y)) { visited[n] = true; queue.add(n) } }
+            if (x < w - 1) { val n = idx + 1; if (!visited[n] && isEmpty(x + 1, y)) { visited[n] = true; queue.add(n) } }
+            if (y > 0) { val n = idx - w; if (!visited[n] && isEmpty(x, y - 1)) { visited[n] = true; queue.add(n) } }
+            if (y < h - 1) { val n = idx + w; if (!visited[n] && isEmpty(x, y + 1)) { visited[n] = true; queue.add(n) } }
+        }
+
+        if (leaked) {
+            val clusters = clusterEdgePoints(edgeHits)
+            for ((cx, cy) in clusters) {
+                leakMarkers.add(LeakMarker(screenToWorldX(cx / scale), screenToWorldY(cy / scale)))
+            }
+            if (clusters.isNotEmpty()) {
+                val (cx, cy) = clusters[0]
+                zoomTo(screenToWorldX(cx / scale), screenToWorldY(cy / scale), (scaleFactor * 2.5f).coerceAtMost(6f))
+            }
+            invalidate()
+        } else {
+            val fillPixels = IntArray(w * h)
+            for (i in 0 until w * h) fillPixels[i] = if (visited[i]) fillColor else Color.TRANSPARENT
+            val fillBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            fillBitmap.setPixels(fillPixels, 0, w, 0, 0, w, h)
+
+            val imagesFolder = File(ctx.filesDir, "images")
+            if (!imagesFolder.exists()) imagesFolder.mkdirs()
+            val outFile = File(imagesFolder, "fill_" + System.currentTimeMillis() + ".png")
+            try {
+                val out = FileOutputStream(outFile)
+                fillBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                out.close()
+            } catch (e: Exception) {
+                invalidate()
+                return
+            }
+
+            val wx0 = screenToWorldX(0f); val wy0 = screenToWorldY(0f)
+            val wx1 = screenToWorldX(width.toFloat()); val wy1 = screenToWorldY(height.toFloat())
+            actions.add(0, FillItem(outFile.absolutePath, wx0, wy0, wx1 - wx0, wy1 - wy0))
+            redoStack.clear()
+            invalidate()
+        }
     }
 
     fun serialize(): String {
@@ -1099,6 +1367,15 @@ class DrawingView @JvmOverloads constructor(
                     sb.append(action.rotation)
                     sb.append("\n")
                 }
+                is FillItem -> {
+                    sb.append("FILL\u0001")
+                    sb.append(action.path).append("\u0001")
+                    sb.append(action.x).append("\u0001")
+                    sb.append(action.y).append("\u0001")
+                    sb.append(action.w).append("\u0001")
+                    sb.append(action.h)
+                    sb.append("\n")
+                }
             }
         }
         return sb.toString()
@@ -1108,6 +1385,7 @@ class DrawingView @JvmOverloads constructor(
         actions.clear()
         redoStack.clear()
         selectedItem = null
+        leakMarkers.clear()
         for (line in content.lines()) {
             if (line.isBlank()) continue
             try {
@@ -1145,13 +1423,11 @@ class DrawingView @JvmOverloads constructor(
                 } else if (line.startsWith("IMAGE\u0001")) {
                     val parts = line.split("\u0001")
                     if (parts.size < 7) continue
-                    val path = parts[1]
-                    val x = parts[2].toFloat()
-                    val y = parts[3].toFloat()
-                    val w = parts[4].toFloat()
-                    val h = parts[5].toFloat()
-                    val rotation = parts[6].toFloat()
-                    actions.add(ImageItem(path, x, y, w, h, rotation))
+                    actions.add(ImageItem(parts[1], parts[2].toFloat(), parts[3].toFloat(), parts[4].toFloat(), parts[5].toFloat(), parts[6].toFloat()))
+                } else if (line.startsWith("FILL\u0001")) {
+                    val parts = line.split("\u0001")
+                    if (parts.size < 6) continue
+                    actions.add(FillItem(parts[1], parts[2].toFloat(), parts[3].toFloat(), parts[4].toFloat(), parts[5].toFloat()))
                 } else {
                     val parts = line.split("|")
                     if (parts.size < 5) continue
