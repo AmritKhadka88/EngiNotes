@@ -83,11 +83,15 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.btnDraw).setOnClickListener {
             closeInlineEditor(commit = true)
-            val options = listOf("✏ Pen") + shapeSymbols
+            val options = listOf("👆 Select", "✏ Pen") + shapeSymbols
             AlertDialog.Builder(this)
                 .setTitle("Draw")
                 .setItems(options.toTypedArray()) { _, index ->
-                    drawingView.currentTool = if (index == 0) Tool.PEN else shapeTools[index - 1]
+                    drawingView.currentTool = when (index) {
+                        0 -> Tool.SELECT
+                        1 -> Tool.PEN
+                        else -> shapeTools[index - 2]
+                    }
                 }
                 .show()
         }
