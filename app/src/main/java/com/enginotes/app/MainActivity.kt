@@ -334,7 +334,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        editText.setText(spannable, EditText.BufferType.SPANNABLE)
+        editText.setText(spannable, TextView.BufferType.SPANNABLE)
         editText.setTextColor(editColor)
         editText.textSize = (sizePx / density).coerceAtLeast(8f)
         editText.setBackgroundColor(Color.TRANSPARENT)
