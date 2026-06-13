@@ -12,6 +12,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.PopupMenu
 import java.io.File
 import java.io.FileOutputStream
 
@@ -21,6 +22,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnFill: Button
     private lateinit var btnShapes: Button
     private lateinit var tvSize: TextView
+    private lateinit var tvTitle: TextView
+
+    private var currentFileName: String? = null
+
+    private val shapeSymbols = listOf("╱ Line", "▭ Rectangle", "▢ Rounded Rect", "○ Circle", "⬭ Ellipse", "△ Triangle", "◇ Diamond", "➔ Arrow", "★ Star", "⬠ Pentagon", "⬡ Hexagon", "〜 Curve", "✛ Cross")
+    private val shapeTools = listOf(Tool.LINE, Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.CIRCLE, Tool.ELLIPSE, Tool.TRIANGLE, Tool.DIAMOND, Tool.ARROW, Tool.STAR, Tool.PENTAGON, Tool.HEXAGON, Tool.CURVE, Tool.CROSS)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -30,8 +37,21 @@ class MainActivity : AppCompatActivity() {
         btnFill = findViewById(R.id.btnFill)
         btnShapes = findViewById(R.id.btnShapes)
         tvSize = findViewById(R.id.tvSize)
+        tvTitle = findViewById(R.id.tvTitle)
+
+        val fileName = intent.getStringExtra("filename")
+        if (fileName != null) {
+            currentFileName = fileName
+            tvTitle.text = fileName
+            val file = File(getDrawingsFolder(), fileName + ".eng")
+            if (file.exists()) drawingView.loadFromString(file.readText())
+        } else {
+            tvTitle.text = "New Note"
+        }
 
         drawingView.onTextTapListener = { x, y -> showTextDialog(x, y) }
+
+        findViewById<Button>(R.id.btnBack).setOnClickListener { finish() }
 
         findViewById<Button>(R.id.btnPen).setOnClickListener {
             drawingView.currentTool = Tool.PEN
@@ -42,16 +62,11 @@ class MainActivity : AppCompatActivity() {
             updateSizeLabel()
         }
         btnShapes.setOnClickListener {
-            val shapes = arrayOf("Line", "Rectangle", "Circle")
             AlertDialog.Builder(this)
                 .setTitle("Select Shape")
-                .setItems(shapes) { _, index ->
-                    drawingView.currentTool = when (index) {
-                        0 -> Tool.LINE
-                        1 -> Tool.RECTANGLE
-                        else -> Tool.CIRCLE
-                    }
-                    btnShapes.text = "Shapes: " + shapes[index]
+                .setItems(shapeSymbols.toTypedArray()) { _, index ->
+                    drawingView.currentTool = shapeTools[index]
+                    btnShapes.text = shapeSymbols[index].split(" ")[0]
                     updateSizeLabel()
                 }
                 .show()
@@ -60,33 +75,33 @@ class MainActivity : AppCompatActivity() {
             drawingView.currentTool = Tool.TEXT
             updateSizeLabel()
         }
-        findViewById<Button>(R.id.btnColor).setOnClickListener {
-            showColorPicker()
-        }
+        findViewById<Button>(R.id.btnColor).setOnClickListener { showColorPicker() }
         findViewById<Button>(R.id.btnFill).setOnClickListener {
             drawingView.fillShapes = !drawingView.fillShapes
-            btnFill.text = if (drawingView.fillShapes) "Fill: On" else "Fill: Off"
+            btnFill.setBackgroundColor(if (drawingView.fillShapes) 0xFFB39DDB.toInt() else 0x00000000)
         }
-        findViewById<Button>(R.id.btnSize).setOnClickListener {
-            showSizePicker()
-        }
-        findViewById<Button>(R.id.btnPaper).setOnClickListener {
-            showPaperPicker()
-        }
-        findViewById<Button>(R.id.btnUndo).setOnClickListener {
-            drawingView.undo()
-        }
-        findViewById<Button>(R.id.btnClear).setOnClickListener {
-            drawingView.clearAll()
-        }
-        findViewById<Button>(R.id.btnSave).setOnClickListener {
-            saveProject()
-        }
-        findViewById<Button>(R.id.btnLoad).setOnClickListener {
-            loadProject()
-        }
-        findViewById<Button>(R.id.btnExport).setOnClickListener {
-            exportImage()
+        findViewById<Button>(R.id.btnSize).setOnClickListener { showSizePicker() }
+        findViewById<Button>(R.id.btnUndo).setOnClickListener { drawingView.undo() }
+        findViewById<Button>(R.id.btnSave).setOnClickListener { saveCurrent() }
+
+        findViewById<Button>(R.id.btnMenu).setOnClickListener { anchor ->
+            val popup = PopupMenu(this, anchor)
+            popup.menu.add("Paper Type")
+            popup.menu.add("Export as Image")
+            popup.menu.add("Save as New")
+            popup.menu.add("Clear Canvas")
+            if (currentFileName != null) popup.menu.add("Delete This Note")
+            popup.setOnMenuItemClickListener { item ->
+                when (item.title) {
+                    "Paper Type" -> showPaperPicker()
+                    "Export as Image" -> exportImage()
+                    "Save as New" -> saveAsNew()
+                    "Clear Canvas" -> drawingView.clearAll()
+                    "Delete This Note" -> deleteCurrentNote()
+                }
+                true
+            }
+            popup.show()
         }
 
         updateSizeLabel()
@@ -114,9 +129,8 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Choose Color")
             .setItems(names.toTypedArray()) { _, index ->
                 drawingView.currentColor = colors[index]
-                if (drawingView.currentTool == Tool.ERASER || drawingView.currentTool == Tool.TEXT) {
+                if (drawingView.currentTool == Tool.ERASER) {
                     drawingView.currentTool = Tool.PEN
-                    btnShapes.text = "Shapes: Line"
                 }
                 updateSizeLabel()
             }
@@ -161,14 +175,8 @@ class MainActivity : AppCompatActivity() {
         })
         container.addView(seekBar)
 
-        val title = when (tool) {
-            Tool.ERASER -> "Eraser Size (1 - $maxSize px)"
-            Tool.TEXT -> "Default Text Size (1 - $maxSize px)"
-            else -> "Pen Thickness (1 - $maxSize px)"
-        }
-
         AlertDialog.Builder(this)
-            .setTitle(title)
+            .setTitle("Size (1 - $maxSize px)")
             .setView(container)
             .setPositiveButton("Done", null)
             .show()
@@ -258,41 +266,62 @@ class MainActivity : AppCompatActivity() {
         return folder
     }
 
-    private fun saveProject() {
-        val input = EditText(this)
-        input.hint = "File name"
+    private fun writeCurrentFile() {
+        val name = currentFileName ?: return
+        File(getDrawingsFolder(), name + ".eng").writeText(drawingView.serialize())
+    }
 
+    private fun saveCurrent() {
+        if (currentFileName == null) {
+            val input = EditText(this)
+            input.hint = "Note name"
+            AlertDialog.Builder(this)
+                .setTitle("Save Note")
+                .setView(input)
+                .setPositiveButton("Save") { _, _ ->
+                    var name = input.text.toString().trim()
+                    if (name.isEmpty()) name = "Note_" + System.currentTimeMillis()
+                    currentFileName = name
+                    tvTitle.text = name
+                    writeCurrentFile()
+                    Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        } else {
+            writeCurrentFile()
+            Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun saveAsNew() {
+        val input = EditText(this)
+        input.hint = "New note name"
         AlertDialog.Builder(this)
-            .setTitle("Save Drawing")
+            .setTitle("Save as New")
             .setView(input)
             .setPositiveButton("Save") { _, _ ->
                 var name = input.text.toString().trim()
-                if (name.isEmpty()) name = "drawing_" + System.currentTimeMillis()
-                val file = File(getDrawingsFolder(), name + ".eng")
-                file.writeText(drawingView.serialize())
-                Toast.makeText(this, "Saved: " + name, Toast.LENGTH_SHORT).show()
+                if (name.isEmpty()) name = "Note_" + System.currentTimeMillis()
+                currentFileName = name
+                tvTitle.text = name
+                writeCurrentFile()
+                Toast.makeText(this, "Saved as " + name, Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
-    private fun loadProject() {
-        val folder = getDrawingsFolder()
-        val files = folder.listFiles()?.filter { it.name.endsWith(".eng") } ?: emptyList()
-
-        if (files.isEmpty()) {
-            Toast.makeText(this, "No saved drawings found", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val names = files.map { it.nameWithoutExtension }.toTypedArray()
+    private fun deleteCurrentNote() {
+        val name = currentFileName ?: return
         AlertDialog.Builder(this)
-            .setTitle("Load Drawing")
-            .setItems(names) { _, index ->
-                val content = files[index].readText()
-                drawingView.loadFromString(content)
-                Toast.makeText(this, "Loaded: " + names[index], Toast.LENGTH_SHORT).show()
+            .setTitle("Delete Note")
+            .setMessage("Delete \"" + name + "\"? This cannot be undone.")
+            .setPositiveButton("Delete") { _, _ ->
+                File(getDrawingsFolder(), name + ".eng").delete()
+                finish()
             }
+            .setNegativeButton("Cancel", null)
             .show()
     }
 
