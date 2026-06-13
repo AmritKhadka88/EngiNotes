@@ -188,7 +188,7 @@ class DrawingView @JvmOverloads constructor(
     var eraserMode: EraserMode = EraserMode.OBJECT
     var fillShapes: Boolean = false
     var paperType: PaperType = PaperType.GRID
-    var defaultTextSize: Float = 30f
+    var defaultTextSize: Float = 36f
 
     var selectedItem: Any? = null
     private enum class HandleType { NONE, MOVE, ROTATE, TL, TM, TR, ML, MR, BL, BM, BR }
@@ -197,6 +197,8 @@ class DrawingView @JvmOverloads constructor(
     private var dragStartWorldY = 0f
     private var dragStartAngle = 0f
     private var dragStartRotation = 0f
+    private var dragStartPivotX = 0f
+    private var dragStartPivotY = 0f
 
     var onTextEditRequest: ((TextItem?, Float, Float, Float, Float) -> Unit)? = null
 
@@ -347,8 +349,10 @@ class DrawingView @JvmOverloads constructor(
             }
         }
 
-        val width = (tp.measureText(item.text).toInt() + 10).coerceAtLeast(1)
-        val layout = StaticLayout.Builder.obtain(spannable, 0, spannable.length, tp, width).build()
+        val width = (tp.measureText(item.text).toInt() + item.size.toInt() + 10).coerceAtLeast(1)
+        val layout = StaticLayout.Builder.obtain(spannable, 0, spannable.length, tp, width)
+            .setIncludePad(true)
+            .build()
 
         canvas.save()
         canvas.translate(item.x, item.y - layout.height)
@@ -439,7 +443,10 @@ class DrawingView @JvmOverloads constructor(
             is StrokeItem -> {
                 val pts = item.data.points
                 if (pts.size < 2) return null
-                if (SHAPE_TOOLS.contains(item.data.type) && pts.size >= 4) {
+                if (item.data.type == Tool.CIRCLE && pts.size >= 4) {
+                    val r = kotlin.math.hypot((pts[2] - pts[0]).toDouble(), (pts[3] - pts[1]).toDouble()).toFloat()
+                    floatArrayOf(pts[0] - r, pts[1] - r, pts[0] + r, pts[1] + r)
+                } else if (SHAPE_TOOLS.contains(item.data.type) && pts.size >= 4) {
                     floatArrayOf(minOf(pts[0], pts[2]), minOf(pts[1], pts[3]), maxOf(pts[0], pts[2]), maxOf(pts[1], pts[3]))
                 } else {
                     var minX = pts[0]; var maxX = pts[0]; var minY = pts[1]; var maxY = pts[1]
@@ -595,12 +602,17 @@ class DrawingView @JvmOverloads constructor(
         return null
     }
 
+    private val longPressHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var longPressRunnable: Runnable? = null
+
     private fun handleSelect(event: MotionEvent) {
         val worldX = screenToWorldX(event.x)
         val worldY = screenToWorldY(event.y)
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
+                longPressRunnable = null
                 val item = selectedItem
                 var handled = false
                 if (item != null) {
@@ -639,6 +651,9 @@ class DrawingView @JvmOverloads constructor(
                             for ((type, pos) in bboxHandlePositions(bounds)) {
                                 if (distance(lx, ly, pos.first, pos.second) <= hitRadius) {
                                     activeHandle = type
+                                    dragStartPivotX = pivotX
+                                    dragStartPivotY = pivotY
+                                    dragStartRotation = rotation
                                     handled = true
                                     break
                                 }
@@ -648,9 +663,15 @@ class DrawingView @JvmOverloads constructor(
                         if (!handled && isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
                             if (distance(lx, ly, item.data.points[0], item.data.points[1]) <= hitRadius) {
                                 activeHandle = HandleType.TL
+                                dragStartPivotX = pivotX
+                                dragStartPivotY = pivotY
+                                dragStartRotation = rotation
                                 handled = true
                             } else if (distance(lx, ly, item.data.points[2], item.data.points[3]) <= hitRadius) {
                                 activeHandle = HandleType.BR
+                                dragStartPivotX = pivotX
+                                dragStartPivotY = pivotY
+                                dragStartRotation = rotation
                                 handled = true
                             }
                         }
@@ -670,9 +691,22 @@ class DrawingView @JvmOverloads constructor(
                     activeHandle = HandleType.NONE
                     selectedItem = findItemAt(worldX, worldY)
                 }
+
+                val sel = selectedItem
+                if (sel is TextItem) {
+                    val runnable = Runnable {
+                        sel.isEditing = true
+                        invalidate()
+                        onTextEditRequest?.invoke(sel, event.x, event.y, worldX, worldY)
+                    }
+                    longPressRunnable = runnable
+                    longPressHandler.postDelayed(runnable, 450)
+                }
+
                 invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
+                longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
                 val item = selectedItem ?: return
                 when (activeHandle) {
                     HandleType.MOVE -> {
@@ -685,16 +719,14 @@ class DrawingView @JvmOverloads constructor(
                     }
                     HandleType.NONE -> return
                     else -> {
-                        val bounds = getBounds(item) ?: return
-                        val rotation = getRotation(item)
-                        val (pivotX, pivotY) = getPivot(item, bounds)
-                        val (lx, ly) = rotatePoint(worldX, worldY, pivotX, pivotY, -rotation)
+                        val (lx, ly) = rotatePoint(worldX, worldY, dragStartPivotX, dragStartPivotY, -dragStartRotation)
                         resizeItem(item, activeHandle, lx, ly)
                     }
                 }
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
+                longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
                 activeHandle = HandleType.NONE
             }
         }
@@ -825,10 +857,7 @@ class DrawingView @JvmOverloads constructor(
             return true
         }
 
-        val isStylus = event.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS
-        if (isStylus) {
-            handleDrawing(event)
-        }
+        handleDrawing(event)
 
         return true
     }
