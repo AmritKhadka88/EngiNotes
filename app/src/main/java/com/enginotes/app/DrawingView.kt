@@ -1054,6 +1054,8 @@ class DrawingView @JvmOverloads constructor(
         invalidate()
     }
 
+    fun hasContent(): Boolean = actions.isNotEmpty()
+
     fun exportBitmap(): android.graphics.Bitmap {
         val bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
