@@ -1148,7 +1148,7 @@ class DrawingView @JvmOverloads constructor(
                 }
             }
             CanvasMode.FIXED -> {
-                CanvasMode.FIXED -> {
+                
                 val pageW = pageWidthPx(); val pageH = pageHeightPx()
                 val grayP = Paint(); grayP.color = Color.parseColor("#D5D5D5")
                 canvas.drawRect(visLeft - 2000f, visTop - 2000f, visRight + 2000f, visBottom + 2000f, grayP)
