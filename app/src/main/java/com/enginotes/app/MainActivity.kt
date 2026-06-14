@@ -287,10 +287,13 @@ class MainActivity : AppCompatActivity() {
         view.setOnTouchListener { v, event ->
             when (event.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
-                    if (v != activeToolbarButton) v.setBackgroundColor(0x332196F3)
+                    // Brighten on press regardless of active state
+                    v.setBackgroundColor(0x992196F3)
                 }
                 android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
-                    if (v != activeToolbarButton) v.setBackgroundColor(Color.TRANSPARENT)
+                    // Restore: active = sky blue tint, inactive = transparent
+                    if (v == activeToolbarButton) v.setBackgroundColor(0x552196F3)
+                    else v.setBackgroundColor(Color.TRANSPARENT)
                 }
             }
             false
