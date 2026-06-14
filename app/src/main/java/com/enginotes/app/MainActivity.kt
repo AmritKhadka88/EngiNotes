@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
 
         tvActiveTool = TextView(this)
         tvActiveTool.textSize = 9f
-        tvActiveTool.setTextColor(0xCCFFFFFF.toInt())
+        tvActiveTool.setTextColor(Color.parseColor("#CCFFFFFF"))
         tvActiveTool.setBackgroundColor(0x55000000)
         tvActiveTool.setPadding(dp(3), 0, dp(3), dp(1))
         tvActiveTool.text = "Select"
