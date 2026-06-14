@@ -281,8 +281,8 @@ class DrawingView @JvmOverloads constructor(
             val minScale = if (canvasMode != CanvasMode.INFINITE) {
                 val pageW = pageWidthPx(); val pageH = pageHeightPx()
                 val marginFactor = 1.3f  // allow 30% margin beyond page
-                val minByW = width / (pageW * marginFactor)
-                val minByH = height / (pageH * marginFactor)
+                val minByW = width.toFloat() / (pageW * marginFactor)
+                val minByH = height.toFloat() / (pageH * marginFactor)
                 minOf(minByW, minByH).coerceAtLeast(0.05f)
             } else 0.2f
 
@@ -628,7 +628,7 @@ class DrawingView @JvmOverloads constructor(
         val minSize = 10f
         when (item) {
             is ImageItem -> {
-            is ImageItem -> {
+            
                 // lx/ly are already in the item's unrotated local frame (rotated back by handleSelect)
                 // Opposite corners stay fixed — only the dragged edge(s) move
                 var left = item.x; var top = item.y; var right = item.x + item.w; var bottom = item.y + item.h
