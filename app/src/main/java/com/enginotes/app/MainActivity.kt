@@ -318,48 +318,115 @@ class MainActivity : AppCompatActivity() {
 
     private fun showSettingsDialog() {
         val prefs = getPrefs()
-        val confirmPref = prefs.getBoolean("confirm_exit_clear", true)
-        val arcDivPref = prefs.getInt("arc_divisions", 3)
 
         val container = LinearLayout(this)
         container.orientation = LinearLayout.VERTICAL
-        container.setPadding(dp(20), dp(10), dp(20), dp(10))
+        container.setPadding(dp(20), dp(8), dp(20), dp(8))
 
-        fun sectionLabel(text: String) {
+        fun divider() {
+            val v = View(this)
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+            lp.setMargins(0, dp(10), 0, dp(4))
+            v.layoutParams = lp
+            v.setBackgroundColor(0xFFDDDDDD.toInt())
+            container.addView(v)
+        }
+
+        fun sectionHeader(text: String) {
             val tv = TextView(this)
             tv.text = text
-            tv.textSize = 13f
-            tv.setTextColor(0xFF888888.toInt())
-            tv.setPadding(0, dp(14), 0, dp(4))
+            tv.textSize = 11f
+            tv.setTextColor(0xFF7B61FF.toInt())
+            tv.setPadding(0, dp(10), 0, dp(2))
+            tv.typeface = android.graphics.Typeface.DEFAULT_BOLD
             container.addView(tv)
         }
 
-        // General
-        sectionLabel("GENERAL")
+        fun rowLabel(text: String, sub: String = "", onClick: (() -> Unit)? = null): TextView {
+            val tv = TextView(this)
+            tv.text = if (sub.isNotEmpty()) "$text\n$sub" else text
+            tv.textSize = 15f
+            tv.setPadding(0, dp(10), 0, dp(10))
+            if (onClick != null) {
+                tv.setOnClickListener { onClick() }
+                tv.setTextColor(0xFF1565C0.toInt())
+            }
+            container.addView(tv)
+            return tv
+        }
+
+        // ── GENERAL ──────────────────────────────────
+        sectionHeader("GENERAL")
+
+        val confirmPref = prefs.getBoolean("confirm_exit_clear", true)
         val checkbox = CheckBox(this)
-        checkbox.text = "Confirm before exit / clear"
+        checkbox.text = "Confirm before exit or clear canvas"
         checkbox.isChecked = confirmPref
         container.addView(checkbox)
 
-        sectionLabel("ARC TOOL")
-        val arcLabel = TextView(this)
-        arcLabel.text = "Divisions (2–12):"
-        container.addView(arcLabel)
+        divider()
+
+        // ── DRAWING ───────────────────────────────────
+        sectionHeader("DRAWING")
+
+        // Arc divisions
+        val arcDivPref = prefs.getInt("arc_divisions", 3)
+        val arcRow = LinearLayout(this)
+        arcRow.orientation = LinearLayout.HORIZONTAL
+        arcRow.gravity = android.view.Gravity.CENTER_VERTICAL
+        arcRow.setPadding(0, dp(8), 0, dp(8))
+        val arcLbl = TextView(this)
+        arcLbl.text = "Arc divisions"
+        arcLbl.textSize = 15f
+        arcLbl.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         val arcInput = EditText(this)
         arcInput.inputType = android.text.InputType.TYPE_CLASS_NUMBER
         arcInput.setText(arcDivPref.toString())
-        container.addView(arcInput)
+        arcInput.layoutParams = LinearLayout.LayoutParams(dp(60), LinearLayout.LayoutParams.WRAP_CONTENT)
+        arcInput.gravity = android.view.Gravity.CENTER
+        arcRow.addView(arcLbl); arcRow.addView(arcInput)
+        container.addView(arcRow)
 
-        sectionLabel("PAPER STYLE")
+        // Eraser type
+        val eraserTypes = arrayOf("Object Eraser (whole strokes)", "Area Eraser (partial strokes)")
+        val currentEraserIdx = if (drawingView.eraserMode == EraserMode.OBJECT) 0 else 1
+        var selectedEraserIdx = currentEraserIdx
+        val eraserLbl = TextView(this)
+        fun refreshEraserLabel() {
+            eraserLbl.text = "Eraser type: ${eraserTypes[selectedEraserIdx].substringBefore(" (")}  (tap to change)"
+        }
+        refreshEraserLabel()
+        eraserLbl.textSize = 15f
+        eraserLbl.setTextColor(0xFF1565C0.toInt())
+        eraserLbl.setPadding(0, dp(10), 0, dp(10))
+        eraserLbl.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle("Eraser Type")
+                .setItems(eraserTypes) { _, i ->
+                    selectedEraserIdx = i
+                    refreshEraserLabel()
+                }
+                .show()
+        }
+        container.addView(eraserLbl)
+
+        divider()
+
+        // ── PAPER ─────────────────────────────────────
+        sectionHeader("PAPER")
+
         val paperTypes = arrayOf("Blank White", "Blank Coloured", "Lined", "Graph Grid", "Dot Grid", "Engineering Grid")
         val paperValues = arrayOf(PaperType.BLANK, PaperType.BLANK_COLORED, PaperType.LINED, PaperType.GRID, PaperType.DOTS, PaperType.ENGINEERING)
         val currentPaperIdx = paperValues.indexOf(drawingView.paperType).coerceAtLeast(0)
-        val paperLabel = TextView(this)
-        paperLabel.text = "Current: ${paperTypes[currentPaperIdx]}  (tap to change)"
-        paperLabel.setPadding(0, dp(6), 0, dp(6))
-        paperLabel.textSize = 15f
-        container.addView(paperLabel)
-        paperLabel.setOnClickListener {
+        val paperLbl = TextView(this)
+        fun refreshPaperLabel(idx: Int) {
+            paperLbl.text = "Style: ${paperTypes[idx]}  (tap to change)"
+        }
+        refreshPaperLabel(currentPaperIdx)
+        paperLbl.textSize = 15f
+        paperLbl.setTextColor(0xFF1565C0.toInt())
+        paperLbl.setPadding(0, dp(10), 0, dp(10))
+        paperLbl.setOnClickListener {
             AlertDialog.Builder(this)
                 .setTitle("Paper Style")
                 .setItems(paperTypes) { _, i ->
@@ -368,16 +435,82 @@ class MainActivity : AppCompatActivity() {
                             drawingView.paperColor = color
                             drawingView.paperType = PaperType.BLANK_COLORED
                             drawingView.invalidate()
-                            paperLabel.text = "Current: ${paperTypes[i]}  (tap to change)"
+                            refreshPaperLabel(i)
                         }
                     } else {
                         drawingView.paperType = paperValues[i]
                         drawingView.invalidate()
-                        paperLabel.text = "Current: ${paperTypes[i]}  (tap to change)"
+                        refreshPaperLabel(i)
                     }
                 }
                 .show()
         }
+        container.addView(paperLbl)
+
+        divider()
+
+        // ── PAGE SETUP ────────────────────────────────
+        sectionHeader("PAGE SETUP")
+
+        val modeLbl = TextView(this)
+        val sizeLbl = TextView(this)
+        val orientLbl = TextView(this)
+
+        fun refreshPageLabels() {
+            modeLbl.text = "Canvas: ${when (drawingView.canvasMode) {
+                CanvasMode.INFINITE -> "Infinite"
+                CanvasMode.FIXED -> "Fixed Page"
+                CanvasMode.PAGINATED -> "Paginated"
+            }}  (tap)"
+            sizeLbl.text = "Size: ${drawingView.paperSize.name}  (tap)"
+            orientLbl.text = "Orientation: ${if (drawingView.pageOrientation == Orientation.PORTRAIT) "Portrait" else "Landscape"}  (tap)"
+        }
+        refreshPageLabels()
+
+        for (lbl in listOf(modeLbl, sizeLbl, orientLbl)) {
+            lbl.textSize = 15f
+            lbl.setTextColor(0xFF1565C0.toInt())
+            lbl.setPadding(0, dp(8), 0, dp(8))
+            container.addView(lbl)
+        }
+
+        modeLbl.setOnClickListener {
+            AlertDialog.Builder(this).setTitle("Canvas Mode")
+                .setItems(arrayOf("Infinite Canvas", "Fixed Page", "Paginated")) { _, i ->
+                    drawingView.canvasMode = when (i) { 0 -> CanvasMode.INFINITE; 1 -> CanvasMode.FIXED; else -> CanvasMode.PAGINATED }
+                    drawingView.invalidate(); refreshPageLabels()
+                }.show()
+        }
+        sizeLbl.setOnClickListener {
+            val sizes = PaperSizeOption.values()
+            AlertDialog.Builder(this).setTitle("Paper Size")
+                .setItems(sizes.map { it.name }.toTypedArray()) { _, i ->
+                    drawingView.paperSize = sizes[i]; drawingView.invalidate(); refreshPageLabels()
+                }.show()
+        }
+        orientLbl.setOnClickListener {
+            AlertDialog.Builder(this).setTitle("Orientation")
+                .setItems(arrayOf("Portrait", "Landscape")) { _, i ->
+                    drawingView.pageOrientation = if (i == 0) Orientation.PORTRAIT else Orientation.LANDSCAPE
+                    drawingView.invalidate(); refreshPageLabels()
+                }.show()
+        }
+
+        val scroll = ScrollView(this)
+        scroll.addView(container)
+
+        AlertDialog.Builder(this)
+            .setTitle("⚙ Settings")
+            .setView(scroll)
+            .setPositiveButton("Done") { _, _ ->
+                prefs.edit().putBoolean("confirm_exit_clear", checkbox.isChecked).apply()
+                val n = (arcInput.text.toString().toIntOrNull() ?: 3).coerceIn(2, 12)
+                prefs.edit().putInt("arc_divisions", n).apply()
+                drawingView.arcDivisions = n
+                drawingView.eraserMode = if (selectedEraserIdx == 0) EraserMode.OBJECT else EraserMode.AREA
+            }
+            .show()
+}
 
         sectionLabel("PAGE SETUP")
         val pageSetupLabel = TextView(this)
