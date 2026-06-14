@@ -66,7 +66,6 @@ class MainActivity : AppCompatActivity() {
     private var cameraImageFile: File? = null
     private var activeToolbarButton: Button? = null
 
-    // Table editing
     private var activeCellEditText: EditText? = null
     private var activeCellToolbar: LinearLayout? = null
     private var tableToolbarOverlay: LinearLayout? = null
@@ -74,7 +73,11 @@ class MainActivity : AppCompatActivity() {
     private val ACTIVE_BTN_COLOR = 0x552196F3.toInt()
     private val PRESS_BTN_COLOR = 0x992196F3.toInt()
 
-    startActivity(intent)
+    private val pickPdfLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            val intent = android.content.Intent(this, PdfViewerActivity::class.java)
+            intent.putExtra("pdf_uri", uri.toString())
+            startActivity(intent)
         }
     }
 
@@ -127,48 +130,6 @@ class MainActivity : AppCompatActivity() {
 
         for (id in listOf(R.id.btnBack, R.id.btnMenu, R.id.btnText, R.id.btnDraw, R.id.btnTools, R.id.btnInsert, R.id.btnUndo, R.id.btnRedo))
             addPressEffect(findViewById(id))
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-
-        drawingView = findViewById(R.id.drawingView)
-        canvasContainer = findViewById(R.id.canvasContainer)
-        tvTitle = findViewById(R.id.tvTitle)
-
-        val fileName = intent.getStringExtra("filename")
-        if (fileName != null) {
-            currentFileName = fileName
-            tvTitle.text = fileName
-            val file = File(getDrawingsFolder(), "$fileName.eng")
-            if (file.exists()) drawingView.loadFromString(file.readText())
-        } else {
-            tvTitle.text = "New Note"
-        }
-        lastSavedContent = drawingView.serialize()
-        drawingView.arcDivisions = getPrefs().getInt("arc_divisions", 3)
-
-        tvActiveTool = TextView(this)
-        tvActiveTool.textSize = 9f
-        tvActiveTool.setTextColor(Color.parseColor("#CCFFFFFF"))
-        tvActiveTool.setBackgroundColor(Color.parseColor("#55000000"))
-        tvActiveTool.setPadding(dp(3), 0, dp(3), dp(1))
-        tvActiveTool.text = "Select"
-        val ip = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        ip.gravity = Gravity.TOP or Gravity.END
-        ip.topMargin = dp(28); ip.rightMargin = dp(4)
-        canvasContainer.addView(tvActiveTool, ip)
-
-        drawingView.onTextEditRequest = { item, screenX, screenY, worldX, worldY ->
-            showInlineTextEditor(item, screenX, screenY, worldX, worldY)
-        }
-
-        drawingView.onTableCellEditRequest = { table, row, col, screenX, screenY ->
-            showTableCellEdiprivate val pickPdfLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        if (uri != null) {
-            val intent = android.content.Intent(this, PdfViewerActivity::class.java)
-            intent.putExtra("pdf_uri", uri.toString())
-
 
         findViewById<Button>(R.id.btnBack).setOnClickListener { confirmThenExit() }
 
@@ -688,16 +649,14 @@ class MainActivity : AppCompatActivity() {
 
         tBtn("✓") {
             cell.text = editText.text.toString()
-            canvasContainer.removeView(editText)
-            canvasContainer.removeView(toolbar)
+            canvasContainer.removeView(editText); canvasContainer.removeView(toolbar)
             activeCellEditText = null; activeCellToolbar = null
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             imm.hideSoftInputFromWindow(editText.windowToken, 0)
             drawingView.invalidate()
         }
         tBtn("✕") {
-            canvasContainer.removeView(editText)
-            canvasContainer.removeView(toolbar)
+            canvasContainer.removeView(editText); canvasContainer.removeView(toolbar)
             activeCellEditText = null; activeCellToolbar = null
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             imm.hideSoftInputFromWindow(editText.windowToken, 0)
@@ -709,8 +668,7 @@ class MainActivity : AppCompatActivity() {
         canvasContainer.addView(toolbar, tp)
 
         activeCellEditText = editText; activeCellToolbar = toolbar
-        editText.requestFocus()
-        editText.selectAll()
+        editText.requestFocus(); editText.selectAll()
         editText.post {
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             imm.showSoftInput(editText, InputMethodManager.SHOW_IMPLICIT)
