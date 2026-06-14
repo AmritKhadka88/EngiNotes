@@ -224,6 +224,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var dragStartWorldX = 0f; private var dragStartWorldY = 0f
     private var dragStartAngle = 0f; private var dragStartRotation = 0f
     private var dragStartPivotX = 0f; private var dragStartPivotY = 0f
+    private var dragStartLocalX = 0f; private var dragStartLocalY = 0f
 
     private var activeArcItem: StrokeItem? = null
     private var arcDragPointIndex = -1
@@ -527,7 +528,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         if (distance(lx, ly, b[2] + hr*2.5f, b[1] - hr*2.5f) <= hit) { actions.remove(item); selectedItem = null; handled = true }
                         val canRot = item is ImageItem || item is TextItem || (item is StrokeItem && item.data.type != Tool.PEN && item.data.type != Tool.ARC)
                         if (!handled && canRot) { val cx = (b[0]+b[2])/2f; val ry = b[1] - 50f/scaleFactor; if (distance(lx, ly, cx, ry) <= hit) { activeHandle = HandleType.ROTATE; dragStartAngle = computeAngle(item, wx, wy); dragStartRotation = rot; handled = true } }
-                        if (!handled && isBbox) { for ((type, pos) in bboxHandlePositions(b)) { if (distance(lx, ly, pos.first, pos.second) <= hit) { activeHandle = type; dragStartPivotX = px; dragStartPivotY = py; dragStartRotation = rot; handled = true; break } } }
+                        if (!handled && isBbox) { for ((type, pos) in bboxHandlePositions(b)) { if (distance(lx, ly, pos.first, pos.second) <= hit) { activeHandle = type; dragStartPivotX = px; dragStartPivotY = py; dragStartRotation = rot; dragStartLocalX = lx; dragStartLocalY = ly; handled = true; break } } }
                         if (!handled && isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
                             if (distance(lx, ly, item.data.points[0], item.data.points[1]) <= hit) { activeHandle = HandleType.TL; dragStartPivotX = px; dragStartPivotY = py; dragStartRotation = rot; handled = true }
                             else if (distance(lx, ly, item.data.points[2], item.data.points[3]) <= hit) { activeHandle = HandleType.BR; dragStartPivotX = px; dragStartPivotY = py; dragStartRotation = rot; handled = true }
@@ -549,9 +550,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     HandleType.NONE -> return
                     else -> {
                         val (lx, ly) = rotatePoint(wx, wy, dragStartPivotX, dragStartPivotY, -dragStartRotation)
-                        val b = getBounds(item)
-                        val clx = when (activeHandle) { HandleType.TM, HandleType.BM -> if (b != null) (b[0]+b[2])/2f else lx; else -> lx }
-                        val cly = when (activeHandle) { HandleType.ML, HandleType.MR -> if (b != null) (b[1]+b[3])/2f else ly; else -> ly }
+                        // For single-axis handles, lock the perpendicular axis to its value
+                        // at the moment the handle was grabbed — this preserves the axis constraint
+                        // regardless of rotation angle.
+                        val clx = when (activeHandle) {
+                            HandleType.TM, HandleType.BM -> dragStartLocalX  // lock X, only move Y
+                            else -> lx
+                        }
+                        val cly = when (activeHandle) {
+                            HandleType.ML, HandleType.MR -> dragStartLocalY  // lock Y, only move X
+                            else -> ly
+                        }
                         resizeItem(item, activeHandle, clx, cly)
                     }
                 }
