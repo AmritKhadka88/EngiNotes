@@ -233,7 +233,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var activeArcItem: StrokeItem? = null
     private var arcDragPointIndex = -1
 
+    // Table state
+    private var activeTableItem: TableItem? = null
+    private var tableDragRowBorder = -1
+    private var tableDragColBorder = -1
+    private var tableDragStartY = 0f
+    private var tableDragStartX = 0f
+    private var tableDragOrigSize = 0f
+    private var tableSelStart: Pair<Int, Int>? = null
+    private var tableSelEnd: Pair<Int, Int>? = null
+
     var onTextEditRequest: ((TextItem?, Float, Float, Float, Float) -> Unit)? = null
+    var onTableCellEditRequest: ((TableItem, Int, Int, Float, Float) -> Unit)? = null
 
     private var scaleFactor = 1f
     private var translateX = 0f; private var translateY = 0f
@@ -268,12 +279,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             when (currentTool) {
                 Tool.TEXT -> {
                     val hit = findTextItemAt(wx, wy)
-                    if (hit != null) {
-                        selectedItem = hit; invalidate()
-                    } else {
-                        selectedItem = null
-                        onTextEditRequest?.invoke(null, e.x, e.y, wx, wy)
-                    }
+                    if (hit != null) { selectedItem = hit; invalidate() }
+                    else { selectedItem = null; onTextEditRequest?.invoke(null, e.x, e.y, wx, wy) }
                 }
                 Tool.FILL -> {
                     val item = findItemAt(wx, wy)
@@ -282,35 +289,27 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         item.paint = item.data.toPaint(); invalidate()
                     } else performFill(e.x, e.y)
                 }
-                Tool.SELECT, Tool.ERASER -> { /* handled by handleSelect / handleDrawing */ }
-                else -> {
-                    // In draw tools, single tap selects nearest item (non-intrusive)
-                }
+                else -> {}
             }
             return true
         }
 
         override fun onDoubleTap(e: MotionEvent): Boolean {
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
-            // Double tap on text always opens editor regardless of tool
             val hit = findTextItemAt(wx, wy)
             if (hit != null) {
                 hit.isEditing = true; invalidate()
                 onTextEditRequest?.invoke(hit, e.x, e.y, wx, wy)
                 return true
             }
-            if (currentTool == Tool.TEXT) {
-                onTextEditRequest?.invoke(null, e.x, e.y, wx, wy)
-            }
+            if (currentTool == Tool.TEXT) onTextEditRequest?.invoke(null, e.x, e.y, wx, wy)
             return true
         }
     })
 
     private fun drawActionItem(canvas: Canvas, action: Any, includeFills: Boolean) {
         when (action) {
-            is TableItem -> {
-                action.draw(canvas, scaleFactor)
-            }
+            is TableItem -> action.draw(canvas, scaleFactor)
             is FillItem -> {
                 if (!includeFills) return
                 if (action.bitmap == null) try { action.bitmap = android.graphics.BitmapFactory.decodeFile(action.path) } catch (e: Exception) {}
@@ -349,6 +348,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         drawSelection(canvas)
         drawArcHandles(canvas)
         drawAutoSelectOverlay(canvas)
+        drawTableOverlay(canvas)
         canvas.restore()
         drawCursor(canvas)
     }
@@ -431,8 +431,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun getBounds(item: Any): FloatArray? {
         return when (item) {
-            is ImageItem -> floatArrayOf(item.x, item.y, item.x + item.w, item.y + item.h)
             is TableItem -> floatArrayOf(item.x, item.y, item.x + item.totalWidth(), item.y + item.totalHeight())
+            is ImageItem -> floatArrayOf(item.x, item.y, item.x + item.w, item.y + item.h)
             is FillItem -> floatArrayOf(item.x, item.y, item.x + item.w, item.y + item.h)
             is TextItem -> {
                 val tp = TextPaint(); tp.textSize = item.size
@@ -491,8 +491,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun moveItem(item: Any, dx: Float, dy: Float) {
         when (item) {
-            is ImageItem -> { item.x += dx; item.y += dy }
             is TableItem -> { item.x += dx; item.y += dy }
+            is ImageItem -> { item.x += dx; item.y += dy }
             is FillItem -> { item.x += dx; item.y += dy }
             is TextItem -> { item.x += dx; item.y += dy }
             is StrokeItem -> {
@@ -508,67 +508,23 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         when (item) {
             is ImageItem -> {
                 val rot = Math.toRadians(item.rotation.toDouble())
-                val cos = kotlin.math.cos(rot).toFloat()
-                val sin = kotlin.math.sin(rot).toFloat()
-
-                // World-space center of image (item.x/y is top-left, pivot for rotation)
-                // Since ImageItem rotates around item.x, item.y (top-left), the center in world is:
+                val cos = kotlin.math.cos(rot).toFloat(); val sin = kotlin.math.sin(rot).toFloat()
                 val oldW = item.w; val oldH = item.h
                 val oldCx = item.x + oldW / 2f * cos - oldH / 2f * sin
                 val oldCy = item.y + oldW / 2f * sin + oldH / 2f * cos
-
-                // Fixed anchor in local space relative to center (center = 0,0)
-                val fixedLocalX = when (handle) {
-                    HandleType.TL, HandleType.ML, HandleType.BL -> oldW / 2f
-                    HandleType.TR, HandleType.MR, HandleType.BR -> -oldW / 2f
-                    else -> 0f
-                }
-                val fixedLocalY = when (handle) {
-                    HandleType.TL, HandleType.TM, HandleType.TR -> oldH / 2f
-                    HandleType.BL, HandleType.BM, HandleType.BR -> -oldH / 2f
-                    else -> 0f
-                }
-
-                // Fixed anchor in world space
+                val fixedLocalX = when (handle) { HandleType.TL, HandleType.ML, HandleType.BL -> oldW / 2f; HandleType.TR, HandleType.MR, HandleType.BR -> -oldW / 2f; else -> 0f }
+                val fixedLocalY = when (handle) { HandleType.TL, HandleType.TM, HandleType.TR -> oldH / 2f; HandleType.BL, HandleType.BM, HandleType.BR -> -oldH / 2f; else -> 0f }
                 val fixedWorldX = oldCx + fixedLocalX * cos - fixedLocalY * sin
                 val fixedWorldY = oldCy + fixedLocalX * sin + fixedLocalY * cos
-
-                // Apply handle drag in local space (center-relative)
                 var l = -oldW / 2f; var t = -oldH / 2f; var r = oldW / 2f; var b = oldH / 2f
-                when (handle) {
-                    HandleType.TL -> { l = lx; t = ly }
-                    HandleType.TM -> t = ly
-                    HandleType.TR -> { r = lx; t = ly }
-                    HandleType.ML -> l = lx
-                    HandleType.MR -> r = lx
-                    HandleType.BL -> { l = lx; b = ly }
-                    HandleType.BM -> b = ly
-                    HandleType.BR -> { r = lx; b = ly }
-                    else -> {}
-                }
-
+                when (handle) { HandleType.TL -> { l = lx; t = ly }; HandleType.TM -> t = ly; HandleType.TR -> { r = lx; t = ly }; HandleType.ML -> l = lx; HandleType.MR -> r = lx; HandleType.BL -> { l = lx; b = ly }; HandleType.BM -> b = ly; HandleType.BR -> { r = lx; b = ly }; else -> {} }
                 if (r - l < min) { if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) l = r - min else r = l + min }
                 if (b - t < min) { if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) t = b - min else b = t + min }
-
                 val newW = r - l; val newH = b - t
-
-                // New fixed anchor position in new local space (center-relative)
-                val newFixedLocalX = when (handle) {
-                    HandleType.TL, HandleType.ML, HandleType.BL -> newW / 2f
-                    HandleType.TR, HandleType.MR, HandleType.BR -> -newW / 2f
-                    else -> 0f
-                }
-                val newFixedLocalY = when (handle) {
-                    HandleType.TL, HandleType.TM, HandleType.TR -> newH / 2f
-                    HandleType.BL, HandleType.BM, HandleType.BR -> -newH / 2f
-                    else -> 0f
-                }
-
-                // New center: place so fixed anchor stays at fixedWorld
+                val newFixedLocalX = when (handle) { HandleType.TL, HandleType.ML, HandleType.BL -> newW / 2f; HandleType.TR, HandleType.MR, HandleType.BR -> -newW / 2f; else -> 0f }
+                val newFixedLocalY = when (handle) { HandleType.TL, HandleType.TM, HandleType.TR -> newH / 2f; HandleType.BL, HandleType.BM, HandleType.BR -> -newH / 2f; else -> 0f }
                 val newCx = fixedWorldX - (newFixedLocalX * cos - newFixedLocalY * sin)
                 val newCy = fixedWorldY - (newFixedLocalX * sin + newFixedLocalY * cos)
-
-                // Convert new center back to top-left (item.x/y)
                 item.x = newCx - (newW / 2f * cos - newH / 2f * sin)
                 item.y = newCy - (newW / 2f * sin + newH / 2f * cos)
                 item.w = newW; item.h = newH
@@ -576,79 +532,31 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is StrokeItem -> {
                 if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
                     val rot = Math.toRadians(item.data.rotation.toDouble())
-                    val cos = kotlin.math.cos(rot).toFloat()
-                    val sin = kotlin.math.sin(rot).toFloat()
-
-                    var l = minOf(item.data.points[0], item.data.points[2])
-                    var t = minOf(item.data.points[1], item.data.points[3])
-                    var r = maxOf(item.data.points[0], item.data.points[2])
-                    var b = maxOf(item.data.points[1], item.data.points[3])
-                    val oldW = r - l; val oldH = b - t
-                    val oldCx = (l + r) / 2f; val oldCy = (t + b) / 2f
-
-                    val fixedLocalX = when (handle) {
-                        HandleType.TL, HandleType.ML, HandleType.BL -> oldW / 2f
-                        HandleType.TR, HandleType.MR, HandleType.BR -> -oldW / 2f
-                        else -> 0f
-                    }
-                    val fixedLocalY = when (handle) {
-                        HandleType.TL, HandleType.TM, HandleType.TR -> oldH / 2f
-                        HandleType.BL, HandleType.BM, HandleType.BR -> -oldH / 2f
-                        else -> 0f
-                    }
-
+                    val cos = kotlin.math.cos(rot).toFloat(); val sin = kotlin.math.sin(rot).toFloat()
+                    var l = minOf(item.data.points[0], item.data.points[2]); var t = minOf(item.data.points[1], item.data.points[3])
+                    var r = maxOf(item.data.points[0], item.data.points[2]); var b = maxOf(item.data.points[1], item.data.points[3])
+                    val oldW = r - l; val oldH = b - t; val oldCx = (l + r) / 2f; val oldCy = (t + b) / 2f
+                    val fixedLocalX = when (handle) { HandleType.TL, HandleType.ML, HandleType.BL -> oldW / 2f; HandleType.TR, HandleType.MR, HandleType.BR -> -oldW / 2f; else -> 0f }
+                    val fixedLocalY = when (handle) { HandleType.TL, HandleType.TM, HandleType.TR -> oldH / 2f; HandleType.BL, HandleType.BM, HandleType.BR -> -oldH / 2f; else -> 0f }
                     val fixedWorldX = oldCx + fixedLocalX * cos - fixedLocalY * sin
                     val fixedWorldY = oldCy + fixedLocalX * sin + fixedLocalY * cos
-
-                    when (handle) {
-                        HandleType.TL -> { l = lx; t = ly }
-                        HandleType.TM -> t = ly
-                        HandleType.TR -> { r = lx; t = ly }
-                        HandleType.ML -> l = lx
-                        HandleType.MR -> r = lx
-                        HandleType.BL -> { l = lx; b = ly }
-                        HandleType.BM -> b = ly
-                        HandleType.BR -> { r = lx; b = ly }
-                        else -> {}
-                    }
-
+                    when (handle) { HandleType.TL -> { l = lx; t = ly }; HandleType.TM -> t = ly; HandleType.TR -> { r = lx; t = ly }; HandleType.ML -> l = lx; HandleType.MR -> r = lx; HandleType.BL -> { l = lx; b = ly }; HandleType.BM -> b = ly; HandleType.BR -> { r = lx; b = ly }; else -> {} }
                     if (r - l < min) { if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) l = r - min else r = l + min }
                     if (b - t < min) { if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) t = b - min else b = t + min }
-
                     val newW = r - l; val newH = b - t
-
-                    val newFixedLocalX = when (handle) {
-                        HandleType.TL, HandleType.ML, HandleType.BL -> newW / 2f
-                        HandleType.TR, HandleType.MR, HandleType.BR -> -newW / 2f
-                        else -> 0f
-                    }
-                    val newFixedLocalY = when (handle) {
-                        HandleType.TL, HandleType.TM, HandleType.TR -> newH / 2f
-                        HandleType.BL, HandleType.BM, HandleType.BR -> -newH / 2f
-                        else -> 0f
-                    }
-
+                    val newFixedLocalX = when (handle) { HandleType.TL, HandleType.ML, HandleType.BL -> newW / 2f; HandleType.TR, HandleType.MR, HandleType.BR -> -newW / 2f; else -> 0f }
+                    val newFixedLocalY = when (handle) { HandleType.TL, HandleType.TM, HandleType.TR -> newH / 2f; HandleType.BL, HandleType.BM, HandleType.BR -> -newH / 2f; else -> 0f }
                     val newCx = fixedWorldX - (newFixedLocalX * cos - newFixedLocalY * sin)
                     val newCy = fixedWorldY - (newFixedLocalX * sin + newFixedLocalY * cos)
-
-                    item.data.points[0] = newCx - newW / 2f
-                    item.data.points[1] = newCy - newH / 2f
-                    item.data.points[2] = newCx + newW / 2f
-                    item.data.points[3] = newCy + newH / 2f
+                    item.data.points[0] = newCx - newW / 2f; item.data.points[1] = newCy - newH / 2f
+                    item.data.points[2] = newCx + newW / 2f; item.data.points[3] = newCy + newH / 2f
                     item.path = item.data.buildPath()
-
                 } else if (ENDPOINT_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    when (handle) {
-                        HandleType.TL -> { item.data.points[0] = lx; item.data.points[1] = ly }
-                        HandleType.BR -> { item.data.points[2] = lx; item.data.points[3] = ly }
-                        else -> {}
-                    }
+                    when (handle) { HandleType.TL -> { item.data.points[0] = lx; item.data.points[1] = ly }; HandleType.BR -> { item.data.points[2] = lx; item.data.points[3] = ly }; else -> {} }
                     item.path = item.data.buildPath()
                 }
             }
-            is TextItem -> {
-                item.size = (distance(item.x, item.y, lx, ly) / (item.text.length.coerceAtLeast(1) * 0.4f)).coerceIn(10f, 300f)
-            }
+            is TextItem -> { item.size = (distance(item.x, item.y, lx, ly) / (item.text.length.coerceAtLeast(1) * 0.4f)).coerceIn(10f, 300f) }
         }
     }
 
@@ -675,8 +583,124 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val longPressHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var longPressRunnable: Runnable? = null
 
+    // ---------- Table ----------
+
+    private fun handleTable(event: MotionEvent) {
+        val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
+        val tol = 18f / scaleFactor
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val table = activeTableItem
+                if (table != null) {
+                    val rb = table.hitTestRowBorder(wy, tol)
+                    val cb = table.hitTestColBorder(wx, tol)
+                    if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; return }
+                    if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; return }
+                    val cell = table.hitTestCell(wx, wy)
+                    if (cell != null) {
+                        if (tableSelStart == null) tableSelStart = cell
+                        else tableSelEnd = cell
+                        invalidate(); return
+                    }
+                    activeTableItem = null; tableSelStart = null; tableSelEnd = null; invalidate()
+                } else {
+                    for (action in actions.reversed()) {
+                        if (action is TableItem) {
+                            val b = getBounds(action) ?: continue
+                            if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) {
+                                activeTableItem = action; invalidate(); return
+                            }
+                        }
+                    }
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val table = activeTableItem ?: return
+                if (tableDragRowBorder >= 0) {
+                    table.rowHeights[tableDragRowBorder] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(20f); invalidate()
+                } else if (tableDragColBorder >= 0) {
+                    table.colWidths[tableDragColBorder] = (tableDragOrigSize + (wx - tableDragStartX)).coerceAtLeast(30f); invalidate()
+                }
+            }
+            MotionEvent.ACTION_UP -> {
+                if (tableDragRowBorder >= 0 || tableDragColBorder >= 0) { tableDragRowBorder = -1; tableDragColBorder = -1; return }
+                val table = activeTableItem ?: return
+                val cell = table.hitTestCell(wx, wy) ?: return
+                val selStart = tableSelStart
+                if (selStart != null && tableSelEnd == null && selStart == cell) {
+                    // Single cell tap — open editor
+                    val rect = table.cellRect(cell.first, cell.second)
+                    val sx = worldToScreenX(rect.left); val sy = worldToScreenY(rect.top)
+                    onTableCellEditRequest?.invoke(table, cell.first, cell.second, sx, sy)
+                    tableSelStart = null
+                }
+            }
+        }
+    }
+
+    fun mergeCellSelection() {
+        val table = activeTableItem ?: return
+        val s = tableSelStart ?: return; val e = tableSelEnd ?: return
+        table.mergeCells(s.first, s.second, e.first, e.second)
+        tableSelStart = null; tableSelEnd = null; invalidate()
+    }
+
+    fun unmergeCellSelection() {
+        val table = activeTableItem ?: return
+        val s = tableSelStart ?: return
+        table.unmergeCells(s.first, s.second)
+        tableSelStart = null; tableSelEnd = null; invalidate()
+    }
+
+    fun getActiveTable(): TableItem? = activeTableItem
+    fun getTableSelection(): Pair<Pair<Int, Int>?, Pair<Int, Int>?> = Pair(tableSelStart, tableSelEnd)
+
+    fun worldToScreenX(wx: Float): Float = wx * scaleFactor + translateX
+    fun worldToScreenY(wy: Float): Float = wy * scaleFactor + translateY
+
+    private fun drawTableOverlay(canvas: Canvas) {
+        val table = activeTableItem ?: return
+        val s = tableSelStart; val e = tableSelEnd
+        if (s != null) {
+            val minR = if (e != null) minOf(s.first, e.first) else s.first
+            val maxR = if (e != null) maxOf(s.first, e.first) else s.first
+            val minC = if (e != null) minOf(s.second, e.second) else s.second
+            val maxC = if (e != null) maxOf(s.second, e.second) else s.second
+            val hlP = Paint(); hlP.color = Color.parseColor("#442196F3"); hlP.style = Paint.Style.FILL
+            for (r in minR..maxR) for (c in minC..maxC) canvas.drawRect(table.cellRect(r, c), hlP)
+        }
+        val op = Paint(); op.color = Color.parseColor("#2196F3"); op.style = Paint.Style.STROKE; op.strokeWidth = 2f / scaleFactor
+        canvas.drawRect(table.x, table.y, table.x + table.totalWidth(), table.y + table.totalHeight(), op)
+    }
+
+    // ---------- Select ----------
+
     private fun handleSelect(event: MotionEvent) {
         val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
+
+        // If a table is active, route to table handler
+        val at = activeTableItem
+        if (at != null) {
+            val b = getBounds(at)
+            if (b != null) {
+                val pad = 20f / scaleFactor
+                if (wx >= b[0] - pad && wx <= b[2] + pad && wy >= b[1] - pad && wy <= b[3] + pad) {
+                    handleTable(event); return
+                }
+            }
+        }
+        // Check if tapping a table to activate it
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            for (action in actions.reversed()) {
+                if (action is TableItem) {
+                    val b = getBounds(action) ?: continue
+                    if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) {
+                        activeTableItem = action; tableSelStart = null; tableSelEnd = null; invalidate(); return
+                    }
+                }
+            }
+        }
+
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it) }; longPressRunnable = null
@@ -695,17 +719,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val canRot = item is ImageItem || item is TextItem || (item is StrokeItem && item.data.type != Tool.PEN && item.data.type != Tool.ARC)
                         if (!handled && canRot) {
                             val cx = (b[0] + b[2]) / 2f; val ry = b[1] - 50f / scaleFactor
-                            if (distance(lx, ly, cx, ry) <= hit) {
-                                activeHandle = HandleType.ROTATE; dragStartAngle = computeAngle(item, wx, wy); dragStartRotation = rot; handled = true
-                            }
+                            if (distance(lx, ly, cx, ry) <= hit) { activeHandle = HandleType.ROTATE; dragStartAngle = computeAngle(item, wx, wy); dragStartRotation = rot; handled = true }
                         }
                         if (!handled && isBbox) {
                             for ((type, pos) in bboxHandlePositions(b)) {
                                 if (distance(lx, ly, pos.first, pos.second) <= hit) {
-                                    activeHandle = type
-                                    dragStartPivotX = px; dragStartPivotY = py; dragStartRotation = rot
-                                    dragStartLocalX = lx; dragStartLocalY = ly
-                                    handled = true; break
+                                    activeHandle = type; dragStartPivotX = px; dragStartPivotY = py
+                                    dragStartRotation = rot; dragStartLocalX = lx; dragStartLocalY = ly; handled = true; break
                                 }
                             }
                         }
@@ -737,17 +757,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     HandleType.ROTATE -> setRotation(item, dragStartRotation + (computeAngle(item, wx, wy) - dragStartAngle))
                     HandleType.NONE -> return
                     else -> {
-                        // Rotate touch point back into item's local frame
                         val (lx, ly) = rotatePoint(wx, wy, dragStartPivotX, dragStartPivotY, -dragStartRotation)
-                        // Lock single-axis handles to prevent perpendicular drift
-                        val clx = when (activeHandle) {
-                            HandleType.TM, HandleType.BM -> dragStartLocalX
-                            else -> lx
-                        }
-                        val cly = when (activeHandle) {
-                            HandleType.ML, HandleType.MR -> dragStartLocalY
-                            else -> ly
-                        }
+                        val clx = when (activeHandle) { HandleType.TM, HandleType.BM -> dragStartLocalX; else -> lx }
+                        val cly = when (activeHandle) { HandleType.ML, HandleType.MR -> dragStartLocalY; else -> ly }
                         resizeItem(item, activeHandle, clx, cly)
                     }
                 }
@@ -768,45 +780,30 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (arc != null) {
                     val r = 30f / scaleFactor; var found = -1; var i = 0
                     while (i + 1 < arc.data.points.size) {
-                        if (distance(wx, wy, arc.data.points[i], arc.data.points[i + 1]) <= r) { found = i; break }
-                        i += 2
+                        if (distance(wx, wy, arc.data.points[i], arc.data.points[i + 1]) <= r) { found = i; break }; i += 2
                     }
                     if (found >= 0) arcDragPointIndex = found
-                    else {
-                        activeArcItem = null
-                        val d = StrokeData(Tool.ARC, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, false)
-                        currentItem = StrokeItem(d, d.buildPath(), d.toPaint())
-                    }
-                } else {
-                    val d = StrokeData(Tool.ARC, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, false)
-                    currentItem = StrokeItem(d, d.buildPath(), d.toPaint())
-                }
+                    else { activeArcItem = null; val d = StrokeData(Tool.ARC, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, false); currentItem = StrokeItem(d, d.buildPath(), d.toPaint()) }
+                } else { val d = StrokeData(Tool.ARC, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, false); currentItem = StrokeItem(d, d.buildPath(), d.toPaint()) }
                 invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
                 if (arcDragPointIndex >= 0) {
                     val arc = activeArcItem ?: return
-                    arc.data.points[arcDragPointIndex] = wx; arc.data.points[arcDragPointIndex + 1] = wy
-                    arc.path = arc.data.buildPath()
-                } else {
-                    val item = currentItem ?: return
-                    item.data.points[2] = wx; item.data.points[3] = wy; item.path = item.data.buildPath()
-                }
+                    arc.data.points[arcDragPointIndex] = wx; arc.data.points[arcDragPointIndex + 1] = wy; arc.path = arc.data.buildPath()
+                } else { val item = currentItem ?: return; item.data.points[2] = wx; item.data.points[3] = wy; item.path = item.data.buildPath() }
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                if (arcDragPointIndex >= 0) {
-                    arcDragPointIndex = -1
-                } else {
+                if (arcDragPointIndex >= 0) { arcDragPointIndex = -1 }
+                else {
                     val item = currentItem
                     if (item != null) {
-                        val p0x = item.data.points[0]; val p0y = item.data.points[1]
-                        val p1x = item.data.points[2]; val p1y = item.data.points[3]
+                        val p0x = item.data.points[0]; val p0y = item.data.points[1]; val p1x = item.data.points[2]; val p1y = item.data.points[3]
                         val n = arcDivisions.coerceIn(1, 20); val pts = mutableListOf<Float>()
                         for (i in 0..n) { val t = i.toFloat() / n; pts.add(p0x + (p1x - p0x) * t); pts.add(p0y + (p1y - p0y) * t) }
                         val d = StrokeData(Tool.ARC, pts, item.data.color, item.data.strokeWidth, false)
-                        val ni = StrokeItem(d, d.buildPath(), d.toPaint())
-                        actions.add(ni); redoStack.clear(); activeArcItem = ni; currentItem = null
+                        val ni = StrokeItem(d, d.buildPath(), d.toPaint()); actions.add(ni); redoStack.clear(); activeArcItem = ni; currentItem = null
                     }
                 }
                 invalidate()
@@ -841,10 +838,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun buildRegion(path: Path): Region {
         val rf = RectF(); path.computeBounds(rf, true)
-        val clip = Rect(
-            kotlin.math.floor(rf.left).toInt() - 1, kotlin.math.floor(rf.top).toInt() - 1,
-            kotlin.math.ceil(rf.right).toInt() + 1, kotlin.math.ceil(rf.bottom).toInt() + 1
-        )
+        val clip = Rect(kotlin.math.floor(rf.left).toInt() - 1, kotlin.math.floor(rf.top).toInt() - 1, kotlin.math.ceil(rf.right).toInt() + 1, kotlin.math.ceil(rf.bottom).toInt() + 1)
         val region = Region(); region.setPath(path, Region(clip)); return region
     }
 
@@ -864,8 +858,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         if (curIn.size >= 4) inSegs.add(curIn); if (curOut.size >= 4) outSegs.add(curOut)
         fun makeItems(segs: List<MutableList<Float>>): List<StrokeItem> = segs.map {
-            val d = StrokeData(data.type, it, data.color, data.strokeWidth, data.fill)
-            StrokeItem(d, d.buildPath(), d.toPaint())
+            val d = StrokeData(data.type, it, data.color, data.strokeWidth, data.fill); StrokeItem(d, d.buildPath(), d.toPaint())
         }
         return Pair(makeItems(inSegs), makeItems(outSegs))
     }
@@ -875,8 +868,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         for (action in actions) {
             if (action is FillItem) { newActions.add(action); continue }
             if (action is StrokeItem && (action.data.type == Tool.PEN || action.data.type == Tool.ERASER || action.data.type == Tool.ARC) && autoSelectDivide == AutoSelectDivide.DIVIDED) {
-                val (inside, outside) = splitStrokeByRegion(action.data, region)
-                newActions.addAll(outside); group.addAll(inside); continue
+                val (inside, outside) = splitStrokeByRegion(action.data, region); newActions.addAll(outside); group.addAll(inside); continue
             }
             val b = getBounds(action); if (b == null) { newActions.add(action); continue }
             val cx = (b[0] + b[2]) / 2f; val cy = (b[1] + b[3]) / 2f
@@ -895,9 +887,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (group != null && group.isNotEmpty()) {
                     val gb = groupBounds(group)
                     if (gb != null) {
-                        if (distance(wx, wy, gb[2] + hr * 2.5f, gb[1] - hr * 2.5f) <= hit) {
-                            for (it in group) actions.remove(it); selectedGroup = null; invalidate(); return
-                        }
+                        if (distance(wx, wy, gb[2] + hr * 2.5f, gb[1] - hr * 2.5f) <= hit) { for (it in group) actions.remove(it); selectedGroup = null; invalidate(); return }
                         val gcx = (gb[0] + gb[2]) / 2f; val gcy = (gb[1] + gb[3]) / 2f
                         val gHandles = listOf(gb[0] to gb[1], gcx to gb[1], gb[2] to gb[1], gb[0] to gcy, gb[2] to gcy, gb[0] to gb[3], gcx to gb[3], gb[2] to gb[3])
                         var found = -1
@@ -919,10 +909,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         when (groupResizeHandle) { 0 -> { nl = wx; nt = wy }; 1 -> nt = wy; 2 -> { nr = wx; nt = wy }; 3 -> nl = wx; 4 -> nr = wx; 5 -> { nl = wx; nb = wy }; 6 -> nb = wy; 7 -> { nr = wx; nb = wy } }
                         val sx = (nr - nl).coerceAtLeast(10f) / origW; val sy = (nb - nt).coerceAtLeast(10f) / origH
                         for (it in group) scaleItemInGroup(it, groupResizeOrigBounds[0], groupResizeOrigBounds[1], sx, sy)
-                    } else {
-                        val dx = wx - groupMoveStartX; val dy = wy - groupMoveStartY
-                        for (it in group) moveItem(it, dx, dy); groupMoveStartX = wx; groupMoveStartY = wy
-                    }
+                    } else { val dx = wx - groupMoveStartX; val dy = wy - groupMoveStartY; for (it in group) moveItem(it, dx, dy); groupMoveStartX = wx; groupMoveStartY = wy }
                     invalidate(); return
                 }
                 if (autoSelectShape == AutoSelectShape.RECTANGLE) {
@@ -1080,14 +1067,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (event.pointerCount >= 2) { scaleDetector.onTouchEvent(event); return true }
-        // Always feed gesture detector so double-tap-to-edit works on any tool
         gestureDetector.onTouchEvent(event)
         if (currentTool == Tool.TEXT || currentTool == Tool.FILL) return true
         if (currentTool == Tool.SELECT) { handleSelect(event); return true }
         if (currentTool == Tool.ARC) { handleArc(event); return true }
         if (currentTool == Tool.AUTOSELECT) { handleAutoSelect(event); return true }
-        handleDrawing(event)
-        return true
+        handleDrawing(event); return true
     }
 
     private fun handleDrawing(event: MotionEvent) {
@@ -1151,15 +1136,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun splitStrokeAroundEraser(data: StrokeData, ex: Float, ey: Float, r: Float): List<StrokeItem> {
         val pts = data.points
-        if (pts.size < 4) {
-            if (pts.size >= 2 && distance(ex, ey, pts[0], pts[1]) <= r) return emptyList()
-            return listOf(StrokeItem(data, data.buildPath(), data.toPaint()))
-        }
+        if (pts.size < 4) { if (pts.size >= 2 && distance(ex, ey, pts[0], pts[1]) <= r) return emptyList(); return listOf(StrokeItem(data, data.buildPath(), data.toPaint())) }
         val segs = mutableListOf<MutableList<Float>>(); var cur = mutableListOf<Float>(); var i = 0
         while (i + 1 < pts.size) {
             if (distance(ex, ey, pts[i], pts[i + 1]) <= r) { if (cur.size >= 4) segs.add(cur); cur = mutableListOf() }
-            else { cur.add(pts[i]); cur.add(pts[i + 1]) }
-            i += 2
+            else { cur.add(pts[i]); cur.add(pts[i + 1]) }; i += 2
         }
         if (cur.size >= 4) segs.add(cur)
         return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill); StrokeItem(d, d.buildPath(), d.toPaint()) }
@@ -1203,9 +1184,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         actions.add(ImageItem(path, wx - w / 2f, wy - h / 2f, w, h, 0f)); redoStack.clear(); invalidate()
     }
 
+    fun addTable(rows: Int, cols: Int, wx: Float, wy: Float, screenWidth: Float) {
+        val table = TableItem(wx, wy)
+        table.rows = rows; table.cols = cols
+        val cellW = (screenWidth / scaleFactor / 2f) / cols
+        val cellH = 60f
+        table.rowHeights.clear(); repeat(rows) { table.rowHeights.add(cellH) }
+        table.colWidths.clear(); repeat(cols) { table.colWidths.add(cellW) }
+        actions.add(table); redoStack.clear()
+        activeTableItem = table; invalidate()
+    }
+
     fun undo() { if (actions.isNotEmpty()) { redoStack.add(actions.removeAt(actions.size - 1)); invalidate() } }
     fun redo() { if (redoStack.isNotEmpty()) { actions.add(redoStack.removeAt(redoStack.size - 1)); invalidate() } }
-    fun clearAll() { actions.clear(); redoStack.clear(); selectedItem = null; invalidate() }
+    fun clearAll() { actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null; invalidate() }
     fun hasContent(): Boolean = actions.isNotEmpty()
     fun exportBitmap(): Bitmap { val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888); draw(Canvas(bmp)); return bmp }
 
@@ -1277,6 +1269,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val sb = StringBuilder()
         sb.append("META\u0001${paperType.name}\u0001${canvasMode.name}\u0001${paperSize.name}\u0001${pageOrientation.name}\u0001$paperColor\n")
         for (a in actions) when (a) {
+            is TableItem -> sb.append(a.serialize())
             is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\n")
@@ -1286,51 +1279,74 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     fun loadFromString(content: String) {
-        actions.clear(); redoStack.clear(); selectedItem = null
-        for (line in content.lines()) {
-            if (line.isBlank()) continue
+        actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null
+        val lines = content.lines()
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i]
+            if (line.isBlank()) { i++; continue }
             try {
-                if (line.startsWith("META\u0001")) {
-                    val p = line.split("\u0001")
-                    try { if (p.size > 1) paperType = PaperType.valueOf(p[1]) } catch (e: Exception) {}
-                    try { if (p.size > 2) canvasMode = CanvasMode.valueOf(p[2]) } catch (e: Exception) {}
-                    try { if (p.size > 3) paperSize = PaperSizeOption.valueOf(p[3]) } catch (e: Exception) {}
-                    try { if (p.size > 4) pageOrientation = Orientation.valueOf(p[4]) } catch (e: Exception) {}
-                    try { if (p.size > 5) paperColor = p[5].toInt() } catch (e: Exception) {}
-                } else if (line.startsWith("TEXT\u0001")) {
-                    val p = line.split("\u0001"); if (p.size < 7) continue
-                    val item = TextItem("", p[1].toFloat(), p[2].toFloat(), p[3].toInt(), p[4].toFloat(), p[5].toFloat())
-                    if (p.size >= 9) {
-                        val bold = p[6].toBoolean(); val italic = p[7].toBoolean()
-                        item.text = p[8].replace("\u0002", "\n")
-                        val style = if (bold && italic) Typeface.BOLD_ITALIC else if (bold) Typeface.BOLD else if (italic) Typeface.ITALIC else -1
-                        if (style >= 0) item.spans.add(TextSpanData(0, item.text.length, 'S', style))
-                    } else {
-                        if (p[6].isNotBlank()) for (t in p[6].split(";")) {
-                            val sp = t.split(","); if (sp.size == 4) item.spans.add(TextSpanData(sp[0].toInt(), sp[1].toInt(), sp[2][0], sp[3].toInt()))
-                        }
-                        item.text = if (p.size > 7) p[7].replace("\u0002", "\n") else ""
+                when {
+                    line.startsWith("META\u0001") -> {
+                        val p = line.split("\u0001")
+                        try { if (p.size > 1) paperType = PaperType.valueOf(p[1]) } catch (e: Exception) {}
+                        try { if (p.size > 2) canvasMode = CanvasMode.valueOf(p[2]) } catch (e: Exception) {}
+                        try { if (p.size > 3) paperSize = PaperSizeOption.valueOf(p[3]) } catch (e: Exception) {}
+                        try { if (p.size > 4) pageOrientation = Orientation.valueOf(p[4]) } catch (e: Exception) {}
+                        try { if (p.size > 5) paperColor = p[5].toInt() } catch (e: Exception) {}
+                        i++
                     }
-                    actions.add(item)
-                } else if (line.startsWith("IMAGE\u0001")) {
-                    val p = line.split("\u0001"); if (p.size < 7) continue
-                    actions.add(ImageItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat(), p[6].toFloat()))
-                } else if (line.startsWith("FILL\u0001")) {
-                    val p = line.split("\u0001"); if (p.size < 6) continue
-                    actions.add(FillItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat()))
-                } else {
-                    val p = line.split("|"); if (p.size < 5) continue
-                    val type = Tool.valueOf(p[0]); val color = p[1].toInt(); val sw = p[2].toFloat(); val fill = p[3].toBoolean()
-                    if (p.size >= 6) {
-                        val rot = p[4].toFloat()
-                        val pts = if (p[5].isBlank()) mutableListOf() else p[5].split(",").map { it.toFloat() }.toMutableList()
-                        val d = StrokeData(type, pts, color, sw, fill, rot); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
-                    } else {
-                        val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
-                        val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
+                    line.startsWith("TABLE\u0001") -> {
+                        val tableLines = mutableListOf<String>()
+                        var j = i
+                        while (j < lines.size && !lines[j].startsWith("TABLEEND")) { tableLines.add(lines[j]); j++ }
+                        val (tableItem, _) = TableItem.deserialize(tableLines, 0)
+                        if (tableItem != null) actions.add(tableItem)
+                        i = j + 1
+                    }
+                    line.startsWith("TEXT\u0001") -> {
+                        val p = line.split("\u0001"); if (p.size >= 7) {
+                            val item = TextItem("", p[1].toFloat(), p[2].toFloat(), p[3].toInt(), p[4].toFloat(), p[5].toFloat())
+                            if (p.size >= 9) {
+                                val bold = p[6].toBoolean(); val italic = p[7].toBoolean()
+                                item.text = p[8].replace("\u0002", "\n")
+                                val style = if (bold && italic) Typeface.BOLD_ITALIC else if (bold) Typeface.BOLD else if (italic) Typeface.ITALIC else -1
+                                if (style >= 0) item.spans.add(TextSpanData(0, item.text.length, 'S', style))
+                            } else {
+                                if (p[6].isNotBlank()) for (t in p[6].split(";")) { val sp = t.split(","); if (sp.size == 4) item.spans.add(TextSpanData(sp[0].toInt(), sp[1].toInt(), sp[2][0], sp[3].toInt())) }
+                                item.text = if (p.size > 7) p[7].replace("\u0002", "\n") else ""
+                            }
+                            actions.add(item)
+                        }
+                        i++
+                    }
+                    line.startsWith("IMAGE\u0001") -> {
+                        val p = line.split("\u0001")
+                        if (p.size >= 7) actions.add(ImageItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat(), p[6].toFloat()))
+                        i++
+                    }
+                    line.startsWith("FILL\u0001") -> {
+                        val p = line.split("\u0001")
+                        if (p.size >= 6) actions.add(FillItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat()))
+                        i++
+                    }
+                    else -> {
+                        val p = line.split("|")
+                        if (p.size >= 5) {
+                            val type = Tool.valueOf(p[0]); val color = p[1].toInt(); val sw = p[2].toFloat(); val fill = p[3].toBoolean()
+                            if (p.size >= 6) {
+                                val rot = p[4].toFloat()
+                                val pts = if (p[5].isBlank()) mutableListOf() else p[5].split(",").map { it.toFloat() }.toMutableList()
+                                val d = StrokeData(type, pts, color, sw, fill, rot); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
+                            } else {
+                                val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
+                                val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
+                            }
+                        }
+                        i++
                     }
                 }
-            } catch (e: Exception) {}
+            } catch (e: Exception) { i++ }
         }
         invalidate()
     }
