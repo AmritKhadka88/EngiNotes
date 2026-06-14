@@ -80,7 +80,7 @@ class StrokeData(
     var rotation: Float = 0f
 ) {
     fun buildPath(): Path {
-    fun buildPath(): Path {
+    
         val path = Path()
         if (type == Tool.PEN || type == Tool.ERASER) {
             if (points.size >= 2) {
