@@ -242,6 +242,9 @@ class DrawingView @JvmOverloads constructor(
     private var regionStart: Pair<Float, Float>? = null
     private var groupMoveStartX = 0f
     private var groupMoveStartY = 0f
+    private var groupResizeHandle = -1
+    private var groupResizeOrigBounds = FloatArray(4)
+    private var groupResizeItemSnapshots: List<FloatArray?> = emptyList()
     var selectedItem: Any? = null
     private enum class HandleType { NONE, MOVE, ROTATE, TL, TM, TR, ML, MR, BL, BM, BR }
     private var activeHandle = HandleType.NONE
@@ -275,7 +278,15 @@ class DrawingView @JvmOverloads constructor(
         }
 
         override fun onScale(detector: ScaleGestureDetector): Boolean {
-            val newScale = (scaleFactor * detector.scaleFactor).coerceIn(0.2f, 6f)
+            val minScale = if (canvasMode != CanvasMode.INFINITE) {
+                val pageW = pageWidthPx(); val pageH = pageHeightPx()
+                val marginFactor = 1.3f  // allow 30% margin beyond page
+                val minByW = width / (pageW * marginFactor)
+                val minByH = height / (pageH * marginFactor)
+                minOf(minByW, minByH).coerceAtLeast(0.05f)
+            } else 0.2f
+
+            val newScale = (scaleFactor * detector.scaleFactor).coerceIn(minScale, 6f)
             val factor = newScale / scaleFactor
 
             translateX = detector.focusX - (detector.focusX - translateX) * factor
@@ -930,9 +941,39 @@ class DrawingView @JvmOverloads constructor(
             }
         }
     }
+    private fun scaleItemInGroup(item: Any, originX: Float, originY: Float, scaleX: Float, scaleY: Float) {
+        when (item) {
+            is StrokeItem -> {
+                val pts = item.data.points
+                var i = 0
+                while (i + 1 < pts.size) {
+                    pts[i] = originX + (pts[i] - originX) * scaleX
+                    pts[i + 1] = originY + (pts[i + 1] - originY) * scaleY
+                    i += 2
+                }
+                item.path = item.data.buildPath()
+            }
+            is TextItem -> {
+                item.x = originX + (item.x - originX) * scaleX
+                item.y = originY + (item.y - originY) * scaleY
+                item.size = (item.size * ((scaleX + scaleY) / 2f)).coerceIn(6f, 500f)
+            }
+            is ImageItem -> {
+                item.x = originX + (item.x - originX) * scaleX
+                item.y = originY + (item.y - originY) * scaleY
+                item.w *= scaleX; item.h *= scaleY
+            }
+            is FillItem -> {
+                item.x = originX + (item.x - originX) * scaleX
+                item.y = originY + (item.y - originY) * scaleY
+                item.w *= scaleX; item.h *= scaleY
+            }
+        }
+    }
 
     // ---------- AutoSelect ----------
 
+    
     private fun groupBounds(group: List<Any>): FloatArray? {
         var result: FloatArray? = null
         for (item in group) {
@@ -1122,6 +1163,7 @@ class DrawingView @JvmOverloads constructor(
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
+                groupResizeHandle = -1
                 val group = selectedGroup
                 if (group != null && group.isNotEmpty()) return
 
