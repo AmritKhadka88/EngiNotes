@@ -457,23 +457,70 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val min = 10f
         when (item) {
             is ImageItem -> {
-                var l = item.x; var t = item.y; var r = item.x + item.w; var b = item.y + item.h
-                when (handle) { HandleType.TL -> { l = lx; t = ly }; HandleType.TM -> t = ly; HandleType.TR -> { r = lx; t = ly }; HandleType.ML -> l = lx; HandleType.MR -> r = lx; HandleType.BL -> { l = lx; b = ly }; HandleType.BM -> b = ly; HandleType.BR -> { r = lx; b = ly }; else -> {} }
+                val rot = Math.toRadians(item.rotation.toDouble())
+                val cos = kotlin.math.cos(rot).toFloat()
+                val sin = kotlin.math.sin(rot).toFloat()
+
+                // Current local bounds
+                var l = 0f; var t = 0f; var r = item.w; var b = item.h
+
+                // Apply handle movement in local space
+                when (handle) {
+                    HandleType.TL -> { l = lx - item.x; t = ly - item.y }
+                    HandleType.TM -> t = ly - item.y
+                    HandleType.TR -> { r = lx - item.x; t = ly - item.y }
+                    HandleType.ML -> l = lx - item.x
+                    HandleType.MR -> r = lx - item.x
+                    HandleType.BL -> { l = lx - item.x; b = ly - item.y }
+                    HandleType.BM -> b = ly - item.y
+                    HandleType.BR -> { r = lx - item.x; b = ly - item.y }
+                    else -> {}
+                }
+
                 if (r - l < min) { if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) l = r - min else r = l + min }
                 if (b - t < min) { if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) t = b - min else b = t + min }
-                val oldPx = dragStartPivotX; val oldPy = dragStartPivotY
-                if ((handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.ML || handle == HandleType.TR || handle == HandleType.BL) && item.rotation != 0f) {
-                    val rot = Math.toRadians(item.rotation.toDouble())
-                    val cos = kotlin.math.cos(rot).toFloat(); val sin = kotlin.math.sin(rot).toFloat()
-                    val oppLx = if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) r else l
-                    val oppLy = if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) b else t
-                    val dox = oppLx - oldPx; val doy = oppLy - oldPy
-                    val owx = oldPx + dox * cos - doy * sin; val owy = oldPy + dox * sin + doy * cos
-                    val dnx = oppLx - l; val dny = oppLy - t
-                    val ofx = l + dnx * cos - dny * sin; val ofy = t + dnx * sin + dny * cos
-                    item.x = l + (owx - ofx); item.y = t + (owy - ofy)
-                } else { item.x = l; item.y = t }
-                item.w = r - l; item.h = b - t
+
+                // The fixed corner in local space (opposite to the handle being dragged)
+                val fixedLocalX = when (handle) {
+                    HandleType.TL, HandleType.ML, HandleType.BL -> item.w  // right edge fixed
+                    HandleType.TR, HandleType.MR, HandleType.BR -> 0f      // left edge fixed
+                    HandleType.TM -> item.w / 2f                           // centre x fixed
+                    HandleType.BM -> item.w / 2f
+                    else -> 0f
+                }
+                val fixedLocalY = when (handle) {
+                    HandleType.TL, HandleType.TM, HandleType.TR -> item.h  // bottom edge fixed
+                    HandleType.BL, HandleType.BM, HandleType.BR -> 0f      // top edge fixed
+                    HandleType.ML -> item.h / 2f                           // centre y fixed
+                    HandleType.MR -> item.h / 2f
+                    else -> 0f
+                }
+
+                // Convert fixed corner from old local space to world space
+                val fixedWorldX = item.x + fixedLocalX * cos - fixedLocalY * sin
+                val fixedWorldY = item.y + fixedLocalX * sin + fixedLocalY * cos
+
+                // New size
+                val newW = r - l; val newH = b - t
+
+                // New fixed corner position in new local space
+                val newFixedLocalX = when (handle) {
+                    HandleType.TL, HandleType.ML, HandleType.BL -> newW
+                    HandleType.TR, HandleType.MR, HandleType.BR -> 0f
+                    HandleType.TM, HandleType.BM -> newW / 2f
+                    else -> 0f
+                }
+                val newFixedLocalY = when (handle) {
+                    HandleType.TL, HandleType.TM, HandleType.TR -> newH
+                    HandleType.BL, HandleType.BM, HandleType.BR -> 0f
+                    HandleType.ML, HandleType.MR -> newH / 2f
+                    else -> 0f
+                }
+
+                // New top-left in world = fixed world - new fixed local rotated
+                item.x = fixedWorldX - (newFixedLocalX * cos - newFixedLocalY * sin)
+                item.y = fixedWorldY - (newFixedLocalX * sin + newFixedLocalY * cos)
+                item.w = newW; item.h = newH
             }
             is StrokeItem -> {
                 if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
