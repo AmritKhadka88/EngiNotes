@@ -28,6 +28,7 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -116,10 +117,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnBack).setOnClickListener { confirmThenExit() }
 
         findViewById<Button>(R.id.btnText).setOnClickListener {
-
-        if (editingItem != null && editingItem === item) { return@showInlineTextEditor }
-        closeInlineEditor(commit = true)
-            
+            closeInlineEditor(commit = true)
             setActiveTool(it as Button, Tool.TEXT, "Text")
         }
 
@@ -198,10 +196,11 @@ class MainActivity : AppCompatActivity() {
 
         setActiveTool(null, Tool.SELECT, "Select")
 
-        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() { confirmThenExit() }
         })
     }
+
     private fun setActiveTool(btn: Button?, tool: Tool, label: String) {
         drawingView.currentTool = tool
         tvActiveTool.text = label
@@ -359,9 +358,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun confirmThenExit() {
         closeInlineEditor(commit = true)
-        if (getPrefs().getBoolean("confirm_exit_clear", true) && drawingView.serialize() != lastSavedContent && drawingView.hasContent()) {
+        val changed = drawingView.serialize() != lastSavedContent && drawingView.hasContent()
+        if (getPrefs().getBoolean("confirm_exit_clear", true) && changed) {
             AlertDialog.Builder(this).setTitle("Unsaved Changes")
-                .setMessage("You have unsaved changes. Save before leaving?")
+                .setMessage("Save before leaving?")
                 .setPositiveButton("Save") { _, _ -> saveCurrent(); finish() }
                 .setNeutralButton("Don't Save") { _, _ -> finish() }
                 .setNegativeButton("Cancel", null)
@@ -492,7 +492,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showInlineTextEditor(item: TextItem?, screenX: Float, screenY: Float, worldX: Float, worldY: Float) {
+        // Don't reopen if already editing this exact item
+        if (activeEditText != null && editingItem === item) return
         closeInlineEditor(commit = true)
+
         pendingBold = false; pendingItalic = false; pendingUnderline = false; pendingHighlight = null
         editingItem = item
         editWorldX = item?.x ?: worldX; editWorldY = item?.y ?: worldY
@@ -554,20 +557,20 @@ class MainActivity : AppCompatActivity() {
             b.setOnClickListener { action(b) }; toolbar.addView(b); return b
         }
 
-        val activeTextBtnColor = Color.parseColor("#2196F3")
-        val inactiveTextBtnColor = Color.parseColor("#55FFFFFF")
+        val activeC = Color.parseColor("#2196F3")
+        val inactiveC = Color.parseColor("#55FFFFFF")
 
         toolBtn("B") { btn ->
             if (editText.selectionStart != editText.selectionEnd) toggleStyleOnSelection(editText, Typeface.BOLD)
-            else { pendingBold = !pendingBold; btn.setBackgroundColor(if (pendingBold) activeTextBtnColor else inactiveTextBtnColor) }
+            else { pendingBold = !pendingBold; btn.setBackgroundColor(if (pendingBold) activeC else inactiveC) }
         }
         toolBtn("I") { btn ->
             if (editText.selectionStart != editText.selectionEnd) toggleStyleOnSelection(editText, Typeface.ITALIC)
-            else { pendingItalic = !pendingItalic; btn.setBackgroundColor(if (pendingItalic) activeTextBtnColor else inactiveTextBtnColor) }
+            else { pendingItalic = !pendingItalic; btn.setBackgroundColor(if (pendingItalic) activeC else inactiveC) }
         }
         toolBtn("U") { btn ->
             if (editText.selectionStart != editText.selectionEnd) toggleUnderlineOnSelection(editText)
-            else { pendingUnderline = !pendingUnderline; btn.setBackgroundColor(if (pendingUnderline) activeTextBtnColor else inactiveTextBtnColor) }
+            else { pendingUnderline = !pendingUnderline; btn.setBackgroundColor(if (pendingUnderline) activeC else inactiveC) }
         }
         toolBtn("🖍") { btn ->
             showColorGridDialog { color ->
@@ -625,14 +628,16 @@ class MainActivity : AppCompatActivity() {
 
         val item = editingItem
         if (commit && !delete && text.isNotBlank()) {
-            drawingView.defaultTextSize = editSize  // persist chosen size
+            drawingView.defaultTextSize = editSize
             if (item != null) {
                 item.text = text; item.color = editColor; item.size = editSize
                 item.rotation = editRotation; item.spans = spans; item.isEditing = false
             } else {
                 drawingView.addText(text, editWorldX, editWorldY, editSize, editRotation, editColor, spans)
             }
-        } else { if (item != null) drawingView.removeTextItem(item) }
+        } else {
+            if (item != null) drawingView.removeTextItem(item)
+        }
         drawingView.invalidate()
         activeEditText = null; activeToolbar = null; editingItem = null
     }
@@ -648,8 +653,8 @@ class MainActivity : AppCompatActivity() {
         try {
             val bmp = android.graphics.BitmapFactory.decodeFile(file.absolutePath) ?: return
             val ratio = bmp.width.toFloat() / bmp.height
-            val w = if (ratio >= 1f) 300f else 300f * ratio
-            val h = if (ratio >= 1f) 300f / ratio else 300f
+            val w = if (ratio >= 1f) 800f else 800f * ratio
+            val h = if (ratio >= 1f) 800f / ratio else 800f
             drawingView.addImage(file.absolutePath, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), w, h)
         } catch (e: Exception) { Toast.makeText(this, "Photo failed: ${e.message}", Toast.LENGTH_LONG).show() }
     }
@@ -662,8 +667,8 @@ class MainActivity : AppCompatActivity() {
             val out = File(folder, "img_${System.currentTimeMillis()}.png")
             FileOutputStream(out).use { bmp.compress(Bitmap.CompressFormat.PNG, 90, it) }
             val ratio = bmp.width.toFloat() / bmp.height
-            val w = if (ratio >= 1f) 300f else 300f * ratio
-            val h = if (ratio >= 1f) 300f / ratio else 300f
+            val w = if (ratio >= 1f) 800f else 800f * ratio
+            val h = if (ratio >= 1f) 800f / ratio else 800f
             drawingView.addImage(out.absolutePath, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), w, h)
         } catch (e: Exception) { Toast.makeText(this, "Image failed: ${e.message}", Toast.LENGTH_LONG).show() }
     }
@@ -683,7 +688,7 @@ class MainActivity : AppCompatActivity() {
             val input = EditText(this); input.hint = "Note name"
             AlertDialog.Builder(this).setTitle("Save Note").setView(input)
                 .setPositiveButton("Save") { _, _ ->
-                    var name = input.text.toString().trim().ifEmpty { "Note_${System.currentTimeMillis()}" }
+                    val name = input.text.toString().trim().ifEmpty { "Note_${System.currentTimeMillis()}" }
                     currentFileName = name; tvTitle.text = name; writeCurrentFile()
                     Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show()
                 }.setNegativeButton("Cancel", null).show()
@@ -694,7 +699,7 @@ class MainActivity : AppCompatActivity() {
         val input = EditText(this); input.hint = "New note name"
         AlertDialog.Builder(this).setTitle("Save as New").setView(input)
             .setPositiveButton("Save") { _, _ ->
-                var name = input.text.toString().trim().ifEmpty { "Note_${System.currentTimeMillis()}" }
+                val name = input.text.toString().trim().ifEmpty { "Note_${System.currentTimeMillis()}" }
                 currentFileName = name; tvTitle.text = name; writeCurrentFile()
                 Toast.makeText(this, "Saved as $name", Toast.LENGTH_SHORT).show()
             }.setNegativeButton("Cancel", null).show()
