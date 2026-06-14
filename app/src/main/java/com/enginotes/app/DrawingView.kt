@@ -80,14 +80,43 @@ class StrokeData(
     var rotation: Float = 0f
 ) {
     fun buildPath(): Path {
+    fun buildPath(): Path {
         val path = Path()
-        if (type == Tool.PEN || type == Tool.ERASER || type == Tool.ARC) {
+        if (type == Tool.PEN || type == Tool.ERASER) {
             if (points.size >= 2) {
                 path.moveTo(points[0], points[1])
                 var i = 2
                 while (i + 1 < points.size) {
                     path.lineTo(points[i], points[i + 1])
                     i += 2
+                }
+            }
+            return path
+        }
+        if (type == Tool.ARC) {
+            // Catmull-Rom spline through all arc points for smooth curves
+            if (points.size >= 2) {
+                path.moveTo(points[0], points[1])
+                if (points.size == 2) {
+                    // single point, nothing to draw
+                } else if (points.size == 4) {
+                    path.lineTo(points[2], points[3])
+                } else {
+                    var i = 0
+                    while (i + 3 < points.size) {
+                        val x0 = if (i == 0) points[0] else points[i - 2]
+                        val y0 = if (i == 0) points[1] else points[i - 1]
+                        val x1 = points[i]; val y1 = points[i + 1]
+                        val x2 = points[i + 2]; val y2 = points[i + 3]
+                        val x3 = if (i + 4 < points.size) points[i + 4] else x2
+                        val y3 = if (i + 5 < points.size) points[i + 5] else y2
+                        val cp1x = x1 + (x2 - x0) / 6f
+                        val cp1y = y1 + (y2 - y0) / 6f
+                        val cp2x = x2 - (x3 - x1) / 6f
+                        val cp2y = y2 - (y3 - y1) / 6f
+                        path.cubicTo(cp1x, cp1y, cp2x, cp2y, x2, y2)
+                        i += 2
+                    }
                 }
             }
             return path
@@ -860,7 +889,25 @@ class DrawingView @JvmOverloads constructor(
                     HandleType.NONE -> return
                     else -> {
                         val (lx, ly) = rotatePoint(worldX, worldY, dragStartPivotX, dragStartPivotY, -dragStartRotation)
-                        resizeItem(item, activeHandle, lx, ly)
+                        // For single-axis handles, clamp the unused axis to its drag-start value
+                        // so rotating an object and dragging TM only changes height, not width.
+                        val b = getBounds(item)
+                        val constrainedLx: Float
+                        val constrainedLy: Float
+                        if (b != null) {
+                            val cx = (b[0] + b[2]) / 2f; val cy = (b[1] + b[3]) / 2f
+                            constrainedLx = when (activeHandle) {
+                                HandleType.TM, HandleType.BM -> cx  // lock x to centre
+                                else -> lx
+                            }
+                            constrainedLy = when (activeHandle) {
+                                HandleType.ML, HandleType.MR -> cy  // lock y to centre
+                                else -> ly
+                            }
+                        } else {
+                            constrainedLx = lx; constrainedLy = ly
+                        }
+                        resizeItem(item, activeHandle, constrainedLx, constrainedLy)
                     }
                 }
                 invalidate()
