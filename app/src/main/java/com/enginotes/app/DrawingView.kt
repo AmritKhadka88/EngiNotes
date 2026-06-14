@@ -308,6 +308,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawActionItem(canvas: Canvas, action: Any, includeFills: Boolean) {
         when (action) {
+            is TableItem -> {
+                action.draw(canvas, scaleFactor)
+            }
             is FillItem -> {
                 if (!includeFills) return
                 if (action.bitmap == null) try { action.bitmap = android.graphics.BitmapFactory.decodeFile(action.path) } catch (e: Exception) {}
@@ -429,6 +432,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun getBounds(item: Any): FloatArray? {
         return when (item) {
             is ImageItem -> floatArrayOf(item.x, item.y, item.x + item.w, item.y + item.h)
+            is TableItem -> floatArrayOf(item.x, item.y, item.x + item.totalWidth(), item.y + item.totalHeight())
             is FillItem -> floatArrayOf(item.x, item.y, item.x + item.w, item.y + item.h)
             is TextItem -> {
                 val tp = TextPaint(); tp.textSize = item.size
@@ -457,11 +461,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun getRotation(item: Any): Float = when (item) {
-        is ImageItem -> item.rotation; is TextItem -> item.rotation; is StrokeItem -> item.data.rotation; else -> 0f
+        is ImageItem -> item.rotation; is TextItem -> item.rotation
+        is StrokeItem -> item.data.rotation; is TableItem -> item.rotation; else -> 0f
     }
 
     private fun setRotation(item: Any, r: Float) {
-        when (item) { is ImageItem -> item.rotation = r; is TextItem -> item.rotation = r; is StrokeItem -> item.data.rotation = r }
+        when (item) {
+            is ImageItem -> item.rotation = r; is TextItem -> item.rotation = r
+            is StrokeItem -> item.data.rotation = r; is TableItem -> item.rotation = r
+        }
     }
 
     private fun getPivot(item: Any, b: FloatArray): Pair<Float, Float> = when (item) {
@@ -484,6 +492,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun moveItem(item: Any, dx: Float, dy: Float) {
         when (item) {
             is ImageItem -> { item.x += dx; item.y += dy }
+            is TableItem -> { item.x += dx; item.y += dy }
             is FillItem -> { item.x += dx; item.y += dy }
             is TextItem -> { item.x += dx; item.y += dy }
             is StrokeItem -> {
