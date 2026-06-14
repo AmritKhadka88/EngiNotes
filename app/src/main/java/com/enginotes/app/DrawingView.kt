@@ -30,7 +30,7 @@ enum class Tool {
     SELECT, FILL, PEN, ERASER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
     TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT, AUTOSELECT
 }
-enum class PaperType { BLANK, LINED, GRID, DOTS, ENGINEERING }
+enum class PaperType { BLANK, BLANK_COLORED, LINED, GRID, DOTS, ENGINEERING }
 enum class EraserMode { OBJECT, AREA }
 enum class AutoSelectShape { RECTANGLE, FREEFORM }
 enum class AutoSelectDivide { WHOLE, DIVIDED }
@@ -226,8 +226,9 @@ class DrawingView @JvmOverloads constructor(
     var eraserMode: EraserMode = EraserMode.OBJECT
     var fillShapes: Boolean = false
     var fillColor: Int = Color.RED
-    var arcDivisions: Int = 4
+    var arcDivisions: Int = 3
     var paperType: PaperType = PaperType.GRID
+    var paperColor: Int = Color.parseColor("#FFFDE7")
     var defaultTextSize: Float = 36f
 
     var autoSelectShape: AutoSelectShape = AutoSelectShape.RECTANGLE
@@ -1139,17 +1140,22 @@ class DrawingView @JvmOverloads constructor(
 
         when (canvasMode) {
             CanvasMode.INFINITE -> {
-                if (paperType != PaperType.BLANK) {
+                if (paperType == PaperType.BLANK_COLORED) {
+                    val p = Paint(); p.color = paperColor
+                    canvas.drawRect(visLeft - 2000f, visTop - 2000f, visRight + 2000f, visBottom + 2000f, p)
+                } else if (paperType != PaperType.BLANK) {
                     drawPaperPattern(canvas, visLeft - 2000f, visTop - 2000f, visRight + 2000f, visBottom + 2000f)
                 }
             }
             CanvasMode.FIXED -> {
+                CanvasMode.FIXED -> {
                 val pageW = pageWidthPx(); val pageH = pageHeightPx()
                 val grayP = Paint(); grayP.color = Color.parseColor("#D5D5D5")
                 canvas.drawRect(visLeft - 2000f, visTop - 2000f, visRight + 2000f, visBottom + 2000f, grayP)
-                val whiteP = Paint(); whiteP.color = Color.WHITE
+                val pageColor = if (paperType == PaperType.BLANK_COLORED) paperColor else Color.WHITE
+                val whiteP = Paint(); whiteP.color = pageColor
                 canvas.drawRect(0f, 0f, pageW, pageH, whiteP)
-                if (paperType != PaperType.BLANK) {
+                if (paperType != PaperType.BLANK && paperType != PaperType.BLANK_COLORED) {
                     canvas.save(); canvas.clipRect(0f, 0f, pageW, pageH)
                     drawPaperPattern(canvas, 0f, 0f, pageW, pageH)
                     canvas.restore()
@@ -1163,7 +1169,8 @@ class DrawingView @JvmOverloads constructor(
                 val gap = 40f
                 val grayP = Paint(); grayP.color = Color.parseColor("#D5D5D5")
                 canvas.drawRect(visLeft - 2000f, visTop - 2000f, visRight + 2000f, visBottom + 2000f, grayP)
-                val whiteP = Paint(); whiteP.color = Color.WHITE
+                val pageColor = if (paperType == PaperType.BLANK_COLORED) paperColor else Color.WHITE
+                val whiteP = Paint(); whiteP.color = pageColor
                 val borderP = Paint(); borderP.color = Color.parseColor("#909090"); borderP.style = Paint.Style.STROKE
                 borderP.strokeWidth = 2f / scaleFactor
                 val period = pageH + gap
@@ -1172,7 +1179,7 @@ class DrawingView @JvmOverloads constructor(
                 for (i in startIdx..endIdx) {
                     val top = i * period
                     canvas.drawRect(0f, top, pageW, top + pageH, whiteP)
-                    if (paperType != PaperType.BLANK) {
+                    if (paperType != PaperType.BLANK && paperType != PaperType.BLANK_COLORED) {
                         canvas.save(); canvas.clipRect(0f, top, pageW, top + pageH)
                         drawPaperPattern(canvas, 0f, top, pageW, top + pageH)
                         canvas.restore()
@@ -1622,7 +1629,7 @@ class DrawingView @JvmOverloads constructor(
 
     fun serialize(): String {
         val sb = StringBuilder()
-        sb.append("META\u0001").append(paperType.name).append("\u0001").append(canvasMode.name).append("\u0001").append(paperSize.name).append("\u0001").append(pageOrientation.name).append("\n")
+        sb.append("META\u0001").append(paperType.name).append("\u0001").append(canvasMode.name).append("\u0001").append(paperSize.name).append("\u0001").append(pageOrientation.name).append("\u0001").append(paperColor).append("\n")
         for (action in actions) {
             when (action) {
                 is StrokeItem -> {
@@ -1685,6 +1692,7 @@ class DrawingView @JvmOverloads constructor(
                     try { if (parts.size > 2 && parts[2].isNotBlank()) canvasMode = CanvasMode.valueOf(parts[2]) } catch (e: Exception) {}
                     try { if (parts.size > 3 && parts[3].isNotBlank()) paperSize = PaperSizeOption.valueOf(parts[3]) } catch (e: Exception) {}
                     try { if (parts.size > 4 && parts[4].isNotBlank()) pageOrientation = Orientation.valueOf(parts[4]) } catch (e: Exception) {}
+                    try { if (parts.size > 5 && parts[5].isNotBlank()) paperColor = parts[5].toInt() } catch (e: Exception) {}
                 } else if (line.startsWith("TEXT\u0001")) {
                     val parts = line.split("\u0001")
                     if (parts.size < 7) continue
