@@ -73,6 +73,22 @@ class MainActivity : AppCompatActivity() {
     private val ACTIVE_BTN_COLOR = 0x552196F3.toInt()
     private val PRESS_BTN_COLOR = 0x992196F3.toInt()
 
+    private val chartLauncher = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK) {
+            val path = result.data?.getStringExtra("chart_image_path")
+            if (path != null) {
+                val bmp = android.graphics.BitmapFactory.decodeFile(path)
+                if (bmp != null) {
+                    val ratio = bmp.width.toFloat() / bmp.height
+                    val w = if (ratio >= 1f) 800f else 800f * ratio
+                    val h = if (ratio >= 1f) 800f / ratio else 800f
+                    drawingView.addImage(path, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), w, h)
+                    Toast.makeText(this, "Chart added to note!", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
     private val pickPdfLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
             val intent = android.content.Intent(this, PdfViewerActivity::class.java)
@@ -208,7 +224,7 @@ class MainActivity : AppCompatActivity() {
                     "Clear Canvas" -> confirmThenClear()
                     "Delete This Note" -> deleteCurrentNote()
                     "📄 Open PDF" -> pickPdfLauncher.launch("application/pdf")
-                    "📊 Chart Builder" -> startActivity(android.content.Intent(this, ChartActivity::class.java))
+                    "📊 Chart Builder" -> chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java))
                     "✍ Handwriting to Text" -> startActivity(android.content.Intent(this, HandwritingActivity::class.java))
                     "Settings" -> showSettingsDialog()
                     "Exit" -> confirmThenExit()
