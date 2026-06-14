@@ -144,9 +144,11 @@ class MainActivity : AppCompatActivity() {
             showTableCellEditor(table, row, col, screenX, screenY)
         }
 
-        for (id in listOf(R.id.btnBack, R.id.btnMenu, R.id.btnText, R.id.btnDraw, R.id.btnTools, R.id.btnInsert, R.id.btnUndo, R.id.btnRedo))
-            addPressEffect(findViewById(id))
-
+        for (id in listOf(R.id.btnBack, R.id.btnMenu, R.id.btnText, R.id.btnDraw, R.id.btnTools, R.id.btnInsert, R.id.btnUndo, R.id.btnRedo)) {
+            val btn = findViewById<Button>(id)
+            btn.setBackgroundColor(Color.TRANSPARENT)
+            addPressEffect(btn)
+        }
         findViewById<Button>(R.id.btnBack).setOnClickListener { confirmThenExit() }
 
         findViewById<Button>(R.id.btnText).setOnClickListener {
@@ -260,7 +262,7 @@ class MainActivity : AppCompatActivity() {
             when (event.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> v.setBackgroundColor(PRESS_BTN_COLOR)
                 android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL ->
-                    v.setBackgroundColor(if (v == activeToolbarButton) ACTIVE_BTN_COLOR else Color.TRANSPARENT)
+                    v.setBackgroundColor(if (v == activeToolbarButton) ACTIVE_BTN_COLOR else Color.parseColor("#3D00CC"))
             }
             false
         }
