@@ -42,7 +42,7 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
-    implementation("com.github.TomRoush:PdfBox-Android:2.0.27.0")
+    
     implementation("org.apache.poi:poi-ooxml:5.2.3")
     implementation("com.google.mlkit:digital-ink-recognition:18.1.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
