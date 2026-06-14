@@ -116,9 +116,10 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnBack).setOnClickListener { confirmThenExit() }
 
         findViewById<Button>(R.id.btnText).setOnClickListener {
-            // Don't close and reopen if already editing this same item
-        if (editingItem != null && editingItem == item) return
+
+        if (editingItem != null && editingItem === item) { return@showInlineTextEditor }
         closeInlineEditor(commit = true)
+            
             setActiveTool(it as Button, Tool.TEXT, "Text")
         }
 
