@@ -65,8 +65,8 @@ class MainActivity : AppCompatActivity() {
     private var cameraImageFile: File? = null
     private var activeToolbarButton: Button? = null
 
-    private val ACTIVE_BTN_COLOR = -2130771149  // 0x80_2196F3 opaque-ish blue
-    private val PRESS_BTN_COLOR = -1726562573   // 0x99_2196F3
+    private val ACTIVE_BTN_COLOR = 0x552196F3.toInt()
+    private val PRESS_BTN_COLOR = 0x992196F3.toInt()
 
     private val pickImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) insertImage(uri)
@@ -194,8 +194,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         setActiveTool(null, Tool.SELECT, "Select")
-    }
 
+        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() { confirmThenExit() }
+        })
+    }
     private fun setActiveTool(btn: Button?, tool: Tool, label: String) {
         drawingView.currentTool = tool
         tvActiveTool.text = label
@@ -354,8 +357,12 @@ class MainActivity : AppCompatActivity() {
     private fun confirmThenExit() {
         closeInlineEditor(commit = true)
         if (getPrefs().getBoolean("confirm_exit_clear", true) && drawingView.serialize() != lastSavedContent && drawingView.hasContent()) {
-            AlertDialog.Builder(this).setTitle("Exit without saving?").setMessage("You have unsaved changes.")
-                .setPositiveButton("Exit") { _, _ -> finish() }.setNegativeButton("Cancel", null).show()
+            AlertDialog.Builder(this).setTitle("Unsaved Changes")
+                .setMessage("You have unsaved changes. Save before leaving?")
+                .setPositiveButton("Save") { _, _ -> saveCurrent(); finish() }
+                .setNeutralButton("Don't Save") { _, _ -> finish() }
+                .setNegativeButton("Cancel", null)
+                .show()
         } else finish()
     }
 
@@ -615,6 +622,7 @@ class MainActivity : AppCompatActivity() {
 
         val item = editingItem
         if (commit && !delete && text.isNotBlank()) {
+            drawingView.defaultTextSize = editSize  // persist chosen size
             if (item != null) {
                 item.text = text; item.color = editColor; item.size = editSize
                 item.rotation = editRotation; item.spans = spans; item.isEditing = false
