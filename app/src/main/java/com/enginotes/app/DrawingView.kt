@@ -523,21 +523,154 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 item.w = newW; item.h = newH
             }
             is StrokeItem -> {
+private fun resizeItem(item: Any, handle: HandleType, lx: Float, ly: Float) {
+        val min = 10f
+        when (item) {
+            is ImageItem -> {
+                val rot = Math.toRadians(item.rotation.toDouble())
+                val cos = kotlin.math.cos(rot).toFloat()
+                val sin = kotlin.math.sin(rot).toFloat()
+
+                val oldW = item.w; val oldH = item.h
+                val oldCx = item.x + oldW / 2f * cos - oldH / 2f * sin
+                val oldCy = item.y + oldW / 2f * sin + oldH / 2f * cos
+
+                // Fixed anchor in local space relative to center
+                val fixedLocalX = when (handle) {
+                    HandleType.TL, HandleType.ML, HandleType.BL -> oldW / 2f
+                    HandleType.TR, HandleType.MR, HandleType.BR -> -oldW / 2f
+                    else -> 0f
+                }
+                val fixedLocalY = when (handle) {
+                    HandleType.TL, HandleType.TM, HandleType.TR -> oldH / 2f
+                    HandleType.BL, HandleType.BM, HandleType.BR -> -oldH / 2f
+                    else -> 0f
+                }
+
+                // Fixed anchor in world space
+                val fixedWorldX = oldCx + fixedLocalX * cos - fixedLocalY * sin
+                val fixedWorldY = oldCy + fixedLocalX * sin + fixedLocalY * cos
+
+                // Current bounds in local (center-relative)
+                var l = -oldW / 2f; var t = -oldH / 2f
+                var r = oldW / 2f; var b = oldH / 2f
+
+                // Apply handle in local space
+                when (handle) {
+                    HandleType.TL -> { l = lx; t = ly }
+                    HandleType.TM -> t = ly
+                    HandleType.TR -> { r = lx; t = ly }
+                    HandleType.ML -> l = lx
+                    HandleType.MR -> r = lx
+                    HandleType.BL -> { l = lx; b = ly }
+                    HandleType.BM -> b = ly
+                    HandleType.BR -> { r = lx; b = ly }
+                    else -> {}
+                }
+
+                if (r - l < min) { if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) l = r - min else r = l + min }
+                if (b - t < min) { if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) t = b - min else b = t + min }
+
+                val newW = r - l; val newH = b - t
+
+                val newFixedLocalX = when (handle) {
+                    HandleType.TL, HandleType.ML, HandleType.BL -> newW / 2f
+                    HandleType.TR, HandleType.MR, HandleType.BR -> -newW / 2f
+                    else -> 0f
+                }
+                val newFixedLocalY = when (handle) {
+                    HandleType.TL, HandleType.TM, HandleType.TR -> newH / 2f
+                    HandleType.BL, HandleType.BM, HandleType.BR -> -newH / 2f
+                    else -> 0f
+                }
+
+                // New center to keep fixed anchor stationary
+                val newCx = fixedWorldX - (newFixedLocalX * cos - newFixedLocalY * sin)
+                val newCy = fixedWorldY - (newFixedLocalX * sin + newFixedLocalY * cos)
+
+                // Convert center back to top-left (item.x/y is top-left in world)
+                item.x = newCx - (newW / 2f * cos - newH / 2f * sin)
+                item.y = newCy - (newW / 2f * sin + newH / 2f * cos)
+                item.w = newW; item.h = newH
+            }
+            is StrokeItem -> {
                 if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    var l = minOf(item.data.points[0], item.data.points[2]); var t = minOf(item.data.points[1], item.data.points[3])
-                    var r = maxOf(item.data.points[0], item.data.points[2]); var b = maxOf(item.data.points[1], item.data.points[3])
-                    when (handle) { HandleType.TL -> { l = lx; t = ly }; HandleType.TM -> t = ly; HandleType.TR -> { r = lx; t = ly }; HandleType.ML -> l = lx; HandleType.MR -> r = lx; HandleType.BL -> { l = lx; b = ly }; HandleType.BM -> b = ly; HandleType.BR -> { r = lx; b = ly }; else -> {} }
+                    val rot = Math.toRadians(item.data.rotation.toDouble())
+                    val cos = kotlin.math.cos(rot).toFloat()
+                    val sin = kotlin.math.sin(rot).toFloat()
+
+                    var l = minOf(item.data.points[0], item.data.points[2])
+                    var t = minOf(item.data.points[1], item.data.points[3])
+                    var r = maxOf(item.data.points[0], item.data.points[2])
+                    var b = maxOf(item.data.points[1], item.data.points[3])
+                    val oldW = r - l; val oldH = b - t
+                    val oldCx = (l + r) / 2f; val oldCy = (t + b) / 2f
+
+                    val fixedLocalX = when (handle) {
+                        HandleType.TL, HandleType.ML, HandleType.BL -> oldW / 2f
+                        HandleType.TR, HandleType.MR, HandleType.BR -> -oldW / 2f
+                        else -> 0f
+                    }
+                    val fixedLocalY = when (handle) {
+                        HandleType.TL, HandleType.TM, HandleType.TR -> oldH / 2f
+                        HandleType.BL, HandleType.BM, HandleType.BR -> -oldH / 2f
+                        else -> 0f
+                    }
+
+                    val fixedWorldX = oldCx + fixedLocalX * cos - fixedLocalY * sin
+                    val fixedWorldY = oldCy + fixedLocalX * sin + fixedLocalY * cos
+
+                    when (handle) {
+                        HandleType.TL -> { l = lx; t = ly }
+                        HandleType.TM -> t = ly
+                        HandleType.TR -> { r = lx; t = ly }
+                        HandleType.ML -> l = lx
+                        HandleType.MR -> r = lx
+                        HandleType.BL -> { l = lx; b = ly }
+                        HandleType.BM -> b = ly
+                        HandleType.BR -> { r = lx; b = ly }
+                        else -> {}
+                    }
+
                     if (r - l < min) { if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) l = r - min else r = l + min }
                     if (b - t < min) { if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) t = b - min else b = t + min }
-                    item.data.points[0] = l; item.data.points[1] = t; item.data.points[2] = r; item.data.points[3] = b
+
+                    val newW = r - l; val newH = b - t
+
+                    val newFixedLocalX = when (handle) {
+                        HandleType.TL, HandleType.ML, HandleType.BL -> newW / 2f
+                        HandleType.TR, HandleType.MR, HandleType.BR -> -newW / 2f
+                        else -> 0f
+                    }
+                    val newFixedLocalY = when (handle) {
+                        HandleType.TL, HandleType.TM, HandleType.TR -> newH / 2f
+                        HandleType.BL, HandleType.BM, HandleType.BR -> -newH / 2f
+                        else -> 0f
+                    }
+
+                    val newCx = fixedWorldX - (newFixedLocalX * cos - newFixedLocalY * sin)
+                    val newCy = fixedWorldY - (newFixedLocalX * sin + newFixedLocalY * cos)
+
+                    item.data.points[0] = newCx - newW / 2f
+                    item.data.points[1] = newCy - newH / 2f
+                    item.data.points[2] = newCx + newW / 2f
+                    item.data.points[3] = newCy + newH / 2f
                     item.path = item.data.buildPath()
+
                 } else if (ENDPOINT_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    when (handle) { HandleType.TL -> { item.data.points[0] = lx; item.data.points[1] = ly }; HandleType.BR -> { item.data.points[2] = lx; item.data.points[3] = ly }; else -> {} }
+                    when (handle) {
+                        HandleType.TL -> { item.data.points[0] = lx; item.data.points[1] = ly }
+                        HandleType.BR -> { item.data.points[2] = lx; item.data.points[3] = ly }
+                        else -> {}
+                    }
                     item.path = item.data.buildPath()
                 }
             }
-            is TextItem -> { item.size = (distance(item.x, item.y, lx, ly) / (item.text.length.coerceAtLeast(1) * 0.4f)).coerceIn(10f, 300f) }
+            is TextItem -> {
+                item.size = (distance(item.x, item.y, lx, ly) / (item.text.length.coerceAtLeast(1) * 0.4f)).coerceIn(10f, 300f)
+            }
         }
+}
     }
 
     private fun findItemAt(x: Float, y: Float): Any? {
