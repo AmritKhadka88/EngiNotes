@@ -29,6 +29,9 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+        <activity android:name=".PdfViewerActivity" android:label="PDF Viewer" />
+        <activity android:name=".ChartActivity" android:label="Chart Builder" />
+        <activity android:name=".HandwritingActivity" android:label="Handwriting Recognition" />
 
     </application>
 </manifest>
