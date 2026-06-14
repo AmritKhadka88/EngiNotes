@@ -617,6 +617,9 @@ class DrawingView @JvmOverloads constructor(
         val minSize = 10f
         when (item) {
             is ImageItem -> {
+            is ImageItem -> {
+                // lx/ly are already in the item's unrotated local frame (rotated back by handleSelect)
+                // Opposite corners stay fixed — only the dragged edge(s) move
                 var left = item.x; var top = item.y; var right = item.x + item.w; var bottom = item.y + item.h
                 when (handle) {
                     HandleType.TL -> { left = lx; top = ly }
@@ -635,7 +638,36 @@ class DrawingView @JvmOverloads constructor(
                 if (bottom - top < minSize) {
                     if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) top = bottom - minSize else bottom = top + minSize
                 }
-                item.x = left; item.y = top; item.w = right - left; item.h = bottom - top
+                // Re-anchor: pivot for ImageItem rotation is top-left (item.x, item.y).
+                // When we move the top-left corner (TL/TM/ML), the pivot itself moves,
+                // so we must offset the rotation anchor to keep opposite corner fixed.
+                val oldPivotX = dragStartPivotX; val oldPivotY = dragStartPivotY
+                val newPivotX = left; val newPivotY = top
+                if ((handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.ML ||
+                     handle == HandleType.TR || handle == HandleType.BL) && item.rotation != 0f) {
+                    // The visual position of the old pivot in world space must stay fixed.
+                    // Rotate old pivot into world, then adjust translate so new pivot lands there.
+                    val rot = Math.toRadians(item.rotation.toDouble())
+                    val cos = kotlin.math.cos(rot).toFloat(); val sin = kotlin.math.sin(rot).toFloat()
+                    // Old top-left in world = it was the pivot, so it was at dragStartPivotX/Y in world.
+                    // New top-left is (left, top) in local. We want the OPPOSITE corner to stay fixed.
+                    // Opposite corner in local:
+                    val oppLocalX = if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) right else left
+                    val oppLocalY = if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) bottom else top
+                    // Opposite corner in world (using old pivot + old rotation):
+                    val dox = oppLocalX - oldPivotX; val doy = oppLocalY - oldPivotY
+                    val oppWorldX = oldPivotX + dox * cos - doy * sin
+                    val oppWorldY = oldPivotY + dox * sin + doy * cos
+                    // New pivot in world should place opposite corner at oppWorld:
+                    val dnx = oppLocalX - newPivotX; val dny = oppLocalY - newPivotY
+                    val oppFromNewX = newPivotX + dnx * cos - dny * sin
+                    val oppFromNewY = newPivotY + dnx * sin + dny * cos
+                    item.x = left + (oppWorldX - oppFromNewX)
+                    item.y = top + (oppWorldY - oppFromNewY)
+                } else {
+                    item.x = left; item.y = top
+                }
+                item.w = right - left; item.h = bottom - top
             }
             is StrokeItem -> {
                 if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
@@ -1010,9 +1042,30 @@ class DrawingView @JvmOverloads constructor(
                             invalidate()
                             return
                         }
+                        val gcx = (gb[0] + gb[2]) / 2f; val gcy = (gb[1] + gb[3]) / 2f
+                        val groupHandlePositions = listOf(
+                            gb[0] to gb[1], gcx to gb[1], gb[2] to gb[1],
+                            gb[0] to gcy,                 gb[2] to gcy,
+                            gb[0] to gb[3], gcx to gb[3], gb[2] to gb[3]
+                        )
+                        var foundHandle = -1
+                        for ((hi, hpos) in groupHandlePositions.withIndex()) {
+                            if (distance(worldX, worldY, hpos.first, hpos.second) <= hitRadius) {
+                                foundHandle = hi; break
+                            }
+                        }
+                        if (foundHandle >= 0) {
+                            groupResizeHandle = foundHandle
+                            groupResizeOrigBounds = gb.copyOf()
+                            // snapshot each item's bounds for proportional scaling
+                            groupResizeItemSnapshots = group.map { getBounds(it)?.copyOf() }
+                            invalidate()
+                            return
+                        }
                         if (worldX in gb[0]..gb[2] && worldY in gb[1]..gb[3]) {
                             groupMoveStartX = worldX
                             groupMoveStartY = worldY
+                            groupResizeHandle = -1
                             invalidate()
                             return
                         }
@@ -1026,11 +1079,35 @@ class DrawingView @JvmOverloads constructor(
             MotionEvent.ACTION_MOVE -> {
                 val group = selectedGroup
                 if (group != null && group.isNotEmpty()) {
-                    val dx = worldX - groupMoveStartX
-                    val dy = worldY - groupMoveStartY
-                    for (it in group) moveItem(it, dx, dy)
-                    groupMoveStartX = worldX
-                    groupMoveStartY = worldY
+                    if (groupResizeHandle >= 0) {
+                        val gb = groupBounds(group)
+                        if (gb != null) {
+                            val origW = (groupResizeOrigBounds[2] - groupResizeOrigBounds[0]).coerceAtLeast(1f)
+                            val origH = (groupResizeOrigBounds[3] - groupResizeOrigBounds[1]).coerceAtLeast(1f)
+                            var newL = groupResizeOrigBounds[0]; var newT = groupResizeOrigBounds[1]
+                            var newR = groupResizeOrigBounds[2]; var newB = groupResizeOrigBounds[3]
+                            when (groupResizeHandle) {
+                                0 -> { newL = worldX; newT = worldY }
+                                1 -> newT = worldY
+                                2 -> { newR = worldX; newT = worldY }
+                                3 -> newL = worldX
+                                4 -> newR = worldX
+                                5 -> { newL = worldX; newB = worldY }
+                                6 -> newB = worldY
+                                7 -> { newR = worldX; newB = worldY }
+                            }
+                            val newW = (newR - newL).coerceAtLeast(10f)
+                            val newH = (newB - newT).coerceAtLeast(10f)
+                            val scaleX = newW / origW; val scaleY = newH / origH
+                            for (it in group) scaleItemInGroup(it, groupResizeOrigBounds[0], groupResizeOrigBounds[1], scaleX, scaleY)
+                        }
+                    } else {
+                        val dx = worldX - groupMoveStartX
+                        val dy = worldY - groupMoveStartY
+                        for (it in group) moveItem(it, dx, dy)
+                        groupMoveStartX = worldX
+                        groupMoveStartY = worldY
+                    }
                     invalidate()
                     return
                 }
@@ -1072,7 +1149,7 @@ class DrawingView @JvmOverloads constructor(
 
         val group = selectedGroup
         if (group != null && group.isNotEmpty()) {
-            val highlightP = Paint(); highlightP.color = Color.parseColor("#552196F3"); highlightP.style = Paint.Style.FILL
+            val highlightP = Paint(); highlightP.color = Color.parseColor("#332196F3"); highlightP.style = Paint.Style.FILL
             for (item in group) {
                 val b = getBounds(item) ?: continue
                 canvas.drawRect(b[0], b[1], b[2], b[3], highlightP)
@@ -1082,7 +1159,23 @@ class DrawingView @JvmOverloads constructor(
                 val borderP = Paint(); borderP.color = Color.parseColor("#2196F3"); borderP.style = Paint.Style.STROKE
                 borderP.strokeWidth = 2f / scaleFactor
                 canvas.drawRect(gb[0], gb[1], gb[2], gb[3], borderP)
+
                 val r = 14f / scaleFactor
+                val cx = (gb[0] + gb[2]) / 2f; val cy = (gb[1] + gb[3]) / 2f
+                val handleFill = Paint(); handleFill.style = Paint.Style.FILL; handleFill.color = Color.WHITE
+                val handleStroke = Paint(); handleStroke.style = Paint.Style.STROKE
+                handleStroke.color = Color.parseColor("#2196F3"); handleStroke.strokeWidth = 2f / scaleFactor
+
+                val handles = listOf(
+                    gb[0] to gb[1], cx to gb[1], gb[2] to gb[1],
+                    gb[0] to cy,                  gb[2] to cy,
+                    gb[0] to gb[3], cx to gb[3], gb[2] to gb[3]
+                )
+                for ((hx, hy) in handles) {
+                    canvas.drawCircle(hx, hy, r, handleFill)
+                    canvas.drawCircle(hx, hy, r, handleStroke)
+                }
+
                 val delP = Paint(); delP.color = Color.parseColor("#F44336"); delP.style = Paint.Style.FILL
                 canvas.drawCircle(gb[2] + r * 2.5f, gb[1] - r * 2.5f, r, delP)
             }
