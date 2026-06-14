@@ -1,10 +1,12 @@
 package com.enginotes.app
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.*
 import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AlertDialog
@@ -12,16 +14,34 @@ import androidx.appcompat.app.AppCompatActivity
 import org.apache.poi.ss.usermodel.WorkbookFactory
 import java.io.File
 import java.io.FileOutputStream
+import kotlin.math.*
+
+data class DataSeries(
+    var name: String,
+    var data: MutableList<Pair<String, Float>>,
+    var color: Int = Color.parseColor("#2196F3"),
+    var lineWidth: Float = 3f,
+    var fontSize: Float = 28f
+)
 
 class ChartActivity : AppCompatActivity() {
 
     private lateinit var chartView: ChartView
-    private var chartData: List<Pair<String, Float>> = emptyList()
+    private val seriesList = mutableListOf<DataSeries>()
     private var chartType = ChartType.BAR
+    private var chartTitle = "My Chart"
+    private var titleFontSize = 40f
+    private var titleColor = Color.BLACK
+    private var bgColor = Color.WHITE
+    private var gridColor = Color.parseColor("#EEEEEE")
+    private var labelFontSize = 26f
+    private var labelColor = Color.DKGRAY
+    private var showGrid = true
+    private var show3D = false
 
-    private val pickExcelLauncher = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.GetContent()) { uri: Uri? ->
-        if (uri != null) loadExcel(uri)
-    }
+    private val pickExcelLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri: Uri? -> if (uri != null) loadExcel(uri) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -31,54 +51,67 @@ class ChartActivity : AppCompatActivity() {
         // Top toolbar
         val toolbar = LinearLayout(this); toolbar.orientation = LinearLayout.HORIZONTAL
         toolbar.setBackgroundColor(Color.parseColor("#FF1565C0"))
-        toolbar.setPadding(dp(8), dp(6), dp(8), dp(6))
+        toolbar.setPadding(dp(6), dp(4), dp(6), dp(4))
         toolbar.gravity = Gravity.CENTER_VERTICAL
 
-        val title = TextView(this); title.text = "📊 Chart Builder"; title.textSize = 16f
+        val title = TextView(this); title.text = "📊 Chart Builder"; title.textSize = 14f
         title.setTextColor(Color.WHITE)
-        val tlp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f); title.layoutParams = tlp
+        title.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         toolbar.addView(title)
 
         fun tbtn(label: String, action: () -> Unit) {
-            val b = Button(this); b.text = label; b.textSize = 12f; b.setTextColor(Color.WHITE)
+            val b = Button(this); b.text = label; b.textSize = 11f; b.setTextColor(Color.WHITE)
             b.setBackgroundColor(Color.parseColor("#55FFFFFF"))
             val p = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            p.setMargins(dp(3), 0, dp(3), 0); b.layoutParams = p
-            b.setPadding(dp(8), dp(4), dp(8), dp(4)); b.minWidth = 0; b.minimumWidth = 0
+            p.setMargins(dp(2), 0, dp(2), 0); b.layoutParams = p
+            b.setPadding(dp(6), dp(3), dp(6), dp(3)); b.minWidth = 0; b.minimumWidth = 0
             b.setOnClickListener { action() }; toolbar.addView(b)
         }
 
         tbtn("📂 Excel") { pickExcelLauncher.launch("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") }
-        tbtn("✏ Manual") { showManualDataDialog() }
-        tbtn("Save") { saveChartToCanvas() }
+        tbtn("✏ Data") { showDataDialog() }
+        tbtn("🎨 Style") { showStyleDialog() }
+        tbtn("📤 Send") { sendToNote() }
         tbtn("✕") { finish() }
         root.addView(toolbar, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
-        // Chart type selector
+        // Chart type scroll
+        val typeScroll = HorizontalScrollView(this)
+        typeScroll.setBackgroundColor(Color.parseColor("#F5F5F5"))
         val typeRow = LinearLayout(this); typeRow.orientation = LinearLayout.HORIZONTAL
-        typeRow.setBackgroundColor(Color.parseColor("#EEF0F0F0"))
-        typeRow.setPadding(dp(8), dp(4), dp(8), dp(4))
+        typeRow.setPadding(dp(4), dp(4), dp(4), dp(4))
 
-        val typeLabel = TextView(this); typeLabel.text = "Type: "; typeLabel.textSize = 14f
-        typeLabel.gravity = Gravity.CENTER_VERTICAL
-        typeRow.addView(typeLabel)
+        val chartTypes = listOf(
+            ChartType.BAR to "Bar", ChartType.BAR_3D to "Bar 3D",
+            ChartType.HORIZONTAL_BAR to "H.Bar", ChartType.STACKED_BAR to "Stacked",
+            ChartType.STACKED_BAR_100 to "100% Stack", ChartType.LINE to "Line",
+            ChartType.LINE_SMOOTH to "Smooth", ChartType.AREA to "Area",
+            ChartType.STACKED_AREA to "Stk.Area", ChartType.PIE to "Pie",
+            ChartType.DONUT to "Donut", ChartType.PIE_3D to "Pie 3D",
+            ChartType.SCATTER to "Scatter", ChartType.BUBBLE to "Bubble",
+            ChartType.RADAR to "Radar", ChartType.HISTOGRAM to "Histogram",
+            ChartType.WATERFALL to "Waterfall", ChartType.FUNNEL to "Funnel",
+            ChartType.HEATMAP to "Heatmap", ChartType.GAUGE to "Gauge",
+            ChartType.CANDLESTICK to "Candle", ChartType.TREEMAP to "Treemap"
+        )
 
-        for ((ct, label) in listOf(ChartType.BAR to "Bar", ChartType.LINE to "Line", ChartType.PIE to "Pie")) {
-            val b = Button(this); b.text = label; b.textSize = 12f
+        val typeBtns = mutableListOf<Button>()
+        for ((ct, label) in chartTypes) {
+            val b = Button(this); b.text = label; b.textSize = 11f
             b.setBackgroundColor(if (chartType == ct) Color.parseColor("#2196F3") else Color.LTGRAY)
             b.setTextColor(if (chartType == ct) Color.WHITE else Color.BLACK)
-            val p = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f); b.layoutParams = p
-            b.setPadding(dp(4), dp(4), dp(4), dp(4)); b.minWidth = 0; b.minimumWidth = 0
+            val p = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            p.setMargins(dp(2), 0, dp(2), 0); b.layoutParams = p
+            b.setPadding(dp(8), dp(3), dp(8), dp(3)); b.minWidth = 0; b.minimumWidth = 0
             b.setOnClickListener {
                 chartType = ct; chartView.chartType = ct; chartView.invalidate()
-                for (v in typeRow.touchables) if (v is Button) {
-                    v.setBackgroundColor(if (v.text == label) Color.parseColor("#2196F3") else Color.LTGRAY)
-                    v.setTextColor(if (v.text == label) Color.WHITE else Color.BLACK)
-                }
+                typeBtns.forEach { it.setBackgroundColor(Color.LTGRAY); it.setTextColor(Color.BLACK) }
+                b.setBackgroundColor(Color.parseColor("#2196F3")); b.setTextColor(Color.WHITE)
             }
-            typeRow.addView(b)
+            typeBtns.add(b); typeRow.addView(b)
         }
-        root.addView(typeRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        typeScroll.addView(typeRow)
+        root.addView(typeScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
         // Chart view
         chartView = ChartView(this)
@@ -86,199 +119,721 @@ class ChartActivity : AppCompatActivity() {
 
         setContentView(root)
 
-        // Load sample data
-        chartData = listOf("Jan" to 120f, "Feb" to 85f, "Mar" to 200f, "Apr" to 150f, "May" to 95f, "Jun" to 180f)
-        chartView.setData(chartData); chartView.chartType = chartType
+        // Default sample data - 2 series
+        seriesList.add(DataSeries("Series A", mutableListOf(
+            "Jan" to 120f, "Feb" to 85f, "Mar" to 200f, "Apr" to 150f, "May" to 95f, "Jun" to 180f
+        ), Color.parseColor("#2196F3")))
+        seriesList.add(DataSeries("Series B", mutableListOf(
+            "Jan" to 80f, "Feb" to 140f, "Mar" to 110f, "Apr" to 190f, "May" to 60f, "Jun" to 220f
+        ), Color.parseColor("#F44336")))
+
+        chartView.bind(seriesList, chartType)
+        chartView.applyStyle(bgColor, gridColor, titleColor, titleFontSize, labelColor, labelFontSize, showGrid, chartTitle)
+    }
+
+    private fun showDataDialog() {
+        val container = LinearLayout(this); container.orientation = LinearLayout.VERTICAL
+        container.setPadding(dp(12), dp(8), dp(12), dp(8))
+
+        val seriesContainer = LinearLayout(this); seriesContainer.orientation = LinearLayout.VERTICAL
+        container.addView(seriesContainer)
+
+        fun refreshSeries() {
+            seriesContainer.removeAllViews()
+            for ((idx, series) in seriesList.withIndex()) {
+                val row = LinearLayout(this); row.orientation = LinearLayout.VERTICAL
+                row.setBackgroundColor(Color.parseColor("#F5F5F5"))
+                row.setPadding(dp(8), dp(6), dp(8), dp(6))
+                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                lp.setMargins(0, dp(4), 0, dp(4)); row.layoutParams = lp
+
+                val headerRow = LinearLayout(this); headerRow.orientation = LinearLayout.HORIZONTAL; headerRow.gravity = Gravity.CENTER_VERTICAL
+                val nameInput = EditText(this); nameInput.setText(series.name); nameInput.textSize = 13f
+                nameInput.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                nameInput.setOnFocusChangeListener { _, _ -> series.name = nameInput.text.toString() }
+
+                val colorBtn = Button(this); colorBtn.text = "🎨"; colorBtn.textSize = 13f
+                colorBtn.setBackgroundColor(series.color); colorBtn.setTextColor(Color.WHITE)
+                colorBtn.setPadding(dp(8), dp(2), dp(8), dp(2)); colorBtn.minWidth = 0; colorBtn.minimumWidth = 0
+                colorBtn.setOnClickListener { showColorGridDialog { c -> series.color = c; colorBtn.setBackgroundColor(c); chartView.invalidate() } }
+
+                val delBtn = Button(this); delBtn.text = "✕"; delBtn.textSize = 13f; delBtn.setTextColor(Color.WHITE)
+                delBtn.setBackgroundColor(Color.parseColor("#F44336"))
+                delBtn.setPadding(dp(8), dp(2), dp(8), dp(2)); delBtn.minWidth = 0; delBtn.minimumWidth = 0
+                delBtn.setOnClickListener { if (seriesList.size > 1) { seriesList.removeAt(idx); refreshSeries(); chartView.invalidate() } }
+
+                headerRow.addView(nameInput); headerRow.addView(colorBtn); headerRow.addView(delBtn)
+                row.addView(headerRow)
+
+                val hint = TextView(this); hint.text = "Data (Label,Value per line):"; hint.textSize = 11f; row.addView(hint)
+                val dataInput = EditText(this); dataInput.minLines = 4
+                dataInput.setText(series.data.joinToString("\n") { "${it.first},${it.second.toInt()}" })
+                dataInput.textSize = 12f
+                dataInput.setOnFocusChangeListener { _, hasFocus ->
+                    if (!hasFocus) {
+                        val newData = mutableListOf<Pair<String, Float>>()
+                        for (line in dataInput.text.toString().lines()) {
+                            val parts = line.trim().split(","); if (parts.size < 2) continue
+                            val v = parts[1].trim().toFloatOrNull() ?: continue
+                            newData.add(parts[0].trim() to v)
+                        }
+                        if (newData.isNotEmpty()) { series.data = newData; chartView.invalidate() }
+                    }
+                }
+                row.addView(dataInput)
+
+                // Line width and font size
+                val widthRow = LinearLayout(this); widthRow.orientation = LinearLayout.HORIZONTAL; widthRow.gravity = Gravity.CENTER_VERTICAL
+                val widthLbl = TextView(this); widthLbl.text = "Line width: "; widthLbl.textSize = 12f
+                val widthSeek = SeekBar(this); widthSeek.max = 20; widthSeek.progress = series.lineWidth.toInt()
+                widthSeek.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                widthSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { series.lineWidth = v.toFloat().coerceAtLeast(1f); chartView.invalidate() }
+                    override fun onStartTrackingTouch(sb: SeekBar?) {}; override fun onStopTrackingTouch(sb: SeekBar?) {}
+                })
+                widthRow.addView(widthLbl); widthRow.addView(widthSeek); row.addView(widthRow)
+
+                seriesContainer.addView(row)
+            }
+        }
+        refreshSeries()
+
+        val addBtn = Button(this); addBtn.text = "+ Add Series"; addBtn.textSize = 13f
+        addBtn.setBackgroundColor(Color.parseColor("#4CAF50")); addBtn.setTextColor(Color.WHITE)
+        addBtn.setOnClickListener {
+            val colors = listOf("#2196F3","#F44336","#4CAF50","#FF9800","#9C27B0","#00BCD4","#FFEB3B","#795548")
+            seriesList.add(DataSeries("Series ${seriesList.size + 1}",
+                mutableListOf("A" to 100f, "B" to 150f, "C" to 80f),
+                Color.parseColor(colors[seriesList.size % colors.size])))
+            refreshSeries(); chartView.invalidate()
+        }
+        container.addView(addBtn)
+
+        val scroll = ScrollView(this); scroll.addView(container)
+        AlertDialog.Builder(this).setTitle("Edit Data & Series").setView(scroll)
+            .setPositiveButton("Apply") { _, _ -> chartView.bind(seriesList, chartType); chartView.invalidate() }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun showStyleDialog() {
+        val container = LinearLayout(this); container.orientation = LinearLayout.VERTICAL
+        container.setPadding(dp(16), dp(8), dp(16), dp(8))
+
+        fun lbl(text: String) { val tv = TextView(this); tv.text = text; tv.textSize = 13f; tv.setPadding(0, dp(8), 0, dp(2)); container.addView(tv) }
+
+        lbl("Chart Title")
+        val titleInput = EditText(this); titleInput.setText(chartTitle); titleInput.textSize = 14f; container.addView(titleInput)
+
+        lbl("Title Color")
+        val titleColorBtn = Button(this); titleColorBtn.text = "Pick Title Color"; titleColorBtn.textSize = 13f
+        titleColorBtn.setBackgroundColor(titleColor); titleColorBtn.setTextColor(Color.WHITE)
+        titleColorBtn.setOnClickListener { showColorGridDialog { c -> titleColor = c; titleColorBtn.setBackgroundColor(c) } }
+        container.addView(titleColorBtn)
+
+        lbl("Title Font Size")
+        val titleSizeSeek = SeekBar(this); titleSizeSeek.max = 80; titleSizeSeek.progress = titleFontSize.toInt()
+        titleSizeSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { titleFontSize = v.toFloat().coerceAtLeast(20f) }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}; override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+        container.addView(titleSizeSeek)
+
+        lbl("Label Color")
+        val labelColorBtn = Button(this); labelColorBtn.text = "Pick Label Color"; labelColorBtn.textSize = 13f
+        labelColorBtn.setBackgroundColor(labelColor); labelColorBtn.setTextColor(Color.WHITE)
+        labelColorBtn.setOnClickListener { showColorGridDialog { c -> labelColor = c; labelColorBtn.setBackgroundColor(c) } }
+        container.addView(labelColorBtn)
+
+        lbl("Label Font Size")
+        val labelSizeSeek = SeekBar(this); labelSizeSeek.max = 60; labelSizeSeek.progress = labelFontSize.toInt()
+        labelSizeSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { labelFontSize = v.toFloat().coerceAtLeast(14f) }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}; override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+        container.addView(labelSizeSeek)
+
+        lbl("Background Color")
+        val bgBtn = Button(this); bgBtn.text = "Pick Background"; bgBtn.textSize = 13f
+        bgBtn.setBackgroundColor(bgColor)
+        bgBtn.setOnClickListener { showColorGridDialog { c -> bgColor = c; bgBtn.setBackgroundColor(c) } }
+        container.addView(bgBtn)
+
+        lbl("Grid Color")
+        val gridBtn = Button(this); gridBtn.text = "Pick Grid Color"; gridBtn.textSize = 13f
+        gridBtn.setBackgroundColor(gridColor)
+        gridBtn.setOnClickListener { showColorGridDialog { c -> gridColor = c; gridBtn.setBackgroundColor(c) } }
+        container.addView(gridBtn)
+
+        val gridCheck = CheckBox(this); gridCheck.text = "Show Grid"; gridCheck.isChecked = showGrid; container.addView(gridCheck)
+        val d3Check = CheckBox(this); d3Check.text = "3D Effect (Bar/Pie)"; d3Check.isChecked = show3D; container.addView(d3Check)
+
+        val scroll = ScrollView(this); scroll.addView(container)
+        AlertDialog.Builder(this).setTitle("Chart Style").setView(scroll)
+            .setPositiveButton("Apply") { _, _ ->
+                chartTitle = titleInput.text.toString()
+                showGrid = gridCheck.isChecked; show3D = d3Check.isChecked
+                chartView.applyStyle(bgColor, gridColor, titleColor, titleFontSize, labelColor, labelFontSize, showGrid, chartTitle)
+                chartView.invalidate()
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun sendToNote() {
+        val bmp = Bitmap.createBitmap(chartView.width.coerceAtLeast(800), chartView.height.coerceAtLeast(600), Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp); chartView.draw(canvas)
+        val folder = File(filesDir, "images"); if (!folder.exists()) folder.mkdirs()
+        val outFile = File(folder, "chart_${System.currentTimeMillis()}.png")
+        try {
+            FileOutputStream(outFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            val result = Intent()
+            result.putExtra("chart_image_path", outFile.absolutePath)
+            setResult(RESULT_OK, result)
+            Toast.makeText(this, "Chart sent to note!", Toast.LENGTH_SHORT).show()
+            finish()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun loadExcel(uri: Uri) {
         try {
             val stream = contentResolver.openInputStream(uri) ?: return
-            val workbook = WorkbookFactory.create(stream)
-            stream.close()
+            val workbook = WorkbookFactory.create(stream); stream.close()
             val sheet = workbook.getSheetAt(0)
-            val data = mutableListOf<Pair<String, Float>>()
+            seriesList.clear()
+            // First row = headers (series names), first col = labels
+            val headerRow = sheet.getRow(0) ?: return
+            val numSeries = headerRow.lastCellNum - 1
+            val colors = listOf("#2196F3","#F44336","#4CAF50","#FF9800","#9C27B0","#00BCD4","#FFEB3B","#795548","#607D8B","#E91E63")
+            for (s in 0 until numSeries) {
+                val name = headerRow.getCell(s + 1)?.toString() ?: "Series ${s+1}"
+                seriesList.add(DataSeries(name, mutableListOf(), Color.parseColor(colors[s % colors.size])))
+            }
             for (row in sheet) {
-                if (row.rowNum == 0) continue // skip header
-                val labelCell = row.getCell(0); val valueCell = row.getCell(1)
-                if (labelCell != null && valueCell != null) {
-                    val label = labelCell.toString()
-                    val value = try { valueCell.numericCellValue.toFloat() } catch (e: Exception) { continue }
-                    data.add(label to value)
+                if (row.rowNum == 0) continue
+                val label = row.getCell(0)?.toString() ?: continue
+                for (s in 0 until numSeries) {
+                    val v = row.getCell(s + 1)?.numericCellValue?.toFloat() ?: continue
+                    if (s < seriesList.size) seriesList[s].data.add(label to v)
                 }
             }
             workbook.close()
-            if (data.isEmpty()) { Toast.makeText(this, "No data found. Expected: Label | Value columns", Toast.LENGTH_LONG).show(); return }
-            chartData = data; chartView.setData(data); Toast.makeText(this, "Loaded ${data.size} rows", Toast.LENGTH_SHORT).show()
+            chartView.bind(seriesList, chartType); chartView.invalidate()
+            Toast.makeText(this, "Loaded ${seriesList.size} series", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Toast.makeText(this, "Excel error: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
-    private fun showManualDataDialog() {
-        val container = LinearLayout(this); container.orientation = LinearLayout.VERTICAL
-        container.setPadding(dp(16), dp(8), dp(16), dp(8))
-
-        val hint = TextView(this); hint.text = "Enter data as: Label,Value (one per line)\nExample:\nJan,120\nFeb,85\nMar,200"
-        hint.textSize = 13f; hint.setPadding(0, 0, 0, dp(8)); container.addView(hint)
-
-        val input = EditText(this); input.minLines = 6
-        input.setText(chartData.joinToString("\n") { "${it.first},${it.second.toInt()}" })
-        container.addView(input)
-
-        AlertDialog.Builder(this).setTitle("Manual Data Entry").setView(container)
-            .setPositiveButton("Apply") { _, _ ->
-                val data = mutableListOf<Pair<String, Float>>()
-                for (line in input.text.toString().lines()) {
-                    val parts = line.trim().split(","); if (parts.size < 2) continue
-                    val v = parts[1].trim().toFloatOrNull() ?: continue
-                    data.add(parts[0].trim() to v)
-                }
-                if (data.isNotEmpty()) { chartData = data; chartView.setData(data) }
-            }.setNegativeButton("Cancel", null).show()
-    }
-
-    private fun saveChartToCanvas() {
-        val bmp = Bitmap.createBitmap(chartView.width, chartView.height, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp); chartView.draw(c)
-        val folder = File(filesDir, "images"); if (!folder.exists()) folder.mkdirs()
-        val outFile = File(folder, "chart_${System.currentTimeMillis()}.png")
-        try {
-            FileOutputStream(outFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
-            Toast.makeText(this, "Chart saved! Go back and use Insert → Image to add it.", Toast.LENGTH_LONG).show()
-        } catch (e: Exception) { Toast.makeText(this, "Save failed: ${e.message}", Toast.LENGTH_LONG).show() }
+    private fun showColorGridDialog(onPicked: (Int) -> Unit) {
+        val grid = GridLayout(this); grid.columnCount = 10; grid.setPadding(dp(10), dp(10), dp(10), dp(10))
+        lateinit var dialog: AlertDialog
+        fun addSwatch(color: Int) {
+            val s = View(this); val p = GridLayout.LayoutParams()
+            p.width = dp(28); p.height = dp(28); p.setMargins(dp(2), dp(2), dp(2), dp(2))
+            s.layoutParams = p; s.setBackgroundColor(color)
+            s.setOnClickListener { onPicked(color); dialog.dismiss() }
+            grid.addView(s)
+        }
+        for (i in 0..9) addSwatch(Color.HSVToColor(floatArrayOf(0f, 0f, 1f - i / 9f)))
+        for (value in listOf(1.0f, 0.85f, 0.7f, 0.5f, 0.3f))
+            for (hue in listOf(0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330))
+                addSwatch(Color.HSVToColor(floatArrayOf(hue.toFloat(), 0.65f, value)))
+        val scroll = ScrollView(this); scroll.addView(grid)
+        dialog = AlertDialog.Builder(this).setTitle("Color").setView(scroll).create(); dialog.show()
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 }
 
-enum class ChartType { BAR, LINE, PIE }
+enum class ChartType {
+    BAR, BAR_3D, HORIZONTAL_BAR, STACKED_BAR, STACKED_BAR_100,
+    LINE, LINE_SMOOTH, AREA, STACKED_AREA,
+    PIE, DONUT, PIE_3D,
+    SCATTER, BUBBLE, RADAR, HISTOGRAM,
+    WATERFALL, FUNNEL, HEATMAP, GAUGE,
+    CANDLESTICK, TREEMAP
+}
 
 class ChartView(context: Context) : View(context) {
-    private var data: List<Pair<String, Float>> = emptyList()
+    private var series = listOf<DataSeries>()
     var chartType = ChartType.BAR
-    private val colors = listOf(
-        Color.parseColor("#2196F3"), Color.parseColor("#F44336"), Color.parseColor("#4CAF50"),
-        Color.parseColor("#FF9800"), Color.parseColor("#9C27B0"), Color.parseColor("#00BCD4"),
-        Color.parseColor("#FFEB3B"), Color.parseColor("#795548"), Color.parseColor("#607D8B"), Color.parseColor("#E91E63")
+
+    private var bgColor = Color.WHITE
+    private var gridColor = Color.parseColor("#EEEEEE")
+    private var titleColor = Color.BLACK
+    private var titleFontSize = 40f
+    private var labelColor = Color.DKGRAY
+    private var labelFontSize = 26f
+    private var showGrid = true
+    private var chartTitle = "Chart"
+
+    private val defaultColors = listOf(
+        Color.parseColor("#2196F3"), Color.parseColor("#F44336"),
+        Color.parseColor("#4CAF50"), Color.parseColor("#FF9800"),
+        Color.parseColor("#9C27B0"), Color.parseColor("#00BCD4"),
+        Color.parseColor("#FFEB3B"), Color.parseColor("#795548"),
+        Color.parseColor("#607D8B"), Color.parseColor("#E91E63")
     )
 
-    fun setData(d: List<Pair<String, Float>>) { data = d; invalidate() }
+    fun bind(s: List<DataSeries>, type: ChartType) { series = s; chartType = type; invalidate() }
+
+    fun applyStyle(bg: Int, grid: Int, tc: Int, tfs: Float, lc: Int, lfs: Float, sg: Boolean, title: String) {
+        bgColor = bg; gridColor = grid; titleColor = tc; titleFontSize = tfs
+        labelColor = lc; labelFontSize = lfs; showGrid = sg; chartTitle = title; invalidate()
+    }
+
+    private fun color(idx: Int): Int = if (idx < series.size) series[idx].color else defaultColors[idx % defaultColors.size]
+    private fun allLabels(): List<String> = series.firstOrNull()?.data?.map { it.first } ?: emptyList()
+    private fun allValues(): List<Float> = series.flatMap { s -> s.data.map { it.second } }
+    private fun maxVal(): Float = allValues().maxOrNull()?.coerceAtLeast(1f) ?: 1f
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        canvas.drawColor(Color.WHITE)
-        if (data.isEmpty()) {
+        canvas.drawColor(bgColor)
+        drawTitle(canvas)
+        if (series.isEmpty() || series.all { it.data.isEmpty() }) {
             val p = Paint(); p.textSize = 40f; p.color = Color.GRAY; p.textAlign = Paint.Align.CENTER
             canvas.drawText("No data", width / 2f, height / 2f, p); return
         }
-        when (chartType) { ChartType.BAR -> drawBar(canvas); ChartType.LINE -> drawLine(canvas); ChartType.PIE -> drawPie(canvas) }
+        when (chartType) {
+            ChartType.BAR -> drawBar(canvas, false)
+            ChartType.BAR_3D -> drawBar(canvas, true)
+            ChartType.HORIZONTAL_BAR -> drawHorizontalBar(canvas)
+            ChartType.STACKED_BAR -> drawStackedBar(canvas, false)
+            ChartType.STACKED_BAR_100 -> drawStackedBar(canvas, true)
+            ChartType.LINE -> drawLine(canvas, false, false)
+            ChartType.LINE_SMOOTH -> drawLine(canvas, true, false)
+            ChartType.AREA -> drawLine(canvas, false, true)
+            ChartType.STACKED_AREA -> drawStackedArea(canvas)
+            ChartType.PIE -> drawPie(canvas, false, false)
+            ChartType.DONUT -> drawPie(canvas, true, false)
+            ChartType.PIE_3D -> drawPie(canvas, false, true)
+            ChartType.SCATTER -> drawScatter(canvas)
+            ChartType.BUBBLE -> drawBubble(canvas)
+            ChartType.RADAR -> drawRadar(canvas)
+            ChartType.HISTOGRAM -> drawHistogram(canvas)
+            ChartType.WATERFALL -> drawWaterfall(canvas)
+            ChartType.FUNNEL -> drawFunnel(canvas)
+            ChartType.HEATMAP -> drawHeatmap(canvas)
+            ChartType.GAUGE -> drawGauge(canvas)
+            ChartType.CANDLESTICK -> drawCandlestick(canvas)
+            ChartType.TREEMAP -> drawTreemap(canvas)
+        }
+        drawLegend(canvas)
     }
 
-    private fun drawBar(canvas: Canvas) {
-        val pad = 80f; val chartW = width - pad * 2f; val chartH = height - pad * 2f
-        val maxVal = data.maxOf { it.second }.coerceAtLeast(1f)
-        val barW = chartW / data.size * 0.7f; val gap = chartW / data.size * 0.3f
+    private fun drawTitle(canvas: Canvas) {
+        val p = Paint(); p.color = titleColor; p.textSize = titleFontSize
+        p.textAlign = Paint.Align.CENTER; p.isFakeBoldText = true; p.isAntiAlias = true
+        canvas.drawText(chartTitle, width / 2f, titleFontSize + 10f, p)
+    }
 
-        // Axes
-        val axP = Paint(); axP.color = Color.DKGRAY; axP.strokeWidth = 2f; axP.style = Paint.Style.STROKE
-        canvas.drawLine(pad, pad, pad, pad + chartH, axP)
-        canvas.drawLine(pad, pad + chartH, pad + chartW, pad + chartH, axP)
+    private fun chartArea(): RectF {
+        val legendH = if (series.size > 1) series.size * (labelFontSize + 8f) + 20f else 0f
+        return RectF(80f, titleFontSize + 30f, width - 20f, height - legendH - 50f)
+    }
 
-        // Y grid lines and labels
-        val lp = Paint(); lp.color = Color.GRAY; lp.textSize = 28f; lp.textAlign = Paint.Align.RIGHT
+    private fun drawAxes(canvas: Canvas, area: RectF, maxV: Float, labels: List<String>, horizontal: Boolean = false) {
+        val ap = Paint(); ap.color = Color.DKGRAY; ap.strokeWidth = 2f
+        canvas.drawLine(area.left, area.top, area.left, area.bottom, ap)
+        canvas.drawLine(area.left, area.bottom, area.right, area.bottom, ap)
+        val lp = Paint(); lp.color = labelColor; lp.textSize = labelFontSize; lp.isAntiAlias = true
+        val gp = Paint(); gp.color = gridColor; gp.strokeWidth = 1f
         for (i in 0..4) {
-            val v = maxVal * i / 4f; val y = pad + chartH - (chartH * i / 4f)
-            canvas.drawLine(pad, y, pad + chartW, y, Paint().also { it.color = Color.parseColor("#EEEEEE"); it.strokeWidth = 1f })
-            canvas.drawText(v.toInt().toString(), pad - 8f, y + 10f, lp)
+            val v = maxV * i / 4f
+            val y = area.bottom - (area.height() * i / 4f)
+            if (showGrid) canvas.drawLine(area.left, y, area.right, y, gp)
+            lp.textAlign = Paint.Align.RIGHT
+            canvas.drawText(v.toInt().toString(), area.left - 8f, y + lp.textSize / 3f, lp)
         }
-
-        // Bars
-        for ((idx, entry) in data.withIndex()) {
-            val barH = chartH * entry.second / maxVal
-            val left = pad + idx * (chartW / data.size) + gap / 2f
-            val right = left + barW
-            val top = pad + chartH - barH
-            val bp = Paint(); bp.color = colors[idx % colors.size]; bp.style = Paint.Style.FILL
-            canvas.drawRect(left, top, right, pad + chartH, bp)
-
-            // Value label
-            val vp = Paint(); vp.color = Color.DKGRAY; vp.textSize = 24f; vp.textAlign = Paint.Align.CENTER
-            canvas.drawText(entry.second.toInt().toString(), (left + right) / 2f, top - 8f, vp)
-
-            // X label
-            val xl = Paint(); xl.color = Color.DKGRAY; xl.textSize = 24f; xl.textAlign = Paint.Align.CENTER
-            canvas.drawText(entry.first, (left + right) / 2f, pad + chartH + 36f, xl)
+        lp.textAlign = Paint.Align.CENTER
+        for ((idx, label) in labels.withIndex()) {
+            val x = area.left + (idx + 0.5f) * area.width() / labels.size
+            canvas.drawText(label, x, area.bottom + labelFontSize + 8f, lp)
         }
-
-        // Title
-        val tp = Paint(); tp.color = Color.BLACK; tp.textSize = 36f; tp.textAlign = Paint.Align.CENTER; tp.isFakeBoldText = true
-        canvas.drawText("Bar Chart", width / 2f, 48f, tp)
     }
 
-    private fun drawLine(canvas: Canvas) {
-        val pad = 80f; val chartW = width - pad * 2f; val chartH = height - pad * 2f
-        val maxVal = data.maxOf { it.second }.coerceAtLeast(1f)
-        val stepX = chartW / (data.size - 1).coerceAtLeast(1)
-
-        val axP = Paint(); axP.color = Color.DKGRAY; axP.strokeWidth = 2f
-        canvas.drawLine(pad, pad, pad, pad + chartH, axP)
-        canvas.drawLine(pad, pad + chartH, pad + chartW, pad + chartH, axP)
-
-        val lp = Paint(); lp.color = Color.GRAY; lp.textSize = 28f; lp.textAlign = Paint.Align.RIGHT
-        for (i in 0..4) {
-            val v = maxVal * i / 4f; val y = pad + chartH - (chartH * i / 4f)
-            canvas.drawLine(pad, y, pad + chartW, y, Paint().also { it.color = Color.parseColor("#EEEEEE"); it.strokeWidth = 1f })
-            canvas.drawText(v.toInt().toString(), pad - 8f, y + 10f, lp)
+    private fun drawBar(canvas: Canvas, is3D: Boolean) {
+        val area = chartArea(); val labels = allLabels(); val maxV = maxVal()
+        drawAxes(canvas, area, maxV, labels)
+        val groupW = area.width() / labels.size.coerceAtLeast(1)
+        val barW = groupW * 0.8f / series.size.coerceAtLeast(1)
+        val d3offset = if (is3D) 12f else 0f
+        for ((si, s) in series.withIndex()) {
+            val p = Paint(); p.color = color(si); p.style = Paint.Style.FILL; p.isAntiAlias = true
+            for ((di, entry) in s.data.withIndex()) {
+                val barH = area.height() * entry.second / maxV
+                val left = area.left + di * groupW + si * barW + groupW * 0.1f
+                val right = left + barW; val top = area.bottom - barH
+                if (is3D) {
+                    val sp = Paint(); sp.color = Color.parseColor("#80000000"); sp.style = Paint.Style.FILL
+                    val path = Path()
+                    path.moveTo(right, top); path.lineTo(right + d3offset, top - d3offset)
+                    path.lineTo(right + d3offset, area.bottom - d3offset); path.lineTo(right, area.bottom); path.close()
+                    canvas.drawPath(path, sp)
+                    val tp = Paint(); tp.color = Color.parseColor("#40FFFFFF"); tp.style = Paint.Style.FILL
+                    val tpath = Path()
+                    tpath.moveTo(left, top); tpath.lineTo(left + d3offset, top - d3offset)
+                    tpath.lineTo(right + d3offset, top - d3offset); tpath.lineTo(right, top); tpath.close()
+                    canvas.drawPath(tpath, tp)
+                }
+                canvas.drawRect(left, top, right, area.bottom, p)
+                val vp = Paint(); vp.color = labelColor; vp.textSize = labelFontSize * 0.8f; vp.textAlign = Paint.Align.CENTER; vp.isAntiAlias = true
+                canvas.drawText(entry.second.toInt().toString(), (left + right) / 2f, top - 4f, vp)
+            }
         }
-
-        val linePaint = Paint(); linePaint.color = Color.parseColor("#2196F3"); linePaint.strokeWidth = 4f; linePaint.style = Paint.Style.STROKE; linePaint.isAntiAlias = true
-        val path = Path()
-        val points = data.mapIndexed { idx, entry ->
-            val x = pad + idx * stepX; val y = pad + chartH - chartH * entry.second / maxVal
-            Pair(x, y)
-        }
-        path.moveTo(points[0].first, points[0].second)
-        for (i in 1 until points.size) path.lineTo(points[i].first, points[i].second)
-        canvas.drawPath(path, linePaint)
-
-        for ((idx, pt) in points.withIndex()) {
-            val cp = Paint(); cp.color = Color.parseColor("#F44336"); cp.style = Paint.Style.FILL
-            canvas.drawCircle(pt.first, pt.second, 8f, cp)
-            val xl = Paint(); xl.color = Color.DKGRAY; xl.textSize = 24f; xl.textAlign = Paint.Align.CENTER
-            canvas.drawText(data[idx].first, pt.first, pad + chartH + 36f, xl)
-            val vl = Paint(); vl.color = Color.DKGRAY; vl.textSize = 22f; vl.textAlign = Paint.Align.CENTER
-            canvas.drawText(data[idx].second.toInt().toString(), pt.first, pt.second - 16f, vl)
-        }
-
-        val tp = Paint(); tp.color = Color.BLACK; tp.textSize = 36f; tp.textAlign = Paint.Align.CENTER; tp.isFakeBoldText = true
-        canvas.drawText("Line Chart", width / 2f, 48f, tp)
     }
 
-    private fun drawPie(canvas: Canvas) {
-        val total = data.sumOf { it.second.toDouble() }.toFloat().coerceAtLeast(1f)
-        val cx = width / 2f; val cy = height / 2f
-        val radius = minOf(width, height) / 2.5f
-        val oval = RectF(cx - radius, cy - radius, cx + radius, cy + radius)
+    private fun drawHorizontalBar(canvas: Canvas) {
+        val area = chartArea(); val labels = allLabels(); val maxV = maxVal()
+        val ap = Paint(); ap.color = Color.DKGRAY; ap.strokeWidth = 2f
+        canvas.drawLine(area.left, area.top, area.left, area.bottom, ap)
+        canvas.drawLine(area.left, area.bottom, area.right, area.bottom, ap)
+        val groupH = area.height() / labels.size.coerceAtLeast(1)
+        val barH = groupH * 0.8f / series.size.coerceAtLeast(1)
+        val lp = Paint(); lp.color = labelColor; lp.textSize = labelFontSize; lp.textAlign = Paint.Align.RIGHT; lp.isAntiAlias = true
+        for ((di, label) in labels.withIndex()) {
+            val cy = area.top + (di + 0.5f) * groupH
+            canvas.drawText(label, area.left - 8f, cy + labelFontSize / 3f, lp)
+        }
+        for ((si, s) in series.withIndex()) {
+            val p = Paint(); p.color = color(si); p.style = Paint.Style.FILL; p.isAntiAlias = true
+            for ((di, entry) in s.data.withIndex()) {
+                val barW = area.width() * entry.second / maxV
+                val top2 = area.top + di * groupH + si * barH + groupH * 0.1f
+                val bottom2 = top2 + barH
+                canvas.drawRect(area.left, top2, area.left + barW, bottom2, p)
+            }
+        }
+    }
+
+    private fun drawStackedBar(canvas: Canvas, pct: Boolean) {
+        val area = chartArea(); val labels = allLabels()
+        val totals = labels.indices.map { idx -> series.sumOf { s -> s.data.getOrNull(idx)?.second?.toDouble() ?: 0.0 }.toFloat() }
+        val maxV = if (pct) 100f else totals.maxOrNull()?.coerceAtLeast(1f) ?: 1f
+        drawAxes(canvas, area, maxV, labels)
+        val barW = area.width() / labels.size.coerceAtLeast(1) * 0.7f
+        for ((di, label) in labels.withIndex()) {
+            var yOff = 0f
+            val total = totals.getOrElse(di) { 1f }.coerceAtLeast(1f)
+            for ((si, s) in series.withIndex()) {
+                val rawV = s.data.getOrNull(di)?.second ?: 0f
+                val v = if (pct) rawV / total * 100f else rawV
+                val barH = area.height() * v / maxV
+                val left = area.left + di * area.width() / labels.size + area.width() / labels.size * 0.15f
+                val top = area.bottom - yOff - barH
+                val p = Paint(); p.color = color(si); p.style = Paint.Style.FILL; p.isAntiAlias = true
+                canvas.drawRect(left, top, left + barW, area.bottom - yOff, p)
+                yOff += barH
+            }
+        }
+    }
+
+    private fun drawLine(canvas: Canvas, smooth: Boolean, fillArea: Boolean) {
+        val area = chartArea(); val labels = allLabels(); val maxV = maxVal()
+        drawAxes(canvas, area, maxV, labels)
+        for ((si, s) in series.withIndex()) {
+            if (s.data.isEmpty()) continue
+            val pts = s.data.mapIndexed { di, entry ->
+                val x = area.left + (di + 0.5f) * area.width() / s.data.size
+                val y = area.bottom - area.height() * entry.second / maxV
+                Pair(x, y)
+            }
+            val p = Paint(); p.color = color(si); p.strokeWidth = s.lineWidth; p.style = Paint.Style.STROKE; p.isAntiAlias = true; p.strokeCap = Paint.Cap.ROUND; p.strokeJoin = Paint.Join.ROUND
+            val path = Path()
+            if (smooth && pts.size >= 2) {
+                path.moveTo(pts[0].first, pts[0].second)
+                for (i in 1 until pts.size) {
+                    val cx = (pts[i-1].first + pts[i].first) / 2f
+                    path.cubicTo(cx, pts[i-1].second, cx, pts[i].second, pts[i].first, pts[i].second)
+                }
+            } else {
+                path.moveTo(pts[0].first, pts[0].second)
+                for (pt in pts.drop(1)) path.lineTo(pt.first, pt.second)
+            }
+            if (fillArea) {
+                val fillPath = Path(path)
+                fillPath.lineTo(pts.last().first, area.bottom); fillPath.lineTo(pts.first().first, area.bottom); fillPath.close()
+                val fp = Paint(); fp.color = color(si); fp.alpha = 60; fp.style = Paint.Style.FILL; fp.isAntiAlias = true
+                canvas.drawPath(fillPath, fp)
+            }
+            canvas.drawPath(path, p)
+            val dp2 = Paint(); dp2.color = color(si); dp2.style = Paint.Style.FILL; dp2.isAntiAlias = true
+            for (pt in pts) canvas.drawCircle(pt.first, pt.second, 7f, dp2)
+        }
+    }
+
+    private fun drawStackedArea(canvas: Canvas) {
+        val area = chartArea(); val labels = allLabels()
+        val totals = labels.indices.map { idx -> series.sumOf { s -> s.data.getOrNull(idx)?.second?.toDouble() ?: 0.0 }.toFloat() }
+        val maxV = totals.maxOrNull()?.coerceAtLeast(1f) ?: 1f
+        drawAxes(canvas, area, maxV, labels)
+        val cumulative = MutableList(labels.size) { 0f }
+        for ((si, s) in series.withIndex()) {
+            val pts = s.data.indices.map { di ->
+                val x = area.left + (di + 0.5f) * area.width() / labels.size
+                val y = area.bottom - area.height() * (cumulative[di] + (s.data.getOrNull(di)?.second ?: 0f)) / maxV
+                Pair(x, y)
+            }
+            val prevPts = s.data.indices.map { di ->
+                val x = area.left + (di + 0.5f) * area.width() / labels.size
+                val y = area.bottom - area.height() * cumulative[di] / maxV
+                Pair(x, y)
+            }
+            val path = Path(); path.moveTo(prevPts.first().first, prevPts.first().second)
+            for (pt in prevPts.drop(1)) path.lineTo(pt.first, pt.second)
+            for (pt in pts.reversed()) path.lineTo(pt.first, pt.second)
+            path.close()
+            val p = Paint(); p.color = color(si); p.alpha = 180; p.style = Paint.Style.FILL; p.isAntiAlias = true
+            canvas.drawPath(path, p)
+            for (di in s.data.indices) cumulative[di] += s.data.getOrNull(di)?.second ?: 0f
+        }
+    }
+
+    private fun drawPie(canvas: Canvas, donut: Boolean, is3D: Boolean) {
+        val area = chartArea()
+        val cx = area.centerX(); val cy = area.centerY()
+        val radius = minOf(area.width(), area.height()) / 2.5f
+        val s = series.firstOrNull() ?: return
+        val total = s.data.sumOf { it.second.toDouble() }.toFloat().coerceAtLeast(1f)
         var startAngle = -90f
-
-        for ((idx, entry) in data.withIndex()) {
+        val d3depth = if (is3D) 20f else 0f
+        val oval = RectF(cx - radius, cy - radius, cx + radius, cy + radius)
+        if (is3D) {
+            val oval3d = RectF(cx - radius, cy - radius + d3depth, cx + radius, cy + radius + d3depth)
+            for ((idx, entry) in s.data.withIndex()) {
+                val sweep = 360f * entry.second / total
+                if (startAngle + sweep > 0) {
+                    val p = Paint(); p.color = color(idx); p.alpha = 180; p.style = Paint.Style.FILL; p.isAntiAlias = true
+                    canvas.drawArc(oval3d, startAngle, sweep, true, p)
+                }
+                startAngle += sweep
+            }
+            startAngle = -90f
+        }
+        for ((idx, entry) in s.data.withIndex()) {
             val sweep = 360f * entry.second / total
-            val pp = Paint(); pp.color = colors[idx % colors.size]; pp.style = Paint.Style.FILL; pp.isAntiAlias = true
-            canvas.drawArc(oval, startAngle, sweep, true, pp)
-
-            // Label line + text
-            val midAngle = Math.toRadians((startAngle + sweep / 2).toDouble())
-            val lx = cx + (radius * 1.25f * kotlin.math.cos(midAngle)).toFloat()
-            val ly = cy + (radius * 1.25f * kotlin.math.sin(midAngle)).toFloat()
-            val lp = Paint(); lp.color = Color.DKGRAY; lp.textSize = 28f
+            val p = Paint(); p.color = color(idx); p.style = Paint.Style.FILL; p.isAntiAlias = true
+            canvas.drawArc(oval, startAngle, sweep, true, p)
+            if (donut) {
+                val dp2 = Paint(); dp2.color = bgColor; dp2.style = Paint.Style.FILL
+                canvas.drawCircle(cx, cy, radius * 0.5f, dp2)
+            }
+            val mid = Math.toRadians((startAngle + sweep / 2).toDouble())
+            val lx = cx + (radius * 1.2f * cos(mid)).toFloat()
+            val ly = cy + (radius * 1.2f * sin(mid)).toFloat()
+            val lp = Paint(); lp.color = labelColor; lp.textSize = labelFontSize * 0.9f; lp.isAntiAlias = true
             lp.textAlign = if (lx > cx) Paint.Align.LEFT else Paint.Align.RIGHT
-            canvas.drawText("${entry.first} (${(entry.second / total * 100).toInt()}%)", lx, ly, lp)
-
+            canvas.drawText("${entry.first} ${(entry.second/total*100).toInt()}%", lx, ly, lp)
             startAngle += sweep
         }
+    }
 
-        val tp = Paint(); tp.color = Color.BLACK; tp.textSize = 36f; tp.textAlign = Paint.Align.CENTER; tp.isFakeBoldText = true
-        canvas.drawText("Pie Chart", width / 2f, 48f, tp)
+    private fun drawScatter(canvas: Canvas) {
+        val area = chartArea(); val maxV = maxVal()
+        drawAxes(canvas, area, maxV, allLabels())
+        for ((si, s) in series.withIndex()) {
+            val p = Paint(); p.color = color(si); p.style = Paint.Style.FILL; p.isAntiAlias = true; p.alpha = 180
+            for ((di, entry) in s.data.withIndex()) {
+                val x = area.left + (di + 0.5f) * area.width() / s.data.size
+                val y = area.bottom - area.height() * entry.second / maxV
+                canvas.drawCircle(x, y, 12f, p)
+            }
+        }
+    }
+
+    private fun drawBubble(canvas: Canvas) {
+        val area = chartArea(); val maxV = maxVal()
+        drawAxes(canvas, area, maxV, allLabels())
+        for ((si, s) in series.withIndex()) {
+            val p = Paint(); p.color = color(si); p.style = Paint.Style.FILL; p.isAntiAlias = true; p.alpha = 120
+            for ((di, entry) in s.data.withIndex()) {
+                val x = area.left + (di + 0.5f) * area.width() / s.data.size
+                val y = area.bottom - area.height() * entry.second / maxV
+                val r = (entry.second / maxV * 40f).coerceIn(8f, 50f)
+                canvas.drawCircle(x, y, r, p)
+            }
+        }
+    }
+
+    private fun drawRadar(canvas: Canvas) {
+        val labels = allLabels(); val n = labels.size.coerceAtLeast(3); val maxV = maxVal()
+        val cx = width / 2f; val cy = height / 2f; val r = minOf(width, height) / 3f
+        val gp = Paint(); gp.color = gridColor; gp.style = Paint.Style.STROKE; gp.strokeWidth = 1f
+        for (ring in 1..4) {
+            val rr = r * ring / 4f; val path = Path()
+            for (i in 0 until n) {
+                val a = Math.toRadians(-90.0 + 360.0 * i / n)
+                val x = cx + (rr * cos(a)).toFloat(); val y = cy + (rr * sin(a)).toFloat()
+                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            path.close(); canvas.drawPath(path, gp)
+        }
+        val lp = Paint(); lp.color = labelColor; lp.textSize = labelFontSize; lp.textAlign = Paint.Align.CENTER; lp.isAntiAlias = true
+        for (i in 0 until n) {
+            val a = Math.toRadians(-90.0 + 360.0 * i / n)
+            canvas.drawLine(cx, cy, cx + (r * cos(a)).toFloat(), cy + (r * sin(a)).toFloat(), gp)
+            canvas.drawText(labels[i], cx + ((r + 24f) * cos(a)).toFloat(), cy + ((r + 24f) * sin(a)).toFloat(), lp)
+        }
+        for ((si, s) in series.withIndex()) {
+            val p = Paint(); p.color = color(si); p.strokeWidth = s.lineWidth; p.style = Paint.Style.STROKE; p.isAntiAlias = true
+            val fp = Paint(); fp.color = color(si); fp.alpha = 60; fp.style = Paint.Style.FILL; fp.isAntiAlias = true
+            val path = Path()
+            for (i in 0 until n) {
+                val v = s.data.getOrNull(i)?.second ?: 0f
+                val a = Math.toRadians(-90.0 + 360.0 * i / n)
+                val rr = r * v / maxV
+                val x = cx + (rr * cos(a)).toFloat(); val y = cy + (rr * sin(a)).toFloat()
+                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            path.close(); canvas.drawPath(path, fp); canvas.drawPath(path, p)
+        }
+    }
+
+    private fun drawHistogram(canvas: Canvas) {
+        val area = chartArea(); val s = series.firstOrNull() ?: return
+        val values = s.data.map { it.second }
+        val bins = 8; val minV = values.minOrNull() ?: 0f; val maxV2 = values.maxOrNull() ?: 1f
+        val binSize = (maxV2 - minV) / bins
+        val counts = IntArray(bins)
+        for (v in values) { val bin = ((v - minV) / binSize).toInt().coerceIn(0, bins - 1); counts[bin]++ }
+        val maxCount = counts.maxOrNull()?.coerceAtLeast(1) ?: 1
+        val ap = Paint(); ap.color = Color.DKGRAY; ap.strokeWidth = 2f
+        canvas.drawLine(area.left, area.top, area.left, area.bottom, ap)
+        canvas.drawLine(area.left, area.bottom, area.right, area.bottom, ap)
+        val bw = area.width() / bins
+        for (i in 0 until bins) {
+            val bh = area.height() * counts[i] / maxCount
+            val p = Paint(); p.color = color(0); p.style = Paint.Style.FILL; p.isAntiAlias = true
+            canvas.drawRect(area.left + i * bw + 2f, area.bottom - bh, area.left + (i+1) * bw - 2f, area.bottom, p)
+            val lp = Paint(); lp.color = labelColor; lp.textSize = labelFontSize * 0.8f; lp.textAlign = Paint.Align.CENTER; lp.isAntiAlias = true
+            canvas.drawText("${(minV + i * binSize).toInt()}", area.left + (i + 0.5f) * bw, area.bottom + labelFontSize + 4f, lp)
+        }
+    }
+
+    private fun drawWaterfall(canvas: Canvas) {
+        val area = chartArea(); val s = series.firstOrNull() ?: return
+        val maxV = s.data.sumOf { it.second.toDouble() }.toFloat().coerceAtLeast(1f)
+        val labels = s.data.map { it.first }
+        drawAxes(canvas, area, maxV, labels)
+        var cumulative = 0f
+        val bw = area.width() / s.data.size * 0.7f
+        for ((di, entry) in s.data.withIndex()) {
+            val x = area.left + di * area.width() / s.data.size + area.width() / s.data.size * 0.15f
+            val bottom = area.bottom - area.height() * cumulative / maxV
+            val top = area.bottom - area.height() * (cumulative + entry.second) / maxV
+            val p = Paint(); p.color = if (entry.second >= 0) color(0) else color(1); p.style = Paint.Style.FILL; p.isAntiAlias = true
+            canvas.drawRect(x, top, x + bw, bottom, p)
+            cumulative += entry.second
+        }
+    }
+
+    private fun drawFunnel(canvas: Canvas) {
+        val area = chartArea(); val s = series.firstOrNull() ?: return
+        val total = s.data.firstOrNull()?.second?.coerceAtLeast(1f) ?: 1f
+        val sliceH = area.height() / s.data.size.coerceAtLeast(1)
+        for ((idx, entry) in s.data.withIndex()) {
+            val ratio = entry.second / total
+            val thisW = area.width() * ratio
+            val nextRatio = s.data.getOrNull(idx + 1)?.second?.div(total) ?: (ratio * 0.6f)
+            val nextW = area.width() * nextRatio
+            val top = area.top + idx * sliceH; val bottom = top + sliceH
+            val path = Path()
+            path.moveTo(area.centerX() - thisW / 2f, top)
+            path.lineTo(area.centerX() + thisW / 2f, top)
+            path.lineTo(area.centerX() + nextW / 2f, bottom)
+            path.lineTo(area.centerX() - nextW / 2f, bottom)
+            path.close()
+            val p = Paint(); p.color = color(idx); p.style = Paint.Style.FILL; p.isAntiAlias = true
+            canvas.drawPath(path, p)
+            val lp = Paint(); lp.color = Color.WHITE; lp.textSize = labelFontSize; lp.textAlign = Paint.Align.CENTER; lp.isAntiAlias = true
+            canvas.drawText("${entry.first}: ${entry.second.toInt()}", area.centerX(), top + sliceH / 2f + labelFontSize / 3f, lp)
+        }
+    }
+
+    private fun drawHeatmap(canvas: Canvas) {
+        val area = chartArea()
+        val rows = series.size.coerceAtLeast(1)
+        val cols = series.firstOrNull()?.data?.size?.coerceAtLeast(1) ?: 1
+        val cellW = area.width() / cols; val cellH = area.height() / rows
+        val allV = allValues(); val minV = allV.minOrNull() ?: 0f; val maxV2 = allV.maxOrNull()?.coerceAtLeast(minV + 1f) ?: 1f
+        for ((si, s) in series.withIndex()) {
+            for ((di, entry) in s.data.withIndex()) {
+                val t = (entry.second - minV) / (maxV2 - minV)
+                val c = Color.HSVToColor(floatArrayOf(240f * (1f - t), 0.8f, 0.9f))
+                val p = Paint(); p.color = c; p.style = Paint.Style.FILL
+                canvas.drawRect(area.left + di * cellW, area.top + si * cellH, area.left + (di+1) * cellW - 2f, area.top + (si+1) * cellH - 2f, p)
+                val lp = Paint(); lp.color = Color.WHITE; lp.textSize = labelFontSize * 0.8f; lp.textAlign = Paint.Align.CENTER; lp.isAntiAlias = true
+                canvas.drawText(entry.second.toInt().toString(), area.left + (di + 0.5f) * cellW, area.top + (si + 0.5f) * cellH + labelFontSize * 0.3f, lp)
+            }
+        }
+    }
+
+    private fun drawGauge(canvas: Canvas) {
+        val s = series.firstOrNull() ?: return
+        val v = s.data.firstOrNull()?.second ?: 0f
+        val maxV = 100f; val cx = width / 2f; val cy = height * 0.65f; val r = minOf(width, height) * 0.38f
+        val sweepAngle = 180f * v / maxV
+        val bgP = Paint(); bgP.color = Color.LTGRAY; bgP.style = Paint.Style.STROKE; bgP.strokeWidth = 30f; bgP.isAntiAlias = true
+        canvas.drawArc(RectF(cx-r, cy-r, cx+r, cy+r), 180f, 180f, false, bgP)
+        val fgP = Paint(); fgP.color = color(0); fgP.style = Paint.Style.STROKE; fgP.strokeWidth = 30f; fgP.isAntiAlias = true
+        canvas.drawArc(RectF(cx-r, cy-r, cx+r, cy+r), 180f, sweepAngle, false, fgP)
+        val tp = Paint(); tp.color = titleColor; tp.textSize = titleFontSize * 1.2f; tp.textAlign = Paint.Align.CENTER; tp.isFakeBoldText = true; tp.isAntiAlias = true
+        canvas.drawText("${v.toInt()}%", cx, cy + 20f, tp)
+        val lp = Paint(); lp.color = labelColor; lp.textSize = labelFontSize; lp.textAlign = Paint.Align.CENTER; lp.isAntiAlias = true
+        canvas.drawText(s.data.firstOrNull()?.first ?: "", cx, cy + labelFontSize + 30f, lp)
+    }
+
+    private fun drawCandlestick(canvas: Canvas) {
+        val area = chartArea(); val s = series.firstOrNull() ?: return
+        val maxV = maxVal(); val labels = allLabels()
+        drawAxes(canvas, area, maxV, labels)
+        val cw = area.width() / s.data.size * 0.6f
+        for ((di, entry) in s.data.withIndex()) {
+            val x = area.left + (di + 0.5f) * area.width() / s.data.size
+            val prev = s.data.getOrNull(di - 1)?.second ?: entry.second
+            val open = prev; val close = entry.second
+            val high = maxOf(open, close) * 1.05f; val low = minOf(open, close) * 0.95f
+            val openY = area.bottom - area.height() * open / maxV
+            val closeY = area.bottom - area.height() * close / maxV
+            val highY = area.bottom - area.height() * high / maxV
+            val lowY = area.bottom - area.height() * low / maxV
+            val isUp = close >= open
+            val p = Paint(); p.color = if (isUp) Color.parseColor("#4CAF50") else Color.parseColor("#F44336"); p.strokeWidth = 2f; p.isAntiAlias = true
+            canvas.drawLine(x, highY, x, lowY, p)
+            p.style = Paint.Style.FILL
+            canvas.drawRect(x - cw/2f, minOf(openY, closeY), x + cw/2f, maxOf(openY, closeY), p)
+        }
+    }
+
+    private fun drawTreemap(canvas: Canvas) {
+        val area = chartArea(); val s = series.firstOrNull() ?: return
+        val total = s.data.sumOf { it.second.toDouble() }.toFloat().coerceAtLeast(1f)
+        var x = area.left; var y = area.top; var rowH = 0f
+        val rowMaxW = area.width()
+        for ((idx, entry) in s.data.withIndex()) {
+            val w = area.width() * entry.second / total
+            val h = area.height() * entry.second / total * 2f
+            if (x + w > area.right) { x = area.left; y += rowH; rowH = 0f }
+            rowH = maxOf(rowH, h)
+            val p = Paint(); p.color = color(idx); p.style = Paint.Style.FILL; p.isAntiAlias = true
+            canvas.drawRect(x + 2f, y + 2f, x + w - 2f, y + h - 2f, p)
+            val lp = Paint(); lp.color = Color.WHITE; lp.textSize = labelFontSize * 0.8f; lp.textAlign = Paint.Align.CENTER; lp.isAntiAlias = true
+            if (w > 60f && h > 30f) canvas.drawText(entry.first, x + w/2f, y + h/2f, lp)
+            x += w
+        }
+    }
+
+    private fun drawLegend(canvas: Canvas) {
+        if (series.size <= 1) return
+        val lp = Paint(); lp.textSize = labelFontSize; lp.isAntiAlias = true
+        var ly = height - (series.size * (labelFontSize + 8f)) - 10f
+        for ((si, s) in series.withIndex()) {
+            val p = Paint(); p.color = color(si); p.style = Paint.Style.FILL
+            canvas.drawRect(20f, ly, 20f + labelFontSize, ly + labelFontSize, p)
+            lp.color = labelColor; lp.textAlign = Paint.Align.LEFT
+            canvas.drawText(s.name, 20f + labelFontSize + 8f, ly + labelFontSize, lp)
+            ly += labelFontSize + 8f
+        }
     }
 }
