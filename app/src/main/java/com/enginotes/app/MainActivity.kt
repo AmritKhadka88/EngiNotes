@@ -328,7 +328,7 @@ class MainActivity : AppCompatActivity() {
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
             lp.setMargins(0, dp(10), 0, dp(4))
             v.layoutParams = lp
-            v.setBackgroundColor(0xFFDDDDDD.toInt())
+            v.setBackgroundColor(-2236963)
             container.addView(v)
         }
 
