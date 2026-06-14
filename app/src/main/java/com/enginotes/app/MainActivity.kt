@@ -46,9 +46,6 @@ class MainActivity : AppCompatActivity() {
     private var currentFileName: String? = null
     private var lastSavedContent: String = ""
 
-    // Font size: 1pt = 3.7795px at 96dpi (screen px), but we want Word-like
-    // At 96dpi, 1pt = 1.333px. Word displays at 100% zoom ≈ 96dpi.
-    // So size 12 → 12 * 1.333 = 16px in world coords (before canvas scale).
     private val PT_TO_PX = 1.333f
 
     private val shapeSymbols = listOf("╱ Line", "▭ Rectangle", "▢ Rounded Rect", "○ Circle", "⬭ Ellipse", "△ Triangle", "◇ Diamond", "➔ Arrow", "★ Star", "⬠ Pentagon", "⬡ Hexagon", "〜 Curve", "✛ Cross")
@@ -61,15 +58,13 @@ class MainActivity : AppCompatActivity() {
     private var editWorldY = 0f
     private var editRotation = 0f
     private var editColor = Color.BLACK
-    private var editSize = 12f * 1.333f  // default 12pt
+    private var editSize = 12f * 1.333f
     private var pendingBold = false
     private var pendingItalic = false
     private var pendingUnderline = false
     private var pendingHighlight: Int? = null
 
     private var cameraImageFile: File? = null
-
-    // Track which top toolbar button is "active" for highlight
     private var activeToolbarButton: Button? = null
 
     private val pickImageLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -102,7 +97,6 @@ class MainActivity : AppCompatActivity() {
         lastSavedContent = drawingView.serialize()
         drawingView.arcDivisions = getPrefs().getInt("arc_divisions", 3)
 
-        // Active tool indicator — overlaid below ⋮, no layout shift
         tvActiveTool = TextView(this)
         tvActiveTool.textSize = 9f
         tvActiveTool.setTextColor(0xCCFFFFFF.toInt())
@@ -135,9 +129,7 @@ class MainActivity : AppCompatActivity() {
         )
         for (btn in toolbarButtons) addPressEffect(btn)
 
-        findViewById<Button>(R.id.btnBack).setOnClickListener {
-            confirmThenExit()
-        }
+        findViewById<Button>(R.id.btnBack).setOnClickListener { confirmThenExit() }
 
         findViewById<Button>(R.id.btnText).setOnClickListener {
             closeInlineEditor(commit = true)
@@ -156,15 +148,9 @@ class MainActivity : AppCompatActivity() {
                             showColorGridDialog { color -> drawingView.fillColor = color }
                             setActiveTool(btn as Button, Tool.FILL, "Fill")
                         }
-                        2 -> {
-                            setActiveTool(btn as Button, Tool.PEN, "Pen")
-                            collapseToolbar()
-                        }
+                        2 -> { setActiveTool(btn as Button, Tool.PEN, "Pen"); collapseToolbar() }
                         3 -> setActiveTool(btn as Button, Tool.ARC, "Arc")
-                        4 -> {
-                            showAutoSelectModeDialog()
-                            setActiveToolbarBtn(btn as Button)
-                        }
+                        4 -> { showAutoSelectModeDialog(); setActiveToolbarBtn(btn as Button) }
                         else -> {
                             val tool = shapeTools[index - 5]
                             setActiveTool(btn as Button, tool, shapeSymbols[index - 5].take(2))
@@ -213,31 +199,16 @@ class MainActivity : AppCompatActivity() {
                 .show()
         }
 
-        findViewById<Button>(R.id.btnUndo).setOnClickListener {
-            closeInlineEditor(commit = true)
-            drawingView.undo()
-        }
-        findViewById<Button>(R.id.btnRedo).setOnClickListener {
-            closeInlineEditor(commit = true)
-            drawingView.redo()
-        }
+        findViewById<Button>(R.id.btnUndo).setOnClickListener { closeInlineEditor(commit = true); drawingView.undo() }
+        findViewById<Button>(R.id.btnRedo).setOnClickListener { closeInlineEditor(commit = true); drawingView.redo() }
 
-        // Collapsed pen toolbar
         findViewById<Button>(R.id.btnExpand).setOnClickListener { expandToolbar() }
-        findViewById<Button>(R.id.btnQuickColor).setOnClickListener {
-            showColorGridDialog { c -> drawingView.currentColor = c }
-        }
+        findViewById<Button>(R.id.btnQuickColor).setOnClickListener { showColorGridDialog { c -> drawingView.currentColor = c } }
         findViewById<Button>(R.id.btnQuickSize).setOnClickListener { showSizePicker() }
-        findViewById<Button>(R.id.btnQuickEraser).setOnClickListener {
-            setActiveTool(null, Tool.ERASER, "Eraser")
-            // stay collapsed
-        }
-        // New: fill button in collapsed bar
-        val btnQuickFill = findViewById<Button>(R.id.btnQuickFill)
-        btnQuickFill?.setOnClickListener {
+        findViewById<Button>(R.id.btnQuickEraser).setOnClickListener { setActiveTool(null, Tool.ERASER, "Eraser") }
+        findViewById<Button>(R.id.btnQuickFill)?.setOnClickListener {
             showColorGridDialog { color -> drawingView.fillColor = color }
             setActiveTool(null, Tool.FILL, "Fill")
-            // stay collapsed
         }
 
         findViewById<Button>(R.id.btnMenu).setOnClickListener { anchor ->
@@ -265,7 +236,6 @@ class MainActivity : AppCompatActivity() {
             popup.show()
         }
 
-        // Set default tool
         setActiveTool(null, Tool.SELECT, "Select")
     }
 
@@ -286,12 +256,8 @@ class MainActivity : AppCompatActivity() {
     private fun addPressEffect(view: View) {
         view.setOnTouchListener { v, event ->
             when (event.actionMasked) {
-                android.view.MotionEvent.ACTION_DOWN -> {
-                    // Brighten on press regardless of active state
-                    v.setBackgroundColor(0x992196F3)
-                }
+                android.view.MotionEvent.ACTION_DOWN -> v.setBackgroundColor(0x992196F3)
                 android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
-                    // Restore: active = sky blue tint, inactive = transparent
                     if (v == activeToolbarButton) v.setBackgroundColor(0x552196F3)
                     else v.setBackgroundColor(Color.TRANSPARENT)
                 }
@@ -299,8 +265,6 @@ class MainActivity : AppCompatActivity() {
             false
         }
     }
-
-    // ---------- Collapsible Pen toolbar ----------
 
     private fun collapseToolbar() {
         findViewById<View>(R.id.toolbarScroll).visibility = View.GONE
@@ -311,8 +275,6 @@ class MainActivity : AppCompatActivity() {
         findViewById<View>(R.id.toolbarScroll).visibility = View.VISIBLE
         findViewById<View>(R.id.collapsedBar).visibility = View.GONE
     }
-
-    // ---------- Settings ----------
 
     private fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
 
@@ -328,7 +290,7 @@ class MainActivity : AppCompatActivity() {
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
             lp.setMargins(0, dp(10), 0, dp(4))
             v.layoutParams = lp
-            v.setBackgroundColor(-2236963)
+            v.setBackgroundColor(Color.parseColor("#DDDDDD"))
             container.addView(v)
         }
 
@@ -336,28 +298,14 @@ class MainActivity : AppCompatActivity() {
             val tv = TextView(this)
             tv.text = text
             tv.textSize = 11f
-            tv.setTextColor(0xFF7B61FF.toInt())
+            tv.setTextColor(Color.parseColor("#7B61FF"))
             tv.setPadding(0, dp(10), 0, dp(2))
             tv.typeface = android.graphics.Typeface.DEFAULT_BOLD
             container.addView(tv)
         }
 
-        fun rowLabel(text: String, sub: String = "", onClick: (() -> Unit)? = null): TextView {
-            val tv = TextView(this)
-            tv.text = if (sub.isNotEmpty()) "$text\n$sub" else text
-            tv.textSize = 15f
-            tv.setPadding(0, dp(10), 0, dp(10))
-            if (onClick != null) {
-                tv.setOnClickListener { onClick() }
-                tv.setTextColor(0xFF1565C0.toInt())
-            }
-            container.addView(tv)
-            return tv
-        }
-
-        // ── GENERAL ──────────────────────────────────
+        // GENERAL
         sectionHeader("GENERAL")
-
         val confirmPref = prefs.getBoolean("confirm_exit_clear", true)
         val checkbox = CheckBox(this)
         checkbox.text = "Confirm before exit or clear canvas"
@@ -366,10 +314,9 @@ class MainActivity : AppCompatActivity() {
 
         divider()
 
-        // ── DRAWING ───────────────────────────────────
+        // DRAWING
         sectionHeader("DRAWING")
 
-        // Arc divisions
         val arcDivPref = prefs.getInt("arc_divisions", 3)
         val arcRow = LinearLayout(this)
         arcRow.orientation = LinearLayout.HORIZONTAL
@@ -387,71 +334,59 @@ class MainActivity : AppCompatActivity() {
         arcRow.addView(arcLbl); arcRow.addView(arcInput)
         container.addView(arcRow)
 
-        // Eraser type
         val eraserTypes = arrayOf("Object Eraser (whole strokes)", "Area Eraser (partial strokes)")
         val currentEraserIdx = if (drawingView.eraserMode == EraserMode.OBJECT) 0 else 1
         var selectedEraserIdx = currentEraserIdx
         val eraserLbl = TextView(this)
         fun refreshEraserLabel() {
-            eraserLbl.text = "Eraser type: ${eraserTypes[selectedEraserIdx].substringBefore(" (")}  (tap to change)"
+            eraserLbl.text = "Eraser: ${eraserTypes[selectedEraserIdx].substringBefore(" (")}  (tap to change)"
         }
         refreshEraserLabel()
         eraserLbl.textSize = 15f
-        eraserLbl.setTextColor(0xFF1565C0.toInt())
+        eraserLbl.setTextColor(Color.parseColor("#1565C0"))
         eraserLbl.setPadding(0, dp(10), 0, dp(10))
         eraserLbl.setOnClickListener {
-            AlertDialog.Builder(this)
-                .setTitle("Eraser Type")
-                .setItems(eraserTypes) { _, i ->
-                    selectedEraserIdx = i
-                    refreshEraserLabel()
-                }
-                .show()
+            AlertDialog.Builder(this).setTitle("Eraser Type").setItems(eraserTypes) { _, i ->
+                selectedEraserIdx = i; refreshEraserLabel()
+            }.show()
         }
         container.addView(eraserLbl)
 
         divider()
 
-        // ── PAPER ─────────────────────────────────────
+        // PAPER
         sectionHeader("PAPER")
-
         val paperTypes = arrayOf("Blank White", "Blank Coloured", "Lined", "Graph Grid", "Dot Grid", "Engineering Grid")
         val paperValues = arrayOf(PaperType.BLANK, PaperType.BLANK_COLORED, PaperType.LINED, PaperType.GRID, PaperType.DOTS, PaperType.ENGINEERING)
         val currentPaperIdx = paperValues.indexOf(drawingView.paperType).coerceAtLeast(0)
         val paperLbl = TextView(this)
-        fun refreshPaperLabel(idx: Int) {
-            paperLbl.text = "Style: ${paperTypes[idx]}  (tap to change)"
-        }
+        fun refreshPaperLabel(idx: Int) { paperLbl.text = "Style: ${paperTypes[idx]}  (tap to change)" }
         refreshPaperLabel(currentPaperIdx)
         paperLbl.textSize = 15f
-        paperLbl.setTextColor(0xFF1565C0.toInt())
+        paperLbl.setTextColor(Color.parseColor("#1565C0"))
         paperLbl.setPadding(0, dp(10), 0, dp(10))
         paperLbl.setOnClickListener {
-            AlertDialog.Builder(this)
-                .setTitle("Paper Style")
-                .setItems(paperTypes) { _, i ->
-                    if (paperValues[i] == PaperType.BLANK_COLORED) {
-                        showColorGridDialog { color ->
-                            drawingView.paperColor = color
-                            drawingView.paperType = PaperType.BLANK_COLORED
-                            drawingView.invalidate()
-                            refreshPaperLabel(i)
-                        }
-                    } else {
-                        drawingView.paperType = paperValues[i]
+            AlertDialog.Builder(this).setTitle("Paper Style").setItems(paperTypes) { _, i ->
+                if (paperValues[i] == PaperType.BLANK_COLORED) {
+                    showColorGridDialog { color ->
+                        drawingView.paperColor = color
+                        drawingView.paperType = PaperType.BLANK_COLORED
                         drawingView.invalidate()
                         refreshPaperLabel(i)
                     }
+                } else {
+                    drawingView.paperType = paperValues[i]
+                    drawingView.invalidate()
+                    refreshPaperLabel(i)
                 }
-                .show()
+            }.show()
         }
         container.addView(paperLbl)
 
         divider()
 
-        // ── PAGE SETUP ────────────────────────────────
+        // PAGE SETUP
         sectionHeader("PAGE SETUP")
-
         val modeLbl = TextView(this)
         val sizeLbl = TextView(this)
         val orientLbl = TextView(this)
@@ -469,7 +404,7 @@ class MainActivity : AppCompatActivity() {
 
         for (lbl in listOf(modeLbl, sizeLbl, orientLbl)) {
             lbl.textSize = 15f
-            lbl.setTextColor(0xFF1565C0.toInt())
+            lbl.setTextColor(Color.parseColor("#1565C0"))
             lbl.setPadding(0, dp(8), 0, dp(8))
             container.addView(lbl)
         }
@@ -510,9 +445,7 @@ class MainActivity : AppCompatActivity() {
                 drawingView.eraserMode = if (selectedEraserIdx == 0) EraserMode.OBJECT else EraserMode.AREA
             }
             .show()
-}
-
-        
+    }
 
     private fun confirmThenExit() {
         closeInlineEditor(commit = true)
@@ -525,9 +458,7 @@ class MainActivity : AppCompatActivity() {
                 .setPositiveButton("Exit") { _, _ -> finish() }
                 .setNegativeButton("Cancel", null)
                 .show()
-        } else {
-            finish()
-        }
+        } else finish()
     }
 
     private fun confirmThenClear() {
@@ -539,18 +470,13 @@ class MainActivity : AppCompatActivity() {
                 .setPositiveButton("Clear") { _, _ -> drawingView.clearAll() }
                 .setNegativeButton("Cancel", null)
                 .show()
-        } else {
-            drawingView.clearAll()
-        }
+        } else drawingView.clearAll()
     }
-
-    // ---------- Color grid ----------
 
     private fun showColorGridDialog(onPicked: (Int) -> Unit) {
         val grid = GridLayout(this)
         grid.columnCount = 10
         grid.setPadding(dp(10), dp(10), dp(10), dp(10))
-
         lateinit var dialog: AlertDialog
         var previewPopup: android.widget.PopupWindow? = null
 
@@ -574,9 +500,7 @@ class MainActivity : AppCompatActivity() {
                         previewPopup?.dismiss(); previewPopup = null
                         onPicked(color); dialog.dismiss()
                     }
-                    android.view.MotionEvent.ACTION_CANCEL -> {
-                        previewPopup?.dismiss(); previewPopup = null
-                    }
+                    android.view.MotionEvent.ACTION_CANCEL -> { previewPopup?.dismiss(); previewPopup = null }
                 }
                 true
             }
@@ -584,10 +508,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         for (i in 0..9) addSwatch(Color.HSVToColor(floatArrayOf(0f, 0f, 1f - i / 9f)))
-        val hues = listOf(0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330)
-        for (value in listOf(1.0f, 0.85f, 0.7f, 0.5f, 0.3f)) {
-            for (hue in hues) addSwatch(Color.HSVToColor(floatArrayOf(hue.toFloat(), 0.65f, value)))
-        }
+        for (value in listOf(1.0f, 0.85f, 0.7f, 0.5f, 0.3f))
+            for (hue in listOf(0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330))
+                addSwatch(Color.HSVToColor(floatArrayOf(hue.toFloat(), 0.65f, value)))
 
         val scroll = ScrollView(this)
         scroll.addView(grid)
@@ -597,31 +520,23 @@ class MainActivity : AppCompatActivity() {
 
     private fun showSizePicker() {
         val tool = drawingView.currentTool
-        val current: Float
-        val maxSize: Int
-        val label: String
+        val current: Float; val maxSize: Int; val label: String
         when (tool) {
             Tool.ERASER -> { current = drawingView.eraserSize; maxSize = 200; label = "Eraser Size" }
             Tool.TEXT -> { current = drawingView.defaultTextSize / PT_TO_PX; maxSize = 144; label = "Font Size (pt)" }
             else -> { current = drawingView.currentStrokeWidth; maxSize = 100; label = "Stroke Width" }
         }
-
         val container = LinearLayout(this)
         container.orientation = LinearLayout.VERTICAL
         container.setPadding(50, 30, 50, 10)
-
-        val tv = TextView(this)
-        tv.text = "$label: ${current.toInt()}"
-        tv.textSize = 16f
+        val tv = TextView(this); tv.text = "$label: ${current.toInt()}"; tv.textSize = 16f
         container.addView(tv)
-
         val seekBar = SeekBar(this)
         seekBar.max = maxSize
         seekBar.progress = current.toInt().coerceIn(1, maxSize)
         seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
-                val v = value.coerceAtLeast(1)
-                tv.text = "$label: $v"
+                val v = value.coerceAtLeast(1); tv.text = "$label: $v"
                 when (tool) {
                     Tool.ERASER -> drawingView.eraserSize = v.toFloat()
                     Tool.TEXT -> drawingView.defaultTextSize = v * PT_TO_PX
@@ -632,81 +547,23 @@ class MainActivity : AppCompatActivity() {
             override fun onStopTrackingTouch(sb: SeekBar?) {}
         })
         container.addView(seekBar)
-
         AlertDialog.Builder(this).setTitle(label).setView(container).setPositiveButton("Done", null).show()
     }
 
-    // ---------- AutoSelect ----------
-
     private fun showAutoSelectModeDialog() {
         val modes = arrayOf("▭ Rectangle – Whole Objects", "▭ Rectangle – Divided", "✏ Freeform – Whole Objects", "✏ Freeform – Divided")
-        AlertDialog.Builder(this)
-            .setTitle("AutoSelect Mode")
-            .setItems(modes) { _, i ->
-                when (i) {
-                    0 -> { drawingView.autoSelectShape = AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide = AutoSelectDivide.WHOLE }
-                    1 -> { drawingView.autoSelectShape = AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide = AutoSelectDivide.DIVIDED }
-                    2 -> { drawingView.autoSelectShape = AutoSelectShape.FREEFORM; drawingView.autoSelectDivide = AutoSelectDivide.WHOLE }
-                    else -> { drawingView.autoSelectShape = AutoSelectShape.FREEFORM; drawingView.autoSelectDivide = AutoSelectDivide.DIVIDED }
-                }
-                drawingView.currentTool = Tool.AUTOSELECT
-                tvActiveTool.text = "AutoSel"
-                Toast.makeText(this, "Draw a region to select", Toast.LENGTH_SHORT).show()
+        AlertDialog.Builder(this).setTitle("AutoSelect Mode").setItems(modes) { _, i ->
+            when (i) {
+                0 -> { drawingView.autoSelectShape = AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide = AutoSelectDivide.WHOLE }
+                1 -> { drawingView.autoSelectShape = AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide = AutoSelectDivide.DIVIDED }
+                2 -> { drawingView.autoSelectShape = AutoSelectShape.FREEFORM; drawingView.autoSelectDivide = AutoSelectDivide.WHOLE }
+                else -> { drawingView.autoSelectShape = AutoSelectShape.FREEFORM; drawingView.autoSelectDivide = AutoSelectDivide.DIVIDED }
             }
-            .show()
+            drawingView.currentTool = Tool.AUTOSELECT
+            tvActiveTool.text = "AutoSel"
+            Toast.makeText(this, "Draw a region to select", Toast.LENGTH_SHORT).show()
+        }.show()
     }
-
-    // ---------- Page Setup ----------
-
-    private fun showPageSetupDialog(onDone: (() -> Unit)? = null) {
-        val container = LinearLayout(this)
-        container.orientation = LinearLayout.VERTICAL
-        container.setPadding(dp(20), dp(10), dp(20), dp(10))
-
-        val modeLabel = TextView(this); container.addView(modeLabel)
-        val sizeLabel = TextView(this); container.addView(sizeLabel)
-        val orientLabel = TextView(this); container.addView(orientLabel)
-
-        fun refresh() {
-            val modeName = when (drawingView.canvasMode) {
-                CanvasMode.INFINITE -> "Infinite Canvas"
-                CanvasMode.FIXED -> "Fixed Page"
-                CanvasMode.PAGINATED -> "Paginated"
-            }
-            modeLabel.text = "Canvas Mode: $modeName  (tap)"
-            sizeLabel.text = "Paper Size: ${drawingView.paperSize.name}  (tap)"
-            orientLabel.text = "Orientation: ${if (drawingView.pageOrientation == Orientation.PORTRAIT) "Portrait" else "Landscape"}  (tap)"
-        }
-        refresh()
-        for (lbl in listOf(modeLabel, sizeLabel, orientLabel)) { lbl.setPadding(0, dp(12), 0, dp(12)); lbl.textSize = 16f }
-
-        modeLabel.setOnClickListener {
-            AlertDialog.Builder(this).setTitle("Canvas Mode")
-                .setItems(arrayOf("Infinite Canvas", "Fixed Page", "Paginated")) { _, i ->
-                    drawingView.canvasMode = when (i) { 0 -> CanvasMode.INFINITE; 1 -> CanvasMode.FIXED; else -> CanvasMode.PAGINATED }
-                    drawingView.invalidate(); refresh()
-                }.show()
-        }
-        sizeLabel.setOnClickListener {
-            val sizes = PaperSizeOption.values()
-            AlertDialog.Builder(this).setTitle("Paper Size")
-                .setItems(sizes.map { it.name }.toTypedArray()) { _, i ->
-                    drawingView.paperSize = sizes[i]; drawingView.invalidate(); refresh()
-                }.show()
-        }
-        orientLabel.setOnClickListener {
-            AlertDialog.Builder(this).setTitle("Orientation")
-                .setItems(arrayOf("Portrait", "Landscape")) { _, i ->
-                    drawingView.pageOrientation = if (i == 0) Orientation.PORTRAIT else Orientation.LANDSCAPE
-                    drawingView.invalidate(); refresh()
-                }.show()
-        }
-
-        AlertDialog.Builder(this).setTitle("Page Setup").setView(container)
-            .setPositiveButton("Done") { _, _ -> onDone?.invoke() }.show()
-    }
-
-    // ---------- Inline text editing ----------
 
     private fun toggleStyleOnSelection(editText: EditText, styleFlag: Int) {
         val start = editText.selectionStart; val end = editText.selectionEnd
@@ -722,7 +579,7 @@ class MainActivity : AppCompatActivity() {
     private fun applyColorToSelection(editText: EditText, color: Int) {
         val start = editText.selectionStart; val end = editText.selectionEnd
         if (start == end) { editColor = color; editText.setTextColor(color); return }
-        editText.text.setSpan(ForegroundColorSpan(color), minOf(start,end), maxOf(start,end), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        editText.text.setSpan(ForegroundColorSpan(color), minOf(start, end), maxOf(start, end), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
     }
 
     private fun toggleUnderlineOnSelection(editText: EditText) {
@@ -743,9 +600,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showInlineTextEditor(item: TextItem?, screenX: Float, screenY: Float, worldX: Float, worldY: Float) {
         closeInlineEditor(commit = true)
-
         pendingBold = false; pendingItalic = false; pendingUnderline = false; pendingHighlight = null
-
         editingItem = item
         editWorldX = item?.x ?: worldX
         editWorldY = item?.y ?: worldY
@@ -755,7 +610,6 @@ class MainActivity : AppCompatActivity() {
 
         val density = resources.displayMetrics.density
         val scaleFactor = drawingView.getScaleFactor()
-        // Convert world size (px) → screen px → sp for EditText
         val screenSizePx = editSize * scaleFactor
         val screenSizeSp = screenSizePx / density
 
@@ -764,13 +618,11 @@ class MainActivity : AppCompatActivity() {
         item?.spans?.forEach { sp ->
             val s = sp.start.coerceIn(0, spannable.length)
             val e = sp.end.coerceIn(s, spannable.length)
-            if (s < e) {
-                when (sp.type) {
-                    'S' -> spannable.setSpan(StyleSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    'C' -> spannable.setSpan(ForegroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    'U' -> spannable.setSpan(UnderlineSpan(), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    'H' -> spannable.setSpan(BackgroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                }
+            if (s < e) when (sp.type) {
+                'S' -> spannable.setSpan(StyleSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                'C' -> spannable.setSpan(ForegroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                'U' -> spannable.setSpan(UnderlineSpan(), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                'H' -> spannable.setSpan(BackgroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
         }
         editText.setText(spannable, TextView.BufferType.SPANNABLE)
@@ -838,19 +690,15 @@ class MainActivity : AppCompatActivity() {
         }
         toolBtn("🎨") { showColorGridDialog { color -> applyColorToSelection(editText, color) } }
 
-        // Font size button — shows pt value
         val ptSize = (editSize / PT_TO_PX).toInt().coerceIn(1, 144)
         toolBtn(ptSize.toString()) { btn ->
-            val numbers = (1..144).map { it.toString() }.toTypedArray()
-            AlertDialog.Builder(this)
-                .setTitle("Font Size (pt)")
-                .setItems(numbers) { _, idx ->
+            AlertDialog.Builder(this).setTitle("Font Size (pt)")
+                .setItems((1..144).map { it.toString() }.toTypedArray()) { _, idx ->
                     val pt = idx + 1
                     editSize = pt * PT_TO_PX
                     editText.textSize = (editSize * drawingView.getScaleFactor() / density).coerceAtLeast(8f)
                     btn.text = pt.toString()
-                }
-                .show()
+                }.show()
         }
         toolBtn("↺") { editRotation -= 15f; editText.rotation = editRotation }
         toolBtn("↻") { editRotation += 15f; editText.rotation = editRotation }
@@ -907,8 +755,6 @@ class MainActivity : AppCompatActivity() {
         activeEditText = null; activeToolbar = null; editingItem = null
     }
 
-    // ---------- Image ----------
-
     private fun launchCamera() {
         val imagesFolder = File(filesDir, "images")
         if (!imagesFolder.exists()) imagesFolder.mkdirs()
@@ -921,14 +767,11 @@ class MainActivity : AppCompatActivity() {
     private fun addImageFromFile(file: File) {
         try {
             val bitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath) ?: return
-            val maxDim = 300f
-            val ratio = bitmap.width.toFloat() / bitmap.height.toFloat()
+            val maxDim = 300f; val ratio = bitmap.width.toFloat() / bitmap.height.toFloat()
             val w: Float; val h: Float
             if (ratio >= 1f) { w = maxDim; h = maxDim / ratio } else { h = maxDim; w = maxDim * ratio }
             drawingView.addImage(file.absolutePath, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), w, h)
-        } catch (e: Exception) {
-            Toast.makeText(this, "Photo insert failed: " + e.message, Toast.LENGTH_LONG).show()
-        }
+        } catch (e: Exception) { Toast.makeText(this, "Photo insert failed: ${e.message}", Toast.LENGTH_LONG).show() }
     }
 
     private fun insertImage(uri: Uri) {
@@ -940,19 +783,13 @@ class MainActivity : AppCompatActivity() {
             if (!imagesFolder.exists()) imagesFolder.mkdirs()
             val outFile = File(imagesFolder, "img_" + System.currentTimeMillis() + ".png")
             val out = FileOutputStream(outFile)
-            bitmap.compress(Bitmap.CompressFormat.PNG, 90, out)
-            out.close()
-            val maxDim = 300f
-            val ratio = bitmap.width.toFloat() / bitmap.height.toFloat()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 90, out); out.close()
+            val maxDim = 300f; val ratio = bitmap.width.toFloat() / bitmap.height.toFloat()
             val w: Float; val h: Float
             if (ratio >= 1f) { w = maxDim; h = maxDim / ratio } else { h = maxDim; w = maxDim * ratio }
             drawingView.addImage(outFile.absolutePath, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), w, h)
-        } catch (e: Exception) {
-            Toast.makeText(this, "Image insert failed: " + e.message, Toast.LENGTH_LONG).show()
-        }
+        } catch (e: Exception) { Toast.makeText(this, "Image insert failed: ${e.message}", Toast.LENGTH_LONG).show() }
     }
-
-    // ---------- File ops ----------
 
     private fun getDrawingsFolder(): File {
         val folder = File(filesDir, "drawings")
@@ -968,8 +805,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun saveCurrent() {
         if (currentFileName == null) {
-            val input = EditText(this)
-            input.hint = "Note name"
+            val input = EditText(this); input.hint = "Note name"
             AlertDialog.Builder(this).setTitle("Save Note").setView(input)
                 .setPositiveButton("Save") { _, _ ->
                     var name = input.text.toString().trim()
@@ -977,8 +813,7 @@ class MainActivity : AppCompatActivity() {
                     currentFileName = name; tvTitle.text = name
                     writeCurrentFile()
                     Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show()
-                }
-                .setNegativeButton("Cancel", null).show()
+                }.setNegativeButton("Cancel", null).show()
         } else {
             writeCurrentFile()
             Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show()
@@ -986,8 +821,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun saveAsNew() {
-        val input = EditText(this)
-        input.hint = "New note name"
+        val input = EditText(this); input.hint = "New note name"
         AlertDialog.Builder(this).setTitle("Save as New").setView(input)
             .setPositiveButton("Save") { _, _ ->
                 var name = input.text.toString().trim()
@@ -995,17 +829,14 @@ class MainActivity : AppCompatActivity() {
                 currentFileName = name; tvTitle.text = name
                 writeCurrentFile()
                 Toast.makeText(this, "Saved as $name", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("Cancel", null).show()
+            }.setNegativeButton("Cancel", null).show()
     }
 
     private fun deleteCurrentNote() {
         val name = currentFileName ?: return
         AlertDialog.Builder(this).setTitle("Delete Note")
             .setMessage("Delete \"$name\"? Cannot be undone.")
-            .setPositiveButton("Delete") { _, _ ->
-                File(getDrawingsFolder(), name + ".eng").delete(); finish()
-            }
+            .setPositiveButton("Delete") { _, _ -> File(getDrawingsFolder(), name + ".eng").delete(); finish() }
             .setNegativeButton("Cancel", null).show()
     }
 
@@ -1015,11 +846,8 @@ class MainActivity : AppCompatActivity() {
         val file = File(folder, "EngiNote_" + System.currentTimeMillis() + ".png")
         try {
             val out = FileOutputStream(file)
-            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-            out.flush(); out.close()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out); out.flush(); out.close()
             Toast.makeText(this, "Exported: ${file.absolutePath}", Toast.LENGTH_LONG).show()
-        } catch (e: Exception) {
-            Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
-        }
+        } catch (e: Exception) { Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_LONG).show() }
     }
 }
