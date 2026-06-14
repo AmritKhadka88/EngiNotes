@@ -512,39 +512,7 @@ class MainActivity : AppCompatActivity() {
             .show()
 }
 
-        sectionLabel("PAGE SETUP")
-        val pageSetupLabel = TextView(this)
-        fun refreshPageLabel() {
-            val modeName = when (drawingView.canvasMode) {
-                CanvasMode.INFINITE -> "Infinite"
-                CanvasMode.FIXED -> "Fixed Page"
-                CanvasMode.PAGINATED -> "Paginated"
-            }
-            val orientName = if (drawingView.pageOrientation == Orientation.PORTRAIT) "Portrait" else "Landscape"
-            pageSetupLabel.text = "${drawingView.paperSize.name} · $modeName · $orientName  (tap to change)"
-        }
-        refreshPageLabel()
-        pageSetupLabel.setPadding(0, dp(6), 0, dp(6))
-        pageSetupLabel.textSize = 15f
-        container.addView(pageSetupLabel)
-        pageSetupLabel.setOnClickListener {
-            showPageSetupDialog { refreshPageLabel() }
-        }
-
-        val scroll = ScrollView(this)
-        scroll.addView(container)
-
-        AlertDialog.Builder(this)
-            .setTitle("Settings")
-            .setView(scroll)
-            .setPositiveButton("Done") { _, _ ->
-                prefs.edit().putBoolean("confirm_exit_clear", checkbox.isChecked).apply()
-                val n = (arcInput.text.toString().toIntOrNull() ?: 3).coerceIn(2, 12)
-                prefs.edit().putInt("arc_divisions", n).apply()
-                drawingView.arcDivisions = n
-            }
-            .show()
-    }
+        
 
     private fun confirmThenExit() {
         closeInlineEditor(commit = true)
