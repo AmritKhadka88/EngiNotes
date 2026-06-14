@@ -262,25 +262,45 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean = true
+
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-            if (currentTool == Tool.TEXT) {
-                onTextEditRequest?.invoke(null, e.x, e.y, screenToWorldX(e.x), screenToWorldY(e.y))
-            } else if (currentTool == Tool.FILL) {
-                val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
-                val item = findItemAt(wx, wy)
-                if (item is StrokeItem && CLOSED_SHAPES.contains(item.data.type)) {
-                    item.data.fill = !item.data.fill; item.data.color = fillColor
-                    item.paint = item.data.toPaint(); invalidate()
-                } else performFill(e.x, e.y)
+            val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
+            when (currentTool) {
+                Tool.TEXT -> {
+                    val hit = findTextItemAt(wx, wy)
+                    if (hit != null) {
+                        selectedItem = hit; invalidate()
+                    } else {
+                        selectedItem = null
+                        onTextEditRequest?.invoke(null, e.x, e.y, wx, wy)
+                    }
+                }
+                Tool.FILL -> {
+                    val item = findItemAt(wx, wy)
+                    if (item is StrokeItem && CLOSED_SHAPES.contains(item.data.type)) {
+                        item.data.fill = !item.data.fill; item.data.color = fillColor
+                        item.paint = item.data.toPaint(); invalidate()
+                    } else performFill(e.x, e.y)
+                }
+                Tool.SELECT, Tool.ERASER -> { /* handled by handleSelect / handleDrawing */ }
+                else -> {
+                    // In draw tools, single tap selects nearest item (non-intrusive)
+                }
             }
             return true
         }
+
         override fun onDoubleTap(e: MotionEvent): Boolean {
+            val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
+            // Double tap on text always opens editor regardless of tool
+            val hit = findTextItemAt(wx, wy)
+            if (hit != null) {
+                hit.isEditing = true; invalidate()
+                onTextEditRequest?.invoke(hit, e.x, e.y, wx, wy)
+                return true
+            }
             if (currentTool == Tool.TEXT) {
-                val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
-                val hit = findTextItemAt(wx, wy)
-                if (hit != null) { hit.isEditing = true; invalidate(); onTextEditRequest?.invoke(hit, e.x, e.y, wx, wy) }
-                else onTextEditRequest?.invoke(null, e.x, e.y, wx, wy)
+                onTextEditRequest?.invoke(null, e.x, e.y, wx, wy)
             }
             return true
         }
@@ -1051,11 +1071,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (event.pointerCount >= 2) { scaleDetector.onTouchEvent(event); return true }
-        if (currentTool == Tool.TEXT || currentTool == Tool.FILL) { gestureDetector.onTouchEvent(event); return true }
+        // Always feed gesture detector so double-tap-to-edit works on any tool
+        gestureDetector.onTouchEvent(event)
+        if (currentTool == Tool.TEXT || currentTool == Tool.FILL) return true
         if (currentTool == Tool.SELECT) { handleSelect(event); return true }
         if (currentTool == Tool.ARC) { handleArc(event); return true }
         if (currentTool == Tool.AUTOSELECT) { handleAutoSelect(event); return true }
-        handleDrawing(event); return true
+        handleDrawing(event)
+        return true
     }
 
     private fun handleDrawing(event: MotionEvent) {
