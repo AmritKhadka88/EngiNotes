@@ -90,9 +90,12 @@
 
         <Button android:id="@+id/btnQuickColor" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🎨" android:textSize="18sp" android:backgroundTint="#55FFFFFF" />
         <Button android:id="@+id/btnQuickSize" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="📏" android:textSize="18sp" android:backgroundTint="#55FFFFFF" />
+        <Button android:id="@+id/btnQuickFill" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🪣" android:textSize="18sp" android:backgroundTint="#55FFFFFF" />
         <Button android:id="@+id/btnQuickEraser" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🧹" android:textSize="18sp" android:backgroundTint="#55FFFFFF" />
 
     </LinearLayout>
+
+
 
     <FrameLayout
         android:id="@+id/canvasContainer"
