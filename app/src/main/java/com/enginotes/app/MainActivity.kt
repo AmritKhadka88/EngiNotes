@@ -129,6 +129,8 @@ class MainActivity : AppCompatActivity() {
         } else {
             tvTitle.text = "New Note"
         }
+        // Migrate old notes to new books structure
+        drawingView.migrateOldNotes(filesDir)
         lastSavedContent = drawingView.serialize()
         drawingView.arcDivisions = getPrefs().getInt("arc_divisions", 3)
 
