@@ -344,19 +344,23 @@ class MainActivity : AppCompatActivity() {
         }
         container.addView(paperLbl)
 
-        divider(); header("PAGE SETUP")
+divider(); header("PAGE SETUP")
 
         val modeLbl = TextView(this); val sizeLbl = TextView(this); val orientLbl = TextView(this)
         fun refreshPageLbls() {
             modeLbl.text = "Canvas: ${when (drawingView.canvasMode) { CanvasMode.INFINITE -> "Infinite"; CanvasMode.FIXED -> "Fixed Page"; else -> "Paginated" }}  (tap)"
             sizeLbl.text = "Size: ${drawingView.paperSize.name}  (tap)"
             orientLbl.text = "Orientation: ${if (drawingView.pageOrientation == Orientation.PORTRAIT) "Portrait" else "Landscape"}  (tap)"
+            val showPageOptions = drawingView.canvasMode != CanvasMode.INFINITE
+            sizeLbl.visibility = if (showPageOptions) View.VISIBLE else View.GONE
+            orientLbl.visibility = if (showPageOptions) View.VISIBLE else View.GONE
         }
         refreshPageLbls()
         for (lbl in listOf(modeLbl, sizeLbl, orientLbl)) {
             lbl.textSize = 15f; lbl.setTextColor(Color.parseColor("#1565C0"))
             lbl.setPadding(0, dp(8), 0, dp(8)); container.addView(lbl)
         }
+        
         modeLbl.setOnClickListener {
             AlertDialog.Builder(this).setTitle("Canvas Mode")
                 .setItems(arrayOf("Infinite Canvas", "Fixed Page", "Paginated")) { _, i ->
