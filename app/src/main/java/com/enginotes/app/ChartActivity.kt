@@ -3,14 +3,17 @@ package com.enginotes.app
 import android.content.Context
 import android.content.Intent
 import android.graphics.*
+import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import org.apache.poi.ss.usermodel.WorkbookFactory
 import java.io.File
 import java.io.FileOutputStream
@@ -23,6 +26,8 @@ data class DataSeries(
     var lineWidth: Float = 3f,
     var fontSize: Float = 28f
 )
+
+data class PinnedLabel(val label: String, val value: Float, val x: Float, val y: Float)
 
 class ChartActivity : AppCompatActivity() {
 
@@ -38,6 +43,9 @@ class ChartActivity : AppCompatActivity() {
     private var labelColor = Color.DKGRAY
     private var showGrid = true
     private var show3D = false
+
+    // Whether opened from note (for send-to-note)
+    private val openedFromNote: Boolean get() = callingActivity != null
 
     private val pickExcelLauncher = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -71,9 +79,19 @@ class ChartActivity : AppCompatActivity() {
         tbtn("📂 Excel") { pickExcelLauncher.launch("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") }
         tbtn("✏ Data") { showDataDialog() }
         tbtn("🎨 Style") { showStyleDialog() }
-        tbtn("📤 Send") { sendToNote() }
+        tbtn("📌 Labels") { chartView.togglePinnedMode(); Toast.makeText(this, if (chartView.pinnedMode) "Tap points to pin labels" else "Pin mode off", Toast.LENGTH_SHORT).show() }
+        tbtn("📤 Send") { showSendOptions() }
         tbtn("✕") { finish() }
         root.addView(toolbar, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        // Excel format hint bar
+        val hintBar = TextView(this)
+        hintBar.text = "  💡 Excel format: Row 1 = headers (Label, Series1, Series2...), Row 2+ = data"
+        hintBar.textSize = 11f
+        hintBar.setTextColor(Color.WHITE)
+        hintBar.setBackgroundColor(Color.parseColor("#CC1565C0"))
+        hintBar.setPadding(dp(8), dp(4), dp(8), dp(4))
+        root.addView(hintBar, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
         // Chart type scroll
         val typeScroll = HorizontalScrollView(this)
@@ -119,7 +137,6 @@ class ChartActivity : AppCompatActivity() {
 
         setContentView(root)
 
-        // Default sample data - 2 series
         seriesList.add(DataSeries("Series A", mutableListOf(
             "Jan" to 120f, "Feb" to 85f, "Mar" to 200f, "Apr" to 150f, "May" to 95f, "Jun" to 180f
         ), Color.parseColor("#2196F3")))
@@ -131,9 +148,100 @@ class ChartActivity : AppCompatActivity() {
         chartView.applyStyle(bgColor, gridColor, titleColor, titleFontSize, labelColor, labelFontSize, showGrid, chartTitle)
     }
 
+    private fun showSendOptions() {
+        val options = mutableListOf("📄 Save as PDF", "🖼 Save as Image (PNG)", "🖼 Save as JPG")
+        if (openedFromNote) options.add("📝 Send to Note")
+        AlertDialog.Builder(this).setTitle("Export Chart")
+            .setItems(options.toTypedArray()) { _, i ->
+                when (i) {
+                    0 -> exportChartAsPdf()
+                    1 -> exportChartAsImage(Bitmap.CompressFormat.PNG, "png")
+                    2 -> exportChartAsImage(Bitmap.CompressFormat.JPEG, "jpg")
+                    3 -> sendToNote()
+                }
+            }.show()
+    }
+
+    private fun getChartBitmap(): Bitmap {
+        val w = chartView.width.coerceAtLeast(800)
+        val h = chartView.height.coerceAtLeast(600)
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bmp)
+        chartView.draw(canvas)
+        return bmp
+    }
+
+    private fun exportChartAsPdf() {
+        try {
+            val bmp = getChartBitmap()
+            val doc = PdfDocument()
+            val pageInfo = PdfDocument.PageInfo.Builder(bmp.width, bmp.height, 1).create()
+            val page = doc.startPage(pageInfo)
+            page.canvas.drawBitmap(bmp, 0f, 0f, Paint())
+            doc.finishPage(page)
+            val file = File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "chart_${System.currentTimeMillis()}.pdf")
+            FileOutputStream(file).use { doc.writeTo(it) }
+            doc.close()
+            shareFile(file, "application/pdf")
+            Toast.makeText(this, "PDF saved!", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "PDF failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun exportChartAsImage(format: Bitmap.CompressFormat, ext: String) {
+        try {
+            val bmp = getChartBitmap()
+            val file = File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), "chart_${System.currentTimeMillis()}.$ext")
+            FileOutputStream(file).use { bmp.compress(format, 95, it) }
+            shareFile(file, "image/$ext")
+            Toast.makeText(this, "Image saved!", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun sendToNote() {
+        try {
+            val bmp = getChartBitmap()
+            val folder = File(filesDir, "images"); if (!folder.exists()) folder.mkdirs()
+            val outFile = File(folder, "chart_${System.currentTimeMillis()}.png")
+            FileOutputStream(outFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            val result = Intent()
+            result.putExtra("chart_image_path", outFile.absolutePath)
+            setResult(RESULT_OK, result)
+            Toast.makeText(this, "Chart sent to note!", Toast.LENGTH_SHORT).show()
+            finish()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun shareFile(file: File, mimeType: String) {
+        try {
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            val intent = Intent(Intent.ACTION_SEND)
+            intent.type = mimeType
+            intent.putExtra(Intent.EXTRA_STREAM, uri)
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            startActivity(Intent.createChooser(intent, "Share via"))
+        } catch (e: Exception) {
+            Toast.makeText(this, "Share failed: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun showDataDialog() {
         val container = LinearLayout(this); container.orientation = LinearLayout.VERTICAL
         container.setPadding(dp(12), dp(8), dp(12), dp(8))
+
+        // Excel format guide
+        val guide = TextView(this)
+        guide.text = "📋 Excel format:\nRow 1: Label | Series1 | Series2 | ...\nRow 2+: Jan | 120 | 80 | ..."
+        guide.textSize = 12f
+        guide.setBackgroundColor(Color.parseColor("#E3F2FD"))
+        guide.setPadding(dp(8), dp(8), dp(8), dp(8))
+        guide.setTextColor(Color.parseColor("#1565C0"))
+        container.addView(guide)
 
         val seriesContainer = LinearLayout(this); seriesContainer.orientation = LinearLayout.VERTICAL
         container.addView(seriesContainer)
@@ -182,7 +290,6 @@ class ChartActivity : AppCompatActivity() {
                 }
                 row.addView(dataInput)
 
-                // Line width and font size
                 val widthRow = LinearLayout(this); widthRow.orientation = LinearLayout.HORIZONTAL; widthRow.gravity = Gravity.CENTER_VERTICAL
                 val widthLbl = TextView(this); widthLbl.text = "Line width: "; widthLbl.textSize = 12f
                 val widthSeek = SeekBar(this); widthSeek.max = 20; widthSeek.progress = series.lineWidth.toInt()
@@ -192,7 +299,6 @@ class ChartActivity : AppCompatActivity() {
                     override fun onStartTrackingTouch(sb: SeekBar?) {}; override fun onStopTrackingTouch(sb: SeekBar?) {}
                 })
                 widthRow.addView(widthLbl); widthRow.addView(widthSeek); row.addView(widthRow)
-
                 seriesContainer.addView(row)
             }
         }
@@ -277,30 +383,12 @@ class ChartActivity : AppCompatActivity() {
             }.setNegativeButton("Cancel", null).show()
     }
 
-    private fun sendToNote() {
-        val bmp = Bitmap.createBitmap(chartView.width.coerceAtLeast(800), chartView.height.coerceAtLeast(600), Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bmp); chartView.draw(canvas)
-        val folder = File(filesDir, "images"); if (!folder.exists()) folder.mkdirs()
-        val outFile = File(folder, "chart_${System.currentTimeMillis()}.png")
-        try {
-            FileOutputStream(outFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
-            val result = Intent()
-            result.putExtra("chart_image_path", outFile.absolutePath)
-            setResult(RESULT_OK, result)
-            Toast.makeText(this, "Chart sent to note!", Toast.LENGTH_SHORT).show()
-            finish()
-        } catch (e: Exception) {
-            Toast.makeText(this, "Failed: ${e.message}", Toast.LENGTH_LONG).show()
-        }
-    }
-
     private fun loadExcel(uri: Uri) {
         try {
             val stream = contentResolver.openInputStream(uri) ?: return
             val workbook = WorkbookFactory.create(stream); stream.close()
             val sheet = workbook.getSheetAt(0)
             seriesList.clear()
-            // First row = headers (series names), first col = labels
             val headerRow = sheet.getRow(0) ?: return
             val numSeries = headerRow.lastCellNum - 1
             val colors = listOf("#2196F3","#F44336","#4CAF50","#FF9800","#9C27B0","#00BCD4","#FFEB3B","#795548","#607D8B","#E91E63")
@@ -357,6 +445,7 @@ enum class ChartType {
 class ChartView(context: Context) : View(context) {
     private var series = listOf<DataSeries>()
     var chartType = ChartType.BAR
+    var pinnedMode = false
 
     private var bgColor = Color.WHITE
     private var gridColor = Color.parseColor("#EEEEEE")
@@ -367,6 +456,14 @@ class ChartView(context: Context) : View(context) {
     private var showGrid = true
     private var chartTitle = "Chart"
 
+    // Pinned labels that always show on chart
+    private val pinnedLabels = mutableListOf<PinnedLabel>()
+    // Temporary hover label (tap to show, tap again to pin)
+    private var hoverLabel: PinnedLabel? = null
+
+    // All interactive data points for tap detection
+    private val dataPoints = mutableListOf<PinnedLabel>()
+
     private val defaultColors = listOf(
         Color.parseColor("#2196F3"), Color.parseColor("#F44336"),
         Color.parseColor("#4CAF50"), Color.parseColor("#FF9800"),
@@ -375,11 +472,43 @@ class ChartView(context: Context) : View(context) {
         Color.parseColor("#607D8B"), Color.parseColor("#E91E63")
     )
 
-    fun bind(s: List<DataSeries>, type: ChartType) { series = s; chartType = type; invalidate() }
+    fun bind(s: List<DataSeries>, type: ChartType) { series = s; chartType = type; dataPoints.clear(); hoverLabel = null; invalidate() }
 
     fun applyStyle(bg: Int, grid: Int, tc: Int, tfs: Float, lc: Int, lfs: Float, sg: Boolean, title: String) {
         bgColor = bg; gridColor = grid; titleColor = tc; titleFontSize = tfs
         labelColor = lc; labelFontSize = lfs; showGrid = sg; chartTitle = title; invalidate()
+    }
+
+    fun togglePinnedMode() { pinnedMode = !pinnedMode; hoverLabel = null; invalidate() }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            val tx = event.x; val ty = event.y
+            val hitRadius = 40f
+
+            // Check if tapping an existing pinned label to remove it
+            val toRemove = pinnedLabels.find { abs(it.x - tx) < hitRadius && abs(it.y - ty) < hitRadius }
+            if (toRemove != null) { pinnedLabels.remove(toRemove); hoverLabel = null; invalidate(); return true }
+
+            // Find nearest data point
+            val nearest = dataPoints.minByOrNull { sqrt((it.x - tx).pow(2) + (it.y - ty).pow(2)) }
+            if (nearest != null && sqrt((nearest.x - tx).pow(2) + (nearest.y - ty).pow(2)) < hitRadius * 2) {
+                if (pinnedMode) {
+                    // Pin it permanently
+                    if (pinnedLabels.none { abs(it.x - nearest.x) < 5f && abs(it.y - nearest.y) < 5f }) {
+                        pinnedLabels.add(nearest)
+                    }
+                    hoverLabel = null
+                } else {
+                    // Show hover tooltip
+                    hoverLabel = if (hoverLabel?.label == nearest.label && hoverLabel?.value == nearest.value) null else nearest
+                }
+                invalidate(); return true
+            }
+            // Tap empty area clears hover
+            hoverLabel = null; invalidate()
+        }
+        return true
     }
 
     private fun color(idx: Int): Int = if (idx < series.size) series[idx].color else defaultColors[idx % defaultColors.size]
@@ -391,6 +520,7 @@ class ChartView(context: Context) : View(context) {
         super.onDraw(canvas)
         canvas.drawColor(bgColor)
         drawTitle(canvas)
+        dataPoints.clear()
         if (series.isEmpty() || series.all { it.data.isEmpty() }) {
             val p = Paint(); p.textSize = 40f; p.color = Color.GRAY; p.textAlign = Paint.Align.CENTER
             canvas.drawText("No data", width / 2f, height / 2f, p); return
@@ -420,6 +550,48 @@ class ChartView(context: Context) : View(context) {
             ChartType.TREEMAP -> drawTreemap(canvas)
         }
         drawLegend(canvas)
+        drawPinnedLabels(canvas)
+        drawHoverLabel(canvas)
+        if (pinnedMode) drawPinnedModeIndicator(canvas)
+    }
+
+    private fun drawPinnedModeIndicator(canvas: Canvas) {
+        val p = Paint(); p.color = Color.parseColor("#CC2196F3"); p.style = Paint.Style.FILL
+        canvas.drawRoundRect(RectF(10f, 10f, 260f, 55f), 12f, 12f, p)
+        val tp = Paint(); tp.color = Color.WHITE; tp.textSize = 28f; tp.isAntiAlias = true
+        canvas.drawText("📌 Tap points to pin", 20f, 42f, tp)
+    }
+
+    private fun drawPinnedLabels(canvas: Canvas) {
+        for (pl in pinnedLabels) drawDataLabel(canvas, pl, Color.parseColor("#CC1565C0"), true)
+    }
+
+    private fun drawHoverLabel(canvas: Canvas) {
+        val hl = hoverLabel ?: return
+        drawDataLabel(canvas, hl, Color.parseColor("#CC333333"), false)
+    }
+
+    private fun drawDataLabel(canvas: Canvas, pl: PinnedLabel, bgC: Int, isPinned: Boolean) {
+        val text = "${pl.label}: ${pl.value.toInt()}"
+        val tp = Paint(); tp.textSize = labelFontSize; tp.isAntiAlias = true; tp.color = Color.WHITE
+        val tw = tp.measureText(text) + 20f; val th = labelFontSize + 16f
+        var lx = pl.x - tw / 2f; val ly = pl.y - th - 12f
+        lx = lx.coerceIn(0f, width - tw)
+        val bp = Paint(); bp.color = bgC; bp.style = Paint.Style.FILL; bp.isAntiAlias = true
+        canvas.drawRoundRect(RectF(lx, ly, lx + tw, ly + th), 8f, 8f, bp)
+        // Arrow
+        val ap = Paint(); ap.color = bgC; ap.style = Paint.Style.FILL
+        val path = Path()
+        path.moveTo(pl.x - 8f, ly + th); path.lineTo(pl.x + 8f, ly + th); path.lineTo(pl.x, pl.y - 4f); path.close()
+        canvas.drawPath(path, ap)
+        canvas.drawText(text, lx + 10f, ly + labelFontSize + 6f, tp)
+        if (isPinned) {
+            val pp = Paint(); pp.color = Color.parseColor("#FFEB3B"); pp.textSize = labelFontSize * 0.8f; pp.isAntiAlias = true
+            canvas.drawText("📌", lx + tw - labelFontSize, ly + labelFontSize + 4f, pp)
+        }
+        // Dot at data point
+        val dp2 = Paint(); dp2.color = bgC; dp2.style = Paint.Style.FILL; dp2.isAntiAlias = true
+        canvas.drawCircle(pl.x, pl.y, 8f, dp2)
     }
 
     private fun drawTitle(canvas: Canvas) {
@@ -478,8 +650,10 @@ class ChartView(context: Context) : View(context) {
                     canvas.drawPath(tpath, tp)
                 }
                 canvas.drawRect(left, top, right, area.bottom, p)
+                val cx = (left + right) / 2f
+                dataPoints.add(PinnedLabel("${s.name} ${entry.first}", entry.second, cx, top))
                 val vp = Paint(); vp.color = labelColor; vp.textSize = labelFontSize * 0.8f; vp.textAlign = Paint.Align.CENTER; vp.isAntiAlias = true
-                canvas.drawText(entry.second.toInt().toString(), (left + right) / 2f, top - 4f, vp)
+                canvas.drawText(entry.second.toInt().toString(), cx, top - 4f, vp)
             }
         }
     }
@@ -503,6 +677,7 @@ class ChartView(context: Context) : View(context) {
                 val top2 = area.top + di * groupH + si * barH + groupH * 0.1f
                 val bottom2 = top2 + barH
                 canvas.drawRect(area.left, top2, area.left + barW, bottom2, p)
+                dataPoints.add(PinnedLabel("${s.name} ${entry.first}", entry.second, area.left + barW, (top2 + bottom2) / 2f))
             }
         }
     }
@@ -524,6 +699,7 @@ class ChartView(context: Context) : View(context) {
                 val top = area.bottom - yOff - barH
                 val p = Paint(); p.color = color(si); p.style = Paint.Style.FILL; p.isAntiAlias = true
                 canvas.drawRect(left, top, left + barW, area.bottom - yOff, p)
+                dataPoints.add(PinnedLabel("${s.name} $label", rawV, left + barW / 2f, top))
                 yOff += barH
             }
         }
@@ -559,7 +735,10 @@ class ChartView(context: Context) : View(context) {
             }
             canvas.drawPath(path, p)
             val dp2 = Paint(); dp2.color = color(si); dp2.style = Paint.Style.FILL; dp2.isAntiAlias = true
-            for (pt in pts) canvas.drawCircle(pt.first, pt.second, 7f, dp2)
+            for ((di, pt) in pts.withIndex()) {
+                canvas.drawCircle(pt.first, pt.second, 9f, dp2)
+                dataPoints.add(PinnedLabel("${s.name}: ${s.data[di].first}", s.data[di].second, pt.first, pt.second))
+            }
         }
     }
 
@@ -586,6 +765,7 @@ class ChartView(context: Context) : View(context) {
             path.close()
             val p = Paint(); p.color = color(si); p.alpha = 180; p.style = Paint.Style.FILL; p.isAntiAlias = true
             canvas.drawPath(path, p)
+            for ((di, pt) in pts.withIndex()) dataPoints.add(PinnedLabel("${s.name}: ${labels[di]}", s.data.getOrNull(di)?.second ?: 0f, pt.first, pt.second))
             for (di in s.data.indices) cumulative[di] += s.data.getOrNull(di)?.second ?: 0f
         }
     }
@@ -625,6 +805,10 @@ class ChartView(context: Context) : View(context) {
             val lp = Paint(); lp.color = labelColor; lp.textSize = labelFontSize * 0.9f; lp.isAntiAlias = true
             lp.textAlign = if (lx > cx) Paint.Align.LEFT else Paint.Align.RIGHT
             canvas.drawText("${entry.first} ${(entry.second/total*100).toInt()}%", lx, ly, lp)
+            // Data point at midpoint of arc
+            val dpx = cx + (radius * 0.7f * cos(mid)).toFloat()
+            val dpy = cy + (radius * 0.7f * sin(mid)).toFloat()
+            dataPoints.add(PinnedLabel(entry.first, entry.second, dpx, dpy))
             startAngle += sweep
         }
     }
@@ -638,6 +822,7 @@ class ChartView(context: Context) : View(context) {
                 val x = area.left + (di + 0.5f) * area.width() / s.data.size
                 val y = area.bottom - area.height() * entry.second / maxV
                 canvas.drawCircle(x, y, 12f, p)
+                dataPoints.add(PinnedLabel("${s.name}: ${entry.first}", entry.second, x, y))
             }
         }
     }
@@ -652,6 +837,7 @@ class ChartView(context: Context) : View(context) {
                 val y = area.bottom - area.height() * entry.second / maxV
                 val r = (entry.second / maxV * 40f).coerceIn(8f, 50f)
                 canvas.drawCircle(x, y, r, p)
+                dataPoints.add(PinnedLabel("${s.name}: ${entry.first}", entry.second, x, y))
             }
         }
     }
@@ -685,6 +871,7 @@ class ChartView(context: Context) : View(context) {
                 val rr = r * v / maxV
                 val x = cx + (rr * cos(a)).toFloat(); val y = cy + (rr * sin(a)).toFloat()
                 if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                dataPoints.add(PinnedLabel("${s.name}: ${labels.getOrElse(i) { "" }}", v, x, y))
             }
             path.close(); canvas.drawPath(path, fp); canvas.drawPath(path, p)
         }
@@ -708,6 +895,7 @@ class ChartView(context: Context) : View(context) {
             canvas.drawRect(area.left + i * bw + 2f, area.bottom - bh, area.left + (i+1) * bw - 2f, area.bottom, p)
             val lp = Paint(); lp.color = labelColor; lp.textSize = labelFontSize * 0.8f; lp.textAlign = Paint.Align.CENTER; lp.isAntiAlias = true
             canvas.drawText("${(minV + i * binSize).toInt()}", area.left + (i + 0.5f) * bw, area.bottom + labelFontSize + 4f, lp)
+            dataPoints.add(PinnedLabel("${(minV + i * binSize).toInt()}-${(minV + (i+1) * binSize).toInt()}", counts[i].toFloat(), area.left + (i + 0.5f) * bw, area.bottom - bh))
         }
     }
 
@@ -724,6 +912,7 @@ class ChartView(context: Context) : View(context) {
             val top = area.bottom - area.height() * (cumulative + entry.second) / maxV
             val p = Paint(); p.color = if (entry.second >= 0) color(0) else color(1); p.style = Paint.Style.FILL; p.isAntiAlias = true
             canvas.drawRect(x, top, x + bw, bottom, p)
+            dataPoints.add(PinnedLabel(entry.first, entry.second, x + bw / 2f, top))
             cumulative += entry.second
         }
     }
@@ -748,6 +937,7 @@ class ChartView(context: Context) : View(context) {
             canvas.drawPath(path, p)
             val lp = Paint(); lp.color = Color.WHITE; lp.textSize = labelFontSize; lp.textAlign = Paint.Align.CENTER; lp.isAntiAlias = true
             canvas.drawText("${entry.first}: ${entry.second.toInt()}", area.centerX(), top + sliceH / 2f + labelFontSize / 3f, lp)
+            dataPoints.add(PinnedLabel(entry.first, entry.second, area.centerX(), top + sliceH / 2f))
         }
     }
 
@@ -765,6 +955,7 @@ class ChartView(context: Context) : View(context) {
                 canvas.drawRect(area.left + di * cellW, area.top + si * cellH, area.left + (di+1) * cellW - 2f, area.top + (si+1) * cellH - 2f, p)
                 val lp = Paint(); lp.color = Color.WHITE; lp.textSize = labelFontSize * 0.8f; lp.textAlign = Paint.Align.CENTER; lp.isAntiAlias = true
                 canvas.drawText(entry.second.toInt().toString(), area.left + (di + 0.5f) * cellW, area.top + (si + 0.5f) * cellH + labelFontSize * 0.3f, lp)
+                dataPoints.add(PinnedLabel("${s.name}: ${entry.first}", entry.second, area.left + (di + 0.5f) * cellW, area.top + (si + 0.5f) * cellH))
             }
         }
     }
@@ -782,6 +973,7 @@ class ChartView(context: Context) : View(context) {
         canvas.drawText("${v.toInt()}%", cx, cy + 20f, tp)
         val lp = Paint(); lp.color = labelColor; lp.textSize = labelFontSize; lp.textAlign = Paint.Align.CENTER; lp.isAntiAlias = true
         canvas.drawText(s.data.firstOrNull()?.first ?: "", cx, cy + labelFontSize + 30f, lp)
+        dataPoints.add(PinnedLabel(s.data.firstOrNull()?.first ?: "Value", v, cx, cy))
     }
 
     private fun drawCandlestick(canvas: Canvas) {
@@ -803,6 +995,7 @@ class ChartView(context: Context) : View(context) {
             canvas.drawLine(x, highY, x, lowY, p)
             p.style = Paint.Style.FILL
             canvas.drawRect(x - cw/2f, minOf(openY, closeY), x + cw/2f, maxOf(openY, closeY), p)
+            dataPoints.add(PinnedLabel(entry.first, entry.second, x, closeY))
         }
     }
 
@@ -810,7 +1003,6 @@ class ChartView(context: Context) : View(context) {
         val area = chartArea(); val s = series.firstOrNull() ?: return
         val total = s.data.sumOf { it.second.toDouble() }.toFloat().coerceAtLeast(1f)
         var x = area.left; var y = area.top; var rowH = 0f
-        val rowMaxW = area.width()
         for ((idx, entry) in s.data.withIndex()) {
             val w = area.width() * entry.second / total
             val h = area.height() * entry.second / total * 2f
@@ -820,6 +1012,7 @@ class ChartView(context: Context) : View(context) {
             canvas.drawRect(x + 2f, y + 2f, x + w - 2f, y + h - 2f, p)
             val lp = Paint(); lp.color = Color.WHITE; lp.textSize = labelFontSize * 0.8f; lp.textAlign = Paint.Align.CENTER; lp.isAntiAlias = true
             if (w > 60f && h > 30f) canvas.drawText(entry.first, x + w/2f, y + h/2f, lp)
+            dataPoints.add(PinnedLabel(entry.first, entry.second, x + w/2f, y + h/2f))
             x += w
         }
     }
