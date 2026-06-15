@@ -241,11 +241,7 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    private fun setActiveToolbarBtn(btn: Button?) {
-        activeToolbarButton?.isSelected = false
-        activeToolbarButton = btn
-        btn?.isSelected = true
-    }
+    
 
     private fun setActiveToolbarBtn(btn: Button?) {
         activeToolbarButton?.setBackgroundColor(Color.TRANSPARENT)
@@ -254,6 +250,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun setActiveTool(btn: Button?, tool: Tool, label: String) {
+        drawingView.currentTool = tool
+        tvActiveTool.text = label
+        setActiveToolbarBtn(btn)
+    }
 
 
 
