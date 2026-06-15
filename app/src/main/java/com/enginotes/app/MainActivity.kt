@@ -145,9 +145,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         for (id in listOf(R.id.btnBack, R.id.btnMenu, R.id.btnText, R.id.btnDraw, R.id.btnTools, R.id.btnInsert, R.id.btnUndo, R.id.btnRedo)) {
-            val btn = findViewById<Button>(id)
-            btn.setBackgroundColor(Color.TRANSPARENT)
-            addPressEffect(btn)
+            findViewById<Button>(id).setBackgroundResource(R.drawable.top_button_selector)
         }
         findViewById<Button>(R.id.btnBack).setOnClickListener { confirmThenExit() }
 
@@ -243,10 +241,10 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    private fun setActiveTool(btn: Button?, tool: Tool, label: String) {
-        drawingView.currentTool = tool
-        tvActiveTool.text = label
-        setActiveToolbarBtn(btn)
+    private fun setActiveToolbarBtn(btn: Button?) {
+        activeToolbarButton?.isSelected = false
+        activeToolbarButton = btn
+        btn?.isSelected = true
     }
 
     private fun setActiveToolbarBtn(btn: Button?) {
@@ -257,16 +255,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
-    private fun addPressEffect(view: View) {
-        view.setOnTouchListener { v, event ->
-            when (event.actionMasked) {
-                android.view.MotionEvent.ACTION_DOWN -> v.setBackgroundColor(PRESS_BTN_COLOR)
-                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL ->
-                    v.setBackgroundColor(if (v == activeToolbarButton) ACTIVE_BTN_COLOR else Color.parseColor("#3D00CC"))
-            }
-            false
-        }
-    }
+
 
     private fun collapseToolbar() {
         findViewById<View>(R.id.toolbarScroll).visibility = View.GONE
