@@ -2,8 +2,11 @@ package com.enginotes.app
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Typeface
+import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
@@ -34,6 +37,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.PopupMenu
 import androidx.core.content.FileProvider
+import org.apache.poi.xwpf.usermodel.XWPFDocument
 import java.io.File
 import java.io.FileOutputStream
 
@@ -74,7 +78,9 @@ class MainActivity : AppCompatActivity() {
     private val ACTIVE_BTN_COLOR = 0x552196F3.toInt()
     private val PRESS_BTN_COLOR = 0x992196F3.toInt()
 
-    private val chartLauncher = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { result ->
+    private val chartLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { result ->
         if (result.resultCode == RESULT_OK) {
             val path = result.data?.getStringExtra("chart_image_path")
             if (path != null) {
@@ -217,20 +223,20 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnMenu).setOnClickListener { anchor ->
             closeInlineEditor(commit = true)
             val popup = PopupMenu(this, anchor)
-            listOf("Save", "Save As", "Export as Image", "Clear Canvas").forEach { popup.menu.add(it) }
+            listOf("Save", "Save As", "Export", "Clear Canvas").forEach { popup.menu.add(it) }
             if (currentFileName != null) popup.menu.add("Delete This Note")
-            listOf("📄 Open PDF", "📊 Chart Builder", "✍ Handwriting to Text", "Settings", "Exit").forEach { popup.menu.add(it) }
+            listOf("📄 Open PDF", "📊 Chart Builder", "✍ Handwriting to Text", "⚙ Settings", "Exit").forEach { popup.menu.add(it) }
             popup.setOnMenuItemClickListener { item ->
                 when (item.title) {
                     "Save" -> saveCurrent()
                     "Save As" -> saveAsNew()
-                    "Export as Image" -> exportImage()
+                    "Export" -> showExportDialog()
                     "Clear Canvas" -> confirmThenClear()
                     "Delete This Note" -> deleteCurrentNote()
                     "📄 Open PDF" -> pickPdfLauncher.launch("application/pdf")
                     "📊 Chart Builder" -> chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java))
                     "✍ Handwriting to Text" -> startActivity(android.content.Intent(this, HandwritingActivity::class.java))
-                    "Settings" -> showSettingsDialog()
+                    "⚙ Settings" -> showSettingsDialog()
                     "Exit" -> confirmThenExit()
                 }
                 true
@@ -243,18 +249,12 @@ class MainActivity : AppCompatActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 when {
-                    // If text editor is open, close it
                     activeEditText != null -> closeInlineEditor(commit = true)
-                    // If table toolbar is open, close it
                     tableToolbarOverlay != null -> {
                         tableToolbarOverlay?.let { canvasContainer.removeView(it) }
                         tableToolbarOverlay = null
                     }
-                    // If active tool is not SELECT, reset to SELECT
-                    drawingView.currentTool != Tool.SELECT -> {
-                        setActiveTool(null, Tool.SELECT, "Select")
-                    }
-                    // Otherwise exit page
+                    drawingView.currentTool != Tool.SELECT -> setActiveTool(null, Tool.SELECT, "Select")
                     else -> confirmThenExit()
                 }
             }
@@ -286,6 +286,176 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
+
+    // ---------- Export ----------
+
+    private fun showExportDialog() {
+        val formats = arrayOf("📄 PDF", "🖼 JPG", "🖼 PNG", "🖼 BMP", "📝 TXT", "📝 DOCX")
+        AlertDialog.Builder(this).setTitle("Export as...")
+            .setItems(formats) { _, i ->
+                when (i) {
+                    0 -> exportAsPdf()
+                    1 -> exportAsBitmap(Bitmap.CompressFormat.JPEG, "jpg")
+                    2 -> exportAsBitmap(Bitmap.CompressFormat.PNG, "png")
+                    3 -> exportAsBitmap(Bitmap.CompressFormat.WEBP, "bmp").also { exportAsBmp() }
+                    4 -> exportAsTxt()
+                    5 -> exportAsDocx()
+                }
+            }.show()
+    }
+
+    private fun exportAsPdf() {
+        try {
+            val bmp = drawingView.exportBitmap()
+            val doc = PdfDocument()
+            val pageInfo = PdfDocument.PageInfo.Builder(bmp.width, bmp.height, 1).create()
+            val page = doc.startPage(pageInfo)
+            page.canvas.drawBitmap(bmp, 0f, 0f, Paint())
+            doc.finishPage(page)
+            val name = currentFileName ?: "EngiNote_${System.currentTimeMillis()}"
+            val file = File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "$name.pdf")
+            FileOutputStream(file).use { doc.writeTo(it) }
+            doc.close()
+            shareFile(file, "application/pdf")
+            Toast.makeText(this, "PDF saved: ${file.name}", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "PDF failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun exportAsBitmap(format: Bitmap.CompressFormat, ext: String) {
+        try {
+            val bmp = drawingView.exportBitmap()
+            val name = currentFileName ?: "EngiNote_${System.currentTimeMillis()}"
+            val file = File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), "$name.$ext")
+            FileOutputStream(file).use { bmp.compress(format, 95, it) }
+            shareFile(file, "image/$ext")
+            Toast.makeText(this, "Saved: ${file.name}", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun exportAsBmp() {
+        try {
+            val bmp = drawingView.exportBitmap()
+            val name = currentFileName ?: "EngiNote_${System.currentTimeMillis()}"
+            val file = File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), "$name.bmp")
+            // Write BMP manually
+            val width = bmp.width; val height = bmp.height
+            val pixels = IntArray(width * height)
+            bmp.getPixels(pixels, 0, width, 0, 0, width, height)
+            FileOutputStream(file).use { fos ->
+                val rowSize = (width * 3 + 3) / 4 * 4
+                val pixelArraySize = rowSize * height
+                val fileSize = 54 + pixelArraySize
+                fun writeInt(v: Int) { fos.write(byteArrayOf(v.toByte(), (v shr 8).toByte(), (v shr 16).toByte(), (v shr 24).toByte())) }
+                fun writeShort(v: Int) { fos.write(byteArrayOf(v.toByte(), (v shr 8).toByte())) }
+                // BMP header
+                fos.write('B'.code); fos.write('M'.code)
+                writeInt(fileSize); writeInt(0); writeInt(54)
+                // DIB header
+                writeInt(40); writeInt(width); writeInt(height)
+                writeShort(1); writeShort(24); writeInt(0); writeInt(pixelArraySize)
+                writeInt(2835); writeInt(2835); writeInt(0); writeInt(0)
+                // Pixel data (bottom-up)
+                val row = ByteArray(rowSize)
+                for (y in height - 1 downTo 0) {
+                    for (x in 0 until width) {
+                        val p = pixels[y * width + x]
+                        row[x * 3] = (p and 0xFF).toByte()
+                        row[x * 3 + 1] = ((p shr 8) and 0xFF).toByte()
+                        row[x * 3 + 2] = ((p shr 16) and 0xFF).toByte()
+                    }
+                    fos.write(row)
+                }
+            }
+            shareFile(file, "image/bmp")
+            Toast.makeText(this, "BMP saved: ${file.name}", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "BMP failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun exportAsTxt() {
+        try {
+            val content = File(getDrawingsFolder(), "${currentFileName ?: return}.eng").readText()
+            val sb = StringBuilder()
+            sb.append("=== ${currentFileName} ===\n\n")
+            for (line in content.lines()) {
+                if (line.startsWith("TEXT\u0001")) {
+                    val parts = line.split("\u0001")
+                    if (parts.size > 7) sb.append(parts.last().replace("\u0002", "\n")).append("\n")
+                }
+            }
+            val name = currentFileName ?: "EngiNote_${System.currentTimeMillis()}"
+            val file = File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "$name.txt")
+            file.writeText(sb.toString())
+            shareFile(file, "text/plain")
+            Toast.makeText(this, "TXT saved: ${file.name}", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "TXT failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun exportAsDocx() {
+        try {
+            val content = currentFileName?.let { File(getDrawingsFolder(), "$it.eng").readText() } ?: return
+            val doc = XWPFDocument()
+            val titlePara = doc.createParagraph()
+            val titleRun = titlePara.createRun()
+            titleRun.setText(currentFileName ?: "EngiNote")
+            titleRun.isBold = true; titleRun.fontSize = 18
+
+            for (line in content.lines()) {
+                if (line.startsWith("TEXT\u0001")) {
+                    val parts = line.split("\u0001")
+                    if (parts.size > 7) {
+                        val text = parts.last().replace("\u0002", "\n")
+                        val para = doc.createParagraph()
+                        val run = para.createRun()
+                        run.setText(text)
+                        try { run.fontSize = (parts[4].toFloat() / PT_TO_PX).toInt().coerceIn(8, 72) } catch (e: Exception) {}
+                    }
+                }
+            }
+
+            // Add canvas image
+            val bmp = drawingView.exportBitmap()
+            val imgFile = File(cacheDir, "export_img.png")
+            FileOutputStream(imgFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 90, it) }
+            val imgPara = doc.createParagraph()
+            val imgRun = imgPara.createRun()
+            FileOutputStream(imgFile).use { imgStream ->
+                imgRun.addPicture(imgFile.inputStream(), org.apache.poi.xwpf.usermodel.Document.PICTURE_TYPE_PNG,
+                    "canvas.png", org.apache.poi.util.Units.toEMU(400.0), org.apache.poi.util.Units.toEMU(300.0))
+            }
+
+            val name = currentFileName ?: "EngiNote_${System.currentTimeMillis()}"
+            val file = File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "$name.docx")
+            FileOutputStream(file).use { doc.write(it) }
+            doc.close()
+            shareFile(file, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            Toast.makeText(this, "DOCX saved: ${file.name}", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "DOCX failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun shareFile(file: File, mimeType: String) {
+        try {
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND)
+            shareIntent.type = mimeType
+            shareIntent.putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            shareIntent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            startActivity(android.content.Intent.createChooser(shareIntent, "Share via"))
+        } catch (e: Exception) {
+            Toast.makeText(this, "Share failed: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // ---------- Settings ----------
 
     private fun showSettingsDialog() {
         val prefs = getPrefs()
@@ -731,8 +901,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun showInlineTextEditor(item: TextItem?, screenX: Float, screenY: Float, worldX: Float, worldY: Float) {
         if (activeEditText != null && editingItem === item) return
-
-        // If another editor is open, commit it first then reopen at new location
         if (activeEditText != null) {
             isSwitchingTextEditor = true
             closeInlineEditor(commit = true)
@@ -749,7 +917,6 @@ class MainActivity : AppCompatActivity() {
         editSize = item?.size ?: drawingView.defaultTextSize
 
         val density = resources.displayMetrics.density
-        // In fixed/paginated show text at actual print size; in infinite scale with canvas
         val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE
         val screenSizePx = if (useActualSize) editSize else editSize * drawingView.getScaleFactor()
 
@@ -844,7 +1011,6 @@ class MainActivity : AppCompatActivity() {
         val tp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
         canvasContainer.addView(toolbar, tp)
 
-        // Update editor position and size whenever canvas is zoomed or panned
         fun updateEditorTransform() {
             val scale = drawingView.getScaleFactor()
             val newSizePx = editSize * scale
@@ -980,14 +1146,5 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle("Delete Note").setMessage("Delete \"$name\"? Cannot be undone.")
             .setPositiveButton("Delete") { _, _ -> File(getDrawingsFolder(), "$name.eng").delete(); finish() }
             .setNegativeButton("Cancel", null).show()
-    }
-
-    private fun exportImage() {
-        val bmp = drawingView.exportBitmap()
-        val file = File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), "EngiNote_${System.currentTimeMillis()}.png")
-        try {
-            FileOutputStream(file).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
-            Toast.makeText(this, "Exported: ${file.absolutePath}", Toast.LENGTH_LONG).show()
-        } catch (e: Exception) { Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_LONG).show() }
     }
 }
