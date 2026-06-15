@@ -1164,6 +1164,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (currentTool == Tool.SELECT) { handleSelect(event); return true }
         if (currentTool == Tool.ARC) { handleArc(event); return true }
         if (currentTool == Tool.AUTOSELECT) { handleAutoSelect(event); return true }
+        // Pan for fixed/paginated in drawing mode
+        if (canvasMode != CanvasMode.INFINITE) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { panStartX = event.x; panStartY = event.y; isPanning = false }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.x - panStartX; val dy = event.y - panStartY
+                    if (!isPanning && (kotlin.math.abs(dx) > 10f || kotlin.math.abs(dy) > 10f)) isPanning = true
+                    if (isPanning) {
+                        translateX += dx; translateY += dy
+                        panStartX = event.x; panStartY = event.y
+                        clampTranslation(); invalidate(); return true
+                    }
+                }
+                MotionEvent.ACTION_UP -> { if (isPanning) { isPanning = false; return true } }
+            }
+        }
         handleDrawing(event); return true
     }
 
