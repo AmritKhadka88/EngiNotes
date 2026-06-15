@@ -251,6 +251,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var prevFocusX = 0f; private var prevFocusY = 0f
     private var hoverX: Float? = null; private var hoverY: Float? = null
 
+    // Pan tracking for single finger pan
+    private var panStartX = 0f; private var panStartY = 0f
+    private var isPanning = false
+
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
             prevFocusX = detector.focusX; prevFocusY = detector.focusY; return true
@@ -267,6 +271,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             translateX += detector.focusX - prevFocusX
             translateY += detector.focusY - prevFocusY
             prevFocusX = detector.focusX; prevFocusY = detector.focusY
+            clampTranslation()
             invalidate(); return true
         }
     })
@@ -305,7 +310,42 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (currentTool == Tool.TEXT) onTextEditRequest?.invoke(null, e.x, e.y, wx, wy)
             return true
         }
+
+        override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
+            if (canvasMode != CanvasMode.INFINITE) {
+                translateX -= distanceX
+                translateY -= distanceY
+                clampTranslation()
+                invalidate()
+                return true
+            }
+            return false
+        }
     })
+
+    // FIX 2: Clamp translation so page stays within screen in Fixed/Paginated modes
+    private fun clampTranslation() {
+        if (canvasMode == CanvasMode.INFINITE) return
+        val pw = pageWidthPx() * scaleFactor
+        val ph = pageHeightPx() * scaleFactor
+        val margin = 20f * scaleFactor // 20px world margin shown around page
+
+        // For FIXED: page goes from 0..pw in screen space after translation
+        // translateX is the screen offset of world origin
+        // Page left screen pos = translateX, page right = translateX + pw
+        // We want page to always overlap screen: page right > margin, page left < width - margin
+        val minTx = width - pw - margin
+        val maxTx = margin
+        val minTy = height - ph - margin
+        val maxTy = margin
+
+        translateX = translateX.coerceIn(minTx, maxTx)
+
+        if (canvasMode == CanvasMode.FIXED) {
+            translateY = translateY.coerceIn(minTy, maxTy)
+        }
+        // PAGINATED: allow vertical scroll but clamp horizontal
+    }
 
     private fun drawActionItem(canvas: Canvas, action: Any, includeFills: Boolean) {
         when (action) {
@@ -357,7 +397,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         super.onLayout(changed, left, top, right, bottom)
         if (canvasMode != CanvasMode.INFINITE && width > 0 && height > 0) {
             val minScale = minOf(width.toFloat() / (pageWidthPx() * 1.15f), height.toFloat() / (pageHeightPx() * 1.15f)).coerceAtLeast(0.05f)
-            if (scaleFactor < minScale) { scaleFactor = minScale; invalidate() }
+            if (scaleFactor < minScale) { scaleFactor = minScale }
+            clampTranslation()
+            invalidate()
         }
     }
 
@@ -436,8 +478,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is FillItem -> floatArrayOf(item.x, item.y, item.x + item.w, item.y + item.h)
             is TextItem -> {
                 val tp = TextPaint(); tp.textSize = item.size
-                val w = tp.measureText(item.text).coerceAtLeast(10f)
-                floatArrayOf(item.x, item.y - item.size * 1.2f, item.x + w, item.y)
+                val lines = item.text.split("\n")
+                val w = lines.maxOf { tp.measureText(it) }.coerceAtLeast(10f)
+                val h = item.size * 1.4f * lines.size
+                // FIX 1: text renders from (x, y-h) to (x+w, y)
+                // Tap target should cover the actual rendered text area
+                floatArrayOf(item.x, item.y - h, item.x + w, item.y)
             }
             is StrokeItem -> {
                 val pts = item.data.points; if (pts.size < 2) return null
@@ -570,11 +616,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return null
     }
 
+    // FIX 1: Use proper text bounds for hit testing
     private fun findTextItemAt(x: Float, y: Float): TextItem? {
         for (a in actions.reversed()) {
             if (a is TextItem) {
-                val b = getBounds(a) ?: continue
-                if (x in (b[0] - 10f)..(b[2] + 10f) && y in (b[1] - 10f)..(b[3] + 10f)) return a
+                val tp = TextPaint(); tp.textSize = a.size
+                val lines = a.text.split("\n")
+                val w = lines.maxOf { tp.measureText(it) }.coerceAtLeast(10f)
+                val h = a.size * 1.4f * lines.size
+                val pad = 20f / scaleFactor
+                // Text renders from (a.x, a.y - h) to (a.x + w, a.y)
+                if (x >= a.x - pad && x <= a.x + w + pad && y >= a.y - h - pad && y <= a.y + pad) return a
             }
         }
         return null
@@ -585,6 +637,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     // ---------- Table ----------
 
+    // FIX 3: Table toolbar — proper row/col add/remove syncing cell array
     private fun handleTable(event: MotionEvent) {
         val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
         val tol = 18f / scaleFactor
@@ -598,8 +651,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; return }
                     val cell = table.hitTestCell(wx, wy)
                     if (cell != null) {
-                        if (tableSelStart == null) tableSelStart = cell
-                        else tableSelEnd = cell
+                        if (tableSelStart == null) { tableSelStart = cell; tableSelEnd = null }
+                        else if (tableSelEnd == null && cell != tableSelStart) tableSelEnd = cell
+                        else { tableSelStart = cell; tableSelEnd = null }
                         invalidate(); return
                     }
                     activeTableItem = null; tableSelStart = null; tableSelEnd = null; invalidate()
@@ -608,7 +662,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         if (action is TableItem) {
                             val b = getBounds(action) ?: continue
                             if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) {
-                                activeTableItem = action; invalidate(); return
+                                activeTableItem = action; tableSelStart = null; tableSelEnd = null; invalidate(); return
                             }
                         }
                     }
@@ -628,7 +682,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val cell = table.hitTestCell(wx, wy) ?: return
                 val selStart = tableSelStart
                 if (selStart != null && tableSelEnd == null && selStart == cell) {
-                    // Single cell tap — open editor
                     val rect = table.cellRect(cell.first, cell.second)
                     val sx = worldToScreenX(rect.left); val sy = worldToScreenY(rect.top)
                     onTableCellEditRequest?.invoke(table, cell.first, cell.second, sx, sy)
@@ -636,6 +689,45 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
             }
         }
+    }
+
+    fun addTableRow(afterRow: Int) {
+        val table = activeTableItem ?: return
+        val insertAt = (afterRow + 1).coerceIn(0, table.rowHeights.size)
+        table.rowHeights.add(insertAt, 60f)
+        table.rows = table.rowHeights.size
+        // Insert empty cells for new row
+        table.insertRow(insertAt)
+        invalidate()
+    }
+
+    fun addTableCol(afterCol: Int) {
+        val table = activeTableItem ?: return
+        val insertAt = (afterCol + 1).coerceIn(0, table.colWidths.size)
+        table.colWidths.add(insertAt, 80f)
+        table.cols = table.colWidths.size
+        table.insertCol(insertAt)
+        invalidate()
+    }
+
+    fun removeTableRow(row: Int) {
+        val table = activeTableItem ?: return
+        if (table.rows <= 1) return
+        val delAt = row.coerceIn(0, table.rowHeights.size - 1)
+        table.rowHeights.removeAt(delAt)
+        table.rows = table.rowHeights.size
+        table.deleteRow(delAt)
+        invalidate()
+    }
+
+    fun removeTableCol(col: Int) {
+        val table = activeTableItem ?: return
+        if (table.cols <= 1) return
+        val delAt = col.coerceIn(0, table.colWidths.size - 1)
+        table.colWidths.removeAt(delAt)
+        table.cols = table.colWidths.size
+        table.deleteCol(delAt)
+        invalidate()
     }
 
     fun mergeCellSelection() {
@@ -667,7 +759,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val minC = if (e != null) minOf(s.second, e.second) else s.second
             val maxC = if (e != null) maxOf(s.second, e.second) else s.second
             val hlP = Paint(); hlP.color = Color.parseColor("#442196F3"); hlP.style = Paint.Style.FILL
-            for (r in minR..maxR) for (c in minC..maxC) canvas.drawRect(table.cellRect(r, c), hlP)
+            for (r in minR..maxR) for (c in minC..maxC) {
+                try { canvas.drawRect(table.cellRect(r, c), hlP) } catch (ex: Exception) {}
+            }
         }
         val op = Paint(); op.color = Color.parseColor("#2196F3"); op.style = Paint.Style.STROKE; op.strokeWidth = 2f / scaleFactor
         canvas.drawRect(table.x, table.y, table.x + table.totalWidth(), table.y + table.totalHeight(), op)
@@ -678,7 +772,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun handleSelect(event: MotionEvent) {
         val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
 
-        // If a table is active, route to table handler
         val at = activeTableItem
         if (at != null) {
             val b = getBounds(at)
@@ -689,7 +782,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
             }
         }
-        // Check if tapping a table to activate it
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             for (action in actions.reversed()) {
                 if (action is TableItem) {
@@ -1191,6 +1283,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val cellH = 60f
         table.rowHeights.clear(); repeat(rows) { table.rowHeights.add(cellH) }
         table.colWidths.clear(); repeat(cols) { table.colWidths.add(cellW) }
+        // Init cells
+        for (r in 0 until rows) for (c in 0 until cols) table.getCellPublic(r, c)
         actions.add(table); redoStack.clear()
         activeTableItem = table; invalidate()
     }
@@ -1212,7 +1306,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     fun zoomTo(wx: Float, wy: Float, scale: Float) {
         scaleFactor = scale.coerceIn(0.2f, 6f)
-        translateX = width / 2f - wx * scaleFactor; translateY = height / 2f - wy * scaleFactor; invalidate()
+        translateX = width / 2f - wx * scaleFactor; translateY = height / 2f - wy * scaleFactor
+        clampTranslation()
+        invalidate()
     }
 
     private fun clusterEdgePoints(points: List<Pair<Int, Int>>): List<Pair<Int, Int>> {
@@ -1350,4 +1446,4 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         invalidate()
     }
-                                     }
+}
