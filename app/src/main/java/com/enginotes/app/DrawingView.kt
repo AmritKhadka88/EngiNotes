@@ -254,17 +254,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var prevFocusX = 0f; private var prevFocusY = 0f
     private var hoverX: Float? = null; private var hoverY: Float? = null
 
-    // Pan tracking for single finger pan
-    private var panStartX = 0f; private var panStartY = 0f
-    private var isPanning = false
-
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
             prevFocusX = detector.focusX; prevFocusY = detector.focusY; return true
         }
         override fun onScale(detector: ScaleGestureDetector): Boolean {
             val minScale = if (canvasMode != CanvasMode.INFINITE && width > 0 && height > 0) {
-                minOf(width.toFloat() / (pageWidthPx() * 1.15f), height.toFloat() / (pageHeightPx() * 1.15f)).coerceAtLeast(0.05f)
+                minOf(width.toFloat() / (pageWidthPx() * 1.5f), height.toFloat() / (pageHeightPx() * 1.5f)).coerceAtLeast(0.05f)
             } else 0.2f
             val newScale = (scaleFactor * detector.scaleFactor).coerceIn(minScale, 6f)
             val factor = newScale / scaleFactor
@@ -289,8 +285,23 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             when (currentTool) {
                 Tool.TEXT -> {
                     val hit = findTextItemAt(wx, wy)
-                    if (hit != null) { selectedItem = hit; invalidate() }
-                    else { selectedItem = null; onTextEditRequest?.invoke(null, e.x, e.y, wx, wy) }
+                    if (hit != null) {
+                        // Single tap on existing text = switch to SELECT showing handles
+                        selectedItem = hit
+                        currentTool = Tool.SELECT
+                        invalidate()
+                    } else {
+                        selectedItem = null
+                        onTextEditRequest?.invoke(null, e.x, e.y, wx, wy)
+                    }
+                }
+                Tool.SELECT -> {
+                    // Single tap in SELECT mode on text = open editor
+                    val hit = findTextItemAt(wx, wy)
+                    if (hit != null && selectedItem === hit) {
+                        hit.isEditing = true; invalidate()
+                        onTextEditRequest?.invoke(hit, e.x, e.y, wx, wy)
+                    }
                 }
                 Tool.FILL -> {
                     val item = findItemAt(wx, wy)
@@ -330,24 +341,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     })
 
-    // FIX 2: Clamp translation so page stays within screen in Fixed/Paginated modes
     private fun clampTranslation() {
         if (canvasMode == CanvasMode.INFINITE) return
         val pw = pageWidthPx() * scaleFactor
         val ph = pageHeightPx() * scaleFactor
         val margin = 20f
-
-        // Horizontal: page must stay within screen
         val minTx = width - pw - margin
         val maxTx = margin
         translateX = translateX.coerceIn(minTx.coerceAtMost(maxTx), maxTx)
-
         if (canvasMode == CanvasMode.FIXED) {
             val minTy = height - ph - margin
             val maxTy = margin
             translateY = translateY.coerceIn(minTy.coerceAtMost(maxTy), maxTy)
         }
-        // PAGINATED: free vertical scroll, clamped horizontal only
     }
 
     private fun drawActionItem(canvas: Canvas, action: Any, includeFills: Boolean) {
@@ -399,7 +405,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
         if (canvasMode != CanvasMode.INFINITE && width > 0 && height > 0 && changed) {
-            // Fit page width to screen with small margin
             val margin = 20f
             scaleFactor = (width.toFloat() - margin * 2f) / pageWidthPx()
             translateX = margin
@@ -450,30 +455,50 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val bounds = getBounds(item) ?: return
         val rotation = getRotation(item); val (pivotX, pivotY) = getPivot(item, bounds)
         canvas.save(); canvas.rotate(rotation, pivotX, pivotY)
-        val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE; selP.strokeWidth = 2f / scaleFactor
+        val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE
+        selP.strokeWidth = 2f / scaleFactor; selP.pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f/scaleFactor, 5f/scaleFactor), 0f)
         canvas.drawRect(bounds[0], bounds[1], bounds[2], bounds[3], selP)
-        val hr = 14f / scaleFactor
+        val hr = 18f / scaleFactor  // BIGGER handles
         val hFill = Paint(); hFill.style = Paint.Style.FILL
-        val hStroke = Paint(); hStroke.style = Paint.Style.STROKE; hStroke.color = Color.parseColor("#2196F3"); hStroke.strokeWidth = 2f / scaleFactor
+        val hStroke = Paint(); hStroke.style = Paint.Style.STROKE
+        hStroke.color = Color.parseColor("#2196F3"); hStroke.strokeWidth = 2f / scaleFactor
         val isBbox = item is ImageItem || item is TextItem || (item is StrokeItem && BBOX_RESIZE_SHAPES.contains(item.data.type))
         val isEndpoint = item is StrokeItem && ENDPOINT_RESIZE_SHAPES.contains(item.data.type)
         if (isBbox) {
             for ((_, pos) in bboxHandlePositions(bounds)) {
-                hFill.color = Color.WHITE; canvas.drawCircle(pos.first, pos.second, hr, hFill); canvas.drawCircle(pos.first, pos.second, hr, hStroke)
+                hFill.color = Color.WHITE
+                canvas.drawCircle(pos.first, pos.second, hr, hFill)
+                canvas.drawCircle(pos.first, pos.second, hr, hStroke)
             }
         } else if (isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
             hFill.color = Color.WHITE
-            canvas.drawCircle(item.data.points[0], item.data.points[1], hr, hFill); canvas.drawCircle(item.data.points[0], item.data.points[1], hr, hStroke)
-            canvas.drawCircle(item.data.points[2], item.data.points[3], hr, hFill); canvas.drawCircle(item.data.points[2], item.data.points[3], hr, hStroke)
+            canvas.drawCircle(item.data.points[0], item.data.points[1], hr, hFill)
+            canvas.drawCircle(item.data.points[0], item.data.points[1], hr, hStroke)
+            canvas.drawCircle(item.data.points[2], item.data.points[3], hr, hFill)
+            canvas.drawCircle(item.data.points[2], item.data.points[3], hr, hStroke)
         }
         val canRotate = item is ImageItem || item is TextItem || (item is StrokeItem && item.data.type != Tool.PEN && item.data.type != Tool.ARC)
         if (canRotate) {
-            val cx = (bounds[0] + bounds[2]) / 2f; val rotY = bounds[1] - 50f / scaleFactor
-            canvas.drawLine(cx, bounds[1], cx, rotY, hStroke)
-            hFill.color = Color.WHITE; canvas.drawCircle(cx, rotY, hr, hFill); canvas.drawCircle(cx, rotY, hr, hStroke)
+            val cx = (bounds[0] + bounds[2]) / 2f; val rotY = bounds[1] - 60f / scaleFactor
+            val rotLinePaint = Paint(); rotLinePaint.color = Color.parseColor("#2196F3")
+            rotLinePaint.strokeWidth = 1.5f / scaleFactor
+            canvas.drawLine(cx, bounds[1], cx, rotY, rotLinePaint)
+            hFill.color = Color.parseColor("#4CAF50")  // Green rotate handle
+            canvas.drawCircle(cx, rotY, hr, hFill)
+            canvas.drawCircle(cx, rotY, hr, hStroke)
+            // Rotation icon
+            val rp = Paint(); rp.color = Color.WHITE; rp.textSize = hr * 1.2f; rp.textAlign = Paint.Align.CENTER; rp.isAntiAlias = true
+            canvas.drawText("↻", cx, rotY + hr * 0.4f, rp)
         }
+        // Delete dot — larger and further away
         hFill.color = Color.parseColor("#F44336")
-        canvas.drawCircle(bounds[2] + hr * 2.5f, bounds[1] - hr * 2.5f, hr, hFill)
+        val delR = hr * 1.4f
+        val delX = bounds[2] + hr * 5f
+        val delY = bounds[1] - hr * 5f
+        canvas.drawCircle(delX, delY, delR, hFill)
+        // X icon on delete
+        val xp = Paint(); xp.color = Color.WHITE; xp.textSize = delR * 1.4f; xp.textAlign = Paint.Align.CENTER; xp.isAntiAlias = true
+        canvas.drawText("✕", delX, delY + delR * 0.4f, xp)
         canvas.restore()
     }
 
@@ -487,8 +512,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val lines = item.text.split("\n")
                 val w = lines.maxOf { tp.measureText(it) }.coerceAtLeast(10f)
                 val h = item.size * 1.4f * lines.size
-                // FIX 1: text renders from (x, y-h) to (x+w, y)
-                // Tap target should cover the actual rendered text area
                 floatArrayOf(item.x, item.y - h, item.x + w, item.y)
             }
             is StrokeItem -> {
@@ -604,16 +627,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     item.data.points[2] = newCx + newW / 2f; item.data.points[3] = newCy + newH / 2f
                     item.path = item.data.buildPath()
                 } else if (ENDPOINT_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    when (handle) { HandleType.TL -> { item.data.points[0] = lx; item.data.points[1] = ly }; HandleType.BR -> { item.data.points[2] = lx; item.data.points[3] = ly }; else -> {} }
+                    when (handle) {
+                        HandleType.TL -> { item.data.points[0] = lx; item.data.points[1] = ly }
+                        HandleType.BR -> { item.data.points[2] = lx; item.data.points[3] = ly }
+                        else -> {}
+                    }
                     item.path = item.data.buildPath()
                 }
             }
-            is TextItem -> { item.size = (distance(item.x, item.y, lx, ly) / (item.text.length.coerceAtLeast(1) * 0.4f)).coerceIn(10f, 300f) }
+            is TextItem -> {
+                item.size = (distance(item.x, item.y, lx, ly) / (item.text.length.coerceAtLeast(1) * 0.4f)).coerceIn(10f, 300f)
+            }
         }
     }
 
     private fun findItemAt(x: Float, y: Float): Any? {
-        val pad = 15f / scaleFactor
+        val pad = 20f / scaleFactor
         for (a in actions.reversed()) {
             if (a is FillItem) continue
             val b = getBounds(a) ?: continue
@@ -622,7 +651,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return null
     }
 
-    // FIX 1: Use proper text bounds for hit testing
     private fun findTextItemAt(x: Float, y: Float): TextItem? {
         for (a in actions.reversed()) {
             if (a is TextItem) {
@@ -630,8 +658,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val lines = a.text.split("\n")
                 val w = lines.maxOf { tp.measureText(it) }.coerceAtLeast(10f)
                 val h = a.size * 1.4f * lines.size
-                val pad = 20f / scaleFactor
-                // Text renders from (a.x, a.y - h) to (a.x + w, a.y)
+                val pad = 24f / scaleFactor
                 if (x >= a.x - pad && x <= a.x + w + pad && y >= a.y - h - pad && y <= a.y + pad) return a
             }
         }
@@ -642,8 +669,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var longPressRunnable: Runnable? = null
 
     // ---------- Table ----------
-
-    // FIX 3: Table toolbar — proper row/col add/remove syncing cell array
     private fun handleTable(event: MotionEvent) {
         val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
         val tol = 18f / scaleFactor
@@ -702,7 +727,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val insertAt = (afterRow + 1).coerceIn(0, table.rowHeights.size)
         table.rowHeights.add(insertAt, 60f)
         table.rows = table.rowHeights.size
-        // Insert empty cells for new row
         table.insertRow(insertAt)
         invalidate()
     }
@@ -774,7 +798,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     // ---------- Select ----------
-
     private fun handleSelect(event: MotionEvent) {
         val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
 
@@ -808,42 +831,65 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     if (b != null) {
                         val rot = getRotation(item); val (px, py) = getPivot(item, b)
                         val (lx, ly) = rotatePoint(wx, wy, px, py, -rot)
-                        val hr = 14f / scaleFactor; val hit = 30f / scaleFactor
-                        val isBbox = item is ImageItem || item is TextItem || (item is StrokeItem && BBOX_RESIZE_SHAPES.contains(item.data.type))
-                        val isEndpoint = item is StrokeItem && ENDPOINT_RESIZE_SHAPES.contains(item.data.type)
-                        if (distance(lx, ly, b[2] + hr * 2.5f, b[1] - hr * 2.5f) <= hit) {
-                            actions.remove(item); selectedItem = null; handled = true
+                        val hr = 18f / scaleFactor
+                        val hit = 50f / scaleFactor  // BIGGER touch area
+
+                        // Delete button - further away with bigger hit area
+                        val delX = b[2] + hr * 5f; val delY = b[1] - hr * 5f
+                        if (distance(lx, ly, delX, delY) <= hit * 1.2f) {
+                            actions.remove(item); selectedItem = null; handled = true; invalidate(); return
                         }
+
                         val canRot = item is ImageItem || item is TextItem || (item is StrokeItem && item.data.type != Tool.PEN && item.data.type != Tool.ARC)
                         if (!handled && canRot) {
-                            val cx = (b[0] + b[2]) / 2f; val ry = b[1] - 50f / scaleFactor
-                            if (distance(lx, ly, cx, ry) <= hit) { activeHandle = HandleType.ROTATE; dragStartAngle = computeAngle(item, wx, wy); dragStartRotation = rot; handled = true }
+                            val cx = (b[0] + b[2]) / 2f; val ry = b[1] - 60f / scaleFactor
+                            if (distance(lx, ly, cx, ry) <= hit) {
+                                activeHandle = HandleType.ROTATE
+                                dragStartAngle = computeAngle(item, wx, wy)
+                                dragStartRotation = rot
+                                handled = true
+                            }
                         }
+                        val isBbox = item is ImageItem || item is TextItem || (item is StrokeItem && BBOX_RESIZE_SHAPES.contains(item.data.type))
+                        val isEndpoint = item is StrokeItem && ENDPOINT_RESIZE_SHAPES.contains(item.data.type)
                         if (!handled && isBbox) {
                             for ((type, pos) in bboxHandlePositions(b)) {
                                 if (distance(lx, ly, pos.first, pos.second) <= hit) {
-                                    activeHandle = type; dragStartPivotX = px; dragStartPivotY = py
-                                    dragStartRotation = rot; dragStartLocalX = lx; dragStartLocalY = ly; handled = true; break
+                                    activeHandle = type
+                                    dragStartPivotX = px; dragStartPivotY = py
+                                    dragStartRotation = rot
+                                    dragStartLocalX = lx; dragStartLocalY = ly
+                                    handled = true; break
                                 }
                             }
                         }
                         if (!handled && isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
                             if (distance(lx, ly, item.data.points[0], item.data.points[1]) <= hit) {
-                                activeHandle = HandleType.TL; dragStartPivotX = px; dragStartPivotY = py; dragStartRotation = rot; handled = true
+                                activeHandle = HandleType.TL
+                                dragStartPivotX = px; dragStartPivotY = py; dragStartRotation = rot; handled = true
                             } else if (distance(lx, ly, item.data.points[2], item.data.points[3]) <= hit) {
-                                activeHandle = HandleType.BR; dragStartPivotX = px; dragStartPivotY = py; dragStartRotation = rot; handled = true
+                                activeHandle = HandleType.BR
+                                dragStartPivotX = px; dragStartPivotY = py; dragStartRotation = rot; handled = true
                             }
                         }
                         if (!handled && lx >= b[0] - hit && lx <= b[2] + hit && ly >= b[1] - hit && ly <= b[3] + hit) {
-                            activeHandle = HandleType.MOVE; dragStartWorldX = wx; dragStartWorldY = wy; handled = true
+                            activeHandle = HandleType.MOVE
+                            dragStartWorldX = wx; dragStartWorldY = wy; handled = true
                         }
                     }
                 }
-                if (!handled) { activeHandle = HandleType.NONE; selectedItem = findItemAt(wx, wy) }
+                if (!handled) {
+                    activeHandle = HandleType.NONE
+                    selectedItem = findItemAt(wx, wy)
+                }
+                // Long press on text to edit
                 val sel = selectedItem
                 if (sel is TextItem) {
-                    val r = Runnable { sel.isEditing = true; invalidate(); onTextEditRequest?.invoke(sel, event.x, event.y, wx, wy) }
-                    longPressRunnable = r; longPressHandler.postDelayed(r, 450)
+                    val r = Runnable {
+                        sel.isEditing = true; invalidate()
+                        onTextEditRequest?.invoke(sel, event.x, event.y, wx, wy)
+                    }
+                    longPressRunnable = r; longPressHandler.postDelayed(r, 500)
                 }
                 invalidate()
             }
@@ -851,8 +897,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
                 val item = selectedItem ?: return
                 when (activeHandle) {
-                    HandleType.MOVE -> { moveItem(item, wx - dragStartWorldX, wy - dragStartWorldY); dragStartWorldX = wx; dragStartWorldY = wy }
-                    HandleType.ROTATE -> setRotation(item, dragStartRotation + (computeAngle(item, wx, wy) - dragStartAngle))
+                    HandleType.MOVE -> {
+                        moveItem(item, wx - dragStartWorldX, wy - dragStartWorldY)
+                        dragStartWorldX = wx; dragStartWorldY = wy
+                    }
+                    HandleType.ROTATE -> {
+                        val newAngle = computeAngle(item, wx, wy)
+                        setRotation(item, dragStartRotation + (newAngle - dragStartAngle))
+                    }
                     HandleType.NONE -> return
                     else -> {
                         val (lx, ly) = rotatePoint(wx, wy, dragStartPivotX, dragStartPivotY, -dragStartRotation)
@@ -881,15 +933,27 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         if (distance(wx, wy, arc.data.points[i], arc.data.points[i + 1]) <= r) { found = i; break }; i += 2
                     }
                     if (found >= 0) arcDragPointIndex = found
-                    else { activeArcItem = null; val d = StrokeData(Tool.ARC, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, false); currentItem = StrokeItem(d, d.buildPath(), d.toPaint()) }
-                } else { val d = StrokeData(Tool.ARC, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, false); currentItem = StrokeItem(d, d.buildPath(), d.toPaint()) }
+                    else {
+                        activeArcItem = null
+                        val d = StrokeData(Tool.ARC, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, false)
+                        currentItem = StrokeItem(d, d.buildPath(), d.toPaint())
+                    }
+                } else {
+                    val d = StrokeData(Tool.ARC, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, false)
+                    currentItem = StrokeItem(d, d.buildPath(), d.toPaint())
+                }
                 invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
                 if (arcDragPointIndex >= 0) {
                     val arc = activeArcItem ?: return
-                    arc.data.points[arcDragPointIndex] = wx; arc.data.points[arcDragPointIndex + 1] = wy; arc.path = arc.data.buildPath()
-                } else { val item = currentItem ?: return; item.data.points[2] = wx; item.data.points[3] = wy; item.path = item.data.buildPath() }
+                    arc.data.points[arcDragPointIndex] = wx; arc.data.points[arcDragPointIndex + 1] = wy
+                    arc.path = arc.data.buildPath()
+                } else {
+                    val item = currentItem ?: return
+                    item.data.points[2] = wx; item.data.points[3] = wy
+                    item.path = item.data.buildPath()
+                }
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
@@ -897,11 +961,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 else {
                     val item = currentItem
                     if (item != null) {
-                        val p0x = item.data.points[0]; val p0y = item.data.points[1]; val p1x = item.data.points[2]; val p1y = item.data.points[3]
+                        val p0x = item.data.points[0]; val p0y = item.data.points[1]
+                        val p1x = item.data.points[2]; val p1y = item.data.points[3]
                         val n = arcDivisions.coerceIn(1, 20); val pts = mutableListOf<Float>()
                         for (i in 0..n) { val t = i.toFloat() / n; pts.add(p0x + (p1x - p0x) * t); pts.add(p0y + (p1y - p0y) * t) }
                         val d = StrokeData(Tool.ARC, pts, item.data.color, item.data.strokeWidth, false)
-                        val ni = StrokeItem(d, d.buildPath(), d.toPaint()); actions.add(ni); redoStack.clear(); activeArcItem = ni; currentItem = null
+                        val ni = StrokeItem(d, d.buildPath(), d.toPaint())
+                        actions.add(ni); redoStack.clear(); activeArcItem = ni; currentItem = null
                     }
                 }
                 invalidate()
@@ -978,14 +1044,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun handleAutoSelect(event: MotionEvent) {
         val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
-        val hr = 14f / scaleFactor; val hit = 30f / scaleFactor
+        val hr = 18f / scaleFactor; val hit = 50f / scaleFactor
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 val group = selectedGroup
                 if (group != null && group.isNotEmpty()) {
                     val gb = groupBounds(group)
                     if (gb != null) {
-                        if (distance(wx, wy, gb[2] + hr * 2.5f, gb[1] - hr * 2.5f) <= hit) { for (it in group) actions.remove(it); selectedGroup = null; invalidate(); return }
+                        val delX = gb[2] + hr * 5f; val delY = gb[1] - hr * 5f
+                        if (distance(wx, wy, delX, delY) <= hit) {
+                            for (it in group) actions.remove(it); selectedGroup = null; invalidate(); return
+                        }
                         val gcx = (gb[0] + gb[2]) / 2f; val gcy = (gb[1] + gb[3]) / 2f
                         val gHandles = listOf(gb[0] to gb[1], gcx to gb[1], gb[2] to gb[1], gb[0] to gcy, gb[2] to gcy, gb[0] to gb[3], gcx to gb[3], gb[2] to gb[3])
                         var found = -1
@@ -1041,14 +1110,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (gb != null) {
                 val bp = Paint(); bp.color = Color.parseColor("#2196F3"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 2f / scaleFactor
                 canvas.drawRect(gb[0], gb[1], gb[2], gb[3], bp)
-                val r = 14f / scaleFactor; val cx = (gb[0] + gb[2]) / 2f; val cy = (gb[1] + gb[3]) / 2f
+                val r = 18f / scaleFactor; val cx = (gb[0] + gb[2]) / 2f
                 val hf = Paint(); hf.style = Paint.Style.FILL; hf.color = Color.WHITE
                 val hs = Paint(); hs.style = Paint.Style.STROKE; hs.color = Color.parseColor("#2196F3"); hs.strokeWidth = 2f / scaleFactor
-                for ((hx, hy) in listOf(gb[0] to gb[1], cx to gb[1], gb[2] to gb[1], gb[0] to cy, gb[2] to cy, gb[0] to gb[3], cx to gb[3], gb[2] to gb[3])) {
+                for ((hx, hy) in listOf(gb[0] to gb[1], cx to gb[1], gb[2] to gb[1], gb[0] to (gb[1]+gb[3])/2f, gb[2] to (gb[1]+gb[3])/2f, gb[0] to gb[3], cx to gb[3], gb[2] to gb[3])) {
                     canvas.drawCircle(hx, hy, r, hf); canvas.drawCircle(hx, hy, r, hs)
                 }
                 val dp = Paint(); dp.color = Color.parseColor("#F44336"); dp.style = Paint.Style.FILL
-                canvas.drawCircle(gb[2] + r * 2.5f, gb[1] - r * 2.5f, r, dp)
+                canvas.drawCircle(gb[2] + r * 5f, gb[1] - r * 5f, r * 1.4f, dp)
             }
         }
     }
@@ -1170,7 +1239,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (currentTool == Tool.SELECT) { handleSelect(event); return true }
         if (currentTool == Tool.ARC) { handleArc(event); return true }
         if (currentTool == Tool.AUTOSELECT) { handleAutoSelect(event); return true }
-        // Pan for fixed/paginated in drawing mode
         handleDrawing(event); return true
     }
 
@@ -1290,10 +1358,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val cellH = 60f
         table.rowHeights.clear(); repeat(rows) { table.rowHeights.add(cellH) }
         table.colWidths.clear(); repeat(cols) { table.colWidths.add(cellW) }
-        // Init cells
         for (r in 0 until rows) for (c in 0 until cols) table.getCellPublic(r, c)
         actions.add(table); redoStack.clear()
         activeTableItem = table; invalidate()
+    }
+
+    // Migrate old notes from filesDir/drawings/ to books/General/
+    fun migrateOldNotes(filesDir: File) {
+        val oldFolder = File(filesDir, "drawings")
+        if (!oldFolder.exists()) return
+        val newFolder = File(File(filesDir, "books"), "General")
+        if (!newFolder.exists()) newFolder.mkdirs()
+        oldFolder.listFiles()?.filter { it.extension == "eng" }?.forEach { file ->
+            val dest = File(newFolder, file.name)
+            if (!dest.exists()) file.copyTo(dest)
+        }
     }
 
     fun undo() { if (actions.isNotEmpty()) { redoStack.add(actions.removeAt(actions.size - 1)); invalidate() } }
@@ -1314,8 +1393,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     fun zoomTo(wx: Float, wy: Float, scale: Float) {
         scaleFactor = scale.coerceIn(0.2f, 6f)
         translateX = width / 2f - wx * scaleFactor; translateY = height / 2f - wy * scaleFactor
-        clampTranslation()
-        invalidate()
+        clampTranslation(); invalidate()
     }
 
     private fun clusterEdgePoints(points: List<Pair<Int, Int>>): List<Pair<Int, Int>> {
@@ -1453,4 +1531,4 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         invalidate()
     }
-}
+                                     }
