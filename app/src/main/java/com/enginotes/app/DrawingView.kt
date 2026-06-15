@@ -245,6 +245,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     var onTextEditRequest: ((TextItem?, Float, Float, Float, Float) -> Unit)? = null
     var onTableCellEditRequest: ((TableItem, Int, Int, Float, Float) -> Unit)? = null
+    var isTextEditorOpen: Boolean = false
+    var onScaleChanged: ((Float) -> Unit)? = null
 
     private var scaleFactor = 1f
     private var translateX = 0f; private var translateY = 0f
@@ -272,6 +274,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             translateY += detector.focusY - prevFocusY
             prevFocusX = detector.focusX; prevFocusY = detector.focusY
             clampTranslation()
+            onScaleChanged?.invoke(scaleFactor)
             invalidate(); return true
         }
     })
@@ -316,6 +319,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 translateX -= distanceX
                 translateY -= distanceY
                 clampTranslation()
+                onScaleChanged?.invoke(scaleFactor)
                 invalidate()
                 return true
             }
