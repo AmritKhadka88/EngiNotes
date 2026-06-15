@@ -580,13 +580,19 @@ class MainActivity : AppCompatActivity() {
     private fun confirmThenExit() {
         closeInlineEditor(commit = true)
         val changed = drawingView.serialize() != lastSavedContent && drawingView.hasContent()
-        if (getPrefs().getBoolean("confirm_exit_clear", true) && changed) {
+        if (!changed) { finish(); return }
+        // If autosave is on, just save and exit — no dialog
+        if (getPrefs().getBoolean("autosave", true)) {
+            autoSave(); finish(); return
+        }
+        // If confirm preference is on, ask
+        if (getPrefs().getBoolean("confirm_exit_clear", true)) {
             AlertDialog.Builder(this).setTitle("Unsaved Changes")
                 .setMessage("Save before leaving?")
                 .setPositiveButton("Save") { _, _ -> saveCurrent(); finish() }
                 .setNeutralButton("Don't Save") { _, _ -> finish() }
                 .setNegativeButton("Cancel", null).show()
-        } else finish()
+        } else { autoSave(); finish() }
     }
 
     private fun confirmThenClear() {
@@ -1119,6 +1125,17 @@ class MainActivity : AppCompatActivity() {
         lastSavedContent = drawingView.serialize()
     }
 
+    private fun autoSave() {
+        if (!getPrefs().getBoolean("autosave", true)) return
+        if (!drawingView.hasContent()) return
+        if (currentFileName == null) {
+            // Auto-assign name if blank note has content
+            val name = "AutoSave_${System.currentTimeMillis()}"
+            currentFileName = name; tvTitle.text = name
+        }
+        writeCurrentFile()
+    }
+
     private fun saveCurrent() {
         if (currentFileName == null) {
             val input = EditText(this); input.hint = "Note name"
@@ -1146,5 +1163,10 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle("Delete Note").setMessage("Delete \"$name\"? Cannot be undone.")
             .setPositiveButton("Delete") { _, _ -> File(getDrawingsFolder(), "$name.eng").delete(); finish() }
             .setNegativeButton("Cancel", null).show()
+    }
+    override fun onPause() {
+        super.onPause()
+        closeInlineEditor(commit = true)
+        autoSave()
     }
 }
