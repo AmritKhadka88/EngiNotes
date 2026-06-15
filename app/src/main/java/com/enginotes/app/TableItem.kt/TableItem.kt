@@ -192,6 +192,31 @@ class TableItem(
         return sb.toString()
     }
 
+    fun getCellPublic(r: Int, c: Int): TableCell = getCellSafe(r, c)
+
+    fun insertRow(at: Int) {
+        val newRow = MutableList(cols) { TableCell() }
+        if (at >= _cells.size) _cells.add(newRow)
+        else _cells.add(at, newRow)
+    }
+
+    fun insertCol(at: Int) {
+        for (row in _cells) {
+            if (at >= row.size) row.add(TableCell())
+            else row.add(at, TableCell())
+        }
+    }
+
+    fun deleteRow(at: Int) {
+        if (at < _cells.size) _cells.removeAt(at)
+    }
+
+    fun deleteCol(at: Int) {
+        for (row in _cells) {
+            if (at < row.size) row.removeAt(at)
+        }
+    }
+
     companion object {
         fun deserialize(lines: List<String>, startIdx: Int): Pair<TableItem?, Int> {
             if (startIdx >= lines.size) return Pair(null, startIdx)
