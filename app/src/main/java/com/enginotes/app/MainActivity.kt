@@ -828,28 +828,20 @@ class MainActivity : AppCompatActivity() {
         val tp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
         canvasContainer.addView(toolbar, tp)
 
-        // Update editText position and size when canvas is zoomed
-        drawingView.onScaleChanged = { scale ->
-            if (useActualSize) {
-                // Fixed/Paginated: keep text at print size, just reposition to follow world coords
-                val sx = drawingView.worldToScreenX(editWorldX)
-                val sy = drawingView.worldToScreenY(editWorldY) - editSize
-                val lp = editText.layoutParams as FrameLayout.LayoutParams
-                lp.leftMargin = sx.toInt().coerceAtLeast(0)
-                lp.topMargin = sy.toInt().coerceAtLeast(0)
-                editText.layoutParams = lp
-            } else {
-                // Infinite: scale text size with canvas zoom
-                val newSizePx = editSize * scale
-                editText.textSize = (newSizePx / density).coerceAtLeast(8f)
-                val sx = drawingView.worldToScreenX(editWorldX)
-                val sy = drawingView.worldToScreenY(editWorldY) - newSizePx
-                val lp = editText.layoutParams as FrameLayout.LayoutParams
-                lp.leftMargin = sx.toInt().coerceAtLeast(0)
-                lp.topMargin = sy.toInt().coerceAtLeast(0)
-                editText.layoutParams = lp
-            }
+        // Update editor position and size whenever canvas is zoomed or panned
+        fun updateEditorTransform() {
+            val scale = drawingView.getScaleFactor()
+            val newSizePx = editSize * scale
+            editText.textSize = (newSizePx / density).coerceAtLeast(8f)
+            val sx = drawingView.worldToScreenX(editWorldX)
+            val sy = drawingView.worldToScreenY(editWorldY) - newSizePx
+            val lp = editText.layoutParams as FrameLayout.LayoutParams
+            lp.leftMargin = sx.toInt()
+            lp.topMargin = sy.toInt()
+            editText.layoutParams = lp
         }
+        drawingView.onScaleChanged = { updateEditorTransform() }
+        drawingView.onCanvasTransformed = { updateEditorTransform() }
 
         activeEditText = editText; activeToolbar = toolbar
         editText.requestFocus()
@@ -894,6 +886,7 @@ class MainActivity : AppCompatActivity() {
 
         if (!isSwitchingTextEditor) drawingView.invalidate()
         drawingView.onScaleChanged = null
+        drawingView.onCanvasTransformed = null
         activeEditText = null; activeToolbar = null; editingItem = null
     }
 
