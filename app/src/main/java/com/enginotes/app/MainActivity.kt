@@ -942,7 +942,9 @@ class MainActivity : AppCompatActivity() {
     // ---------- File ops ----------
 
     private fun getDrawingsFolder(): File {
-        val f = File(filesDir, "drawings"); if (!f.exists()) f.mkdirs(); return f
+        val bookName = intent.getStringExtra("book_name") ?: "General"
+        val f = File(File(filesDir, "books"), bookName)
+        if (!f.exists()) f.mkdirs(); return f
     }
 
     private fun writeCurrentFile() {
