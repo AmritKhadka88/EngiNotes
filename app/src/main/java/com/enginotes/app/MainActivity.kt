@@ -9,7 +9,6 @@ import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import android.os.Bundle
-import android.os.Environment
 import android.text.Editable
 import android.text.Spannable
 import android.text.SpannableStringBuilder
@@ -75,9 +74,6 @@ class MainActivity : AppCompatActivity() {
     private var activeCellToolbar: LinearLayout? = null
     private var tableToolbarOverlay: LinearLayout? = null
 
-    private val ACTIVE_BTN_COLOR = 0x552196F3.toInt()
-    private val PRESS_BTN_COLOR = 0x992196F3.toInt()
-
     private val chartLauncher = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -129,7 +125,6 @@ class MainActivity : AppCompatActivity() {
         } else {
             tvTitle.text = "New Note"
         }
-        // Migrate old notes to new books structure
         drawingView.migrateOldNotes(filesDir)
         lastSavedContent = drawingView.serialize()
         drawingView.arcDivisions = getPrefs().getInt("arc_divisions", 3)
@@ -290,6 +285,12 @@ class MainActivity : AppCompatActivity() {
     private fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
 
     // ---------- Export ----------
+    // All exports save to externalCacheDir so FileProvider path always matches
+    private fun getCacheExportDir(): File {
+        val dir = externalCacheDir ?: cacheDir
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
 
     private fun showExportDialog() {
         val formats = arrayOf("📄 PDF", "🖼 JPG", "🖼 PNG", "🖼 BMP", "📝 TXT", "📝 DOCX")
@@ -299,7 +300,7 @@ class MainActivity : AppCompatActivity() {
                     0 -> exportAsPdf()
                     1 -> exportAsBitmap(Bitmap.CompressFormat.JPEG, "jpg")
                     2 -> exportAsBitmap(Bitmap.CompressFormat.PNG, "png")
-                    3 -> exportAsBitmap(Bitmap.CompressFormat.WEBP, "bmp").also { exportAsBmp() }
+                    3 -> exportAsBmp()
                     4 -> exportAsTxt()
                     5 -> exportAsDocx()
                 }
@@ -309,18 +310,29 @@ class MainActivity : AppCompatActivity() {
     private fun exportAsPdf() {
         try {
             val bmp = drawingView.exportBitmap()
+            // Clamp bitmap size to avoid PdfDocument failure
+            val maxDim = 3000
+            val scale = if (bmp.width > maxDim || bmp.height > maxDim)
+                minOf(maxDim.toFloat() / bmp.width, maxDim.toFloat() / bmp.height) else 1f
+            val pw = (bmp.width * scale).toInt().coerceAtLeast(1)
+            val ph = (bmp.height * scale).toInt().coerceAtLeast(1)
+            val scaledBmp = if (scale < 1f) Bitmap.createScaledBitmap(bmp, pw, ph, true) else bmp
+
             val doc = PdfDocument()
-            val pageInfo = PdfDocument.PageInfo.Builder(bmp.width, bmp.height, 1).create()
+            val pageInfo = PdfDocument.PageInfo.Builder(pw, ph, 1).create()
             val page = doc.startPage(pageInfo)
-            page.canvas.drawBitmap(bmp, 0f, 0f, Paint())
+            page.canvas.drawBitmap(scaledBmp, 0f, 0f, Paint())
             doc.finishPage(page)
-            val name = currentFileName ?: "EngiNote_${System.currentTimeMillis()}"
-            val file = File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "$name.pdf")
+
+            val name = (currentFileName ?: "EngiNote_${System.currentTimeMillis()}").replace(" ", "_")
+            val file = File(getCacheExportDir(), "$name.pdf")
             FileOutputStream(file).use { doc.writeTo(it) }
             doc.close()
+
             shareFile(file, "application/pdf")
-            Toast.makeText(this, "PDF saved: ${file.name}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "PDF ready to share!", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
+            e.printStackTrace()
             Toast.makeText(this, "PDF failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
@@ -328,12 +340,13 @@ class MainActivity : AppCompatActivity() {
     private fun exportAsBitmap(format: Bitmap.CompressFormat, ext: String) {
         try {
             val bmp = drawingView.exportBitmap()
-            val name = currentFileName ?: "EngiNote_${System.currentTimeMillis()}"
-            val file = File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), "$name.$ext")
+            val name = (currentFileName ?: "EngiNote_${System.currentTimeMillis()}").replace(" ", "_")
+            val file = File(getCacheExportDir(), "$name.$ext")
             FileOutputStream(file).use { bmp.compress(format, 95, it) }
             shareFile(file, "image/$ext")
-            Toast.makeText(this, "Saved: ${file.name}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Image ready to share!", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
+            e.printStackTrace()
             Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
@@ -341,9 +354,8 @@ class MainActivity : AppCompatActivity() {
     private fun exportAsBmp() {
         try {
             val bmp = drawingView.exportBitmap()
-            val name = currentFileName ?: "EngiNote_${System.currentTimeMillis()}"
-            val file = File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), "$name.bmp")
-            // Write BMP manually
+            val name = (currentFileName ?: "EngiNote_${System.currentTimeMillis()}").replace(" ", "_")
+            val file = File(getCacheExportDir(), "$name.bmp")
             val width = bmp.width; val height = bmp.height
             val pixels = IntArray(width * height)
             bmp.getPixels(pixels, 0, width, 0, 0, width, height)
@@ -351,16 +363,13 @@ class MainActivity : AppCompatActivity() {
                 val rowSize = (width * 3 + 3) / 4 * 4
                 val pixelArraySize = rowSize * height
                 val fileSize = 54 + pixelArraySize
-                fun writeInt(v: Int) { fos.write(byteArrayOf(v.toByte(), (v shr 8).toByte(), (v shr 16).toByte(), (v shr 24).toByte())) }
-                fun writeShort(v: Int) { fos.write(byteArrayOf(v.toByte(), (v shr 8).toByte())) }
-                // BMP header
+                fun writeInt(v: Int) = fos.write(byteArrayOf(v.toByte(), (v shr 8).toByte(), (v shr 16).toByte(), (v shr 24).toByte()))
+                fun writeShort(v: Int) = fos.write(byteArrayOf(v.toByte(), (v shr 8).toByte()))
                 fos.write('B'.code); fos.write('M'.code)
                 writeInt(fileSize); writeInt(0); writeInt(54)
-                // DIB header
                 writeInt(40); writeInt(width); writeInt(height)
                 writeShort(1); writeShort(24); writeInt(0); writeInt(pixelArraySize)
                 writeInt(2835); writeInt(2835); writeInt(0); writeInt(0)
-                // Pixel data (bottom-up)
                 val row = ByteArray(rowSize)
                 for (y in height - 1 downTo 0) {
                     for (x in 0 until width) {
@@ -373,15 +382,19 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             shareFile(file, "image/bmp")
-            Toast.makeText(this, "BMP saved: ${file.name}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "BMP ready to share!", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
+            e.printStackTrace()
             Toast.makeText(this, "BMP failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
     private fun exportAsTxt() {
         try {
-            val content = File(getDrawingsFolder(), "${currentFileName ?: return}.eng").readText()
+            val engFile = currentFileName?.let { File(getDrawingsFolder(), "$it.eng") }
+                ?: run { Toast.makeText(this, "Save the note first!", Toast.LENGTH_SHORT).show(); return }
+            if (!engFile.exists()) { Toast.makeText(this, "Save the note first!", Toast.LENGTH_SHORT).show(); return }
+            val content = engFile.readText()
             val sb = StringBuilder()
             sb.append("=== ${currentFileName} ===\n\n")
             for (line in content.lines()) {
@@ -390,20 +403,25 @@ class MainActivity : AppCompatActivity() {
                     if (parts.size > 7) sb.append(parts.last().replace("\u0002", "\n")).append("\n")
                 }
             }
-            val name = currentFileName ?: "EngiNote_${System.currentTimeMillis()}"
-            val file = File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "$name.txt")
+            val name = (currentFileName ?: "EngiNote_${System.currentTimeMillis()}").replace(" ", "_")
+            val file = File(getCacheExportDir(), "$name.txt")
             file.writeText(sb.toString())
             shareFile(file, "text/plain")
-            Toast.makeText(this, "TXT saved: ${file.name}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "TXT ready to share!", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
+            e.printStackTrace()
             Toast.makeText(this, "TXT failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
     private fun exportAsDocx() {
         try {
-            val content = currentFileName?.let { File(getDrawingsFolder(), "$it.eng").readText() } ?: return
+            val engFile = currentFileName?.let { File(getDrawingsFolder(), "$it.eng") }
+                ?: run { Toast.makeText(this, "Save the note first!", Toast.LENGTH_SHORT).show(); return }
+            if (!engFile.exists()) { Toast.makeText(this, "Save the note first!", Toast.LENGTH_SHORT).show(); return }
+            val content = engFile.readText()
             val doc = XWPFDocument()
+
             val titlePara = doc.createParagraph()
             val titleRun = titlePara.createRun()
             titleRun.setText(currentFileName ?: "EngiNote")
@@ -422,24 +440,28 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            // Add canvas image
+            // Embed canvas image
             val bmp = drawingView.exportBitmap()
-            val imgFile = File(cacheDir, "export_img.png")
+            val imgFile = File(cacheDir, "export_img_${System.currentTimeMillis()}.png")
             FileOutputStream(imgFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 90, it) }
             val imgPara = doc.createParagraph()
             val imgRun = imgPara.createRun()
-            FileOutputStream(imgFile).use { imgStream ->
-                imgRun.addPicture(imgFile.inputStream(), org.apache.poi.xwpf.usermodel.Document.PICTURE_TYPE_PNG,
-                    "canvas.png", org.apache.poi.util.Units.toEMU(400.0), org.apache.poi.util.Units.toEMU(300.0))
-            }
+            imgRun.addPicture(
+                imgFile.inputStream(),
+                org.apache.poi.xwpf.usermodel.Document.PICTURE_TYPE_PNG,
+                "canvas.png",
+                org.apache.poi.util.Units.toEMU(400.0),
+                org.apache.poi.util.Units.toEMU(300.0)
+            )
 
-            val name = currentFileName ?: "EngiNote_${System.currentTimeMillis()}"
-            val file = File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "$name.docx")
+            val name = (currentFileName ?: "EngiNote_${System.currentTimeMillis()}").replace(" ", "_")
+            val file = File(getCacheExportDir(), "$name.docx")
             FileOutputStream(file).use { doc.write(it) }
             doc.close()
             shareFile(file, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-            Toast.makeText(this, "DOCX saved: ${file.name}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "DOCX ready to share!", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
+            e.printStackTrace()
             Toast.makeText(this, "DOCX failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
@@ -447,13 +469,14 @@ class MainActivity : AppCompatActivity() {
     private fun shareFile(file: File, mimeType: String) {
         try {
             val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-            val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND)
-            shareIntent.type = mimeType
-            shareIntent.putExtra(android.content.Intent.EXTRA_STREAM, uri)
-            shareIntent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            startActivity(android.content.Intent.createChooser(shareIntent, "Share via"))
+            val intent = android.content.Intent(android.content.Intent.ACTION_SEND)
+            intent.type = mimeType
+            intent.putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            intent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            startActivity(android.content.Intent.createChooser(intent, "Share via"))
         } catch (e: Exception) {
-            Toast.makeText(this, "Share failed: ${e.message}", Toast.LENGTH_SHORT).show()
+            e.printStackTrace()
+            Toast.makeText(this, "Share failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -583,11 +606,7 @@ class MainActivity : AppCompatActivity() {
         closeInlineEditor(commit = true)
         val changed = drawingView.serialize() != lastSavedContent && drawingView.hasContent()
         if (!changed) { finish(); return }
-        // If autosave is on, just save and exit — no dialog
-        if (getPrefs().getBoolean("autosave", true)) {
-            autoSave(); finish(); return
-        }
-        // If confirm preference is on, ask
+        if (getPrefs().getBoolean("autosave", true)) { autoSave(); finish(); return }
         if (getPrefs().getBoolean("confirm_exit_clear", true)) {
             AlertDialog.Builder(this).setTitle("Unsaved Changes")
                 .setMessage("Save before leaving?")
@@ -1131,7 +1150,6 @@ class MainActivity : AppCompatActivity() {
         if (!getPrefs().getBoolean("autosave", true)) return
         if (!drawingView.hasContent()) return
         if (currentFileName == null) {
-            // Auto-assign name if blank note has content
             val name = "AutoSave_${System.currentTimeMillis()}"
             currentFileName = name; tvTitle.text = name
         }
@@ -1166,6 +1184,7 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("Delete") { _, _ -> File(getDrawingsFolder(), "$name.eng").delete(); finish() }
             .setNegativeButton("Cancel", null).show()
     }
+
     override fun onPause() {
         super.onPause()
         closeInlineEditor(commit = true)
