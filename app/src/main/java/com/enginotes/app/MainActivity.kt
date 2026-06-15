@@ -241,7 +241,23 @@ class MainActivity : AppCompatActivity() {
         setActiveTool(null, Tool.SELECT, "Select")
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() { confirmThenExit() }
+            override fun handleOnBackPressed() {
+                when {
+                    // If text editor is open, close it
+                    activeEditText != null -> closeInlineEditor(commit = true)
+                    // If table toolbar is open, close it
+                    tableToolbarOverlay != null -> {
+                        tableToolbarOverlay?.let { canvasContainer.removeView(it) }
+                        tableToolbarOverlay = null
+                    }
+                    // If active tool is not SELECT, reset to SELECT
+                    drawingView.currentTool != Tool.SELECT -> {
+                        setActiveTool(null, Tool.SELECT, "Select")
+                    }
+                    // Otherwise exit page
+                    else -> confirmThenExit()
+                }
+            }
         })
     }
 
