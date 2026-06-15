@@ -7,13 +7,17 @@
         android:supportsRtl="true">
 
         <activity
-            android:name=".HomeActivity"
+            android:name=".BooksActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".HomeActivity"
+            android:exported="false" />
 
         <activity
             android:name=".MainActivity"
@@ -29,6 +33,7 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
         <activity android:name=".PdfViewerActivity" android:label="PDF Viewer" />
         <activity android:name=".ChartActivity" android:label="Chart Builder" />
         <activity android:name=".HandwritingActivity" android:label="Handwriting Recognition" />
