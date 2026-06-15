@@ -145,7 +145,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         for (id in listOf(R.id.btnBack, R.id.btnMenu, R.id.btnText, R.id.btnDraw, R.id.btnTools, R.id.btnInsert, R.id.btnUndo, R.id.btnRedo)) {
-            findViewById<Button>(id).setBackgroundResource(R.drawable.top_button_selector)
+            val btn = findViewById<Button>(id)
+            btn.setBackgroundResource(R.drawable.top_button_selector)
+            btn.setTextColor(Color.BLACK)
         }
         findViewById<Button>(R.id.btnBack).setOnClickListener { confirmThenExit() }
 
