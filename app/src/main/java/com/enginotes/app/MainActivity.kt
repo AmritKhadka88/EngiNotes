@@ -65,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     private var pendingHighlight: Int? = null
     private var cameraImageFile: File? = null
     private var activeToolbarButton: Button? = null
+    private var isSwitchingTextEditor = false
 
     private var activeCellEditText: EditText? = null
     private var activeCellToolbar: LinearLayout? = null
@@ -149,6 +150,7 @@ class MainActivity : AppCompatActivity() {
             btn.setBackgroundResource(R.drawable.top_button_selector)
             btn.setTextColor(Color.BLACK)
         }
+
         findViewById<Button>(R.id.btnBack).setOnClickListener { confirmThenExit() }
 
         findViewById<Button>(R.id.btnText).setOnClickListener {
@@ -243,23 +245,19 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    
-
-    private fun setActiveToolbarBtn(btn: Button?) {
-        activeToolbarButton?.setBackgroundColor(Color.TRANSPARENT)
-        activeToolbarButton = btn
-        btn?.setBackgroundColor(ACTIVE_BTN_COLOR)
-    }
-
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-
     private fun setActiveTool(btn: Button?, tool: Tool, label: String) {
         drawingView.currentTool = tool
         tvActiveTool.text = label
         setActiveToolbarBtn(btn)
     }
 
+    private fun setActiveToolbarBtn(btn: Button?) {
+        activeToolbarButton?.isSelected = false
+        activeToolbarButton = btn
+        btn?.isSelected = true
+    }
 
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     private fun collapseToolbar() {
         findViewById<View>(R.id.toolbarScroll).visibility = View.GONE
@@ -344,7 +342,7 @@ class MainActivity : AppCompatActivity() {
         }
         container.addView(paperLbl)
 
-divider(); header("PAGE SETUP")
+        divider(); header("PAGE SETUP")
 
         val modeLbl = TextView(this); val sizeLbl = TextView(this); val orientLbl = TextView(this)
         fun refreshPageLbls() {
@@ -360,7 +358,6 @@ divider(); header("PAGE SETUP")
             lbl.textSize = 15f; lbl.setTextColor(Color.parseColor("#1565C0"))
             lbl.setPadding(0, dp(8), 0, dp(8)); container.addView(lbl)
         }
-        
         modeLbl.setOnClickListener {
             AlertDialog.Builder(this).setTitle("Canvas Mode")
                 .setItems(arrayOf("Infinite Canvas", "Fixed Page", "Paginated")) { _, i ->
@@ -531,30 +528,20 @@ divider(); header("PAGE SETUP")
         }
 
         btn("+ Row") {
-            val table = drawingView.getActiveTable() ?: return@btn
-            val afterRow = drawingView.getTableSelection().first?.first ?: (table.rows - 1)
-            table.rowHeights.add((afterRow + 1).coerceIn(0, table.rowHeights.size), 60f)
-            table.rows++; drawingView.invalidate()
+            val afterRow = drawingView.getTableSelection().first?.first ?: ((drawingView.getActiveTable()?.rows ?: 1) - 1)
+            drawingView.addTableRow(afterRow)
         }
         btn("+ Col") {
-            val table = drawingView.getActiveTable() ?: return@btn
-            val afterCol = drawingView.getTableSelection().first?.second ?: (table.cols - 1)
-            table.colWidths.add((afterCol + 1).coerceIn(0, table.colWidths.size), 80f)
-            table.cols++; drawingView.invalidate()
+            val afterCol = drawingView.getTableSelection().first?.second ?: ((drawingView.getActiveTable()?.cols ?: 1) - 1)
+            drawingView.addTableCol(afterCol)
         }
         btn("- Row") {
-            val table = drawingView.getActiveTable() ?: return@btn
-            if (table.rows <= 1) return@btn
-            val delRow = drawingView.getTableSelection().first?.first ?: (table.rows - 1)
-            table.rowHeights.removeAt(delRow.coerceIn(0, table.rowHeights.size - 1))
-            table.rows--; drawingView.invalidate()
+            val delRow = drawingView.getTableSelection().first?.first ?: ((drawingView.getActiveTable()?.rows ?: 1) - 1)
+            drawingView.removeTableRow(delRow)
         }
         btn("- Col") {
-            val table = drawingView.getActiveTable() ?: return@btn
-            if (table.cols <= 1) return@btn
-            val delCol = drawingView.getTableSelection().first?.second ?: (table.cols - 1)
-            table.colWidths.removeAt(delCol.coerceIn(0, table.colWidths.size - 1))
-            table.cols--; drawingView.invalidate()
+            val delCol = drawingView.getTableSelection().first?.second ?: ((drawingView.getActiveTable()?.cols ?: 1) - 1)
+            drawingView.removeTableCol(delCol)
         }
         btn("Merge") { drawingView.mergeCellSelection() }
         btn("Unmerge") { drawingView.unmergeCellSelection() }
@@ -728,7 +715,15 @@ divider(); header("PAGE SETUP")
 
     private fun showInlineTextEditor(item: TextItem?, screenX: Float, screenY: Float, worldX: Float, worldY: Float) {
         if (activeEditText != null && editingItem === item) return
-        closeInlineEditor(commit = true)
+
+        // If another editor is open, commit it first then reopen at new location
+        if (activeEditText != null) {
+            isSwitchingTextEditor = true
+            closeInlineEditor(commit = true)
+            isSwitchingTextEditor = false
+            drawingView.post { showInlineTextEditor(item, screenX, screenY, worldX, worldY) }
+            return
+        }
 
         pendingBold = false; pendingItalic = false; pendingUnderline = false; pendingHighlight = null
         editingItem = item
@@ -738,7 +733,9 @@ divider(); header("PAGE SETUP")
         editSize = item?.size ?: drawingView.defaultTextSize
 
         val density = resources.displayMetrics.density
-        val screenSizePx = editSize * drawingView.getScaleFactor()
+        // In fixed/paginated show text at actual print size; in infinite scale with canvas
+        val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE
+        val screenSizePx = if (useActualSize) editSize else editSize * drawingView.getScaleFactor()
 
         val editText = EditText(this)
         val spannable = SpannableStringBuilder(item?.text ?: "")
@@ -756,7 +753,8 @@ divider(); header("PAGE SETUP")
         editText.textSize = (screenSizePx / density).coerceAtLeast(8f)
         editText.setBackgroundColor(Color.TRANSPARENT)
         editText.setPadding(dp(4), dp(4), dp(4), dp(4))
-        editText.minWidth = dp(120); editText.rotation = editRotation
+        editText.minWidth = dp(120)
+        if (!useActualSize) editText.rotation = editRotation
 
         editText.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -816,17 +814,43 @@ divider(); header("PAGE SETUP")
             AlertDialog.Builder(this).setTitle("Font Size (pt)")
                 .setItems((1..144).map { it.toString() }.toTypedArray()) { _, idx ->
                     val pt = idx + 1; editSize = pt * PT_TO_PX
-                    editText.textSize = (editSize * drawingView.getScaleFactor() / density).coerceAtLeast(8f)
+                    val newScreenSize = if (useActualSize) editSize else editSize * drawingView.getScaleFactor()
+                    editText.textSize = (newScreenSize / density).coerceAtLeast(8f)
                     btn.text = pt.toString()
+                    drawingView.onScaleChanged?.invoke(drawingView.getScaleFactor())
                 }.show()
         }
-        toolBtn("↺") { editRotation -= 15f; editText.rotation = editRotation }
-        toolBtn("↻") { editRotation += 15f; editText.rotation = editRotation }
+        toolBtn("↺") { editRotation -= 15f; if (!useActualSize) editText.rotation = editRotation }
+        toolBtn("↻") { editRotation += 15f; if (!useActualSize) editText.rotation = editRotation }
         toolBtn("✓") { closeInlineEditor(commit = true) }
         toolBtn("🗑") { closeInlineEditor(commit = false, delete = true) }
 
         val tp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
         canvasContainer.addView(toolbar, tp)
+
+        // Update editText position and size when canvas is zoomed
+        drawingView.onScaleChanged = { scale ->
+            if (useActualSize) {
+                // Fixed/Paginated: keep text at print size, just reposition to follow world coords
+                val sx = drawingView.worldToScreenX(editWorldX)
+                val sy = drawingView.worldToScreenY(editWorldY) - editSize
+                val lp = editText.layoutParams as FrameLayout.LayoutParams
+                lp.leftMargin = sx.toInt().coerceAtLeast(0)
+                lp.topMargin = sy.toInt().coerceAtLeast(0)
+                editText.layoutParams = lp
+            } else {
+                // Infinite: scale text size with canvas zoom
+                val newSizePx = editSize * scale
+                editText.textSize = (newSizePx / density).coerceAtLeast(8f)
+                val sx = drawingView.worldToScreenX(editWorldX)
+                val sy = drawingView.worldToScreenY(editWorldY) - newSizePx
+                val lp = editText.layoutParams as FrameLayout.LayoutParams
+                lp.leftMargin = sx.toInt().coerceAtLeast(0)
+                lp.topMargin = sy.toInt().coerceAtLeast(0)
+                editText.layoutParams = lp
+            }
+        }
+
         activeEditText = editText; activeToolbar = toolbar
         editText.requestFocus()
         editText.post {
@@ -867,7 +891,9 @@ divider(); header("PAGE SETUP")
                 drawingView.addText(text, editWorldX, editWorldY, editSize, editRotation, editColor, spans)
             }
         } else { if (item != null) drawingView.removeTextItem(item) }
-        drawingView.invalidate()
+
+        if (!isSwitchingTextEditor) drawingView.invalidate()
+        drawingView.onScaleChanged = null
         activeEditText = null; activeToolbar = null; editingItem = null
     }
 
