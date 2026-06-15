@@ -328,23 +328,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (canvasMode == CanvasMode.INFINITE) return
         val pw = pageWidthPx() * scaleFactor
         val ph = pageHeightPx() * scaleFactor
-        val margin = 20f * scaleFactor // 20px world margin shown around page
+        val margin = 20f
 
-        // For FIXED: page goes from 0..pw in screen space after translation
-        // translateX is the screen offset of world origin
-        // Page left screen pos = translateX, page right = translateX + pw
-        // We want page to always overlap screen: page right > margin, page left < width - margin
+        // Horizontal: page must stay within screen
         val minTx = width - pw - margin
         val maxTx = margin
-        val minTy = height - ph - margin
-        val maxTy = margin
-
-        translateX = translateX.coerceIn(minTx, maxTx)
+        translateX = translateX.coerceIn(minTx.coerceAtMost(maxTx), maxTx)
 
         if (canvasMode == CanvasMode.FIXED) {
-            translateY = translateY.coerceIn(minTy, maxTy)
+            val minTy = height - ph - margin
+            val maxTy = margin
+            translateY = translateY.coerceIn(minTy.coerceAtMost(maxTy), maxTy)
         }
-        // PAGINATED: allow vertical scroll but clamp horizontal
+        // PAGINATED: free vertical scroll, clamped horizontal only
     }
 
     private fun drawActionItem(canvas: Canvas, action: Any, includeFills: Boolean) {
@@ -395,9 +391,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
-        if (canvasMode != CanvasMode.INFINITE && width > 0 && height > 0) {
-            val minScale = minOf(width.toFloat() / (pageWidthPx() * 1.15f), height.toFloat() / (pageHeightPx() * 1.15f)).coerceAtLeast(0.05f)
-            if (scaleFactor < minScale) { scaleFactor = minScale }
+        if (canvasMode != CanvasMode.INFINITE && width > 0 && height > 0 && changed) {
+            // Fit page width to screen with small margin
+            val margin = 20f
+            scaleFactor = (width.toFloat() - margin * 2f) / pageWidthPx()
+            translateX = margin
+            translateY = margin
             clampTranslation()
             invalidate()
         }
@@ -1165,21 +1164,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (currentTool == Tool.ARC) { handleArc(event); return true }
         if (currentTool == Tool.AUTOSELECT) { handleAutoSelect(event); return true }
         // Pan for fixed/paginated in drawing mode
-        if (canvasMode != CanvasMode.INFINITE) {
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { panStartX = event.x; panStartY = event.y; isPanning = false }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = event.x - panStartX; val dy = event.y - panStartY
-                    if (!isPanning && (kotlin.math.abs(dx) > 10f || kotlin.math.abs(dy) > 10f)) isPanning = true
-                    if (isPanning) {
-                        translateX += dx; translateY += dy
-                        panStartX = event.x; panStartY = event.y
-                        clampTranslation(); invalidate(); return true
-                    }
-                }
-                MotionEvent.ACTION_UP -> { if (isPanning) { isPanning = false; return true } }
-            }
-        }
         handleDrawing(event); return true
     }
 
