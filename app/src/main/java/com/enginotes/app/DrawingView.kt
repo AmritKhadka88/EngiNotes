@@ -377,8 +377,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 var sample = 1; var tw = srcW; var th = srcH
                 while (tw > maxDim || th > maxDim) { sample *= 2; tw /= 2; th /= 2 }
                 val opts = BitmapFactory.Options().apply {
-                    inSampleSize = sample
-                    inJustDecodeBounds = false
+                    inSampleSize = sample; inJustDecodeBounds = false
                     inPreferredConfig = Bitmap.Config.RGB_565
                 }
                 val decoded = BitmapFactory.decodeFile(path, opts)
@@ -387,9 +386,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val scaled = Bitmap.createScaledBitmap(decoded, (decoded.width * scale).toInt(), (decoded.height * scale).toInt(), true)
                     if (scaled !== decoded) decoded.recycle()
                     scaled
-                } else {
-                    decoded
-                }
+                } else decoded
                 if (finalBmp != null) synchronized(bitmapCache) { bitmapCache.putBitmap(path, finalBmp) }
                 post { onLoaded(finalBmp) }
             } catch (oom: OutOfMemoryError) {
@@ -639,98 +636,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
-        val minSize = 15f
-
-        when (item) {
-            is ImageItem -> {
-                val rot = item.rotation
-                val pivotX = item.x + item.w / 2f
-                val pivotY = item.y + item.h / 2f
-                val (lx, ly) = rotatePoint(wx, wy, pivotX, pivotY, -rot)
-
-                val left = item.x; val top = item.y
-                val right = item.x + item.w; val bottom = item.y + item.h
-
-                val anchorLocalX = when (handle) {
-                    HandleType.TL, HandleType.ML, HandleType.BL -> right
-                    HandleType.TR, HandleType.MR, HandleType.BR -> left
-                    else -> (left + right) / 2f
-                }
-                val anchorLocalY = when (handle) {
-                    HandleType.TL, HandleType.TM, HandleType.TR -> bottom
-                    HandleType.BL, HandleType.BM, HandleType.BR -> top
-                    else -> (top + bottom) / 2f
-                }
-                val (anchorWorldX, anchorWorldY) = rotatePoint(anchorLocalX, anchorLocalY, pivotX, pivotY, rot)
-
-                var newLeft = left; var newTop = top
-                var newRight = right; var newBottom = bottom
-
-                when (handle) {
-                    HandleType.TL -> { newLeft = lx; newTop = ly }
-                    HandleType.TM -> { newTop = ly }
-                    HandleType.TR -> { newRight = lx; newTop = ly }
-                    HandleType.ML -> { newLeft = lx }
-                    HandleType.MR -> { newRight = lx }
-                    HandleType.BL -> { newLeft = lx; newBottom = ly }
-                    HandleType.BM -> { newBottom = ly }
-                    HandleType.BR -> { newRight = lx; newBottom = ly }
-                    else -> return
-                }
-
-                when (handle) {
-                    HandleType.TL, HandleType.ML, HandleType.BL ->
-                        if (right - newLeft < minSize) newLeft = right - minSize
-                    HandleType.TR, HandleType.MR, HandleType.BR ->
-                        if (newRight - left < minSize) newRight = left + minSize
-                    else -> {}
-                }
-                when (handle) {
-                    HandleType.TL, HandleType.TM, HandleType.TR ->
-                        if (bottom - newTop < minSize) newTop = bottom - minSize
-                    HandleType.BL, HandleType.BM, HandleType.BR ->
-                        if (newBottom - top < minSize) newBottom = top + minSize
-                    else -> {}
-                }
-
-                val newW = newRight - newLeft
-                val newH = newBottom - newTop
-
-                val rad = Math.toRadians(rot.toDouble())
-                val cos = kotlin.math.cos(rad).toFloat()
-                val sin = kotlin.math.sin(rad).toFloat()
-
-                val vecX = newLeft - anchorLocalX
-                val vecY = newTop - anchorLocalY
-
-                item.x = anchorWorldX + (vecX * cos - vecY * sin)
-                item.y = anchorWorldY + (vecX * sin + vecY * cos)
-                item.w = newW
-                item.h = newH
-            }
-
-            is StrokeItem -> {
-            is StrokeItem -> {
-                if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    // Points are always stored as local unrotated bbox [left,top,right,bottom]
-                    // Rotation is applied at draw time around the center
-                    val rot = item.data.rotation
-                    val left = minOf(item.data.points[0], item.data.points[2])
-                    val top = minOf(item.data.points[1], item.data.points[3])
-                    val right = maxOf(item.data.points[0], item.data.points[2])
-                    val bottom = maxOf(item.data.points[1], item.data.points[3])
-                    val pivotX = (left + right) / 2f
-                    val pivotY = (top + bottom) / 2f
-
-                    // Unrotate touch into local space
-                    val (lx, ly) = rotatePoint(wx, wy, pivotX, pivotY, -rot)
-
-                    var nl = left; var nt = top; var nr = right; var nb = bottom
-                    when (handle) {
-                        HandleType.TL -> { nl = lx; nt = ly }
-                        HandleType.TM -> { nt = ly }
-                        HandleType.TR -> { nr = lx; nt = ly }
-private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
         val min = 15f
 
         when (item) {
@@ -741,15 +646,12 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
 
                 val oldCx = item.x + item.w / 2f
                 val oldCy = item.y + item.h / 2f
-
-                // Unrotate touch into local space
                 val dx = wx - oldCx; val dy = wy - oldCy
                 val lx = dx * cos + dy * sin
                 val ly = -dx * sin + dy * cos
 
                 val oldW = item.w; val oldH = item.h
 
-                // Fixed anchor in local space (opposite corner/edge)
                 val fixedLocalX = when (handle) {
                     HandleType.TL, HandleType.ML, HandleType.BL -> oldW / 2f
                     HandleType.TR, HandleType.MR, HandleType.BR -> -oldW / 2f
@@ -761,11 +663,9 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
                     else -> 0f
                 }
 
-                // Project anchor to world space
                 val fixedWorldX = oldCx + fixedLocalX * cos - fixedLocalY * sin
                 val fixedWorldY = oldCy + fixedLocalX * sin + fixedLocalY * cos
 
-                // Update bounds in local space based on handle
                 var nl = -oldW / 2f; var nt = -oldH / 2f
                 var nr = oldW / 2f; var nb = oldH / 2f
 
@@ -781,7 +681,6 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
                     else -> return
                 }
 
-                // Clamp min size
                 if (nr - nl < min) {
                     if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) nl = nr - min else nr = nl + min
                 }
@@ -791,7 +690,6 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
 
                 val newW = nr - nl; val newH = nb - nt
 
-                // New anchor position in new local space
                 val newFixedLocalX = when (handle) {
                     HandleType.TL, HandleType.ML, HandleType.BL -> newW / 2f
                     HandleType.TR, HandleType.MR, HandleType.BR -> -newW / 2f
@@ -803,7 +701,6 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
                     else -> 0f
                 }
 
-                // Back-calculate new center from fixed world anchor
                 val newCx = fixedWorldX - (newFixedLocalX * cos - newFixedLocalY * sin)
                 val newCy = fixedWorldY - (newFixedLocalX * sin + newFixedLocalY * cos)
 
@@ -827,12 +724,10 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
                     val oldW = r - l; val oldH = b - t
                     val oldCx = (l + r) / 2f; val oldCy = (t + b) / 2f
 
-                    // Unrotate touch into local space
                     val dx = wx - oldCx; val dy = wy - oldCy
                     val lx = dx * cos + dy * sin
                     val ly = -dx * sin + dy * cos
 
-                    // Fixed anchor in local space
                     val fixedLocalX = when (handle) {
                         HandleType.TL, HandleType.ML, HandleType.BL -> oldW / 2f
                         HandleType.TR, HandleType.MR, HandleType.BR -> -oldW / 2f
@@ -844,11 +739,9 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
                         else -> 0f
                     }
 
-                    // Project anchor to world space
                     val fixedWorldX = oldCx + fixedLocalX * cos - fixedLocalY * sin
                     val fixedWorldY = oldCy + fixedLocalX * sin + fixedLocalY * cos
 
-                    // Update bounds using local touch coords
                     var nl = -oldW / 2f; var nt = -oldH / 2f
                     var nr = oldW / 2f; var nb = oldH / 2f
 
@@ -864,7 +757,6 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
                         else -> return
                     }
 
-                    // Clamp min size
                     if (nr - nl < min) {
                         if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) nl = nr - min else nr = nl + min
                     }
@@ -874,7 +766,6 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
 
                     val newW = nr - nl; val newH = nb - nt
 
-                    // New anchor in new local space
                     val newFixedLocalX = when (handle) {
                         HandleType.TL, HandleType.ML, HandleType.BL -> newW / 2f
                         HandleType.TR, HandleType.MR, HandleType.BR -> -newW / 2f
@@ -886,7 +777,6 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
                         else -> 0f
                     }
 
-                    // Back-calculate new center
                     val newCx = fixedWorldX - (newFixedLocalX * cos - newFixedLocalY * sin)
                     val newCy = fixedWorldY - (newFixedLocalX * sin + newFixedLocalY * cos)
 
@@ -911,10 +801,6 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
                 item.size = (item.size + dy * 0.5f).coerceIn(8f, 300f)
             }
         }
-
-        resizePrevWorldX = wx
-        resizePrevWorldY = wy
-}
 
         resizePrevWorldX = wx
         resizePrevWorldY = wy
@@ -1829,4 +1715,4 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
         }
         invalidate()
     }
-                                     }
+}
