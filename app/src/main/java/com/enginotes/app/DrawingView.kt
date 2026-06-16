@@ -63,22 +63,15 @@ val ENDPOINT_RESIZE_SHAPES = setOf(Tool.LINE, Tool.CIRCLE, Tool.ARROW, Tool.CURV
 
 data class TextSpanData(val start: Int, val end: Int, val type: Char, val value: Int)
 
-// Thread pool for image loading — max 3 concurrent loads
 private val imageLoadExecutor = ThreadPoolExecutor(
     2, 3, 60L, TimeUnit.SECONDS, LinkedBlockingQueue()
 )
 
-// Global bitmap cache — limited size LRU
 private val bitmapCache = object : LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
-    private val MAX_SIZE = 50 * 1024 * 1024 // 50MB
+    private val MAX_SIZE = 80 * 1024 * 1024L
     private var currentSize = 0L
-    override fun removeEldestEntry(eldest: Map.Entry<String, Bitmap>): Boolean {
-        return currentSize > MAX_SIZE
-    }
-    fun putBitmap(key: String, bmp: Bitmap) {
-        currentSize += bmp.byteCount
-        put(key, bmp)
-    }
+    override fun removeEldestEntry(eldest: Map.Entry<String, Bitmap>): Boolean = currentSize > MAX_SIZE
+    fun putBitmap(key: String, bmp: Bitmap) { currentSize += bmp.byteCount; put(key, bmp) }
     fun getBitmap(key: String): Bitmap? = get(key)
 }
 
@@ -194,7 +187,6 @@ class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var
 }
 
 class ImageItem(var path: String, var x: Float, var y: Float, var w: Float, var h: Float, var rotation: Float) {
-    // bitmap loaded async — always use getBitmap()
     @Volatile var bitmap: Bitmap? = null
     @Volatile var loading: Boolean = false
 }
@@ -254,8 +246,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var dragStartWorldX = 0f; private var dragStartWorldY = 0f
     private var dragStartAngle = 0f; private var dragStartRotation = 0f
     private var dragStartPivotX = 0f; private var dragStartPivotY = 0f
-
-    // FIX: Track previous world position during resize drag (not local coords)
     private var resizePrevWorldX = 0f; private var resizePrevWorldY = 0f
 
     private var activeArcItem: StrokeItem? = null
@@ -316,12 +306,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             when (currentTool) {
                 Tool.TEXT -> {
                     val hit = findTextItemAt(wx, wy)
-                    if (hit != null) {
-                        selectedItem = hit; currentTool = Tool.SELECT; invalidate()
-                    } else {
-                        selectedItem = null
-                        onTextEditRequest?.invoke(null, e.x, e.y, wx, wy)
-                    }
+                    if (hit != null) { selectedItem = hit; currentTool = Tool.SELECT; invalidate() }
+                    else { selectedItem = null; onTextEditRequest?.invoke(null, e.x, e.y, wx, wy) }
                 }
                 Tool.SELECT -> {
                     val hit = findTextItemAt(wx, wy)
@@ -378,28 +364,41 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
-    // FIX: Load bitmaps async to avoid ANR on image insert
     private fun loadBitmapAsync(path: String, onLoaded: (Bitmap?) -> Unit) {
         val cached = synchronized(bitmapCache) { bitmapCache.getBitmap(path) }
         if (cached != null) { onLoaded(cached); return }
         imageLoadExecutor.execute {
+            var bmp: Bitmap? = null
             try {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(path, bounds)
+                val srcW = bounds.outWidth; val srcH = bounds.outHeight
+                if (srcW <= 0 || srcH <= 0) { post { onLoaded(null) }; return@execute }
+                val maxDim = 1920
+                var sample = 1; var tw = srcW; var th = srcH
+                while (tw > maxDim || th > maxDim) { sample *= 2; tw /= 2; th /= 2 }
                 val opts = BitmapFactory.Options().apply {
-                    inJustDecodeBounds = true
-                    BitmapFactory.decodeFile(path, this)
-                    val maxDim = 2048
-                    inSampleSize = 1
-                    var w = outWidth; var h = outHeight
-                    while (w > maxDim || h > maxDim) { inSampleSize *= 2; w /= 2; h /= 2 }
-                    inJustDecodeBounds = false
-                    inPreferredConfig = Bitmap.Config.RGB_565 // Less memory than ARGB_8888
+                    inSampleSize = sample; inJustDecodeBounds = false
+                    inPreferredConfig = Bitmap.Config.RGB_565
                 }
-                val bmp = BitmapFactory.decodeFile(path, opts)
+                bmp = BitmapFactory.decodeFile(path, opts)
+                if (bmp != null && (bmp.width > maxDim || bmp.height > maxDim)) {
+                    val scale = minOf(maxDim.toFloat() / bmp.width, maxDim.toFloat() / bmp.height)
+                    val scaled = Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true)
+                    if (scaled !== bmp) bmp.recycle()
+                    bmp = scaled
+                }
                 if (bmp != null) synchronized(bitmapCache) { bitmapCache.putBitmap(path, bmp) }
-                post { onLoaded(bmp) }
-            } catch (e: Exception) {
-                post { onLoaded(null) }
-            }
+                val result = bmp; post { onLoaded(result) }
+            } catch (oom: OutOfMemoryError) {
+                bmp?.recycle(); bmp = null
+                try {
+                    val opts2 = BitmapFactory.Options().apply { inSampleSize = 16; inPreferredConfig = Bitmap.Config.RGB_565 }
+                    bmp = BitmapFactory.decodeFile(path, opts2)
+                    if (bmp != null) synchronized(bitmapCache) { bitmapCache.putBitmap(path, bmp) }
+                    val result = bmp; post { onLoaded(result) }
+                } catch (e: Exception) { post { onLoaded(null) } }
+            } catch (e: Exception) { post { onLoaded(null) } }
         }
     }
 
@@ -409,9 +408,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (cached != null) { item.bitmap = cached; return cached }
         if (!item.loading) {
             item.loading = true
-            loadBitmapAsync(item.path) { bmp ->
-                item.bitmap = bmp; item.loading = false; invalidate()
-            }
+            loadBitmapAsync(item.path) { bmp -> item.bitmap = bmp; item.loading = false; invalidate() }
         }
         return null
     }
@@ -422,9 +419,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (cached != null) { item.bitmap = cached; return cached }
         if (!item.loading) {
             item.loading = true
-            loadBitmapAsync(item.path) { bmp ->
-                item.bitmap = bmp; item.loading = false; invalidate()
-            }
+            loadBitmapAsync(item.path) { bmp -> item.bitmap = bmp; item.loading = false; invalidate() }
         }
         return null
     }
@@ -545,7 +540,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 canvas.drawCircle(pos.first, pos.second, hr, hStroke)
             }
         } else if (isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
-            // FIX: Draw endpoint handles at actual point positions
             hFill.color = Color.WHITE
             val p0x = item.data.points[0]; val p0y = item.data.points[1]
             val p1x = item.data.points[2]; val p1y = item.data.points[3]
@@ -648,96 +642,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         when (item) {
             is ImageItem -> {
-                val left = item.x; val top = item.y
-                val right = item.x + item.w; val bottom = item.y + item.h
-
-                var newLeft = left; var newTop = top
-                var newRight = right; var newBottom = bottom
-
-                when (handle) {
-                    HandleType.TL -> { newLeft = wx; newTop = wy }
-                    HandleType.TM -> { newTop = wy }
-                    HandleType.TR -> { newRight = wx; newTop = wy }
-                    HandleType.ML -> { newLeft = wx }
-                    HandleType.MR -> { newRight = wx }
-                    HandleType.BL -> { newLeft = wx; newBottom = wy }
-                    HandleType.BM -> { newBottom = wy }
-                    HandleType.BR -> { newRight = wx; newBottom = wy }
-                    else -> return
-                }
-
-                // Enforce min size — anchor the opposite edge
-                when (handle) {
-                    HandleType.TL, HandleType.ML, HandleType.BL ->
-                        if (right - newLeft < minSize) newLeft = right - minSize
-                    HandleType.TR, HandleType.MR, HandleType.BR ->
-                        if (newRight - left < minSize) newRight = left + minSize
-                    else -> {}
-                }
-                when (handle) {
-                    HandleType.TL, HandleType.TM, HandleType.TR ->
-                        if (bottom - newTop < minSize) newTop = bottom - minSize
-                    HandleType.BL, HandleType.BM, HandleType.BR ->
-                        if (newBottom - top < minSize) newBottom = top + minSize
-                    else -> {}
-                }
-
-                item.x = newLeft; item.y = newTop
-                item.w = newRight - newLeft; item.h = newBottom - newTop
-            }
-
-            is StrokeItem -> {
-                if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    val left = minOf(item.data.points[0], item.data.points[2])
-                    val top = minOf(item.data.points[1], item.data.points[3])
-                    val right = maxOf(item.data.points[0], item.data.points[2])
-                    val bottom = maxOf(item.data.points[1], item.data.points[3])
-
-                    var nl = left; var nt = top; var nr = right; var nb = bottom
-
-                    when (handle) {
-                        HandleType.TL -> { nl = wx; nt = wy }
-                        HandleType.TM -> { nt = wy }
-                        HandleType.TR -> { nr = wx; nt = wy }
-                        HandleType.ML -> { nl = wx }
-                        HandleType.MR -> { nr = wx }
-                        HandleType.BL -> { nl = wx; nb = wy }
-                        HandleType.BM -> { nb = wy }
-                        HandleType.BR -> { nr = wx; nb = wy }
-                        else -> return
-                    }
-
-                    when (handle) {
-                        HandleType.TL, HandleType.ML, HandleType.BL ->
-                            if (right - nl < minSize) nl = right - minSize
-                        HandleType.TR, HandleType.MR, HandleType.BR ->
-                            if (nr - left < minSize) nr = left + minSize
-                        else -> {}
-                    }
-                    when (handle) {
-                        HandleType.TL, HandleType.TM, HandleType.TR ->
-                            if (bottom - nt < minSize) nt = bottom - minSize
-                        HandleType.BL, HandleType.BM, HandleType.BR ->
-                            if (nb - top < minSize) nb = top + minSize
-                        else -> {}
-                    }
-
-                    item.data.points[0] = nl; item.data.points[1] = nt
-                    item.data.points[2] = nr; item.data.points[3] = nb
-                    item.path = item.data.buildPath()
-
-                } else if (ENDPOINT_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    when (handle) {
-                        HandleType.TL -> { item.data.points[0] = wx; item.data.points[1] = wy }
-                        HandleType.BR -> { item.data.points[2] = wx; item.data.points[3] = wy }
-                        else -> {}
-                    }
-                    item.path = item.data.buildPath()
-private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
-        val minSize = 15f
-
-        when (item) {
-            is ImageItem -> {
                 val rot = item.rotation
                 val pivotX = item.x + item.w / 2f
                 val pivotY = item.y + item.h / 2f
@@ -795,9 +699,11 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
                 val cos = kotlin.math.cos(rad).toFloat()
                 val sin = kotlin.math.sin(rad).toFloat()
 
-                val vecX = -newAnchorLocalX(anchorLocalX, left, newLeft, newRight, handle)
-                val vecY = -newAnchorLocalY(anchorLocalY, top, newTop, newBottom, handle)
+                // Vector from anchor local position to new top-left in local space
+                val vecX = newLeft - anchorLocalX
+                val vecY = newTop - anchorLocalY
 
+                // Rotate that vector to get world offset from anchor world position
                 item.x = anchorWorldX + (vecX * cos - vecY * sin)
                 item.y = anchorWorldY + (vecX * sin + vecY * cos)
                 item.w = newW
@@ -887,22 +793,6 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
         resizePrevWorldY = wy
     }
 
-    private fun newAnchorLocalX(anchorLocalX: Float, left: Float, newLeft: Float, newRight: Float, handle: HandleType): Float {
-        return when (handle) {
-            HandleType.TL, HandleType.ML, HandleType.BL -> newLeft - anchorLocalX
-            HandleType.TR, HandleType.MR, HandleType.BR -> newRight - anchorLocalX
-            else -> (newLeft + newRight) / 2f - anchorLocalX
-        }
-    }
-
-    private fun newAnchorLocalY(anchorLocalY: Float, top: Float, newTop: Float, newBottom: Float, handle: HandleType): Float {
-        return when (handle) {
-            HandleType.TL, HandleType.TM, HandleType.TR -> newTop - anchorLocalY
-            HandleType.BL, HandleType.BM, HandleType.BR -> newBottom - anchorLocalY
-            else -> (newTop + newBottom) / 2f - anchorLocalY
-        }
-    }
-            
     private fun findItemAt(x: Float, y: Float): Any? {
         val pad = 20f / scaleFactor
         for (a in actions.reversed()) {
@@ -1101,14 +991,12 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
                                     activeHandle = type
                                     dragStartPivotX = px; dragStartPivotY = py
                                     dragStartRotation = rot
-                                    // FIX: initialize resize prev to current world position
                                     resizePrevWorldX = wx; resizePrevWorldY = wy
                                     handled = true; break
                                 }
                             }
                         }
                         if (!handled && isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
-                            // FIX: hit test against actual endpoint positions (not bbox corners)
                             val p0x = item.data.points[0]; val p0y = item.data.points[1]
                             val p1x = item.data.points[2]; val p1y = item.data.points[3]
                             if (distance(wx, wy, p0x, p0y) <= hit) {
@@ -1149,9 +1037,7 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
                         setRotation(item, dragStartRotation + (newAngle - dragStartAngle))
                     }
                     HandleType.NONE -> return
-                    else -> {
-                        resizeItem(item, activeHandle, wx, wy)
-                    }
+                    else -> resizeItem(item, activeHandle, wx, wy)
                 }
                 invalidate()
             }
@@ -1623,11 +1509,9 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
 
     fun removeTextItem(item: TextItem) { actions.remove(item); invalidate() }
 
-    // FIX: addImage no longer loads bitmap synchronously — just adds item, async load happens in drawActionItem
     fun addImage(path: String, wx: Float, wy: Float, w: Float, h: Float) {
         val item = ImageItem(path, wx - w / 2f, wy - h / 2f, w, h, 0f)
         actions.add(item); redoStack.clear()
-        // Kick off async load immediately so it's ready when drawn
         loadBitmapAsync(path) { bmp -> item.bitmap = bmp; item.loading = false; invalidate() }
         invalidate()
     }
@@ -1789,7 +1673,6 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
                         if (p.size >= 7) {
                             val item = ImageItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat(), p[6].toFloat())
                             actions.add(item)
-                            // FIX: async load on restore too
                             loadBitmapAsync(p[1]) { bmp -> item.bitmap = bmp; item.loading = false; invalidate() }
                         }
                         i++
@@ -1819,4 +1702,4 @@ private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
         }
         invalidate()
     }
-}
+                                     }
