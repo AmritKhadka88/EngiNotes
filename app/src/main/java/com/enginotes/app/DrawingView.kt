@@ -644,47 +644,88 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
-        val dx = wx - resizePrevWorldX
-        val dy = wy - resizePrevWorldY
-        resizePrevWorldX = wx
-        resizePrevWorldY = wy
-        val min = 10f
+        val minSize = 15f
 
         when (item) {
             is ImageItem -> {
+                val left = item.x; val top = item.y
+                val right = item.x + item.w; val bottom = item.y + item.h
+
+                var newLeft = left; var newTop = top
+                var newRight = right; var newBottom = bottom
+
                 when (handle) {
-                    HandleType.TL -> { item.x += dx; item.y += dy; item.w = (item.w - dx).coerceAtLeast(min); item.h = (item.h - dy).coerceAtLeast(min) }
-                    HandleType.TM -> { item.y += dy; item.h = (item.h - dy).coerceAtLeast(min) }
-                    HandleType.TR -> { item.y += dy; item.w = (item.w + dx).coerceAtLeast(min); item.h = (item.h - dy).coerceAtLeast(min) }
-                    HandleType.ML -> { item.x += dx; item.w = (item.w - dx).coerceAtLeast(min) }
-                    HandleType.MR -> { item.w = (item.w + dx).coerceAtLeast(min) }
-                    HandleType.BL -> { item.x += dx; item.w = (item.w - dx).coerceAtLeast(min); item.h = (item.h + dy).coerceAtLeast(min) }
-                    HandleType.BM -> { item.h = (item.h + dy).coerceAtLeast(min) }
-                    HandleType.BR -> { item.w = (item.w + dx).coerceAtLeast(min); item.h = (item.h + dy).coerceAtLeast(min) }
+                    HandleType.TL -> { newLeft = wx; newTop = wy }
+                    HandleType.TM -> { newTop = wy }
+                    HandleType.TR -> { newRight = wx; newTop = wy }
+                    HandleType.ML -> { newLeft = wx }
+                    HandleType.MR -> { newRight = wx }
+                    HandleType.BL -> { newLeft = wx; newBottom = wy }
+                    HandleType.BM -> { newBottom = wy }
+                    HandleType.BR -> { newRight = wx; newBottom = wy }
+                    else -> return
+                }
+
+                // Enforce min size — anchor the opposite edge
+                when (handle) {
+                    HandleType.TL, HandleType.ML, HandleType.BL ->
+                        if (right - newLeft < minSize) newLeft = right - minSize
+                    HandleType.TR, HandleType.MR, HandleType.BR ->
+                        if (newRight - left < minSize) newRight = left + minSize
                     else -> {}
                 }
+                when (handle) {
+                    HandleType.TL, HandleType.TM, HandleType.TR ->
+                        if (bottom - newTop < minSize) newTop = bottom - minSize
+                    HandleType.BL, HandleType.BM, HandleType.BR ->
+                        if (newBottom - top < minSize) newBottom = top + minSize
+                    else -> {}
+                }
+
+                item.x = newLeft; item.y = newTop
+                item.w = newRight - newLeft; item.h = newBottom - newTop
             }
+
             is StrokeItem -> {
                 if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    val l = minOf(item.data.points[0], item.data.points[2])
-                    val t = minOf(item.data.points[1], item.data.points[3])
-                    val r = maxOf(item.data.points[0], item.data.points[2])
-                    val b = maxOf(item.data.points[1], item.data.points[3])
-                    var nl = l; var nt = t; var nr = r; var nb = b
+                    val left = minOf(item.data.points[0], item.data.points[2])
+                    val top = minOf(item.data.points[1], item.data.points[3])
+                    val right = maxOf(item.data.points[0], item.data.points[2])
+                    val bottom = maxOf(item.data.points[1], item.data.points[3])
+
+                    var nl = left; var nt = top; var nr = right; var nb = bottom
+
                     when (handle) {
-                        HandleType.TL -> { nl = (l + dx).coerceAtMost(r - min); nt = (t + dy).coerceAtMost(b - min) }
-                        HandleType.TM -> { nt = (t + dy).coerceAtMost(b - min) }
-                        HandleType.TR -> { nr = (r + dx).coerceAtLeast(l + min); nt = (t + dy).coerceAtMost(b - min) }
-                        HandleType.ML -> { nl = (l + dx).coerceAtMost(r - min) }
-                        HandleType.MR -> { nr = (r + dx).coerceAtLeast(l + min) }
-                        HandleType.BL -> { nl = (l + dx).coerceAtMost(r - min); nb = (b + dy).coerceAtLeast(t + min) }
-                        HandleType.BM -> { nb = (b + dy).coerceAtLeast(t + min) }
-                        HandleType.BR -> { nr = (r + dx).coerceAtLeast(l + min); nb = (b + dy).coerceAtLeast(t + min) }
+                        HandleType.TL -> { nl = wx; nt = wy }
+                        HandleType.TM -> { nt = wy }
+                        HandleType.TR -> { nr = wx; nt = wy }
+                        HandleType.ML -> { nl = wx }
+                        HandleType.MR -> { nr = wx }
+                        HandleType.BL -> { nl = wx; nb = wy }
+                        HandleType.BM -> { nb = wy }
+                        HandleType.BR -> { nr = wx; nb = wy }
+                        else -> return
+                    }
+
+                    when (handle) {
+                        HandleType.TL, HandleType.ML, HandleType.BL ->
+                            if (right - nl < minSize) nl = right - minSize
+                        HandleType.TR, HandleType.MR, HandleType.BR ->
+                            if (nr - left < minSize) nr = left + minSize
                         else -> {}
                     }
+                    when (handle) {
+                        HandleType.TL, HandleType.TM, HandleType.TR ->
+                            if (bottom - nt < minSize) nt = bottom - minSize
+                        HandleType.BL, HandleType.BM, HandleType.BR ->
+                            if (nb - top < minSize) nb = top + minSize
+                        else -> {}
+                    }
+
                     item.data.points[0] = nl; item.data.points[1] = nt
                     item.data.points[2] = nr; item.data.points[3] = nb
                     item.path = item.data.buildPath()
+
                 } else if (ENDPOINT_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
                     when (handle) {
                         HandleType.TL -> { item.data.points[0] = wx; item.data.points[1] = wy }
@@ -694,10 +735,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     item.path = item.data.buildPath()
                 }
             }
+
             is TextItem -> {
+                val dy = wy - resizePrevWorldY
                 item.size = (item.size + dy * 0.5f).coerceIn(8f, 300f)
             }
         }
+
+        resizePrevWorldX = wx
+        resizePrevWorldY = wy
     }
             
     private fun findItemAt(x: Float, y: Float): Any? {
