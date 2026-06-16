@@ -179,11 +179,11 @@ class ChartActivity : AppCompatActivity() {
             val page = doc.startPage(pageInfo)
             page.canvas.drawBitmap(bmp, 0f, 0f, Paint())
             doc.finishPage(page)
-            val file = File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS), "chart_${System.currentTimeMillis()}.pdf")
+            val file = File(externalCacheDir ?: cacheDir, "chart_${System.currentTimeMillis()}.pdf")
             FileOutputStream(file).use { doc.writeTo(it) }
             doc.close()
             shareFile(file, "application/pdf")
-            Toast.makeText(this, "PDF saved!", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Preparing share...", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Toast.makeText(this, "PDF failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
@@ -192,10 +192,10 @@ class ChartActivity : AppCompatActivity() {
     private fun exportChartAsImage(format: Bitmap.CompressFormat, ext: String) {
         try {
             val bmp = getChartBitmap()
-            val file = File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), "chart_${System.currentTimeMillis()}.$ext")
+            val file = File(externalCacheDir ?: cacheDir, "chart_${System.currentTimeMillis()}.$ext")
             FileOutputStream(file).use { bmp.compress(format, 95, it) }
             shareFile(file, "image/$ext")
-            Toast.makeText(this, "Image saved!", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Preparing share...", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
