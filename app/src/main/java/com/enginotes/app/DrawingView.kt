@@ -646,69 +646,92 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
-    // FIX: Resize using delta (current world - previous world) to avoid exponential jump
     private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
-        val dx = wx - resizePrevWorldX
-        val dy = wy - resizePrevWorldY
+        val min = 10f
+
+        // Transform world delta into item's local coordinate space (accounting for rotation)
+        val rot = getRotation(item)
+        val b = getBounds(item)
+        val (px, py) = if (b != null) getPivot(item, b) else Pair(0f, 0f)
+
+        // Convert current and previous world positions to local (unrotated) coords
+        val (lcx, lcy) = rotatePoint(wx, wy, px, py, -rot)
+        val (lpx, lpy) = rotatePoint(resizePrevWorldX, resizePrevWorldY, px, py, -rot)
+        val ldx = lcx - lpx
+        val ldy = lcy - lpy
+
         resizePrevWorldX = wx
         resizePrevWorldY = wy
-        val min = 10f
 
         when (item) {
             is ImageItem -> {
-                // Resize image by moving the appropriate edge/corner
                 when (handle) {
-                    HandleType.TL -> { item.x += dx; item.y += dy; item.w = (item.w - dx).coerceAtLeast(min); item.h = (item.h - dy).coerceAtLeast(min) }
-                    HandleType.TM -> { item.y += dy; item.h = (item.h - dy).coerceAtLeast(min) }
-                    HandleType.TR -> { item.y += dy; item.w = (item.w + dx).coerceAtLeast(min); item.h = (item.h - dy).coerceAtLeast(min) }
-                    HandleType.ML -> { item.x += dx; item.w = (item.w - dx).coerceAtLeast(min) }
-                    HandleType.MR -> { item.w = (item.w + dx).coerceAtLeast(min) }
-                    HandleType.BL -> { item.x += dx; item.w = (item.w - dx).coerceAtLeast(min); item.h = (item.h + dy).coerceAtLeast(min) }
-                    HandleType.BM -> { item.h = (item.h + dy).coerceAtLeast(min) }
-                    HandleType.BR -> { item.w = (item.w + dx).coerceAtLeast(min); item.h = (item.h + dy).coerceAtLeast(min) }
+                    HandleType.TL -> {
+                        item.x += ldx * kotlin.math.cos(Math.toRadians(rot.toDouble())).toFloat() - ldy * kotlin.math.sin(Math.toRadians(rot.toDouble())).toFloat()
+                        item.y += ldx * kotlin.math.sin(Math.toRadians(rot.toDouble())).toFloat() + ldy * kotlin.math.cos(Math.toRadians(rot.toDouble())).toFloat()
+                        item.w = (item.w - ldx).coerceAtLeast(min)
+                        item.h = (item.h - ldy).coerceAtLeast(min)
+                    }
+                    HandleType.TM -> {
+                        item.y += ldx * kotlin.math.sin(Math.toRadians(rot.toDouble())).toFloat() + ldy * kotlin.math.cos(Math.toRadians(rot.toDouble())).toFloat()
+                        item.h = (item.h - ldy).coerceAtLeast(min)
+                    }
+                    HandleType.TR -> {
+                        item.y += ldx * kotlin.math.sin(Math.toRadians(rot.toDouble())).toFloat() + ldy * kotlin.math.cos(Math.toRadians(rot.toDouble())).toFloat()
+                        item.w = (item.w + ldx).coerceAtLeast(min)
+                        item.h = (item.h - ldy).coerceAtLeast(min)
+                    }
+                    HandleType.ML -> {
+                        item.x += ldx * kotlin.math.cos(Math.toRadians(rot.toDouble())).toFloat() - ldy * kotlin.math.sin(Math.toRadians(rot.toDouble())).toFloat()
+                        item.w = (item.w - ldx).coerceAtLeast(min)
+                    }
+                    HandleType.MR -> { item.w = (item.w + ldx).coerceAtLeast(min) }
+                    HandleType.BL -> {
+                        item.x += ldx * kotlin.math.cos(Math.toRadians(rot.toDouble())).toFloat() - ldy * kotlin.math.sin(Math.toRadians(rot.toDouble())).toFloat()
+                        item.w = (item.w - ldx).coerceAtLeast(min)
+                        item.h = (item.h + ldy).coerceAtLeast(min)
+                    }
+                    HandleType.BM -> { item.h = (item.h + ldy).coerceAtLeast(min) }
+                    HandleType.BR -> {
+                        item.w = (item.w + ldx).coerceAtLeast(min)
+                        item.h = (item.h + ldy).coerceAtLeast(min)
+                    }
                     else -> {}
                 }
             }
             is StrokeItem -> {
                 if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    // Get current bbox
                     val l = minOf(item.data.points[0], item.data.points[2])
                     val t = minOf(item.data.points[1], item.data.points[3])
                     val r = maxOf(item.data.points[0], item.data.points[2])
-                    val b = maxOf(item.data.points[1], item.data.points[3])
-                    var nl = l; var nt = t; var nr = r; var nb = b
+                    val bv = maxOf(item.data.points[1], item.data.points[3])
+                    var nl = l; var nt = t; var nr = r; var nb = bv
                     when (handle) {
-                        HandleType.TL -> { nl = (l + dx).coerceAtMost(r - min); nt = (t + dy).coerceAtMost(b - min) }
-                        HandleType.TM -> { nt = (t + dy).coerceAtMost(b - min) }
-                        HandleType.TR -> { nr = (r + dx).coerceAtLeast(l + min); nt = (t + dy).coerceAtMost(b - min) }
-                        HandleType.ML -> { nl = (l + dx).coerceAtMost(r - min) }
-                        HandleType.MR -> { nr = (r + dx).coerceAtLeast(l + min) }
-                        HandleType.BL -> { nl = (l + dx).coerceAtMost(r - min); nb = (b + dy).coerceAtLeast(t + min) }
-                        HandleType.BM -> { nb = (b + dy).coerceAtLeast(t + min) }
-                        HandleType.BR -> { nr = (r + dx).coerceAtLeast(l + min); nb = (b + dy).coerceAtLeast(t + min) }
+                        HandleType.TL -> { nl = (l + ldx).coerceAtMost(r - min); nt = (t + ldy).coerceAtMost(bv - min) }
+                        HandleType.TM -> { nt = (t + ldy).coerceAtMost(bv - min) }
+                        HandleType.TR -> { nr = (r + ldx).coerceAtLeast(l + min); nt = (t + ldy).coerceAtMost(bv - min) }
+                        HandleType.ML -> { nl = (l + ldx).coerceAtMost(r - min) }
+                        HandleType.MR -> { nr = (r + ldx).coerceAtLeast(l + min) }
+                        HandleType.BL -> { nl = (l + ldx).coerceAtMost(r - min); nb = (bv + ldy).coerceAtLeast(t + min) }
+                        HandleType.BM -> { nb = (bv + ldy).coerceAtLeast(t + min) }
+                        HandleType.BR -> { nr = (r + ldx).coerceAtLeast(l + min); nb = (bv + ldy).coerceAtLeast(t + min) }
                         else -> {}
                     }
                     item.data.points[0] = nl; item.data.points[1] = nt
                     item.data.points[2] = nr; item.data.points[3] = nb
                     item.path = item.data.buildPath()
                 } else if (ENDPOINT_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    // FIX: Move endpoint directly to current world position
+                    // Endpoints are in world space — move directly to finger position
                     when (handle) {
-                        HandleType.TL -> {
-                            item.data.points[0] = wx
-                            item.data.points[1] = wy
-                        }
-                        HandleType.BR -> {
-                            item.data.points[2] = wx
-                            item.data.points[3] = wy
-                        }
+                        HandleType.TL -> { item.data.points[0] = wx; item.data.points[1] = wy }
+                        HandleType.BR -> { item.data.points[2] = wx; item.data.points[3] = wy }
                         else -> {}
                     }
                     item.path = item.data.buildPath()
                 }
             }
             is TextItem -> {
-                item.size = (item.size + dy * 0.5f).coerceIn(8f, 300f)
+                item.size = (item.size + ldy * 0.5f).coerceIn(8f, 300f)
             }
         }
     }
