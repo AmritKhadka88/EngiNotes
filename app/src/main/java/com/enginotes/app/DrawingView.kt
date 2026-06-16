@@ -28,7 +28,7 @@ import java.io.FileOutputStream
 
 enum class Tool {
     SELECT, FILL, PEN, ERASER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
-    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT, AUTOSELECT
+    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT, AUTOSELECT, EXPORT_WINDOW
 }
 enum class PaperType { BLANK, BLANK_COLORED, LINED, GRID, DOTS, ENGINEERING }
 enum class EraserMode { OBJECT, AREA }
@@ -249,6 +249,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var onScaleChanged: ((Float) -> Unit)? = null
     var onCanvasTransformed: (() -> Unit)? = null
 
+    // Export window selection
+    private var exportWindowStart: Pair<Float, Float>? = null
+    private var exportWindowEnd: Pair<Float, Float>? = null
+    var onExportWindowSelected: ((Float, Float, Float, Float) -> Unit)? = null
     private var scaleFactor = 1f
     private var translateX = 0f; private var translateY = 0f
     private var prevFocusX = 0f; private var prevFocusY = 0f
@@ -398,6 +402,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         drawArcHandles(canvas)
         drawAutoSelectOverlay(canvas)
         drawTableOverlay(canvas)
+        drawExportWindowOverlay(canvas)
         canvas.restore()
         drawCursor(canvas)
     }
@@ -1095,6 +1100,43 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
+    private fun drawExportWindowOverlay(canvas: Canvas) {
+        val s = exportWindowStart ?: return
+        val e = exportWindowEnd ?: return
+        val left = minOf(s.first, e.first); val top = minOf(s.second, e.second)
+        val right = maxOf(s.first, e.first); val bottom = maxOf(s.second, e.second)
+
+        // Dim outside selection
+        val dimP = Paint(); dimP.color = Color.parseColor("#88000000"); dimP.style = Paint.Style.FILL
+        val vl = screenToWorldX(0f); val vt = screenToWorldY(0f)
+        val vr = screenToWorldX(width.toFloat()); val vb = screenToWorldY(height.toFloat())
+        canvas.drawRect(vl, vt, vr, top, dimP)
+        canvas.drawRect(vl, bottom, vr, vb, dimP)
+        canvas.drawRect(vl, top, left, bottom, dimP)
+        canvas.drawRect(right, top, vr, bottom, dimP)
+
+        // Selection border
+        val bp = Paint(); bp.color = Color.parseColor("#2196F3")
+        bp.style = Paint.Style.STROKE; bp.strokeWidth = 3f / scaleFactor
+        bp.pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f / scaleFactor, 6f / scaleFactor), 0f)
+        canvas.drawRect(left, top, right, bottom, bp)
+
+        // Corner handles
+        val hr = 10f / scaleFactor
+        val hf = Paint(); hf.color = Color.WHITE; hf.style = Paint.Style.FILL
+        val hs = Paint(); hs.color = Color.parseColor("#2196F3"); hs.style = Paint.Style.STROKE; hs.strokeWidth = 2f / scaleFactor
+        for ((cx, cy) in listOf(left to top, right to top, left to bottom, right to bottom)) {
+            canvas.drawCircle(cx, cy, hr, hf); canvas.drawCircle(cx, cy, hr, hs)
+        }
+
+        // Size label
+        val wp = ((right - left) / 3.7795f).toInt()
+        val hp = ((bottom - top) / 3.7795f).toInt()
+        val lp = Paint(); lp.color = Color.WHITE; lp.textSize = 28f / scaleFactor
+        lp.isAntiAlias = true; lp.setShadowLayer(3f / scaleFactor, 0f, 0f, Color.BLACK)
+        canvas.drawText("${wp}×${hp}mm", left + 8f / scaleFactor, top - 12f / scaleFactor, lp)
+    }
+
     private fun drawAutoSelectOverlay(canvas: Canvas) {
         regionPath?.let { rp ->
             val fp = Paint(); fp.color = Color.parseColor("#332196F3"); fp.style = Paint.Style.FILL
@@ -1239,7 +1281,37 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (currentTool == Tool.SELECT) { handleSelect(event); return true }
         if (currentTool == Tool.ARC) { handleArc(event); return true }
         if (currentTool == Tool.AUTOSELECT) { handleAutoSelect(event); return true }
+        if (currentTool == Tool.EXPORT_WINDOW) { handleExportWindow(event); return true }
         handleDrawing(event); return true
+    }
+
+    private fun handleExportWindow(event: MotionEvent) {
+        val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                exportWindowStart = Pair(wx, wy)
+                exportWindowEnd = Pair(wx, wy)
+                invalidate()
+            }
+            MotionEvent.ACTION_MOVE -> {
+                exportWindowEnd = Pair(wx, wy)
+                invalidate()
+            }
+            MotionEvent.ACTION_UP -> {
+                val s = exportWindowStart ?: return
+                val e = exportWindowEnd ?: return
+                val left = minOf(s.first, e.first)
+                val top = minOf(s.second, e.second)
+                val right = maxOf(s.first, e.first)
+                val bottom = maxOf(s.second, e.second)
+                if (right - left > 20f && bottom - top > 20f) {
+                    onExportWindowSelected?.invoke(left, top, right, bottom)
+                }
+                exportWindowStart = null; exportWindowEnd = null
+                currentTool = Tool.SELECT
+                invalidate()
+            }
+        }
     }
 
     private fun handleDrawing(event: MotionEvent) {
@@ -1373,6 +1445,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val dest = File(newFolder, file.name)
             if (!dest.exists()) file.copyTo(dest)
         }
+    }
+
+    fun exportWindow(left: Float, top: Float, right: Float, bottom: Float): Bitmap {
+        val tmpBmp = Bitmap.createBitmap(this.width, this.height, Bitmap.Config.ARGB_8888)
+        draw(Canvas(tmpBmp))
+        val sx = worldToScreenX(left).toInt().coerceAtLeast(0)
+        val sy = worldToScreenY(top).toInt().coerceAtLeast(0)
+        val ex = worldToScreenX(right).toInt().coerceAtMost(this.width)
+        val ey = worldToScreenY(bottom).toInt().coerceAtMost(this.height)
+        val cw = (ex - sx).coerceAtLeast(1)
+        val ch = (ey - sy).coerceAtLeast(1)
+        return Bitmap.createBitmap(tmpBmp, sx, sy, cw, ch)
     }
 
     fun undo() { if (actions.isNotEmpty()) { redoStack.add(actions.removeAt(actions.size - 1)); invalidate() } }
