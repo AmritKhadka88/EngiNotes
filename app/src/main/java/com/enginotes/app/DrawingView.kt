@@ -733,6 +733,147 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         else -> {}
                     }
                     item.path = item.data.buildPath()
+private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
+        val minSize = 15f
+
+        when (item) {
+            is ImageItem -> {
+                val rot = item.rotation
+                val pivotX = item.x + item.w / 2f
+                val pivotY = item.y + item.h / 2f
+                val (lx, ly) = rotatePoint(wx, wy, pivotX, pivotY, -rot)
+
+                val left = item.x; val top = item.y
+                val right = item.x + item.w; val bottom = item.y + item.h
+
+                val anchorLocalX = when (handle) {
+                    HandleType.TL, HandleType.ML, HandleType.BL -> right
+                    HandleType.TR, HandleType.MR, HandleType.BR -> left
+                    else -> (left + right) / 2f
+                }
+                val anchorLocalY = when (handle) {
+                    HandleType.TL, HandleType.TM, HandleType.TR -> bottom
+                    HandleType.BL, HandleType.BM, HandleType.BR -> top
+                    else -> (top + bottom) / 2f
+                }
+                val (anchorWorldX, anchorWorldY) = rotatePoint(anchorLocalX, anchorLocalY, pivotX, pivotY, rot)
+
+                var newLeft = left; var newTop = top
+                var newRight = right; var newBottom = bottom
+
+                when (handle) {
+                    HandleType.TL -> { newLeft = lx; newTop = ly }
+                    HandleType.TM -> { newTop = ly }
+                    HandleType.TR -> { newRight = lx; newTop = ly }
+                    HandleType.ML -> { newLeft = lx }
+                    HandleType.MR -> { newRight = lx }
+                    HandleType.BL -> { newLeft = lx; newBottom = ly }
+                    HandleType.BM -> { newBottom = ly }
+                    HandleType.BR -> { newRight = lx; newBottom = ly }
+                    else -> return
+                }
+
+                when (handle) {
+                    HandleType.TL, HandleType.ML, HandleType.BL ->
+                        if (right - newLeft < minSize) newLeft = right - minSize
+                    HandleType.TR, HandleType.MR, HandleType.BR ->
+                        if (newRight - left < minSize) newRight = left + minSize
+                    else -> {}
+                }
+                when (handle) {
+                    HandleType.TL, HandleType.TM, HandleType.TR ->
+                        if (bottom - newTop < minSize) newTop = bottom - minSize
+                    HandleType.BL, HandleType.BM, HandleType.BR ->
+                        if (newBottom - top < minSize) newBottom = top + minSize
+                    else -> {}
+                }
+
+                val newW = newRight - newLeft
+                val newH = newBottom - newTop
+
+                val rad = Math.toRadians(rot.toDouble())
+                val cos = kotlin.math.cos(rad).toFloat()
+                val sin = kotlin.math.sin(rad).toFloat()
+
+                val vecX = -newAnchorLocalX(anchorLocalX, left, newLeft, newRight, handle)
+                val vecY = -newAnchorLocalY(anchorLocalY, top, newTop, newBottom, handle)
+
+                item.x = anchorWorldX + (vecX * cos - vecY * sin)
+                item.y = anchorWorldY + (vecX * sin + vecY * cos)
+                item.w = newW
+                item.h = newH
+            }
+
+            is StrokeItem -> {
+                if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
+                    val rot = item.data.rotation
+                    val left = minOf(item.data.points[0], item.data.points[2])
+                    val top = minOf(item.data.points[1], item.data.points[3])
+                    val right = maxOf(item.data.points[0], item.data.points[2])
+                    val bottom = maxOf(item.data.points[1], item.data.points[3])
+                    val pivotX = (left + right) / 2f; val pivotY = (top + bottom) / 2f
+                    val (lx, ly) = rotatePoint(wx, wy, pivotX, pivotY, -rot)
+
+                    val anchorLocalX = when (handle) {
+                        HandleType.TL, HandleType.ML, HandleType.BL -> right
+                        HandleType.TR, HandleType.MR, HandleType.BR -> left
+                        else -> (left + right) / 2f
+                    }
+                    val anchorLocalY = when (handle) {
+                        HandleType.TL, HandleType.TM, HandleType.TR -> bottom
+                        HandleType.BL, HandleType.BM, HandleType.BR -> top
+                        else -> (top + bottom) / 2f
+                    }
+                    val (anchorWorldX, anchorWorldY) = rotatePoint(anchorLocalX, anchorLocalY, pivotX, pivotY, rot)
+
+                    var nl = left; var nt = top; var nr = right; var nb = bottom
+                    when (handle) {
+                        HandleType.TL -> { nl = lx; nt = ly }
+                        HandleType.TM -> { nt = ly }
+                        HandleType.TR -> { nr = lx; nt = ly }
+                        HandleType.ML -> { nl = lx }
+                        HandleType.MR -> { nr = lx }
+                        HandleType.BL -> { nl = lx; nb = ly }
+                        HandleType.BM -> { nb = ly }
+                        HandleType.BR -> { nr = lx; nb = ly }
+                        else -> return
+                    }
+
+                    when (handle) {
+                        HandleType.TL, HandleType.ML, HandleType.BL ->
+                            if (right - nl < minSize) nl = right - minSize
+                        HandleType.TR, HandleType.MR, HandleType.BR ->
+                            if (nr - left < minSize) nr = left + minSize
+                        else -> {}
+                    }
+                    when (handle) {
+                        HandleType.TL, HandleType.TM, HandleType.TR ->
+                            if (bottom - nt < minSize) nt = bottom - minSize
+                        HandleType.BL, HandleType.BM, HandleType.BR ->
+                            if (nb - top < minSize) nb = top + minSize
+                        else -> {}
+                    }
+
+                    val rad = Math.toRadians(rot.toDouble())
+                    val cos = kotlin.math.cos(rad).toFloat()
+                    val sin = kotlin.math.sin(rad).toFloat()
+
+                    val loLeft = nl - anchorLocalX; val loTop = nt - anchorLocalY
+                    val loRight = nr - anchorLocalX; val loBottom = nb - anchorLocalY
+
+                    item.data.points[0] = anchorWorldX + (loLeft * cos - loTop * sin)
+                    item.data.points[1] = anchorWorldY + (loLeft * sin + loTop * cos)
+                    item.data.points[2] = anchorWorldX + (loRight * cos - loBottom * sin)
+                    item.data.points[3] = anchorWorldY + (loRight * sin + loBottom * cos)
+                    item.path = item.data.buildPath()
+
+                } else if (ENDPOINT_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
+                    when (handle) {
+                        HandleType.TL -> { item.data.points[0] = wx; item.data.points[1] = wy }
+                        HandleType.BR -> { item.data.points[2] = wx; item.data.points[3] = wy }
+                        else -> {}
+                    }
+                    item.path = item.data.buildPath()
                 }
             }
 
@@ -744,6 +885,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         resizePrevWorldX = wx
         resizePrevWorldY = wy
+    }
+
+    private fun newAnchorLocalX(anchorLocalX: Float, left: Float, newLeft: Float, newRight: Float, handle: HandleType): Float {
+        return when (handle) {
+            HandleType.TL, HandleType.ML, HandleType.BL -> newLeft - anchorLocalX
+            HandleType.TR, HandleType.MR, HandleType.BR -> newRight - anchorLocalX
+            else -> (newLeft + newRight) / 2f - anchorLocalX
+        }
+    }
+
+    private fun newAnchorLocalY(anchorLocalY: Float, top: Float, newTop: Float, newBottom: Float, handle: HandleType): Float {
+        return when (handle) {
+            HandleType.TL, HandleType.TM, HandleType.TR -> newTop - anchorLocalY
+            HandleType.BL, HandleType.BM, HandleType.BR -> newBottom - anchorLocalY
+            else -> (newTop + newBottom) / 2f - anchorLocalY
+        }
     }
             
     private fun findItemAt(x: Float, y: Float): Any? {
