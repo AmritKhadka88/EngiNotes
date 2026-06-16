@@ -1396,7 +1396,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_UP -> {
                 val s = exportWindowStart ?: return; val e = exportWindowEnd ?: return
                 val left = minOf(s.first, e.first); val top = minOf(s.second, e.second)
-                val right = maxOf(s.first, e.first); val bottom = maxOf(s.second, e.bottom)
+                val right = maxOf(s.first, e.first); val bottom = maxOf(s.second, e.second)
                 if (right - left > 20f && bottom - top > 20f) onExportWindowSelected?.invoke(left, top, right, bottom)
                 exportWindowStart = null; exportWindowEnd = null; currentTool = Tool.SELECT; invalidate()
             }
