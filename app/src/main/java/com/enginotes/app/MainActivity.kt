@@ -88,8 +88,11 @@ class MainActivity : AppCompatActivity() {
                 val bmp = android.graphics.BitmapFactory.decodeFile(path)
                 if (bmp != null) {
                     val ratio = bmp.width.toFloat() / bmp.height
-                    val w = if (ratio >= 1f) 800f else 800f * ratio
-                    val h = if (ratio >= 1f) 800f / ratio else 800f
+                    val screenW = drawingView.width / drawingView.getScaleFactor()
+                    val screenH = drawingView.height / drawingView.getScaleFactor()
+                    val w = screenW * 0.85f
+                    val h = w / ratio
+                    drawingView.addImage(path, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), w, h)
                     drawingView.addImage(path, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), w, h)
                     Toast.makeText(this, "Chart added to note!", Toast.LENGTH_SHORT).show()
                 }
@@ -1109,26 +1112,59 @@ class MainActivity : AppCompatActivity() {
 
     private fun addImageFromFile(file: File) {
         try {
-            val bmp = android.graphics.BitmapFactory.decodeFile(file.absolutePath) ?: return
-            val ratio = bmp.width.toFloat() / bmp.height
-            val w = if (ratio >= 1f) 800f else 800f * ratio
-            val h = if (ratio >= 1f) 800f / ratio else 800f
+            // Read dimensions only — don't decode full bitmap on main thread
+            val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeFile(file.absolutePath, opts)
+            val srcW = opts.outWidth.toFloat().coerceAtLeast(1f)
+            val srcH = opts.outHeight.toFloat().coerceAtLeast(1f)
+            val ratio = srcW / srcH
+            val screenW = drawingView.width / drawingView.getScaleFactor()
+            val screenH = drawingView.height / drawingView.getScaleFactor()
+            val w = screenW * 0.85f
+            val h = (w / ratio).coerceAtMost(screenH * 0.85f)
             drawingView.addImage(file.absolutePath, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), w, h)
         } catch (e: Exception) { Toast.makeText(this, "Photo failed: ${e.message}", Toast.LENGTH_LONG).show() }
     }
 
     private fun insertImage(uri: Uri) {
         try {
-            val stream = contentResolver.openInputStream(uri) ?: return
-            val bmp = android.graphics.BitmapFactory.decodeStream(stream); stream.close()
+            // Step 1: read dimensions without decoding full image
+            val boundsOpts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            contentResolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, boundsOpts) }
+            val srcW = boundsOpts.outWidth.toFloat().coerceAtLeast(1f)
+            val srcH = boundsOpts.outHeight.toFloat().coerceAtLeast(1f)
+            val ratio = srcW / srcH
+
+            // Step 2: decode with aggressive downsampling — max 1920px
+            val maxDim = 1920
+            var sample = 1
+            var tw = srcW.toInt(); var th = srcH.toInt()
+            while (tw > maxDim || th > maxDim) { sample *= 2; tw /= 2; th /= 2 }
+            val decodeOpts = android.graphics.BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inJustDecodeBounds = false
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+            val bmp = contentResolver.openInputStream(uri)?.use {
+                android.graphics.BitmapFactory.decodeStream(it, null, decodeOpts)
+            } ?: return
+
+            // Step 3: save to file
             val folder = File(filesDir, "images"); if (!folder.exists()) folder.mkdirs()
-            val out = File(folder, "img_${System.currentTimeMillis()}.png")
-            FileOutputStream(out).use { bmp.compress(Bitmap.CompressFormat.PNG, 90, it) }
-            val ratio = bmp.width.toFloat() / bmp.height
-            val w = if (ratio >= 1f) 800f else 800f * ratio
-            val h = if (ratio >= 1f) 800f / ratio else 800f
+            val out = File(folder, "img_${System.currentTimeMillis()}.jpg")
+            FileOutputStream(out).use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+            bmp.recycle()
+
+            // Step 4: insert at 85% screen width
+            val screenW = drawingView.width / drawingView.getScaleFactor()
+            val screenH = drawingView.height / drawingView.getScaleFactor()
+            val w = screenW * 0.85f
+            val h = (w / ratio).coerceAtMost(screenH * 0.85f)
             drawingView.addImage(out.absolutePath, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), w, h)
-        } catch (e: Exception) { Toast.makeText(this, "Image failed: ${e.message}", Toast.LENGTH_LONG).show() }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Toast.makeText(this, "Image failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     // ---------- File ops ----------
