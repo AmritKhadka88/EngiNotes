@@ -615,11 +615,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
-    private fun getPivot(item: Any, b: FloatArray): Pair<Float, Float> = when (item) {
-        is ImageItem -> Pair(item.x + item.w / 2f, item.y + item.h / 2f)
-        is TextItem -> Pair(item.x, item.y)
-        else -> Pair((b[0] + b[2]) / 2f, (b[1] + b[3]) / 2f)
-    }
+    private fun getPivot(item: Any, b: FloatArray): Pair<Float, Float> =
+        Pair((b[0] + b[2]) / 2f, (b[1] + b[3]) / 2f)
 
     private fun rotatePoint(x: Float, y: Float, px: Float, py: Float, deg: Float): Pair<Float, Float> {
         val a = Math.toRadians(deg.toDouble()); val dx = x - px; val dy = y - py
@@ -647,58 +644,61 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
-        val min = 10f
-
-        // Transform world delta into item's local coordinate space (accounting for rotation)
-        val rot = getRotation(item)
-        val b = getBounds(item)
-        val (px, py) = if (b != null) getPivot(item, b) else Pair(0f, 0f)
-
-        // Convert current and previous world positions to local (unrotated) coords
-        val (lcx, lcy) = rotatePoint(wx, wy, px, py, -rot)
-        val (lpx, lpy) = rotatePoint(resizePrevWorldX, resizePrevWorldY, px, py, -rot)
-        val ldx = lcx - lpx
-        val ldy = lcy - lpy
-
+        val dx = wx - resizePrevWorldX
+        val dy = wy - resizePrevWorldY
         resizePrevWorldX = wx
         resizePrevWorldY = wy
+        val min = 10f
 
         when (item) {
             is ImageItem -> {
                 when (handle) {
-                    HandleType.TL -> {
-                        item.x += ldx * kotlin.math.cos(Math.toRadians(rot.toDouble())).toFloat() - ldy * kotlin.math.sin(Math.toRadians(rot.toDouble())).toFloat()
-                        item.y += ldx * kotlin.math.sin(Math.toRadians(rot.toDouble())).toFloat() + ldy * kotlin.math.cos(Math.toRadians(rot.toDouble())).toFloat()
-                        item.w = (item.w - ldx).coerceAtLeast(min)
-                        item.h = (item.h - ldy).coerceAtLeast(min)
-                    }
-                    HandleType.TM -> {
-                        item.y += ldx * kotlin.math.sin(Math.toRadians(rot.toDouble())).toFloat() + ldy * kotlin.math.cos(Math.toRadians(rot.toDouble())).toFloat()
-                        item.h = (item.h - ldy).coerceAtLeast(min)
-                    }
-                    HandleType.TR -> {
-                        item.y += ldx * kotlin.math.sin(Math.toRadians(rot.toDouble())).toFloat() + ldy * kotlin.math.cos(Math.toRadians(rot.toDouble())).toFloat()
-                        item.w = (item.w + ldx).coerceAtLeast(min)
-                        item.h = (item.h - ldy).coerceAtLeast(min)
-                    }
-                    HandleType.ML -> {
-                        item.x += ldx * kotlin.math.cos(Math.toRadians(rot.toDouble())).toFloat() - ldy * kotlin.math.sin(Math.toRadians(rot.toDouble())).toFloat()
-                        item.w = (item.w - ldx).coerceAtLeast(min)
-                    }
-                    HandleType.MR -> { item.w = (item.w + ldx).coerceAtLeast(min) }
-                    HandleType.BL -> {
-                        item.x += ldx * kotlin.math.cos(Math.toRadians(rot.toDouble())).toFloat() - ldy * kotlin.math.sin(Math.toRadians(rot.toDouble())).toFloat()
-                        item.w = (item.w - ldx).coerceAtLeast(min)
-                        item.h = (item.h + ldy).coerceAtLeast(min)
-                    }
-                    HandleType.BM -> { item.h = (item.h + ldy).coerceAtLeast(min) }
-                    HandleType.BR -> {
-                        item.w = (item.w + ldx).coerceAtLeast(min)
-                        item.h = (item.h + ldy).coerceAtLeast(min)
-                    }
+                    HandleType.TL -> { item.x += dx; item.y += dy; item.w = (item.w - dx).coerceAtLeast(min); item.h = (item.h - dy).coerceAtLeast(min) }
+                    HandleType.TM -> { item.y += dy; item.h = (item.h - dy).coerceAtLeast(min) }
+                    HandleType.TR -> { item.y += dy; item.w = (item.w + dx).coerceAtLeast(min); item.h = (item.h - dy).coerceAtLeast(min) }
+                    HandleType.ML -> { item.x += dx; item.w = (item.w - dx).coerceAtLeast(min) }
+                    HandleType.MR -> { item.w = (item.w + dx).coerceAtLeast(min) }
+                    HandleType.BL -> { item.x += dx; item.w = (item.w - dx).coerceAtLeast(min); item.h = (item.h + dy).coerceAtLeast(min) }
+                    HandleType.BM -> { item.h = (item.h + dy).coerceAtLeast(min) }
+                    HandleType.BR -> { item.w = (item.w + dx).coerceAtLeast(min); item.h = (item.h + dy).coerceAtLeast(min) }
                     else -> {}
                 }
             }
+            is StrokeItem -> {
+                if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
+                    val l = minOf(item.data.points[0], item.data.points[2])
+                    val t = minOf(item.data.points[1], item.data.points[3])
+                    val r = maxOf(item.data.points[0], item.data.points[2])
+                    val b = maxOf(item.data.points[1], item.data.points[3])
+                    var nl = l; var nt = t; var nr = r; var nb = b
+                    when (handle) {
+                        HandleType.TL -> { nl = (l + dx).coerceAtMost(r - min); nt = (t + dy).coerceAtMost(b - min) }
+                        HandleType.TM -> { nt = (t + dy).coerceAtMost(b - min) }
+                        HandleType.TR -> { nr = (r + dx).coerceAtLeast(l + min); nt = (t + dy).coerceAtMost(b - min) }
+                        HandleType.ML -> { nl = (l + dx).coerceAtMost(r - min) }
+                        HandleType.MR -> { nr = (r + dx).coerceAtLeast(l + min) }
+                        HandleType.BL -> { nl = (l + dx).coerceAtMost(r - min); nb = (b + dy).coerceAtLeast(t + min) }
+                        HandleType.BM -> { nb = (b + dy).coerceAtLeast(t + min) }
+                        HandleType.BR -> { nr = (r + dx).coerceAtLeast(l + min); nb = (b + dy).coerceAtLeast(t + min) }
+                        else -> {}
+                    }
+                    item.data.points[0] = nl; item.data.points[1] = nt
+                    item.data.points[2] = nr; item.data.points[3] = nb
+                    item.path = item.data.buildPath()
+                } else if (ENDPOINT_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
+                    when (handle) {
+                        HandleType.TL -> { item.data.points[0] = wx; item.data.points[1] = wy }
+                        HandleType.BR -> { item.data.points[2] = wx; item.data.points[3] = wy }
+                        else -> {}
+                    }
+                    item.path = item.data.buildPath()
+                }
+            }
+            is TextItem -> {
+                item.size = (item.size + dy * 0.5f).coerceIn(8f, 300f)
+            }
+        }
+    }
             is StrokeItem -> {
                 if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
                     val l = minOf(item.data.points[0], item.data.points[2])
@@ -983,7 +983,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                     HandleType.NONE -> return
                     else -> {
-                        // FIX: pass raw world coords, resizeItem handles delta internally
                         resizeItem(item, activeHandle, wx, wy)
                     }
                 }
