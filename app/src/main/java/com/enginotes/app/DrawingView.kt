@@ -699,43 +699,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
         }
     }
-            is StrokeItem -> {
-                if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    val l = minOf(item.data.points[0], item.data.points[2])
-                    val t = minOf(item.data.points[1], item.data.points[3])
-                    val r = maxOf(item.data.points[0], item.data.points[2])
-                    val bv = maxOf(item.data.points[1], item.data.points[3])
-                    var nl = l; var nt = t; var nr = r; var nb = bv
-                    when (handle) {
-                        HandleType.TL -> { nl = (l + ldx).coerceAtMost(r - min); nt = (t + ldy).coerceAtMost(bv - min) }
-                        HandleType.TM -> { nt = (t + ldy).coerceAtMost(bv - min) }
-                        HandleType.TR -> { nr = (r + ldx).coerceAtLeast(l + min); nt = (t + ldy).coerceAtMost(bv - min) }
-                        HandleType.ML -> { nl = (l + ldx).coerceAtMost(r - min) }
-                        HandleType.MR -> { nr = (r + ldx).coerceAtLeast(l + min) }
-                        HandleType.BL -> { nl = (l + ldx).coerceAtMost(r - min); nb = (bv + ldy).coerceAtLeast(t + min) }
-                        HandleType.BM -> { nb = (bv + ldy).coerceAtLeast(t + min) }
-                        HandleType.BR -> { nr = (r + ldx).coerceAtLeast(l + min); nb = (bv + ldy).coerceAtLeast(t + min) }
-                        else -> {}
-                    }
-                    item.data.points[0] = nl; item.data.points[1] = nt
-                    item.data.points[2] = nr; item.data.points[3] = nb
-                    item.path = item.data.buildPath()
-                } else if (ENDPOINT_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    // Endpoints are in world space — move directly to finger position
-                    when (handle) {
-                        HandleType.TL -> { item.data.points[0] = wx; item.data.points[1] = wy }
-                        HandleType.BR -> { item.data.points[2] = wx; item.data.points[3] = wy }
-                        else -> {}
-                    }
-                    item.path = item.data.buildPath()
-                }
-            }
-            is TextItem -> {
-                item.size = (item.size + ldy * 0.5f).coerceIn(8f, 300f)
-            }
-        }
-    }
-
+            
     private fun findItemAt(x: Float, y: Float): Any? {
         val pad = 20f / scaleFactor
         for (a in actions.reversed()) {
