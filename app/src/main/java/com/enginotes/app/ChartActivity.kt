@@ -6,7 +6,6 @@ import android.graphics.*
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import android.os.Bundle
-import android.os.Environment
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -19,13 +18,18 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.*
 
+// XY data point — x can be numeric or index, label is for display
+data class DataPoint(val xLabel: String, val xVal: Float, val yVal: Float)
+
 data class DataSeries(
     var name: String,
-    var data: MutableList<Pair<String, Float>>,
+    var points: MutableList<DataPoint> = mutableListOf(),
     var color: Int = Color.parseColor("#2196F3"),
-    var lineWidth: Float = 3f,
-    var fontSize: Float = 28f
-)
+    var lineWidth: Float = 3f
+) {
+    // Legacy compat — old code uses .data as List<Pair<String,Float>>
+    val data: List<Pair<String, Float>> get() = points.map { it.xLabel to it.yVal }
+}
 
 data class PinnedLabel(val label: String, val value: Float, val x: Float, val y: Float)
 
@@ -33,7 +37,7 @@ class ChartActivity : AppCompatActivity() {
 
     private lateinit var chartView: ChartView
     private val seriesList = mutableListOf<DataSeries>()
-    private var chartType = ChartType.BAR
+    private var chartType = ChartType.LINE
     private var chartTitle = "My Chart"
     private var titleFontSize = 40f
     private var titleColor = Color.BLACK
@@ -44,7 +48,6 @@ class ChartActivity : AppCompatActivity() {
     private var showGrid = true
     private var show3D = false
 
-    // Whether opened from note (for send-to-note)
     private val openedFromNote: Boolean get() = callingActivity != null
 
     private val pickExcelLauncher = registerForActivityResult(
@@ -56,7 +59,6 @@ class ChartActivity : AppCompatActivity() {
 
         val root = LinearLayout(this); root.orientation = LinearLayout.VERTICAL
 
-        // Top toolbar
         val toolbar = LinearLayout(this); toolbar.orientation = LinearLayout.HORIZONTAL
         toolbar.setBackgroundColor(Color.parseColor("#FF1565C0"))
         toolbar.setPadding(dp(6), dp(4), dp(6), dp(4))
@@ -73,22 +75,22 @@ class ChartActivity : AppCompatActivity() {
             val p = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             p.setMargins(dp(2), 0, dp(2), 0); b.layoutParams = p
             b.setPadding(dp(6), dp(3), dp(6), dp(3)); b.minWidth = 0; b.minimumWidth = 0
+            b.setSingleLine(true)
             b.setOnClickListener { action() }; toolbar.addView(b)
         }
 
         tbtn("📂 Excel") { pickExcelLauncher.launch("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") }
         tbtn("✏ Data") { showDataDialog() }
         tbtn("🎨 Style") { showStyleDialog() }
-        tbtn("📌 Labels") { chartView.togglePinnedMode(); Toast.makeText(this, if (chartView.pinnedMode) "Tap points to pin labels" else "Pin mode off", Toast.LENGTH_SHORT).show() }
+        tbtn("📌 Labels") { chartView.togglePinnedMode(); Toast.makeText(this, if (chartView.pinnedMode) "Tap points to pin" else "Pin mode off", Toast.LENGTH_SHORT).show() }
         tbtn("📤 Send") { showSendOptions() }
         tbtn("✕") { finish() }
         root.addView(toolbar, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
-        // Excel format hint bar
+        // Hint bar
         val hintBar = TextView(this)
-        hintBar.text = "  💡 Excel format: Row 1 = headers (Label, Series1, Series2...), Row 2+ = data"
-        hintBar.textSize = 11f
-        hintBar.setTextColor(Color.WHITE)
+        hintBar.text = "  💡 Excel: Shared X → Label|S1|S2  or  Independent XY → S1_X|S1_Y|S2_X|S2_Y"
+        hintBar.textSize = 11f; hintBar.setTextColor(Color.WHITE)
         hintBar.setBackgroundColor(Color.parseColor("#CC1565C0"))
         hintBar.setPadding(dp(8), dp(4), dp(8), dp(4))
         root.addView(hintBar, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -119,8 +121,9 @@ class ChartActivity : AppCompatActivity() {
             b.setBackgroundColor(if (chartType == ct) Color.parseColor("#2196F3") else Color.LTGRAY)
             b.setTextColor(if (chartType == ct) Color.WHITE else Color.BLACK)
             val p = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            p.setMargins(dp(2), 0, dp(2), 0); b.layoutParams = p
+            p.setMargins(dp(4), dp(2), dp(4), dp(2)); b.layoutParams = p
             b.setPadding(dp(8), dp(3), dp(8), dp(3)); b.minWidth = 0; b.minimumWidth = 0
+            b.setSingleLine(true)
             b.setOnClickListener {
                 chartType = ct; chartView.chartType = ct; chartView.invalidate()
                 typeBtns.forEach { it.setBackgroundColor(Color.LTGRAY); it.setTextColor(Color.BLACK) }
@@ -131,17 +134,19 @@ class ChartActivity : AppCompatActivity() {
         typeScroll.addView(typeRow)
         root.addView(typeScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
-        // Chart view
         chartView = ChartView(this)
         root.addView(chartView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
         setContentView(root)
 
+        // Default sample data
         seriesList.add(DataSeries("Series A", mutableListOf(
-            "Jan" to 120f, "Feb" to 85f, "Mar" to 200f, "Apr" to 150f, "May" to 95f, "Jun" to 180f
+            DataPoint("0", 0f, 0f), DataPoint("1", 1f, 1f), DataPoint("2", 2f, 4f),
+            DataPoint("3", 3f, 9f), DataPoint("4", 4f, 16f), DataPoint("5", 5f, 25f)
         ), Color.parseColor("#2196F3")))
         seriesList.add(DataSeries("Series B", mutableListOf(
-            "Jan" to 80f, "Feb" to 140f, "Mar" to 110f, "Apr" to 190f, "May" to 60f, "Jun" to 220f
+            DataPoint("0", 0f, 0f), DataPoint("2", 2f, 6f), DataPoint("3", 3f, 12f),
+            DataPoint("5", 5f, 20f), DataPoint("7", 7f, 35f)
         ), Color.parseColor("#F44336")))
 
         chartView.bind(seriesList, chartType)
@@ -149,7 +154,7 @@ class ChartActivity : AppCompatActivity() {
     }
 
     private fun showSendOptions() {
-        val options = mutableListOf("📄 Save as PDF", "🖼 Save as Image (PNG)", "🖼 Save as JPG")
+        val options = mutableListOf("📄 Save as PDF", "🖼 Save as PNG", "🖼 Save as JPG")
         if (openedFromNote) options.add("📝 Send to Note")
         AlertDialog.Builder(this).setTitle("Export Chart")
             .setItems(options.toTypedArray()) { _, i ->
@@ -166,18 +171,24 @@ class ChartActivity : AppCompatActivity() {
         val w = chartView.width.coerceAtLeast(800)
         val h = chartView.height.coerceAtLeast(600)
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val canvas = android.graphics.Canvas(bmp)
-        chartView.draw(canvas)
+        val bitmapCanvas = Canvas(bmp)
+        chartView.draw(bitmapCanvas)
         return bmp
     }
 
     private fun exportChartAsPdf() {
         try {
             val bmp = getChartBitmap()
+            val maxDim = 3000
+            val scale = if (bmp.width > maxDim || bmp.height > maxDim)
+                minOf(maxDim.toFloat() / bmp.width, maxDim.toFloat() / bmp.height) else 1f
+            val pw = (bmp.width * scale).toInt().coerceAtLeast(1)
+            val ph = (bmp.height * scale).toInt().coerceAtLeast(1)
+            val scaledBmp = if (scale < 1f) Bitmap.createScaledBitmap(bmp, pw, ph, true) else bmp
             val doc = PdfDocument()
-            val pageInfo = PdfDocument.PageInfo.Builder(bmp.width, bmp.height, 1).create()
+            val pageInfo = PdfDocument.PageInfo.Builder(pw, ph, 1).create()
             val page = doc.startPage(pageInfo)
-            page.canvas.drawBitmap(bmp, 0f, 0f, Paint())
+            page.canvas.drawBitmap(scaledBmp, 0f, 0f, Paint())
             doc.finishPage(page)
             val file = File(externalCacheDir ?: cacheDir, "chart_${System.currentTimeMillis()}.pdf")
             FileOutputStream(file).use { doc.writeTo(it) }
@@ -185,6 +196,7 @@ class ChartActivity : AppCompatActivity() {
             shareFile(file, "application/pdf")
             Toast.makeText(this, "Preparing share...", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
+            e.printStackTrace()
             Toast.makeText(this, "PDF failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
@@ -197,6 +209,7 @@ class ChartActivity : AppCompatActivity() {
             shareFile(file, "image/$ext")
             Toast.makeText(this, "Preparing share...", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
+            e.printStackTrace()
             Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
@@ -226,7 +239,8 @@ class ChartActivity : AppCompatActivity() {
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             startActivity(Intent.createChooser(intent, "Share via"))
         } catch (e: Exception) {
-            Toast.makeText(this, "Share failed: ${e.message}", Toast.LENGTH_SHORT).show()
+            e.printStackTrace()
+            Toast.makeText(this, "Share failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -234,9 +248,10 @@ class ChartActivity : AppCompatActivity() {
         val container = LinearLayout(this); container.orientation = LinearLayout.VERTICAL
         container.setPadding(dp(12), dp(8), dp(12), dp(8))
 
-        // Excel format guide
         val guide = TextView(this)
-        guide.text = "📋 Excel format:\nRow 1: Label | Series1 | Series2 | ...\nRow 2+: Jan | 120 | 80 | ..."
+        guide.text = "📋 Manual entry: X,Y per line (e.g. 1.5,23.4)\n" +
+                "📂 Excel shared X:  Label | S1 | S2\n" +
+                "📂 Excel XY pairs:  S1_X | S1_Y | S2_X | S2_Y"
         guide.textSize = 12f
         guide.setBackgroundColor(Color.parseColor("#E3F2FD"))
         guide.setPadding(dp(8), dp(8), dp(8), dp(8))
@@ -273,19 +288,21 @@ class ChartActivity : AppCompatActivity() {
                 headerRow.addView(nameInput); headerRow.addView(colorBtn); headerRow.addView(delBtn)
                 row.addView(headerRow)
 
-                val hint = TextView(this); hint.text = "Data (Label,Value per line):"; hint.textSize = 11f; row.addView(hint)
+                val hint = TextView(this); hint.text = "X,Y per line (e.g. 1.5,23.4):"; hint.textSize = 11f; row.addView(hint)
                 val dataInput = EditText(this); dataInput.minLines = 4
-                dataInput.setText(series.data.joinToString("\n") { "${it.first},${it.second.toInt()}" })
+                // Show as X,Y format
+                dataInput.setText(series.points.joinToString("\n") { "${it.xVal},${it.yVal}" })
                 dataInput.textSize = 12f
                 dataInput.setOnFocusChangeListener { _, hasFocus ->
                     if (!hasFocus) {
-                        val newData = mutableListOf<Pair<String, Float>>()
+                        val newPts = mutableListOf<DataPoint>()
                         for (line in dataInput.text.toString().lines()) {
                             val parts = line.trim().split(","); if (parts.size < 2) continue
-                            val v = parts[1].trim().toFloatOrNull() ?: continue
-                            newData.add(parts[0].trim() to v)
+                            val x = parts[0].trim().toFloatOrNull() ?: continue
+                            val y = parts[1].trim().toFloatOrNull() ?: continue
+                            newPts.add(DataPoint(x.toString(), x, y))
                         }
-                        if (newData.isNotEmpty()) { series.data = newData; chartView.invalidate() }
+                        if (newPts.isNotEmpty()) { series.points = newPts; chartView.invalidate() }
                     }
                 }
                 row.addView(dataInput)
@@ -309,7 +326,7 @@ class ChartActivity : AppCompatActivity() {
         addBtn.setOnClickListener {
             val colors = listOf("#2196F3","#F44336","#4CAF50","#FF9800","#9C27B0","#00BCD4","#FFEB3B","#795548")
             seriesList.add(DataSeries("Series ${seriesList.size + 1}",
-                mutableListOf("A" to 100f, "B" to 150f, "C" to 80f),
+                mutableListOf(DataPoint("0",0f,0f), DataPoint("1",1f,10f), DataPoint("2",2f,20f)),
                 Color.parseColor(colors[seriesList.size % colors.size])))
             refreshSeries(); chartView.invalidate()
         }
@@ -388,26 +405,62 @@ class ChartActivity : AppCompatActivity() {
             val stream = contentResolver.openInputStream(uri) ?: return
             val workbook = WorkbookFactory.create(stream); stream.close()
             val sheet = workbook.getSheetAt(0)
-            seriesList.clear()
             val headerRow = sheet.getRow(0) ?: return
-            val numSeries = headerRow.lastCellNum - 1
+            val headers = (0 until headerRow.lastCellNum).map { headerRow.getCell(it)?.toString()?.trim() ?: "" }
+            seriesList.clear()
+
             val colors = listOf("#2196F3","#F44336","#4CAF50","#FF9800","#9C27B0","#00BCD4","#FFEB3B","#795548","#607D8B","#E91E63")
-            for (s in 0 until numSeries) {
-                val name = headerRow.getCell(s + 1)?.toString() ?: "Series ${s+1}"
-                seriesList.add(DataSeries(name, mutableListOf(), Color.parseColor(colors[s % colors.size])))
-            }
-            for (row in sheet) {
-                if (row.rowNum == 0) continue
-                val label = row.getCell(0)?.toString() ?: continue
+
+            // Detect format: XY pairs if headers contain "_X" or "_Y"
+            val isXYFormat = headers.any { it.endsWith("_X", ignoreCase = true) || it.endsWith("_Y", ignoreCase = true) }
+
+            if (isXYFormat) {
+                // Independent XY format: S1_X | S1_Y | S2_X | S2_Y
+                var col = 0
+                var si = 0
+                while (col + 1 < headers.size) {
+                    val xHeader = headers[col]
+                    val yHeader = headers.getOrNull(col + 1) ?: break
+                    // Detect paired columns
+                    val seriesName = xHeader.removeSuffix("_X").removeSuffix("_x").ifBlank { "Series ${si + 1}" }
+                    val series = DataSeries(seriesName, mutableListOf(), Color.parseColor(colors[si % colors.size]))
+                    for (row in sheet) {
+                        if (row.rowNum == 0) continue
+                        val xCell = row.getCell(col)
+                        val yCell = row.getCell(col + 1)
+                        val xVal = xCell?.numericCellValue?.toFloat() ?: xCell?.toString()?.toFloatOrNull() ?: continue
+                        val yVal = yCell?.numericCellValue?.toFloat() ?: yCell?.toString()?.toFloatOrNull() ?: continue
+                        series.points.add(DataPoint(xVal.toString(), xVal, yVal))
+                    }
+                    if (series.points.isNotEmpty()) seriesList.add(series)
+                    col += 2; si++
+                }
+            } else {
+                // Shared label format: Label | Series1 | Series2 | ...
+                val numSeries = headers.size - 1
                 for (s in 0 until numSeries) {
-                    val v = row.getCell(s + 1)?.numericCellValue?.toFloat() ?: continue
-                    if (s < seriesList.size) seriesList[s].data.add(label to v)
+                    val name = headers.getOrElse(s + 1) { "Series ${s+1}" }
+                    seriesList.add(DataSeries(name, mutableListOf(), Color.parseColor(colors[s % colors.size])))
+                }
+                var xIdx = 0f
+                for (row in sheet) {
+                    if (row.rowNum == 0) continue
+                    val label = row.getCell(0)?.toString() ?: continue
+                    val xNum = label.toFloatOrNull() ?: xIdx  // Use numeric X if label is a number
+                    for (s in 0 until numSeries) {
+                        val v = row.getCell(s + 1)?.numericCellValue?.toFloat()
+                            ?: row.getCell(s + 1)?.toString()?.toFloatOrNull() ?: continue
+                        if (s < seriesList.size) seriesList[s].points.add(DataPoint(label, xNum, v))
+                    }
+                    xIdx++
                 }
             }
+
             workbook.close()
             chartView.bind(seriesList, chartType); chartView.invalidate()
-            Toast.makeText(this, "Loaded ${seriesList.size} series", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Loaded ${seriesList.size} series (${if (isXYFormat) "XY format" else "shared X format"})", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
+            e.printStackTrace()
             Toast.makeText(this, "Excel error: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
@@ -444,7 +497,7 @@ enum class ChartType {
 
 class ChartView(context: Context) : View(context) {
     private var series = listOf<DataSeries>()
-    var chartType = ChartType.BAR
+    var chartType = ChartType.LINE
     var pinnedMode = false
 
     private var bgColor = Color.WHITE
@@ -456,12 +509,8 @@ class ChartView(context: Context) : View(context) {
     private var showGrid = true
     private var chartTitle = "Chart"
 
-    // Pinned labels that always show on chart
     private val pinnedLabels = mutableListOf<PinnedLabel>()
-    // Temporary hover label (tap to show, tap again to pin)
     private var hoverLabel: PinnedLabel? = null
-
-    // All interactive data points for tap detection
     private val dataPoints = mutableListOf<PinnedLabel>()
 
     private val defaultColors = listOf(
@@ -483,45 +532,61 @@ class ChartView(context: Context) : View(context) {
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-            val tx = event.x; val ty = event.y
-            val hitRadius = 40f
-
-            // Check if tapping an existing pinned label to remove it
+            val tx = event.x; val ty = event.y; val hitRadius = 40f
             val toRemove = pinnedLabels.find { abs(it.x - tx) < hitRadius && abs(it.y - ty) < hitRadius }
             if (toRemove != null) { pinnedLabels.remove(toRemove); hoverLabel = null; invalidate(); return true }
-
-            // Find nearest data point
             val nearest = dataPoints.minByOrNull { sqrt((it.x - tx).pow(2) + (it.y - ty).pow(2)) }
             if (nearest != null && sqrt((nearest.x - tx).pow(2) + (nearest.y - ty).pow(2)) < hitRadius * 2) {
                 if (pinnedMode) {
-                    // Pin it permanently
-                    if (pinnedLabels.none { abs(it.x - nearest.x) < 5f && abs(it.y - nearest.y) < 5f }) {
-                        pinnedLabels.add(nearest)
-                    }
+                    if (pinnedLabels.none { abs(it.x - nearest.x) < 5f && abs(it.y - nearest.y) < 5f }) pinnedLabels.add(nearest)
                     hoverLabel = null
                 } else {
-                    // Show hover tooltip
                     hoverLabel = if (hoverLabel?.label == nearest.label && hoverLabel?.value == nearest.value) null else nearest
                 }
                 invalidate(); return true
             }
-            // Tap empty area clears hover
             hoverLabel = null; invalidate()
         }
         return true
     }
 
     private fun color(idx: Int): Int = if (idx < series.size) series[idx].color else defaultColors[idx % defaultColors.size]
-    private fun allLabels(): List<String> = series.firstOrNull()?.data?.map { it.first } ?: emptyList()
-    private fun allValues(): List<Float> = series.flatMap { s -> s.data.map { it.second } }
+
+    // Compute global X and Y ranges across all series
+    private fun xRange(): Pair<Float, Float> {
+        val allX = series.flatMap { it.points.map { p -> p.xVal } }
+        val min = allX.minOrNull() ?: 0f; val max = allX.maxOrNull() ?: 1f
+        return if (min == max) Pair(min - 1f, max + 1f) else Pair(min, max)
+    }
+
+    private fun yRange(): Pair<Float, Float> {
+        val allY = series.flatMap { it.points.map { p -> p.yVal } }
+        val min = 0f; val max = allY.maxOrNull()?.coerceAtLeast(1f) ?: 1f
+        return Pair(min, max)
+    }
+
+    private fun allLabels(): List<String> = series.firstOrNull()?.points?.map { it.xLabel } ?: emptyList()
+    private fun allValues(): List<Float> = series.flatMap { it.points.map { p -> p.yVal } }
     private fun maxVal(): Float = allValues().maxOrNull()?.coerceAtLeast(1f) ?: 1f
+
+    // Map world X to screen X using actual numeric X values
+    private fun xToScreen(xVal: Float, area: RectF): Float {
+        val (xMin, xMax) = xRange()
+        return area.left + (xVal - xMin) / (xMax - xMin) * area.width()
+    }
+
+    // Map world Y to screen Y
+    private fun yToScreen(yVal: Float, area: RectF): Float {
+        val (_, yMax) = yRange()
+        return area.bottom - yVal / yMax * area.height()
+    }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         canvas.drawColor(bgColor)
         drawTitle(canvas)
         dataPoints.clear()
-        if (series.isEmpty() || series.all { it.data.isEmpty() }) {
+        if (series.isEmpty() || series.all { it.points.isEmpty() }) {
             val p = Paint(); p.textSize = 40f; p.color = Color.GRAY; p.textAlign = Paint.Align.CENTER
             canvas.drawText("No data", width / 2f, height / 2f, p); return
         }
@@ -557,39 +622,27 @@ class ChartView(context: Context) : View(context) {
 
     private fun drawPinnedModeIndicator(canvas: Canvas) {
         val p = Paint(); p.color = Color.parseColor("#CC2196F3"); p.style = Paint.Style.FILL
-        canvas.drawRoundRect(RectF(10f, 10f, 260f, 55f), 12f, 12f, p)
+        canvas.drawRoundRect(RectF(10f, 10f, 280f, 55f), 12f, 12f, p)
         val tp = Paint(); tp.color = Color.WHITE; tp.textSize = 28f; tp.isAntiAlias = true
         canvas.drawText("📌 Tap points to pin", 20f, 42f, tp)
     }
 
-    private fun drawPinnedLabels(canvas: Canvas) {
-        for (pl in pinnedLabels) drawDataLabel(canvas, pl, Color.parseColor("#CC1565C0"), true)
-    }
-
-    private fun drawHoverLabel(canvas: Canvas) {
-        val hl = hoverLabel ?: return
-        drawDataLabel(canvas, hl, Color.parseColor("#CC333333"), false)
-    }
+    private fun drawPinnedLabels(canvas: Canvas) { for (pl in pinnedLabels) drawDataLabel(canvas, pl, Color.parseColor("#CC1565C0"), true) }
+    private fun drawHoverLabel(canvas: Canvas) { val hl = hoverLabel ?: return; drawDataLabel(canvas, hl, Color.parseColor("#CC333333"), false) }
 
     private fun drawDataLabel(canvas: Canvas, pl: PinnedLabel, bgC: Int, isPinned: Boolean) {
-        val text = "${pl.label}: ${pl.value.toInt()}"
+        val text = "${pl.label}: ${if (pl.value == pl.value.toLong().toFloat()) pl.value.toLong().toString() else String.format("%.2f", pl.value)}"
         val tp = Paint(); tp.textSize = labelFontSize; tp.isAntiAlias = true; tp.color = Color.WHITE
         val tw = tp.measureText(text) + 20f; val th = labelFontSize + 16f
         var lx = pl.x - tw / 2f; val ly = pl.y - th - 12f
         lx = lx.coerceIn(0f, width - tw)
         val bp = Paint(); bp.color = bgC; bp.style = Paint.Style.FILL; bp.isAntiAlias = true
         canvas.drawRoundRect(RectF(lx, ly, lx + tw, ly + th), 8f, 8f, bp)
-        // Arrow
         val ap = Paint(); ap.color = bgC; ap.style = Paint.Style.FILL
-        val path = Path()
-        path.moveTo(pl.x - 8f, ly + th); path.lineTo(pl.x + 8f, ly + th); path.lineTo(pl.x, pl.y - 4f); path.close()
+        val path = Path(); path.moveTo(pl.x - 8f, ly + th); path.lineTo(pl.x + 8f, ly + th); path.lineTo(pl.x, pl.y - 4f); path.close()
         canvas.drawPath(path, ap)
         canvas.drawText(text, lx + 10f, ly + labelFontSize + 6f, tp)
-        if (isPinned) {
-            val pp = Paint(); pp.color = Color.parseColor("#FFEB3B"); pp.textSize = labelFontSize * 0.8f; pp.isAntiAlias = true
-            canvas.drawText("📌", lx + tw - labelFontSize, ly + labelFontSize + 4f, pp)
-        }
-        // Dot at data point
+        if (isPinned) { val pp = Paint(); pp.color = Color.parseColor("#FFEB3B"); pp.textSize = labelFontSize * 0.8f; pp.isAntiAlias = true; canvas.drawText("📌", lx + tw - labelFontSize, ly + labelFontSize + 4f, pp) }
         val dp2 = Paint(); dp2.color = bgC; dp2.style = Paint.Style.FILL; dp2.isAntiAlias = true
         canvas.drawCircle(pl.x, pl.y, 8f, dp2)
     }
@@ -605,18 +658,49 @@ class ChartView(context: Context) : View(context) {
         return RectF(80f, titleFontSize + 30f, width - 20f, height - legendH - 50f)
     }
 
-    private fun drawAxes(canvas: Canvas, area: RectF, maxV: Float, labels: List<String>, horizontal: Boolean = false) {
+    // Draw numeric XY axes — works for both shared and independent X
+    private fun drawXYAxes(canvas: Canvas, area: RectF) {
+        val ap = Paint(); ap.color = Color.DKGRAY; ap.strokeWidth = 2f
+        canvas.drawLine(area.left, area.top, area.left, area.bottom, ap)
+        canvas.drawLine(area.left, area.bottom, area.right, area.bottom, ap)
+        val lp = Paint(); lp.color = labelColor; lp.textSize = labelFontSize; lp.isAntiAlias = true
+        val gp = Paint(); gp.color = gridColor; gp.strokeWidth = 1f
+        val (_, yMax) = yRange(); val (xMin, xMax) = xRange()
+
+        // Y axis gridlines and labels
+        for (i in 0..4) {
+            val v = yMax * i / 4f
+            val y = area.bottom - area.height() * i / 4f
+            if (showGrid) canvas.drawLine(area.left, y, area.right, y, gp)
+            lp.textAlign = Paint.Align.RIGHT
+            val label = if (v == v.toLong().toFloat()) v.toLong().toString() else String.format("%.1f", v)
+            canvas.drawText(label, area.left - 8f, y + lp.textSize / 3f, lp)
+        }
+
+        // X axis labels — show 5 evenly spaced numeric values
+        lp.textAlign = Paint.Align.CENTER
+        for (i in 0..4) {
+            val xVal = xMin + (xMax - xMin) * i / 4f
+            val x = area.left + area.width() * i / 4f
+            val label = if (xVal == xVal.toLong().toFloat()) xVal.toLong().toString() else String.format("%.1f", xVal)
+            canvas.drawText(label, x, area.bottom + labelFontSize + 8f, lp)
+            if (showGrid && i > 0) canvas.drawLine(x, area.top, x, area.bottom, gp)
+        }
+    }
+
+    // Legacy drawAxes for chart types that use category labels (bar, pie etc)
+    private fun drawAxes(canvas: Canvas, area: RectF, maxV: Float, labels: List<String>) {
         val ap = Paint(); ap.color = Color.DKGRAY; ap.strokeWidth = 2f
         canvas.drawLine(area.left, area.top, area.left, area.bottom, ap)
         canvas.drawLine(area.left, area.bottom, area.right, area.bottom, ap)
         val lp = Paint(); lp.color = labelColor; lp.textSize = labelFontSize; lp.isAntiAlias = true
         val gp = Paint(); gp.color = gridColor; gp.strokeWidth = 1f
         for (i in 0..4) {
-            val v = maxV * i / 4f
-            val y = area.bottom - (area.height() * i / 4f)
+            val v = maxV * i / 4f; val y = area.bottom - (area.height() * i / 4f)
             if (showGrid) canvas.drawLine(area.left, y, area.right, y, gp)
             lp.textAlign = Paint.Align.RIGHT
-            canvas.drawText(v.toInt().toString(), area.left - 8f, y + lp.textSize / 3f, lp)
+            val label = if (v == v.toLong().toFloat()) v.toLong().toString() else String.format("%.1f", v)
+            canvas.drawText(label, area.left - 8f, y + lp.textSize / 3f, lp)
         }
         lp.textAlign = Paint.Align.CENTER
         for ((idx, label) in labels.withIndex()) {
@@ -625,97 +709,20 @@ class ChartView(context: Context) : View(context) {
         }
     }
 
-    private fun drawBar(canvas: Canvas, is3D: Boolean) {
-        val area = chartArea(); val labels = allLabels(); val maxV = maxVal()
-        drawAxes(canvas, area, maxV, labels)
-        val groupW = area.width() / labels.size.coerceAtLeast(1)
-        val barW = groupW * 0.8f / series.size.coerceAtLeast(1)
-        val d3offset = if (is3D) 12f else 0f
-        for ((si, s) in series.withIndex()) {
-            val p = Paint(); p.color = color(si); p.style = Paint.Style.FILL; p.isAntiAlias = true
-            for ((di, entry) in s.data.withIndex()) {
-                val barH = area.height() * entry.second / maxV
-                val left = area.left + di * groupW + si * barW + groupW * 0.1f
-                val right = left + barW; val top = area.bottom - barH
-                if (is3D) {
-                    val sp = Paint(); sp.color = Color.parseColor("#80000000"); sp.style = Paint.Style.FILL
-                    val path = Path()
-                    path.moveTo(right, top); path.lineTo(right + d3offset, top - d3offset)
-                    path.lineTo(right + d3offset, area.bottom - d3offset); path.lineTo(right, area.bottom); path.close()
-                    canvas.drawPath(path, sp)
-                    val tp = Paint(); tp.color = Color.parseColor("#40FFFFFF"); tp.style = Paint.Style.FILL
-                    val tpath = Path()
-                    tpath.moveTo(left, top); tpath.lineTo(left + d3offset, top - d3offset)
-                    tpath.lineTo(right + d3offset, top - d3offset); tpath.lineTo(right, top); tpath.close()
-                    canvas.drawPath(tpath, tp)
-                }
-                canvas.drawRect(left, top, right, area.bottom, p)
-                val cx = (left + right) / 2f
-                dataPoints.add(PinnedLabel("${s.name} ${entry.first}", entry.second, cx, top))
-                val vp = Paint(); vp.color = labelColor; vp.textSize = labelFontSize * 0.8f; vp.textAlign = Paint.Align.CENTER; vp.isAntiAlias = true
-                canvas.drawText(entry.second.toInt().toString(), cx, top - 4f, vp)
-            }
-        }
-    }
-
-    private fun drawHorizontalBar(canvas: Canvas) {
-        val area = chartArea(); val labels = allLabels(); val maxV = maxVal()
-        val ap = Paint(); ap.color = Color.DKGRAY; ap.strokeWidth = 2f
-        canvas.drawLine(area.left, area.top, area.left, area.bottom, ap)
-        canvas.drawLine(area.left, area.bottom, area.right, area.bottom, ap)
-        val groupH = area.height() / labels.size.coerceAtLeast(1)
-        val barH = groupH * 0.8f / series.size.coerceAtLeast(1)
-        val lp = Paint(); lp.color = labelColor; lp.textSize = labelFontSize; lp.textAlign = Paint.Align.RIGHT; lp.isAntiAlias = true
-        for ((di, label) in labels.withIndex()) {
-            val cy = area.top + (di + 0.5f) * groupH
-            canvas.drawText(label, area.left - 8f, cy + labelFontSize / 3f, lp)
-        }
-        for ((si, s) in series.withIndex()) {
-            val p = Paint(); p.color = color(si); p.style = Paint.Style.FILL; p.isAntiAlias = true
-            for ((di, entry) in s.data.withIndex()) {
-                val barW = area.width() * entry.second / maxV
-                val top2 = area.top + di * groupH + si * barH + groupH * 0.1f
-                val bottom2 = top2 + barH
-                canvas.drawRect(area.left, top2, area.left + barW, bottom2, p)
-                dataPoints.add(PinnedLabel("${s.name} ${entry.first}", entry.second, area.left + barW, (top2 + bottom2) / 2f))
-            }
-        }
-    }
-
-    private fun drawStackedBar(canvas: Canvas, pct: Boolean) {
-        val area = chartArea(); val labels = allLabels()
-        val totals = labels.indices.map { idx -> series.sumOf { s -> s.data.getOrNull(idx)?.second?.toDouble() ?: 0.0 }.toFloat() }
-        val maxV = if (pct) 100f else totals.maxOrNull()?.coerceAtLeast(1f) ?: 1f
-        drawAxes(canvas, area, maxV, labels)
-        val barW = area.width() / labels.size.coerceAtLeast(1) * 0.7f
-        for ((di, label) in labels.withIndex()) {
-            var yOff = 0f
-            val total = totals.getOrElse(di) { 1f }.coerceAtLeast(1f)
-            for ((si, s) in series.withIndex()) {
-                val rawV = s.data.getOrNull(di)?.second ?: 0f
-                val v = if (pct) rawV / total * 100f else rawV
-                val barH = area.height() * v / maxV
-                val left = area.left + di * area.width() / labels.size + area.width() / labels.size * 0.15f
-                val top = area.bottom - yOff - barH
-                val p = Paint(); p.color = color(si); p.style = Paint.Style.FILL; p.isAntiAlias = true
-                canvas.drawRect(left, top, left + barW, area.bottom - yOff, p)
-                dataPoints.add(PinnedLabel("${s.name} $label", rawV, left + barW / 2f, top))
-                yOff += barH
-            }
-        }
-    }
-
+    // LINE/SCATTER use actual X values for positioning
     private fun drawLine(canvas: Canvas, smooth: Boolean, fillArea: Boolean) {
-        val area = chartArea(); val labels = allLabels(); val maxV = maxVal()
-        drawAxes(canvas, area, maxV, labels)
+        val area = chartArea()
+        drawXYAxes(canvas, area)
         for ((si, s) in series.withIndex()) {
-            if (s.data.isEmpty()) continue
-            val pts = s.data.mapIndexed { di, entry ->
-                val x = area.left + (di + 0.5f) * area.width() / s.data.size
-                val y = area.bottom - area.height() * entry.second / maxV
+            if (s.points.isEmpty()) continue
+            val sorted = s.points.sortedBy { it.xVal }
+            val pts = sorted.map { pt ->
+                val x = xToScreen(pt.xVal, area)
+                val y = yToScreen(pt.yVal, area)
                 Pair(x, y)
             }
-            val p = Paint(); p.color = color(si); p.strokeWidth = s.lineWidth; p.style = Paint.Style.STROKE; p.isAntiAlias = true; p.strokeCap = Paint.Cap.ROUND; p.strokeJoin = Paint.Join.ROUND
+            val p = Paint(); p.color = color(si); p.strokeWidth = s.lineWidth; p.style = Paint.Style.STROKE
+            p.isAntiAlias = true; p.strokeCap = Paint.Cap.ROUND; p.strokeJoin = Paint.Join.ROUND
             val path = Path()
             if (smooth && pts.size >= 2) {
                 path.moveTo(pts[0].first, pts[0].second)
@@ -735,110 +742,180 @@ class ChartView(context: Context) : View(context) {
             }
             canvas.drawPath(path, p)
             val dp2 = Paint(); dp2.color = color(si); dp2.style = Paint.Style.FILL; dp2.isAntiAlias = true
-            for ((di, pt) in pts.withIndex()) {
+            for ((i, pt) in pts.withIndex()) {
                 canvas.drawCircle(pt.first, pt.second, 9f, dp2)
-                dataPoints.add(PinnedLabel("${s.name}: ${s.data[di].first}", s.data[di].second, pt.first, pt.second))
+                val sp = sorted[i]
+                val xLabel = if (sp.xVal == sp.xVal.toLong().toFloat()) sp.xVal.toLong().toString() else String.format("%.2f", sp.xVal)
+                dataPoints.add(PinnedLabel("${s.name} x=$xLabel", sp.yVal, pt.first, pt.second))
             }
-        }
-    }
-
-    private fun drawStackedArea(canvas: Canvas) {
-        val area = chartArea(); val labels = allLabels()
-        val totals = labels.indices.map { idx -> series.sumOf { s -> s.data.getOrNull(idx)?.second?.toDouble() ?: 0.0 }.toFloat() }
-        val maxV = totals.maxOrNull()?.coerceAtLeast(1f) ?: 1f
-        drawAxes(canvas, area, maxV, labels)
-        val cumulative = MutableList(labels.size) { 0f }
-        for ((si, s) in series.withIndex()) {
-            val pts = s.data.indices.map { di ->
-                val x = area.left + (di + 0.5f) * area.width() / labels.size
-                val y = area.bottom - area.height() * (cumulative[di] + (s.data.getOrNull(di)?.second ?: 0f)) / maxV
-                Pair(x, y)
-            }
-            val prevPts = s.data.indices.map { di ->
-                val x = area.left + (di + 0.5f) * area.width() / labels.size
-                val y = area.bottom - area.height() * cumulative[di] / maxV
-                Pair(x, y)
-            }
-            val path = Path(); path.moveTo(prevPts.first().first, prevPts.first().second)
-            for (pt in prevPts.drop(1)) path.lineTo(pt.first, pt.second)
-            for (pt in pts.reversed()) path.lineTo(pt.first, pt.second)
-            path.close()
-            val p = Paint(); p.color = color(si); p.alpha = 180; p.style = Paint.Style.FILL; p.isAntiAlias = true
-            canvas.drawPath(path, p)
-            for ((di, pt) in pts.withIndex()) dataPoints.add(PinnedLabel("${s.name}: ${labels[di]}", s.data.getOrNull(di)?.second ?: 0f, pt.first, pt.second))
-            for (di in s.data.indices) cumulative[di] += s.data.getOrNull(di)?.second ?: 0f
-        }
-    }
-
-    private fun drawPie(canvas: Canvas, donut: Boolean, is3D: Boolean) {
-        val area = chartArea()
-        val cx = area.centerX(); val cy = area.centerY()
-        val radius = minOf(area.width(), area.height()) / 2.5f
-        val s = series.firstOrNull() ?: return
-        val total = s.data.sumOf { it.second.toDouble() }.toFloat().coerceAtLeast(1f)
-        var startAngle = -90f
-        val d3depth = if (is3D) 20f else 0f
-        val oval = RectF(cx - radius, cy - radius, cx + radius, cy + radius)
-        if (is3D) {
-            val oval3d = RectF(cx - radius, cy - radius + d3depth, cx + radius, cy + radius + d3depth)
-            for ((idx, entry) in s.data.withIndex()) {
-                val sweep = 360f * entry.second / total
-                if (startAngle + sweep > 0) {
-                    val p = Paint(); p.color = color(idx); p.alpha = 180; p.style = Paint.Style.FILL; p.isAntiAlias = true
-                    canvas.drawArc(oval3d, startAngle, sweep, true, p)
-                }
-                startAngle += sweep
-            }
-            startAngle = -90f
-        }
-        for ((idx, entry) in s.data.withIndex()) {
-            val sweep = 360f * entry.second / total
-            val p = Paint(); p.color = color(idx); p.style = Paint.Style.FILL; p.isAntiAlias = true
-            canvas.drawArc(oval, startAngle, sweep, true, p)
-            if (donut) {
-                val dp2 = Paint(); dp2.color = bgColor; dp2.style = Paint.Style.FILL
-                canvas.drawCircle(cx, cy, radius * 0.5f, dp2)
-            }
-            val mid = Math.toRadians((startAngle + sweep / 2).toDouble())
-            val lx = cx + (radius * 1.2f * cos(mid)).toFloat()
-            val ly = cy + (radius * 1.2f * sin(mid)).toFloat()
-            val lp = Paint(); lp.color = labelColor; lp.textSize = labelFontSize * 0.9f; lp.isAntiAlias = true
-            lp.textAlign = if (lx > cx) Paint.Align.LEFT else Paint.Align.RIGHT
-            canvas.drawText("${entry.first} ${(entry.second/total*100).toInt()}%", lx, ly, lp)
-            // Data point at midpoint of arc
-            val dpx = cx + (radius * 0.7f * cos(mid)).toFloat()
-            val dpy = cy + (radius * 0.7f * sin(mid)).toFloat()
-            dataPoints.add(PinnedLabel(entry.first, entry.second, dpx, dpy))
-            startAngle += sweep
         }
     }
 
     private fun drawScatter(canvas: Canvas) {
-        val area = chartArea(); val maxV = maxVal()
-        drawAxes(canvas, area, maxV, allLabels())
+        val area = chartArea()
+        drawXYAxes(canvas, area)
         for ((si, s) in series.withIndex()) {
-            val p = Paint(); p.color = color(si); p.style = Paint.Style.FILL; p.isAntiAlias = true; p.alpha = 180
-            for ((di, entry) in s.data.withIndex()) {
-                val x = area.left + (di + 0.5f) * area.width() / s.data.size
-                val y = area.bottom - area.height() * entry.second / maxV
-                canvas.drawCircle(x, y, 12f, p)
-                dataPoints.add(PinnedLabel("${s.name}: ${entry.first}", entry.second, x, y))
+            val p = Paint(); p.color = color(si); p.style = Paint.Style.FILL; p.isAntiAlias = true; p.alpha = 200
+            for (pt in s.points) {
+                val sx = xToScreen(pt.xVal, area); val sy = yToScreen(pt.yVal, area)
+                canvas.drawCircle(sx, sy, 12f, p)
+                val xLabel = if (pt.xVal == pt.xVal.toLong().toFloat()) pt.xVal.toLong().toString() else String.format("%.2f", pt.xVal)
+                dataPoints.add(PinnedLabel("${s.name} x=$xLabel", pt.yVal, sx, sy))
             }
         }
     }
 
     private fun drawBubble(canvas: Canvas) {
-        val area = chartArea(); val maxV = maxVal()
-        drawAxes(canvas, area, maxV, allLabels())
+        val area = chartArea()
+        drawXYAxes(canvas, area)
+        val maxY = yRange().second
         for ((si, s) in series.withIndex()) {
             val p = Paint(); p.color = color(si); p.style = Paint.Style.FILL; p.isAntiAlias = true; p.alpha = 120
-            for ((di, entry) in s.data.withIndex()) {
-                val x = area.left + (di + 0.5f) * area.width() / s.data.size
-                val y = area.bottom - area.height() * entry.second / maxV
-                val r = (entry.second / maxV * 40f).coerceIn(8f, 50f)
-                canvas.drawCircle(x, y, r, p)
-                dataPoints.add(PinnedLabel("${s.name}: ${entry.first}", entry.second, x, y))
+            for (pt in s.points) {
+                val sx = xToScreen(pt.xVal, area); val sy = yToScreen(pt.yVal, area)
+                val r = (pt.yVal / maxY * 40f).coerceIn(8f, 50f)
+                canvas.drawCircle(sx, sy, r, p)
+                dataPoints.add(PinnedLabel("${s.name}: ${pt.xLabel}", pt.yVal, sx, sy))
             }
+        }
+    }
+
+    private fun drawStackedArea(canvas: Canvas) {
+        val area = chartArea()
+        drawXYAxes(canvas, area)
+        val allX = series.flatMap { it.points.map { p -> p.xVal } }.distinct().sorted()
+        val (_, yMax) = yRange()
+        val cumulative = mutableMapOf<Float, Float>()
+        for (s in series) {
+            val pts = allX.map { x ->
+                val pt = s.points.minByOrNull { abs(it.xVal - x) }
+                val y = pt?.yVal ?: 0f
+                val cum = cumulative.getOrDefault(x, 0f)
+                val sx = xToScreen(x, area); val sy = yToScreen(cum + y, area)
+                Pair(sx, sy)
+            }
+            val prevPts = allX.map { x ->
+                val cum = cumulative.getOrDefault(x, 0f)
+                Pair(xToScreen(x, area), yToScreen(cum, area))
+            }
+            val path = Path(); path.moveTo(prevPts.first().first, prevPts.first().second)
+            for (pt in prevPts.drop(1)) path.lineTo(pt.first, pt.second)
+            for (pt in pts.reversed()) path.lineTo(pt.first, pt.second)
+            path.close()
+            val p = Paint(); p.color = color(series.indexOf(s)); p.alpha = 180; p.style = Paint.Style.FILL; p.isAntiAlias = true
+            canvas.drawPath(path, p)
+            for ((i, pt) in pts.withIndex()) { cumulative[allX[i]] = (cumulative.getOrDefault(allX[i], 0f) + (s.points.minByOrNull { abs(it.xVal - allX[i]) }?.yVal ?: 0f)) }
+        }
+    }
+
+    // Bar charts use category labels (shared X only makes sense for bar)
+    private fun drawBar(canvas: Canvas, is3D: Boolean) {
+        val area = chartArea(); val labels = allLabels(); val maxV = maxVal()
+        drawAxes(canvas, area, maxV, labels)
+        val groupW = area.width() / labels.size.coerceAtLeast(1)
+        val barW = groupW * 0.8f / series.size.coerceAtLeast(1)
+        val d3offset = if (is3D) 12f else 0f
+        for ((si, s) in series.withIndex()) {
+            val p = Paint(); p.color = color(si); p.style = Paint.Style.FILL; p.isAntiAlias = true
+            for ((di, pt) in s.points.withIndex()) {
+                val barH = area.height() * pt.yVal / maxV
+                val left = area.left + di * groupW + si * barW + groupW * 0.1f
+                val right = left + barW; val top = area.bottom - barH
+                if (is3D) {
+                    val sp = Paint(); sp.color = Color.parseColor("#80000000"); sp.style = Paint.Style.FILL
+                    val path = Path(); path.moveTo(right, top); path.lineTo(right + d3offset, top - d3offset); path.lineTo(right + d3offset, area.bottom - d3offset); path.lineTo(right, area.bottom); path.close()
+                    canvas.drawPath(path, sp)
+                    val tp = Paint(); tp.color = Color.parseColor("#40FFFFFF"); tp.style = Paint.Style.FILL
+                    val tpath = Path(); tpath.moveTo(left, top); tpath.lineTo(left + d3offset, top - d3offset); tpath.lineTo(right + d3offset, top - d3offset); tpath.lineTo(right, top); tpath.close()
+                    canvas.drawPath(tpath, tp)
+                }
+                canvas.drawRect(left, top, right, area.bottom, p)
+                val cx = (left + right) / 2f
+                dataPoints.add(PinnedLabel("${s.name} ${pt.xLabel}", pt.yVal, cx, top))
+                val vp = Paint(); vp.color = labelColor; vp.textSize = labelFontSize * 0.8f; vp.textAlign = Paint.Align.CENTER; vp.isAntiAlias = true
+                val vLabel = if (pt.yVal == pt.yVal.toLong().toFloat()) pt.yVal.toLong().toString() else String.format("%.1f", pt.yVal)
+                canvas.drawText(vLabel, cx, top - 4f, vp)
+            }
+        }
+    }
+
+    private fun drawHorizontalBar(canvas: Canvas) {
+        val area = chartArea(); val labels = allLabels(); val maxV = maxVal()
+        val ap = Paint(); ap.color = Color.DKGRAY; ap.strokeWidth = 2f
+        canvas.drawLine(area.left, area.top, area.left, area.bottom, ap)
+        canvas.drawLine(area.left, area.bottom, area.right, area.bottom, ap)
+        val groupH = area.height() / labels.size.coerceAtLeast(1)
+        val barH = groupH * 0.8f / series.size.coerceAtLeast(1)
+        val lp = Paint(); lp.color = labelColor; lp.textSize = labelFontSize; lp.textAlign = Paint.Align.RIGHT; lp.isAntiAlias = true
+        for ((di, label) in labels.withIndex()) {
+            val cy = area.top + (di + 0.5f) * groupH
+            canvas.drawText(label, area.left - 8f, cy + labelFontSize / 3f, lp)
+        }
+        for ((si, s) in series.withIndex()) {
+            val p = Paint(); p.color = color(si); p.style = Paint.Style.FILL; p.isAntiAlias = true
+            for ((di, pt) in s.points.withIndex()) {
+                val barW = area.width() * pt.yVal / maxV
+                val top2 = area.top + di * groupH + si * barH + groupH * 0.1f
+                val bottom2 = top2 + barH
+                canvas.drawRect(area.left, top2, area.left + barW, bottom2, p)
+                dataPoints.add(PinnedLabel("${s.name} ${pt.xLabel}", pt.yVal, area.left + barW, (top2 + bottom2) / 2f))
+            }
+        }
+    }
+
+    private fun drawStackedBar(canvas: Canvas, pct: Boolean) {
+        val area = chartArea(); val labels = allLabels()
+        val totals = labels.indices.map { idx -> series.sumOf { s -> s.points.getOrNull(idx)?.yVal?.toDouble() ?: 0.0 }.toFloat() }
+        val maxV = if (pct) 100f else totals.maxOrNull()?.coerceAtLeast(1f) ?: 1f
+        drawAxes(canvas, area, maxV, labels)
+        val barW = area.width() / labels.size.coerceAtLeast(1) * 0.7f
+        for ((di, label) in labels.withIndex()) {
+            var yOff = 0f
+            val total = totals.getOrElse(di) { 1f }.coerceAtLeast(1f)
+            for ((si, s) in series.withIndex()) {
+                val rawV = s.points.getOrNull(di)?.yVal ?: 0f
+                val v = if (pct) rawV / total * 100f else rawV
+                val barH = area.height() * v / maxV
+                val left = area.left + di * area.width() / labels.size + area.width() / labels.size * 0.15f
+                val top = area.bottom - yOff - barH
+                val p = Paint(); p.color = color(si); p.style = Paint.Style.FILL; p.isAntiAlias = true
+                canvas.drawRect(left, top, left + barW, area.bottom - yOff, p)
+                dataPoints.add(PinnedLabel("${s.name} $label", rawV, left + barW / 2f, top))
+                yOff += barH
+            }
+        }
+    }
+
+    private fun drawPie(canvas: Canvas, donut: Boolean, is3D: Boolean) {
+        val area = chartArea(); val cx = area.centerX(); val cy = area.centerY()
+        val radius = minOf(area.width(), area.height()) / 2.5f
+        val s = series.firstOrNull() ?: return
+        val total = s.points.sumOf { it.yVal.toDouble() }.toFloat().coerceAtLeast(1f)
+        var startAngle = -90f; val d3depth = if (is3D) 20f else 0f
+        val oval = RectF(cx - radius, cy - radius, cx + radius, cy + radius)
+        if (is3D) {
+            val oval3d = RectF(cx - radius, cy - radius + d3depth, cx + radius, cy + radius + d3depth)
+            for ((idx, pt) in s.points.withIndex()) {
+                val sweep = 360f * pt.yVal / total
+                val p = Paint(); p.color = color(idx); p.alpha = 180; p.style = Paint.Style.FILL; p.isAntiAlias = true
+                canvas.drawArc(oval3d, startAngle, sweep, true, p)
+                startAngle += sweep
+            }
+            startAngle = -90f
+        }
+        for ((idx, pt) in s.points.withIndex()) {
+            val sweep = 360f * pt.yVal / total
+            val p = Paint(); p.color = color(idx); p.style = Paint.Style.FILL; p.isAntiAlias = true
+            canvas.drawArc(oval, startAngle, sweep, true, p)
+            if (donut) { val dp2 = Paint(); dp2.color = bgColor; dp2.style = Paint.Style.FILL; canvas.drawCircle(cx, cy, radius * 0.5f, dp2) }
+            val mid = Math.toRadians((startAngle + sweep / 2).toDouble())
+            val lx = cx + (radius * 1.2f * cos(mid)).toFloat(); val ly = cy + (radius * 1.2f * sin(mid)).toFloat()
+            val lp = Paint(); lp.color = labelColor; lp.textSize = labelFontSize * 0.9f; lp.isAntiAlias = true
+            lp.textAlign = if (lx > cx) Paint.Align.LEFT else Paint.Align.RIGHT
+            canvas.drawText("${pt.xLabel} ${(pt.yVal/total*100).toInt()}%", lx, ly, lp)
+            val dpx = cx + (radius * 0.7f * cos(mid)).toFloat(); val dpy = cy + (radius * 0.7f * sin(mid)).toFloat()
+            dataPoints.add(PinnedLabel(pt.xLabel, pt.yVal, dpx, dpy))
+            startAngle += sweep
         }
     }
 
@@ -866,9 +943,8 @@ class ChartView(context: Context) : View(context) {
             val fp = Paint(); fp.color = color(si); fp.alpha = 60; fp.style = Paint.Style.FILL; fp.isAntiAlias = true
             val path = Path()
             for (i in 0 until n) {
-                val v = s.data.getOrNull(i)?.second ?: 0f
-                val a = Math.toRadians(-90.0 + 360.0 * i / n)
-                val rr = r * v / maxV
+                val v = s.points.getOrNull(i)?.yVal ?: 0f
+                val a = Math.toRadians(-90.0 + 360.0 * i / n); val rr = r * v / maxV
                 val x = cx + (rr * cos(a)).toFloat(); val y = cy + (rr * sin(a)).toFloat()
                 if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
                 dataPoints.add(PinnedLabel("${s.name}: ${labels.getOrElse(i) { "" }}", v, x, y))
@@ -879,10 +955,9 @@ class ChartView(context: Context) : View(context) {
 
     private fun drawHistogram(canvas: Canvas) {
         val area = chartArea(); val s = series.firstOrNull() ?: return
-        val values = s.data.map { it.second }
+        val values = s.points.map { it.yVal }
         val bins = 8; val minV = values.minOrNull() ?: 0f; val maxV2 = values.maxOrNull() ?: 1f
-        val binSize = (maxV2 - minV) / bins
-        val counts = IntArray(bins)
+        val binSize = (maxV2 - minV) / bins; val counts = IntArray(bins)
         for (v in values) { val bin = ((v - minV) / binSize).toInt().coerceIn(0, bins - 1); counts[bin]++ }
         val maxCount = counts.maxOrNull()?.coerceAtLeast(1) ?: 1
         val ap = Paint(); ap.color = Color.DKGRAY; ap.strokeWidth = 2f
@@ -901,68 +976,61 @@ class ChartView(context: Context) : View(context) {
 
     private fun drawWaterfall(canvas: Canvas) {
         val area = chartArea(); val s = series.firstOrNull() ?: return
-        val maxV = s.data.sumOf { it.second.toDouble() }.toFloat().coerceAtLeast(1f)
-        val labels = s.data.map { it.first }
+        val maxV = s.points.sumOf { it.yVal.toDouble() }.toFloat().coerceAtLeast(1f)
+        val labels = s.points.map { it.xLabel }
         drawAxes(canvas, area, maxV, labels)
-        var cumulative = 0f
-        val bw = area.width() / s.data.size * 0.7f
-        for ((di, entry) in s.data.withIndex()) {
-            val x = area.left + di * area.width() / s.data.size + area.width() / s.data.size * 0.15f
+        var cumulative = 0f; val bw = area.width() / s.points.size * 0.7f
+        for ((di, pt) in s.points.withIndex()) {
+            val x = area.left + di * area.width() / s.points.size + area.width() / s.points.size * 0.15f
             val bottom = area.bottom - area.height() * cumulative / maxV
-            val top = area.bottom - area.height() * (cumulative + entry.second) / maxV
-            val p = Paint(); p.color = if (entry.second >= 0) color(0) else color(1); p.style = Paint.Style.FILL; p.isAntiAlias = true
+            val top = area.bottom - area.height() * (cumulative + pt.yVal) / maxV
+            val p = Paint(); p.color = if (pt.yVal >= 0) color(0) else color(1); p.style = Paint.Style.FILL; p.isAntiAlias = true
             canvas.drawRect(x, top, x + bw, bottom, p)
-            dataPoints.add(PinnedLabel(entry.first, entry.second, x + bw / 2f, top))
-            cumulative += entry.second
+            dataPoints.add(PinnedLabel(pt.xLabel, pt.yVal, x + bw / 2f, top))
+            cumulative += pt.yVal
         }
     }
 
     private fun drawFunnel(canvas: Canvas) {
         val area = chartArea(); val s = series.firstOrNull() ?: return
-        val total = s.data.firstOrNull()?.second?.coerceAtLeast(1f) ?: 1f
-        val sliceH = area.height() / s.data.size.coerceAtLeast(1)
-        for ((idx, entry) in s.data.withIndex()) {
-            val ratio = entry.second / total
-            val thisW = area.width() * ratio
-            val nextRatio = s.data.getOrNull(idx + 1)?.second?.div(total) ?: (ratio * 0.6f)
+        val total = s.points.firstOrNull()?.yVal?.coerceAtLeast(1f) ?: 1f
+        val sliceH = area.height() / s.points.size.coerceAtLeast(1)
+        for ((idx, pt) in s.points.withIndex()) {
+            val ratio = pt.yVal / total; val thisW = area.width() * ratio
+            val nextRatio = s.points.getOrNull(idx + 1)?.yVal?.div(total) ?: (ratio * 0.6f)
             val nextW = area.width() * nextRatio
             val top = area.top + idx * sliceH; val bottom = top + sliceH
             val path = Path()
-            path.moveTo(area.centerX() - thisW / 2f, top)
-            path.lineTo(area.centerX() + thisW / 2f, top)
-            path.lineTo(area.centerX() + nextW / 2f, bottom)
-            path.lineTo(area.centerX() - nextW / 2f, bottom)
-            path.close()
+            path.moveTo(area.centerX() - thisW / 2f, top); path.lineTo(area.centerX() + thisW / 2f, top)
+            path.lineTo(area.centerX() + nextW / 2f, bottom); path.lineTo(area.centerX() - nextW / 2f, bottom); path.close()
             val p = Paint(); p.color = color(idx); p.style = Paint.Style.FILL; p.isAntiAlias = true
             canvas.drawPath(path, p)
             val lp = Paint(); lp.color = Color.WHITE; lp.textSize = labelFontSize; lp.textAlign = Paint.Align.CENTER; lp.isAntiAlias = true
-            canvas.drawText("${entry.first}: ${entry.second.toInt()}", area.centerX(), top + sliceH / 2f + labelFontSize / 3f, lp)
-            dataPoints.add(PinnedLabel(entry.first, entry.second, area.centerX(), top + sliceH / 2f))
+            canvas.drawText("${pt.xLabel}: ${pt.yVal.toInt()}", area.centerX(), top + sliceH / 2f + labelFontSize / 3f, lp)
+            dataPoints.add(PinnedLabel(pt.xLabel, pt.yVal, area.centerX(), top + sliceH / 2f))
         }
     }
 
     private fun drawHeatmap(canvas: Canvas) {
-        val area = chartArea()
-        val rows = series.size.coerceAtLeast(1)
-        val cols = series.firstOrNull()?.data?.size?.coerceAtLeast(1) ?: 1
+        val area = chartArea(); val rows = series.size.coerceAtLeast(1)
+        val cols = series.firstOrNull()?.points?.size?.coerceAtLeast(1) ?: 1
         val cellW = area.width() / cols; val cellH = area.height() / rows
         val allV = allValues(); val minV = allV.minOrNull() ?: 0f; val maxV2 = allV.maxOrNull()?.coerceAtLeast(minV + 1f) ?: 1f
         for ((si, s) in series.withIndex()) {
-            for ((di, entry) in s.data.withIndex()) {
-                val t = (entry.second - minV) / (maxV2 - minV)
+            for ((di, pt) in s.points.withIndex()) {
+                val t = (pt.yVal - minV) / (maxV2 - minV)
                 val c = Color.HSVToColor(floatArrayOf(240f * (1f - t), 0.8f, 0.9f))
                 val p = Paint(); p.color = c; p.style = Paint.Style.FILL
                 canvas.drawRect(area.left + di * cellW, area.top + si * cellH, area.left + (di+1) * cellW - 2f, area.top + (si+1) * cellH - 2f, p)
                 val lp = Paint(); lp.color = Color.WHITE; lp.textSize = labelFontSize * 0.8f; lp.textAlign = Paint.Align.CENTER; lp.isAntiAlias = true
-                canvas.drawText(entry.second.toInt().toString(), area.left + (di + 0.5f) * cellW, area.top + (si + 0.5f) * cellH + labelFontSize * 0.3f, lp)
-                dataPoints.add(PinnedLabel("${s.name}: ${entry.first}", entry.second, area.left + (di + 0.5f) * cellW, area.top + (si + 0.5f) * cellH))
+                canvas.drawText(pt.yVal.toInt().toString(), area.left + (di + 0.5f) * cellW, area.top + (si + 0.5f) * cellH + labelFontSize * 0.3f, lp)
+                dataPoints.add(PinnedLabel("${s.name}: ${pt.xLabel}", pt.yVal, area.left + (di + 0.5f) * cellW, area.top + (si + 0.5f) * cellH))
             }
         }
     }
 
     private fun drawGauge(canvas: Canvas) {
-        val s = series.firstOrNull() ?: return
-        val v = s.data.firstOrNull()?.second ?: 0f
+        val s = series.firstOrNull() ?: return; val v = s.points.firstOrNull()?.yVal ?: 0f
         val maxV = 100f; val cx = width / 2f; val cy = height * 0.65f; val r = minOf(width, height) * 0.38f
         val sweepAngle = 180f * v / maxV
         val bgP = Paint(); bgP.color = Color.LTGRAY; bgP.style = Paint.Style.STROKE; bgP.strokeWidth = 30f; bgP.isAntiAlias = true
@@ -972,47 +1040,43 @@ class ChartView(context: Context) : View(context) {
         val tp = Paint(); tp.color = titleColor; tp.textSize = titleFontSize * 1.2f; tp.textAlign = Paint.Align.CENTER; tp.isFakeBoldText = true; tp.isAntiAlias = true
         canvas.drawText("${v.toInt()}%", cx, cy + 20f, tp)
         val lp = Paint(); lp.color = labelColor; lp.textSize = labelFontSize; lp.textAlign = Paint.Align.CENTER; lp.isAntiAlias = true
-        canvas.drawText(s.data.firstOrNull()?.first ?: "", cx, cy + labelFontSize + 30f, lp)
-        dataPoints.add(PinnedLabel(s.data.firstOrNull()?.first ?: "Value", v, cx, cy))
+        canvas.drawText(s.points.firstOrNull()?.xLabel ?: "", cx, cy + labelFontSize + 30f, lp)
+        dataPoints.add(PinnedLabel(s.points.firstOrNull()?.xLabel ?: "Value", v, cx, cy))
     }
 
     private fun drawCandlestick(canvas: Canvas) {
         val area = chartArea(); val s = series.firstOrNull() ?: return
         val maxV = maxVal(); val labels = allLabels()
         drawAxes(canvas, area, maxV, labels)
-        val cw = area.width() / s.data.size * 0.6f
-        for ((di, entry) in s.data.withIndex()) {
-            val x = area.left + (di + 0.5f) * area.width() / s.data.size
-            val prev = s.data.getOrNull(di - 1)?.second ?: entry.second
-            val open = prev; val close = entry.second
+        val cw = area.width() / s.points.size * 0.6f
+        for ((di, pt) in s.points.withIndex()) {
+            val x = area.left + (di + 0.5f) * area.width() / s.points.size
+            val prev = s.points.getOrNull(di - 1)?.yVal ?: pt.yVal
+            val open = prev; val close = pt.yVal
             val high = maxOf(open, close) * 1.05f; val low = minOf(open, close) * 0.95f
-            val openY = area.bottom - area.height() * open / maxV
-            val closeY = area.bottom - area.height() * close / maxV
-            val highY = area.bottom - area.height() * high / maxV
-            val lowY = area.bottom - area.height() * low / maxV
+            val openY = area.bottom - area.height() * open / maxV; val closeY = area.bottom - area.height() * close / maxV
+            val highY = area.bottom - area.height() * high / maxV; val lowY = area.bottom - area.height() * low / maxV
             val isUp = close >= open
             val p = Paint(); p.color = if (isUp) Color.parseColor("#4CAF50") else Color.parseColor("#F44336"); p.strokeWidth = 2f; p.isAntiAlias = true
-            canvas.drawLine(x, highY, x, lowY, p)
-            p.style = Paint.Style.FILL
+            canvas.drawLine(x, highY, x, lowY, p); p.style = Paint.Style.FILL
             canvas.drawRect(x - cw/2f, minOf(openY, closeY), x + cw/2f, maxOf(openY, closeY), p)
-            dataPoints.add(PinnedLabel(entry.first, entry.second, x, closeY))
+            dataPoints.add(PinnedLabel(pt.xLabel, pt.yVal, x, closeY))
         }
     }
 
     private fun drawTreemap(canvas: Canvas) {
         val area = chartArea(); val s = series.firstOrNull() ?: return
-        val total = s.data.sumOf { it.second.toDouble() }.toFloat().coerceAtLeast(1f)
+        val total = s.points.sumOf { it.yVal.toDouble() }.toFloat().coerceAtLeast(1f)
         var x = area.left; var y = area.top; var rowH = 0f
-        for ((idx, entry) in s.data.withIndex()) {
-            val w = area.width() * entry.second / total
-            val h = area.height() * entry.second / total * 2f
+        for ((idx, pt) in s.points.withIndex()) {
+            val w = area.width() * pt.yVal / total; val h = area.height() * pt.yVal / total * 2f
             if (x + w > area.right) { x = area.left; y += rowH; rowH = 0f }
             rowH = maxOf(rowH, h)
             val p = Paint(); p.color = color(idx); p.style = Paint.Style.FILL; p.isAntiAlias = true
             canvas.drawRect(x + 2f, y + 2f, x + w - 2f, y + h - 2f, p)
             val lp = Paint(); lp.color = Color.WHITE; lp.textSize = labelFontSize * 0.8f; lp.textAlign = Paint.Align.CENTER; lp.isAntiAlias = true
-            if (w > 60f && h > 30f) canvas.drawText(entry.first, x + w/2f, y + h/2f, lp)
-            dataPoints.add(PinnedLabel(entry.first, entry.second, x + w/2f, y + h/2f))
+            if (w > 60f && h > 30f) canvas.drawText(pt.xLabel, x + w/2f, y + h/2f, lp)
+            dataPoints.add(PinnedLabel(pt.xLabel, pt.yVal, x + w/2f, y + h/2f))
             x += w
         }
     }
