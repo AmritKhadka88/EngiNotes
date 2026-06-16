@@ -62,6 +62,7 @@ class MainActivity : AppCompatActivity() {
     private var editRotation = 0f
     private var editColor = Color.BLACK
     private var editSize = 12f * 1.333f
+    private var exportWindowBitmap: Bitmap? = null
     private var pendingBold = false
     private var pendingItalic = false
     private var pendingUnderline = false
@@ -148,6 +149,11 @@ class MainActivity : AppCompatActivity() {
             showTableCellEditor(table, row, col, screenX, screenY)
         }
 
+        drawingView.onExportWindowSelected = { left, top, right, bottom ->
+            exportWindowBitmap = drawingView.exportWindow(left, top, right, bottom)
+            showExportWindowDialog()
+        }
+
         for (id in listOf(R.id.btnBack, R.id.btnMenu, R.id.btnText, R.id.btnDraw, R.id.btnTools, R.id.btnInsert, R.id.btnUndo, R.id.btnRedo)) {
             val btn = findViewById<Button>(id)
             btn.setBackgroundResource(R.drawable.top_button_selector)
@@ -220,7 +226,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnMenu).setOnClickListener { anchor ->
             closeInlineEditor(commit = true)
             val popup = PopupMenu(this, anchor)
-            listOf("Save", "Save As", "Export", "Clear Canvas").forEach { popup.menu.add(it) }
+            listOf("Save", "Save As", "Export", "Export Window", "Clear Canvas").forEach { popup.menu.add(it) }
             if (currentFileName != null) popup.menu.add("Delete This Note")
             listOf("📄 Open PDF", "📊 Chart Builder", "✍ Handwriting to Text", "⚙ Settings", "Exit").forEach { popup.menu.add(it) }
             popup.setOnMenuItemClickListener { item ->
@@ -228,6 +234,14 @@ class MainActivity : AppCompatActivity() {
                     "Save" -> saveCurrent()
                     "Save As" -> saveAsNew()
                     "Export" -> showExportDialog()
+                    "Export Window" -> {
+                        if (drawingView.canvasMode != CanvasMode.INFINITE) {
+                            Toast.makeText(this, "Window export is for Infinite Canvas only", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(this, "Draw a rectangle to select export area", Toast.LENGTH_SHORT).show()
+                            setActiveTool(null, Tool.EXPORT_WINDOW, "ExportWin")
+                        }
+                    }
                     "Clear Canvas" -> confirmThenClear()
                     "Delete This Note" -> deleteCurrentNote()
                     "📄 Open PDF" -> pickPdfLauncher.launch("application/pdf")
@@ -290,6 +304,24 @@ class MainActivity : AppCompatActivity() {
         val dir = externalCacheDir ?: cacheDir
         if (!dir.exists()) dir.mkdirs()
         return dir
+    }
+    
+    private fun showExportWindowDialog() {
+        val bmp = exportWindowBitmap ?: return
+        val name = (currentFileName ?: "EngiNote_${System.currentTimeMillis()}").replace(" ", "_")
+        val formats = arrayOf("📄 PDF", "🖼 JPG", "🖼 PNG", "🖼 BMP")
+        AlertDialog.Builder(this).setTitle("Export Selection as...")
+            .setItems(formats) { _, i ->
+                pendingExportBitmap = bmp
+                when (i) {
+                    0 -> savePdfLauncher.launch("${name}_window.pdf")
+                    1 -> { pendingExportFormat = "jpg"; saveImageLauncher.launch("${name}_window.jpg") }
+                    2 -> { pendingExportFormat = "png"; saveImageLauncher.launch("${name}_window.png") }
+                    3 -> { pendingExportFormat = "bmp"; saveImageLauncher.launch("${name}_window.bmp") }
+                }
+            }
+            .setNegativeButton("Cancel") { _, _ -> exportWindowBitmap = null }
+            .show()
     }
 
     private fun showExportDialog() {
