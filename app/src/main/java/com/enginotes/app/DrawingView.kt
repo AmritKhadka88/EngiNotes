@@ -368,7 +368,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val cached = synchronized(bitmapCache) { bitmapCache.getBitmap(path) }
         if (cached != null) { onLoaded(cached); return }
         imageLoadExecutor.execute {
-            var bmp: Bitmap? = null
             try {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(path, bounds)
@@ -378,25 +377,27 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 var sample = 1; var tw = srcW; var th = srcH
                 while (tw > maxDim || th > maxDim) { sample *= 2; tw /= 2; th /= 2 }
                 val opts = BitmapFactory.Options().apply {
-                    inSampleSize = sample; inJustDecodeBounds = false
+                    inSampleSize = sample
+                    inJustDecodeBounds = false
                     inPreferredConfig = Bitmap.Config.RGB_565
                 }
-                bmp = BitmapFactory.decodeFile(path, opts)
-                if (bmp != null && (bmp.width > maxDim || bmp.height > maxDim)) {
-                    val scale = minOf(maxDim.toFloat() / bmp.width, maxDim.toFloat() / bmp.height)
-                    val scaled = Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true)
-                    if (scaled !== bmp) bmp.recycle()
-                    bmp = scaled
+                val decoded = BitmapFactory.decodeFile(path, opts)
+                val finalBmp: Bitmap? = if (decoded != null && (decoded.width > maxDim || decoded.height > maxDim)) {
+                    val scale = minOf(maxDim.toFloat() / decoded.width, maxDim.toFloat() / decoded.height)
+                    val scaled = Bitmap.createScaledBitmap(decoded, (decoded.width * scale).toInt(), (decoded.height * scale).toInt(), true)
+                    if (scaled !== decoded) decoded.recycle()
+                    scaled
+                } else {
+                    decoded
                 }
-                if (bmp != null) synchronized(bitmapCache) { bitmapCache.putBitmap(path, bmp) }
-                val result = bmp; post { onLoaded(result) }
+                if (finalBmp != null) synchronized(bitmapCache) { bitmapCache.putBitmap(path, finalBmp) }
+                post { onLoaded(finalBmp) }
             } catch (oom: OutOfMemoryError) {
-                bmp?.recycle(); bmp = null
                 try {
                     val opts2 = BitmapFactory.Options().apply { inSampleSize = 16; inPreferredConfig = Bitmap.Config.RGB_565 }
-                    bmp = BitmapFactory.decodeFile(path, opts2)
-                    if (bmp != null) synchronized(bitmapCache) { bitmapCache.putBitmap(path, bmp) }
-                    val result = bmp; post { onLoaded(result) }
+                    val fallback = BitmapFactory.decodeFile(path, opts2)
+                    if (fallback != null) synchronized(bitmapCache) { bitmapCache.putBitmap(path, fallback) }
+                    post { onLoaded(fallback) }
                 } catch (e: Exception) { post { onLoaded(null) } }
             } catch (e: Exception) { post { onLoaded(null) } }
         }
@@ -699,11 +700,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val cos = kotlin.math.cos(rad).toFloat()
                 val sin = kotlin.math.sin(rad).toFloat()
 
-                // Vector from anchor local position to new top-left in local space
                 val vecX = newLeft - anchorLocalX
                 val vecY = newTop - anchorLocalY
 
-                // Rotate that vector to get world offset from anchor world position
                 item.x = anchorWorldX + (vecX * cos - vecY * sin)
                 item.y = anchorWorldY + (vecX * sin + vecY * cos)
                 item.w = newW
@@ -1397,7 +1396,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_UP -> {
                 val s = exportWindowStart ?: return; val e = exportWindowEnd ?: return
                 val left = minOf(s.first, e.first); val top = minOf(s.second, e.second)
-                val right = maxOf(s.first, e.first); val bottom = maxOf(s.second, e.second)
+                val right = maxOf(s.first, e.first); val bottom = maxOf(s.second, e.bottom)
                 if (right - left > 20f && bottom - top > 20f) onExportWindowSelected?.invoke(left, top, right, bottom)
                 exportWindowStart = null; exportWindowEnd = null; currentTool = Tool.SELECT; invalidate()
             }
