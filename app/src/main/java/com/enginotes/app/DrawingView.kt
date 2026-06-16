@@ -710,26 +710,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
 
             is StrokeItem -> {
+            is StrokeItem -> {
                 if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
+                    // Points are always stored as local unrotated bbox [left,top,right,bottom]
+                    // Rotation is applied at draw time around the center
                     val rot = item.data.rotation
                     val left = minOf(item.data.points[0], item.data.points[2])
                     val top = minOf(item.data.points[1], item.data.points[3])
                     val right = maxOf(item.data.points[0], item.data.points[2])
                     val bottom = maxOf(item.data.points[1], item.data.points[3])
-                    val pivotX = (left + right) / 2f; val pivotY = (top + bottom) / 2f
-                    val (lx, ly) = rotatePoint(wx, wy, pivotX, pivotY, -rot)
+                    val pivotX = (left + right) / 2f
+                    val pivotY = (top + bottom) / 2f
 
-                    val anchorLocalX = when (handle) {
-                        HandleType.TL, HandleType.ML, HandleType.BL -> right
-                        HandleType.TR, HandleType.MR, HandleType.BR -> left
-                        else -> (left + right) / 2f
-                    }
-                    val anchorLocalY = when (handle) {
-                        HandleType.TL, HandleType.TM, HandleType.TR -> bottom
-                        HandleType.BL, HandleType.BM, HandleType.BR -> top
-                        else -> (top + bottom) / 2f
-                    }
-                    val (anchorWorldX, anchorWorldY) = rotatePoint(anchorLocalX, anchorLocalY, pivotX, pivotY, rot)
+                    // Unrotate touch into local space
+                    val (lx, ly) = rotatePoint(wx, wy, pivotX, pivotY, -rot)
 
                     var nl = left; var nt = top; var nr = right; var nb = bottom
                     when (handle) {
@@ -744,6 +738,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         else -> return
                     }
 
+                    // Clamp min size
                     when (handle) {
                         HandleType.TL, HandleType.ML, HandleType.BL ->
                             if (right - nl < minSize) nl = right - minSize
@@ -759,17 +754,53 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         else -> {}
                     }
 
+                    // Write back as simple local bbox — no rotation applied to points
+                    // The new pivot may have shifted, so we need to keep the anchor corner
+                    // fixed in world space by adjusting the stored points
+                    val newPivotX = (nl + nr) / 2f
+                    val newPivotY = (nt + nb) / 2f
+
+                    // Anchor corner in old local space → world space
+                    val anchorLocalX = when (handle) {
+                        HandleType.TL, HandleType.ML, HandleType.BL -> right
+                        HandleType.TR, HandleType.MR, HandleType.BR -> left
+                        else -> pivotX
+                    }
+                    val anchorLocalY = when (handle) {
+                        HandleType.TL, HandleType.TM, HandleType.TR -> bottom
+                        HandleType.BL, HandleType.BM, HandleType.BR -> top
+                        else -> pivotY
+                    }
+                    val (anchorWorldX, anchorWorldY) = rotatePoint(anchorLocalX, anchorLocalY, pivotX, pivotY, rot)
+
+                    // New anchor in new local space
+                    val newAnchorLocalX = when (handle) {
+                        HandleType.TL, HandleType.ML, HandleType.BL -> nr
+                        HandleType.TR, HandleType.MR, HandleType.BR -> nl
+                        else -> newPivotX
+                    }
+                    val newAnchorLocalY = when (handle) {
+                        HandleType.TL, HandleType.TM, HandleType.TR -> nb
+                        HandleType.BL, HandleType.BM, HandleType.BR -> nt
+                        else -> newPivotY
+                    }
+
+                    // New pivot world = anchorWorld - rotate(newAnchorLocal - newPivot)
+                    val dax = newAnchorLocalX - newPivotX
+                    val day = newAnchorLocalY - newPivotY
                     val rad = Math.toRadians(rot.toDouble())
                     val cos = kotlin.math.cos(rad).toFloat()
                     val sin = kotlin.math.sin(rad).toFloat()
+                    val newWorldPivotX = anchorWorldX - (dax * cos - day * sin)
+                    val newWorldPivotY = anchorWorldY - (dax * sin + day * cos)
 
-                    val loLeft = nl - anchorLocalX; val loTop = nt - anchorLocalY
-                    val loRight = nr - anchorLocalX; val loBottom = nb - anchorLocalY
-
-                    item.data.points[0] = anchorWorldX + (loLeft * cos - loTop * sin)
-                    item.data.points[1] = anchorWorldY + (loLeft * sin + loTop * cos)
-                    item.data.points[2] = anchorWorldX + (loRight * cos - loBottom * sin)
-                    item.data.points[3] = anchorWorldY + (loRight * sin + loBottom * cos)
+                    // Translate local bbox so new pivot matches world pivot
+                    val dx = newWorldPivotX - newPivotX
+                    val dy = newWorldPivotY - newPivotY
+                    item.data.points[0] = nl + dx
+                    item.data.points[1] = nt + dy
+                    item.data.points[2] = nr + dx
+                    item.data.points[3] = nb + dy
                     item.path = item.data.buildPath()
 
                 } else if (ENDPOINT_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
