@@ -107,15 +107,16 @@ class PdfViewerActivity : AppCompatActivity() {
 
         // Wire snip overlay touch
         snipOverlay.onSnipSelected = { rect ->
-            // rect is in screen coords over the PDF canvas
-            val pageBmp = pdfCanvas.getPageBitmap() ?: return@onSnipSelected
-            val scale = pdfCanvas.getPageScale()
-            val sx = (rect.left / scale).toInt().coerceIn(0, pageBmp.width)
-            val sy = (rect.top  / scale).toInt().coerceIn(0, pageBmp.height)
-            val sw = ((rect.width())  / scale).toInt().coerceAtLeast(1).coerceAtMost(pageBmp.width  - sx)
-            val sh = ((rect.height()) / scale).toInt().coerceAtLeast(1).coerceAtMost(pageBmp.height - sy)
-            val cropped = Bitmap.createBitmap(pageBmp, sx, sy, sw, sh)
-            sendSnipToNote(cropped)
+            val pageBmp = pdfCanvas.getPageBitmap()
+            if (pageBmp != null) {
+                val scale = pdfCanvas.getPageScale()
+                val sx = (rect.left / scale).toInt().coerceIn(0, pageBmp.width)
+                val sy = (rect.top  / scale).toInt().coerceIn(0, pageBmp.height)
+                val sw = ((rect.width())  / scale).toInt().coerceAtLeast(1).coerceAtMost(pageBmp.width  - sx)
+                val sh = ((rect.height()) / scale).toInt().coerceAtLeast(1).coerceAtMost(pageBmp.height - sy)
+                val cropped = Bitmap.createBitmap(pageBmp, sx, sy, sw, sh)
+                sendSnipToNote(cropped)
+            }
             setSnipMode(false, snipOverlay)
         }
 
