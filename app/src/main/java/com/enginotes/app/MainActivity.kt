@@ -779,117 +779,191 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showCellStyleDialog(table: TableItem, row: Int, col: Int, cell: TableCell) {
-        val container = LinearLayout(this); container.orientation = LinearLayout.VERTICAL
-        container.setPadding(dp(16), dp(8), dp(16), dp(8))
+    val container = LinearLayout(this); container.orientation = LinearLayout.VERTICAL
+    container.setPadding(dp(16), dp(8), dp(16), dp(8))
 
-        fun label(text: String) { val tv = TextView(this); tv.text = text; tv.textSize = 13f; tv.setPadding(0, dp(8), 0, dp(2)); container.addView(tv) }
+    fun label(text: String) {
+        val tv = TextView(this); tv.text = text; tv.textSize = 13f
+        tv.setTextColor(Color.parseColor("#7B61FF"))
+        tv.setPadding(0, dp(10), 0, dp(4))
+        container.addView(tv)
+    }
 
-        label("Text Color")
-        val textColorBtn = Button(this); textColorBtn.text = "Pick Text Color"; textColorBtn.textSize = 13f
-        textColorBtn.setBackgroundColor(cell.textColor); textColorBtn.setTextColor(Color.WHITE)
-        textColorBtn.setOnClickListener { showColorGridDialog { c -> cell.textColor = c; textColorBtn.setBackgroundColor(c); drawingView.invalidate() } }
-        container.addView(textColorBtn)
+    // ── Layout Presets ──────────────────────────────────────────
+    label("Layout Preset")
+    val presetRow = LinearLayout(this); presetRow.orientation = LinearLayout.HORIZONTAL
+    presetRow.setPadding(0, dp(4), 0, dp(4))
 
-        label("Background Color")
-        val bgBtn = Button(this); bgBtn.text = "Pick Background"; bgBtn.textSize = 13f
-        bgBtn.setBackgroundColor(cell.bgColor)
-        bgBtn.setOnClickListener { showColorGridDialog { c -> cell.bgColor = c; bgBtn.setBackgroundColor(c); drawingView.invalidate() } }
-        container.addView(bgBtn)
+    fun presetBtn(name: String, action: () -> Unit) {
+        val b = Button(this); b.text = name; b.textSize = 11f
+        b.setBackgroundColor(Color.parseColor("#EDE7F6"))
+        b.setTextColor(Color.parseColor("#4527A0"))
+        val p = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        p.setMargins(dp(2), 0, dp(2), 0); b.layoutParams = p
+        b.setPadding(dp(4), dp(6), dp(4), dp(6)); b.minWidth = 0; b.minimumWidth = 0
+        b.setOnClickListener { action(); drawingView.invalidate() }
+        presetRow.addView(b)
+    }
 
-        label("Border Color")
-        val borderBtn = Button(this); borderBtn.text = "Pick Border Color"; borderBtn.textSize = 13f
-        borderBtn.setBackgroundColor(cell.borderColor); borderBtn.setTextColor(Color.WHITE)
-        borderBtn.setOnClickListener { showColorGridDialog { c -> cell.borderColor = c; borderBtn.setBackgroundColor(c); drawingView.invalidate() } }
-        container.addView(borderBtn)
-
-        label("Border Width (${cell.borderWidth.toInt()})")
-        val bwSeek = SeekBar(this); bwSeek.max = 20; bwSeek.progress = cell.borderWidth.toInt()
-        bwSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { cell.borderWidth = v.toFloat().coerceAtLeast(1f); drawingView.invalidate() }
-            override fun onStartTrackingTouch(sb: SeekBar?) {}; override fun onStopTrackingTouch(sb: SeekBar?) {}
-        })
-        container.addView(bwSeek)
-
-        label("Text Size (${cell.textSize.toInt()})")
-        val tsSeek = SeekBar(this); tsSeek.max = 60; tsSeek.progress = cell.textSize.toInt()
-        tsSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { cell.textSize = v.toFloat().coerceAtLeast(8f); drawingView.invalidate() }
-            override fun onStartTrackingTouch(sb: SeekBar?) {}; override fun onStopTrackingTouch(sb: SeekBar?) {}
-        })
-        container.addView(tsSeek)
-
-        label("Alignment")
-        val alignRow = LinearLayout(this); alignRow.orientation = LinearLayout.HORIZONTAL
-        for ((idx, lbl) in listOf("Left", "Center", "Right").withIndex()) {
-            val b = Button(this); b.text = lbl; b.textSize = 12f
-            b.setBackgroundColor(if (cell.alignment == idx) Color.parseColor("#2196F3") else Color.LTGRAY)
-            b.setOnClickListener { cell.alignment = idx; drawingView.invalidate() }
-            val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f); b.layoutParams = lp
-            alignRow.addView(b)
+    presetBtn("Header\nRow") {
+        // First row: dark bg, white bold text, thick border
+        for (c in 0 until table.cols) {
+            val hc = table.getCellPublic(0, c)
+            hc.bgColor = Color.parseColor("#37474F")
+            hc.textColor = Color.WHITE
+            hc.borderColor = Color.parseColor("#263238")
+            hc.borderWidth = 3f
         }
-        container.addView(alignRow)
+        // Rest: normal
+        for (r in 1 until table.rows) for (c in 0 until table.cols) {
+            val nc = table.getCellPublic(r, c)
+            nc.bgColor = Color.WHITE; nc.textColor = Color.BLACK
+            nc.borderColor = Color.DKGRAY; nc.borderWidth = 1.5f
+        }
+    }
+    presetBtn("Zebra\nRows") {
+        for (r in 0 until table.rows) for (c in 0 until table.cols) {
+            val nc = table.getCellPublic(r, c)
+            nc.bgColor = if (r % 2 == 0) Color.WHITE else Color.parseColor("#F5F5F5")
+            nc.textColor = Color.BLACK; nc.borderColor = Color.parseColor("#BDBDBD"); nc.borderWidth = 1f
+        }
+    }
+    presetBtn("Bold\nBorders") {
+        for (r in 0 until table.rows) for (c in 0 until table.cols) {
+            val nc = table.getCellPublic(r, c)
+            nc.borderColor = Color.BLACK; nc.borderWidth = 3f
+        }
+    }
+    presetBtn("No\nBorders") {
+        for (r in 0 until table.rows) for (c in 0 until table.cols) {
+            val nc = table.getCellPublic(r, c)
+            nc.borderColor = Color.TRANSPARENT; nc.borderWidth = 0f
+        }
+    }
+    container.addView(presetRow)
 
-        val scroll = ScrollView(this); scroll.addView(container)
-        AlertDialog.Builder(this).setTitle("Cell Style (R${row+1} C${col+1})").setView(scroll).setPositiveButton("Done", null).show()
+    // Divider
+    val div = View(this)
+    val dlp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+    dlp.setMargins(0, dp(12), 0, dp(4)); div.layoutParams = dlp
+    div.setBackgroundColor(Color.LTGRAY); container.addView(div)
+
+    // ── Per-cell style ──────────────────────────────────────────
+    label("Cell Style  (R${row+1} C${col+1})")
+
+    label("Text Color")
+    val textColorBtn = Button(this); textColorBtn.text = "Pick Text Color"; textColorBtn.textSize = 13f
+    textColorBtn.setBackgroundColor(cell.textColor); textColorBtn.setTextColor(Color.WHITE)
+    textColorBtn.setOnClickListener { showColorGridDialog { c -> cell.textColor = c; textColorBtn.setBackgroundColor(c); drawingView.invalidate() } }
+    container.addView(textColorBtn)
+
+    label("Background Color")
+    val bgBtn = Button(this); bgBtn.text = "Pick Background"; bgBtn.textSize = 13f
+    bgBtn.setBackgroundColor(cell.bgColor)
+    bgBtn.setOnClickListener { showColorGridDialog { c -> cell.bgColor = c; bgBtn.setBackgroundColor(c); drawingView.invalidate() } }
+    container.addView(bgBtn)
+
+    label("Border Color")
+    val borderBtn = Button(this); borderBtn.text = "Pick Border Color"; borderBtn.textSize = 13f
+    borderBtn.setBackgroundColor(cell.borderColor); borderBtn.setTextColor(Color.WHITE)
+    borderBtn.setOnClickListener { showColorGridDialog { c -> cell.borderColor = c; borderBtn.setBackgroundColor(c); drawingView.invalidate() } }
+    container.addView(borderBtn)
+
+    // Border thickness with thin/normal/bold quick buttons
+    label("Border Width")
+    val bwRow = LinearLayout(this); bwRow.orientation = LinearLayout.HORIZONTAL
+    bwRow.setPadding(0, dp(4), 0, dp(4))
+    val bwSeek = SeekBar(this); bwSeek.max = 20; bwSeek.progress = cell.borderWidth.toInt()
+
+    fun bwQuickBtn(label: String, weight: Float) {
+        val b = Button(this); b.text = label; b.textSize = 12f
+        b.setBackgroundColor(Color.parseColor("#EDE7F6")); b.setTextColor(Color.parseColor("#4527A0"))
+        val p = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        p.setMargins(dp(2), 0, dp(2), 0); b.layoutParams = p
+        b.setPadding(dp(8), dp(4), dp(8), dp(4)); b.minWidth = 0; b.minimumWidth = 0
+        b.setOnClickListener { cell.borderWidth = weight; bwSeek.progress = weight.toInt(); drawingView.invalidate() }
+        bwRow.addView(b)
+    }
+    bwQuickBtn("None", 0f); bwQuickBtn("Thin", 1f); bwQuickBtn("Normal", 2f); bwQuickBtn("Bold", 4f)
+    container.addView(bwRow)
+
+    bwSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+        override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { cell.borderWidth = v.toFloat(); drawingView.invalidate() }
+        override fun onStartTrackingTouch(sb: SeekBar?) {}; override fun onStopTrackingTouch(sb: SeekBar?) {}
+    })
+    container.addView(bwSeek)
+
+    label("Text Size (${cell.textSize.toInt()}pt)")
+    val tsSeek = SeekBar(this); tsSeek.max = 60; tsSeek.progress = cell.textSize.toInt()
+    tsSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+        override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { cell.textSize = v.toFloat().coerceAtLeast(8f); drawingView.invalidate() }
+        override fun onStartTrackingTouch(sb: SeekBar?) {}; override fun onStopTrackingTouch(sb: SeekBar?) {}
+    })
+    container.addView(tsSeek)
+
+    label("Alignment")
+    val alignRow = LinearLayout(this); alignRow.orientation = LinearLayout.HORIZONTAL
+    for ((idx, lbl) in listOf("Left", "Center", "Right").withIndex()) {
+        val b = Button(this); b.text = lbl; b.textSize = 12f
+        b.setBackgroundColor(if (cell.alignment == idx) Color.parseColor("#2196F3") else Color.LTGRAY)
+        b.setOnClickListener { cell.alignment = idx; drawingView.invalidate() }
+        val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f); b.layoutParams = lp
+        alignRow.addView(b)
+    }
+    container.addView(alignRow)
+
+    val scroll = ScrollView(this); scroll.addView(container)
+    AlertDialog.Builder(this).setTitle("Table Style").setView(scroll).setPositiveButton("Done", null).show()
     }
 
     private fun showTableCellEditor(table: TableItem, row: Int, col: Int, screenX: Float, screenY: Float) {
-        activeCellEditText?.let { canvasContainer.removeView(it) }
-        activeCellToolbar?.let { canvasContainer.removeView(it) }
+    activeCellEditText?.let { canvasContainer.removeView(it) }
+    activeCellToolbar?.let { canvasContainer.removeView(it) }
 
-        val cell = table.cells[row][col]
-        val editText = EditText(this)
-        editText.setText(cell.text)
-        editText.setTextColor(cell.textColor)
-        editText.textSize = (cell.textSize * drawingView.getScaleFactor() / resources.displayMetrics.density).coerceAtLeast(8f)
-        editText.setBackgroundColor(Color.parseColor("#EEFFFFFF"))
-        editText.setPadding(dp(6), dp(4), dp(6), dp(4))
-        editText.minWidth = dp(80)
+    val cell = table.cells[row][col]
+    val editText = EditText(this)
+    editText.setText(cell.text)
+    editText.setTextColor(cell.textColor)
+    editText.textSize = (cell.textSize * drawingView.getScaleFactor() / resources.displayMetrics.density).coerceAtLeast(8f)
+    editText.setBackgroundColor(Color.parseColor("#EEFFFFFF"))
+    editText.setPadding(dp(6), dp(4), dp(6), dp(4))
+    editText.minWidth = dp(80)
 
-        val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        params.leftMargin = screenX.toInt().coerceIn(0, canvasContainer.width - dp(100))
-        params.topMargin = (screenY + dp(4)).toInt().coerceIn(dp(40), canvasContainer.height - dp(80))
-        canvasContainer.addView(editText, params)
-
-        val toolbar = LinearLayout(this); toolbar.orientation = LinearLayout.HORIZONTAL
-        toolbar.setBackgroundColor(Color.parseColor("#AA222222"))
-        toolbar.setPadding(dp(4), dp(2), dp(4), dp(2))
-
-        fun tBtn(label: String, action: () -> Unit) {
-            val b = Button(this); b.text = label; b.textSize = 13f; b.setTextColor(Color.WHITE)
-            b.setBackgroundColor(Color.parseColor("#55FFFFFF"))
-            val p = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            p.setMargins(dp(2), 0, dp(2), 0); b.layoutParams = p
-            b.setPadding(dp(8), dp(4), dp(8), dp(4)); b.minWidth = 0; b.minimumWidth = 0
-            b.setOnClickListener { action() }; toolbar.addView(b)
+    // Auto-commit on every text change — no confirm button needed
+    editText.addTextChangedListener(object : android.text.TextWatcher {
+        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+        override fun afterTextChanged(s: android.text.Editable?) {
+            cell.text = s?.toString() ?: ""
+            drawingView.invalidate()
         }
+    })
 
-        tBtn("✓") {
+    // Dismiss when focus is lost (user taps outside)
+    editText.setOnFocusChangeListener { _, hasFocus ->
+        if (!hasFocus) {
             cell.text = editText.text.toString()
-            canvasContainer.removeView(editText); canvasContainer.removeView(toolbar)
-            activeCellEditText = null; activeCellToolbar = null
+            canvasContainer.removeView(editText)
+            activeCellEditText = null
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             imm.hideSoftInputFromWindow(editText.windowToken, 0)
             drawingView.invalidate()
         }
-        tBtn("✕") {
-            canvasContainer.removeView(editText); canvasContainer.removeView(toolbar)
-            activeCellEditText = null; activeCellToolbar = null
-            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-            imm.hideSoftInputFromWindow(editText.windowToken, 0)
-        }
+    }
 
-        val tp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        tp.leftMargin = screenX.toInt().coerceIn(0, canvasContainer.width - dp(100))
-        tp.topMargin = (screenY - dp(44)).toInt().coerceAtLeast(0)
-        canvasContainer.addView(toolbar, tp)
+    val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+    params.leftMargin = screenX.toInt().coerceIn(0, canvasContainer.width - dp(100))
+    params.topMargin = (screenY + dp(4)).toInt().coerceIn(dp(40), canvasContainer.height - dp(80))
+    canvasContainer.addView(editText, params)
 
-        activeCellEditText = editText; activeCellToolbar = toolbar
-        editText.requestFocus(); editText.selectAll()
-        editText.post {
-            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-            imm.showSoftInput(editText, InputMethodManager.SHOW_IMPLICIT)
-        }
+    activeCellEditText = editText
+    activeCellToolbar = null  // no toolbar needed anymore
+    editText.requestFocus()
+    editText.selectAll()
+    editText.post {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.showSoftInput(editText, InputMethodManager.SHOW_IMPLICIT)
+    }
     }
 
     // ---------- Text editing ----------
