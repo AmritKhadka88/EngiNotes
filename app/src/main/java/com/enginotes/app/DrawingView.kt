@@ -38,7 +38,7 @@ enum class PaperType { BLANK, BLANK_COLORED, LINED, GRID, DOTS, ENGINEERING }
 enum class EraserMode { OBJECT, AREA }
 enum class AutoSelectShape { RECTANGLE, FREEFORM }
 enum class AutoSelectDivide { WHOLE, DIVIDED }
-enum class CanvasMode { INFINITE, FIXED, PAGINATED }
+enum class CanvasMode { INFINITE, FIXED, PAGINATED, CONVENIENT }
 enum class Orientation { PORTRAIT, LANDSCAPE }
 
 enum class PaperSizeOption(val widthMM: Float, val heightMM: Float) {
@@ -203,6 +203,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val redoStack = mutableListOf<Any>()
     private var currentItem: StrokeItem? = null
 
+    // Audio items — stored separately, not in actions (no undo for audio)
+    private val audioItems = mutableListOf<AudioItem>()
+    var onAudioItemTap: ((AudioItem) -> Unit)? = null
+
     var currentTool: Tool = Tool.PEN
         set(value) {
             if (field == Tool.SELECT && value != Tool.SELECT) selectedItem = null
@@ -220,13 +224,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var fillShapes: Boolean = false
     var fillColor: Int = Color.RED
     var arcDivisions: Int = 3
-    var paperType: PaperType = PaperType.GRID
+    var paperType: PaperType = PaperType.LINED
     var paperColor: Int = Color.parseColor("#FFFDE7")
     var defaultTextSize: Float = 16f * 1.333f
 
     var autoSelectShape: AutoSelectShape = AutoSelectShape.RECTANGLE
     var autoSelectDivide: AutoSelectDivide = AutoSelectDivide.WHOLE
-    var canvasMode: CanvasMode = CanvasMode.INFINITE
+    var canvasMode: CanvasMode = CanvasMode.CONVENIENT
     var paperSize: PaperSizeOption = PaperSizeOption.A4
     var pageOrientation: Orientation = Orientation.PORTRAIT
 
@@ -280,11 +284,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var twoFingerLastX = 0f; private var twoFingerLastY = 0f
     private var hoverX: Float? = null; private var hoverY: Float? = null
 
-    // ── Palm rejection / stylus tracking ────────────────────────
-    private var isStylusDown = false   // true while stylus pointer is on screen
-    private var drawingPointerId = -1  // pointer id that started the current stroke
+    private var isStylusDown = false
+    private var drawingPointerId = -1
 
-    // ── helper: tools that draw on canvas ───────────────────────
     private fun isDrawingTool() = currentTool == Tool.PEN ||
         currentTool == Tool.ERASER ||
         currentTool in SHAPE_TOOLS ||
@@ -296,7 +298,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             prevFocusX = detector.focusX; prevFocusY = detector.focusY; return true
         }
         override fun onScale(detector: ScaleGestureDetector): Boolean {
-            val minScale = if (canvasMode != CanvasMode.INFINITE && width > 0 && height > 0) {
+            val minScale = if (canvasMode != CanvasMode.INFINITE && canvasMode != CanvasMode.CONVENIENT && width > 0 && height > 0) {
                 minOf(width.toFloat() / (pageWidthPx() * 1.5f), height.toFloat() / (pageHeightPx() * 1.5f)).coerceAtLeast(0.05f)
             } else 0.2f
             val newScale = (scaleFactor * detector.scaleFactor).coerceIn(minScale, 6f)
@@ -357,9 +359,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
 
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
-            // Only allow single-finger scroll on INFINITE canvas and only for non-drawing tools
             if (canvasMode == CanvasMode.INFINITE && !isDrawingTool()) {
                 translateX -= distanceX; translateY -= distanceY
+                onScaleChanged?.invoke(scaleFactor)
+                onCanvasTransformed?.invoke()
+                invalidate(); return true
+            }
+            // CONVENIENT: allow single-finger vertical scroll only (pan between pages)
+            if (canvasMode == CanvasMode.CONVENIENT && !isDrawingTool()) {
+                translateY -= distanceY
                 onScaleChanged?.invoke(scaleFactor)
                 onCanvasTransformed?.invoke()
                 invalidate(); return true
@@ -369,7 +377,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     })
 
     private fun clampTranslation() {
-        if (canvasMode == CanvasMode.INFINITE) return
+        // INFINITE and CONVENIENT: no clamping (free scroll)
+        if (canvasMode == CanvasMode.INFINITE || canvasMode == CanvasMode.CONVENIENT) return
         val pw = pageWidthPx() * scaleFactor; val ph = pageHeightPx() * scaleFactor
         val margin = 20f
         val minTx = width - pw - margin; val maxTx = margin
@@ -439,7 +448,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun drawActionItem(canvas: Canvas, action: Any, includeFills: Boolean) {
-        when (action) {
+
+                when (action) {
             is TableItem -> action.draw(canvas, scaleFactor)
             is FillItem -> {
                 if (!includeFills) return
@@ -476,6 +486,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         canvas.scale(scaleFactor, scaleFactor)
         drawBackground(canvas)
         for (action in actions) drawActionItem(canvas, action, true)
+        for (audio in audioItems) drawAudioItem(canvas, audio)
         currentItem?.let { canvas.drawPath(it.path, it.paint) }
         drawSelection(canvas)
         drawArcHandles(canvas)
@@ -489,13 +500,69 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
         if (canvasMode != CanvasMode.INFINITE && width > 0 && height > 0 && changed) {
-            val margin = 20f
-            // Fit page to 75% of screen width so there is comfortable margin around it
-            scaleFactor = (width.toFloat() - margin * 2f) / pageWidthPx() * 0.75f
-            translateX = (width - pageWidthPx() * scaleFactor) / 2f
-            translateY = margin
+            if (canvasMode == CanvasMode.CONVENIENT) {
+                // Page width = screen width, page height = screen height, scale = 1
+                scaleFactor = 1f
+                translateX = 0f
+                translateY = 0f
+            } else {
+                // Print layout: fit A4 page at 75% screen width
+                val margin = 20f
+                scaleFactor = (width.toFloat() - margin * 2f) / pageWidthPx() * 0.75f
+                translateX = (width - pageWidthPx() * scaleFactor) / 2f
+                translateY = margin
+            }
             clampTranslation(); invalidate()
         }
+    }
+
+    // ── Audio item drawing ───────────────────────────────────────
+
+    private fun drawAudioItem(canvas: Canvas, item: AudioItem) {
+        val iconSize = 48f / scaleFactor
+        val padding  = 8f  / scaleFactor
+        val cornerR  = 12f / scaleFactor
+
+        val bgPaint = Paint().apply {
+            color = if (item.isPlaying) Color.parseColor("#1565C0") else Color.parseColor("#EDE7F6")
+            style = Paint.Style.FILL; isAntiAlias = true
+        }
+        val textPaint = Paint().apply {
+            color = if (item.isPlaying) Color.WHITE else Color.parseColor("#4527A0")
+            textSize = 22f / scaleFactor; isAntiAlias = true
+        }
+        val titleWidth = textPaint.measureText(item.title).coerceAtLeast(80f / scaleFactor)
+        val pillW = iconSize + titleWidth + padding * 4f
+        val pillH = iconSize + padding * 2f
+        val rect = RectF(item.x, item.y, item.x + pillW, item.y + pillH)
+        canvas.drawRoundRect(rect, cornerR, cornerR, bgPaint)
+
+        // Icon text
+        val iconPaint = Paint().apply {
+            color = if (item.isPlaying) Color.WHITE else Color.parseColor("#6200EE")
+            textSize = iconSize * 0.75f; isAntiAlias = true
+        }
+        canvas.drawText(if (item.isPlaying) "▶" else "🎙", item.x + padding, item.y + iconSize * 0.85f + padding * 0.5f, iconPaint)
+
+        // Title
+        canvas.drawText(item.title, item.x + iconSize + padding * 2f, item.y + iconSize * 0.65f + padding, textPaint)
+
+        // Duration
+        if (item.durationMs > 0) {
+            val dSec = item.durationMs / 1000
+            val durStr = "%d:%02d".format(dSec / 60, dSec % 60)
+            val dPaint = Paint().apply {
+                color = textPaint.color; textSize = 16f / scaleFactor; isAntiAlias = true; alpha = 160
+            }
+            canvas.drawText(durStr, item.x + iconSize + padding * 2f, item.y + pillH - padding, dPaint)
+        }
+
+        // Outline stroke
+        val strokePaint = Paint().apply {
+            color = if (item.isPlaying) Color.parseColor("#1565C0") else Color.parseColor("#B39DDB")
+            style = Paint.Style.STROKE; strokeWidth = 1.5f / scaleFactor; isAntiAlias = true
+        }
+        canvas.drawRoundRect(rect, cornerR, cornerR, strokePaint)
     }
 
     private fun drawArcHandles(canvas: Canvas) {
@@ -663,54 +730,50 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val dx = wx - oldCx; val dy = wy - oldCy
                 val lx = dx * cos + dy * sin; val ly = -dx * sin + dy * cos
                 val oldW = item.w; val oldH = item.h
-                val fixedLocalX = when (handle) { HandleType.TL, HandleType.ML, HandleType.BL -> oldW / 2f; HandleType.TR, HandleType.MR, HandleType.BR -> -oldW / 2f; else -> 0f }
-                val fixedLocalY = when (handle) { HandleType.TL, HandleType.TM, HandleType.TR -> oldH / 2f; HandleType.BL, HandleType.BM, HandleType.BR -> -oldH / 2f; else -> 0f }
+                val fixedLocalX = when (handle) { HandleType.TL,HandleType.ML,HandleType.BL -> oldW/2f; HandleType.TR,HandleType.MR,HandleType.BR -> -oldW/2f; else -> 0f }
+                val fixedLocalY = when (handle) { HandleType.TL,HandleType.TM,HandleType.TR -> oldH/2f; HandleType.BL,HandleType.BM,HandleType.BR -> -oldH/2f; else -> 0f }
                 val fixedWorldX = oldCx + fixedLocalX * cos - fixedLocalY * sin
                 val fixedWorldY = oldCy + fixedLocalX * sin + fixedLocalY * cos
-                var nl = -oldW / 2f; var nt = -oldH / 2f; var nr = oldW / 2f; var nb = oldH / 2f
-                when (handle) { HandleType.TL -> { nl = lx; nt = ly }; HandleType.TM -> { nt = ly }; HandleType.TR -> { nr = lx; nt = ly }; HandleType.ML -> { nl = lx }; HandleType.MR -> { nr = lx }; HandleType.BL -> { nl = lx; nb = ly }; HandleType.BM -> { nb = ly }; HandleType.BR -> { nr = lx; nb = ly }; else -> return }
-                if (nr - nl < min) { if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) nl = nr - min else nr = nl + min }
-                if (nb - nt < min) { if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) nt = nb - min else nb = nt + min }
-                val newW = nr - nl; val newH = nb - nt
-                val newFixedLocalX = when (handle) { HandleType.TL, HandleType.ML, HandleType.BL -> newW / 2f; HandleType.TR, HandleType.MR, HandleType.BR -> -newW / 2f; else -> 0f }
-                val newFixedLocalY = when (handle) { HandleType.TL, HandleType.TM, HandleType.TR -> newH / 2f; HandleType.BL, HandleType.BM, HandleType.BR -> -newH / 2f; else -> 0f }
-                val newCx = fixedWorldX - (newFixedLocalX * cos - newFixedLocalY * sin)
-                val newCy = fixedWorldY - (newFixedLocalX * sin + newFixedLocalY * cos)
-                item.x = newCx - newW / 2f; item.y = newCy - newH / 2f; item.w = newW; item.h = newH
+                var nl = -oldW/2f; var nt = -oldH/2f; var nr = oldW/2f; var nb = oldH/2f
+                when (handle) { HandleType.TL->{nl=lx;nt=ly}; HandleType.TM->{nt=ly}; HandleType.TR->{nr=lx;nt=ly}; HandleType.ML->{nl=lx}; HandleType.MR->{nr=lx}; HandleType.BL->{nl=lx;nb=ly}; HandleType.BM->{nb=ly}; HandleType.BR->{nr=lx;nb=ly}; else->return }
+                if(nr-nl<min){if(handle==HandleType.TL||handle==HandleType.ML||handle==HandleType.BL) nl=nr-min else nr=nl+min}
+                if(nb-nt<min){if(handle==HandleType.TL||handle==HandleType.TM||handle==HandleType.TR) nt=nb-min else nb=nt+min}
+                val newW=nr-nl; val newH=nb-nt
+                val newFLX = when(handle){HandleType.TL,HandleType.ML,HandleType.BL->newW/2f;HandleType.TR,HandleType.MR,HandleType.BR->-newW/2f;else->0f}
+                val newFLY = when(handle){HandleType.TL,HandleType.TM,HandleType.TR->newH/2f;HandleType.BL,HandleType.BM,HandleType.BR->-newH/2f;else->0f}
+                item.x = fixedWorldX-(newFLX*cos-newFLY*sin)-newW/2f
+                item.y = fixedWorldY-(newFLX*sin+newFLY*cos)-newH/2f
+                item.w = newW; item.h = newH
             }
             is StrokeItem -> {
                 if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    val rot = Math.toRadians(item.data.rotation.toDouble())
-                    val cos = kotlin.math.cos(rot).toFloat(); val sin = kotlin.math.sin(rot).toFloat()
-                    val l = minOf(item.data.points[0], item.data.points[2]); val t = minOf(item.data.points[1], item.data.points[3])
-                    val r = maxOf(item.data.points[0], item.data.points[2]); val b = maxOf(item.data.points[1], item.data.points[3])
-                    val oldW = r - l; val oldH = b - t; val oldCx = (l + r) / 2f; val oldCy = (t + b) / 2f
-                    val dx = wx - oldCx; val dy = wy - oldCy
-                    val lx = dx * cos + dy * sin; val ly = -dx * sin + dy * cos
-                    val fixedLocalX = when (handle) { HandleType.TL, HandleType.ML, HandleType.BL -> oldW / 2f; HandleType.TR, HandleType.MR, HandleType.BR -> -oldW / 2f; else -> 0f }
-                    val fixedLocalY = when (handle) { HandleType.TL, HandleType.TM, HandleType.TR -> oldH / 2f; HandleType.BL, HandleType.BM, HandleType.BR -> -oldH / 2f; else -> 0f }
-                    val fixedWorldX = oldCx + fixedLocalX * cos - fixedLocalY * sin
-                    val fixedWorldY = oldCy + fixedLocalX * sin + fixedLocalY * cos
-                    var nl = -oldW / 2f; var nt = -oldH / 2f; var nr = oldW / 2f; var nb = oldH / 2f
-                    when (handle) { HandleType.TL -> { nl = lx; nt = ly }; HandleType.TM -> { nt = ly }; HandleType.TR -> { nr = lx; nt = ly }; HandleType.ML -> { nl = lx }; HandleType.MR -> { nr = lx }; HandleType.BL -> { nl = lx; nb = ly }; HandleType.BM -> { nb = ly }; HandleType.BR -> { nr = lx; nb = ly }; else -> return }
-                    if (nr - nl < min) { if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) nl = nr - min else nr = nl + min }
-                    if (nb - nt < min) { if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) nt = nb - min else nb = nt + min }
-                    val newW = nr - nl; val newH = nb - nt
-                    val newFixedLocalX = when (handle) { HandleType.TL, HandleType.ML, HandleType.BL -> newW / 2f; HandleType.TR, HandleType.MR, HandleType.BR -> -newW / 2f; else -> 0f }
-                    val newFixedLocalY = when (handle) { HandleType.TL, HandleType.TM, HandleType.TR -> newH / 2f; HandleType.BL, HandleType.BM, HandleType.BR -> -newH / 2f; else -> 0f }
-                    val newCx = fixedWorldX - (newFixedLocalX * cos - newFixedLocalY * sin)
-                    val newCy = fixedWorldY - (newFixedLocalX * sin + newFixedLocalY * cos)
-                    item.data.points[0] = newCx - newW / 2f; item.data.points[1] = newCy - newH / 2f
-                    item.data.points[2] = newCx + newW / 2f; item.data.points[3] = newCy + newH / 2f
-                    item.path = item.data.buildPath()
+                    val rot=Math.toRadians(item.data.rotation.toDouble()); val cos=kotlin.math.cos(rot).toFloat(); val sin=kotlin.math.sin(rot).toFloat()
+                    val l=minOf(item.data.points[0],item.data.points[2]); val t=minOf(item.data.points[1],item.data.points[3])
+                    val r=maxOf(item.data.points[0],item.data.points[2]); val b=maxOf(item.data.points[1],item.data.points[3])
+                    val oldW=r-l; val oldH=b-t; val oldCx=(l+r)/2f; val oldCy=(t+b)/2f
+                    val dx=wx-oldCx; val dy=wy-oldCy; val lx=dx*cos+dy*sin; val ly=-dx*sin+dy*cos
+                    val fLX=when(handle){HandleType.TL,HandleType.ML,HandleType.BL->oldW/2f;HandleType.TR,HandleType.MR,HandleType.BR->-oldW/2f;else->0f}
+                    val fLY=when(handle){HandleType.TL,HandleType.TM,HandleType.TR->oldH/2f;HandleType.BL,HandleType.BM,HandleType.BR->-oldH/2f;else->0f}
+                    val fWX=oldCx+fLX*cos-fLY*sin; val fWY=oldCy+fLX*sin+fLY*cos
+                    var nl=-oldW/2f; var nt2=-oldH/2f; var nr=oldW/2f; var nb=oldH/2f
+                    when(handle){HandleType.TL->{nl=lx;nt2=ly};HandleType.TM->{nt2=ly};HandleType.TR->{nr=lx;nt2=ly};HandleType.ML->{nl=lx};HandleType.MR->{nr=lx};HandleType.BL->{nl=lx;nb=ly};HandleType.BM->{nb=ly};HandleType.BR->{nr=lx;nb=ly};else->return}
+                    if(nr-nl<min){if(handle==HandleType.TL||handle==HandleType.ML||handle==HandleType.BL) nl=nr-min else nr=nl+min}
+                    if(nb-nt2<min){if(handle==HandleType.TL||handle==HandleType.TM||handle==HandleType.TR) nt2=nb-min else nb=nt2+min}
+                    val nW=nr-nl; val nH=nb-nt2
+                    val nFLX=when(handle){HandleType.TL,HandleType.ML,HandleType.BL->nW/2f;HandleType.TR,HandleType.MR,HandleType.BR->-nW/2f;else->0f}
+                    val nFLY=when(handle){HandleType.TL,HandleType.TM,HandleType.TR->nH/2f;HandleType.BL,HandleType.BM,HandleType.BR->-nH/2f;else->0f}
+                    val nCx=fWX-(nFLX*cos-nFLY*sin); val nCy=fWY-(nFLX*sin+nFLY*cos)
+                    item.data.points[0]=nCx-nW/2f; item.data.points[1]=nCy-nH/2f
+                    item.data.points[2]=nCx+nW/2f; item.data.points[3]=nCy+nH/2f
+                    item.path=item.data.buildPath()
                 } else if (ENDPOINT_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    when (handle) { HandleType.TL -> { item.data.points[0] = wx; item.data.points[1] = wy }; HandleType.BR -> { item.data.points[2] = wx; item.data.points[3] = wy }; else -> {} }
-                    item.path = item.data.buildPath()
+                    when(handle){HandleType.TL->{item.data.points[0]=wx;item.data.points[1]=wy};HandleType.BR->{item.data.points[2]=wx;item.data.points[3]=wy};else->{}}
+                    item.path=item.data.buildPath()
                 }
             }
-            is TextItem -> { val dy = wy - resizePrevWorldY; item.size = (item.size + dy * 0.5f).coerceIn(8f, 300f) }
+            is TextItem -> { val dy=wy-resizePrevWorldY; item.size=(item.size+dy*0.5f).coerceIn(8f,300f) }
         }
-        resizePrevWorldX = wx; resizePrevWorldY = wy
+        resizePrevWorldX=wx; resizePrevWorldY=wy
     }
 
     private fun findItemAt(x: Float, y: Float): Any? {
@@ -747,526 +810,328 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_DOWN -> {
                 val table = activeTableItem
                 if (table != null && tableIsActive) {
-                    val rb = table.hitTestRowBorder(wy, tol)
-                    val cb = table.hitTestColBorder(wx, tol)
-                    if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; return }
-                    if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; return }
+                    val rb = table.hitTestRowBorder(wy, tol); val cb = table.hitTestColBorder(wx, tol)
+                    if (rb >= 0) { tableDragRowBorder=rb; tableDragStartY=wy; tableDragOrigSize=table.rowHeights[rb]; return }
+                    if (cb >= 0) { tableDragColBorder=cb; tableDragStartX=wx; tableDragOrigSize=table.colWidths[cb]; return }
                     val cell = table.hitTestCell(wx, wy)
-                    if (cell == null) {
-                        tableIsActive = false; tableSelStart = null; tableSelEnd = null
-                        activeTableItem = null; currentTool = Tool.SELECT; invalidate(); return
-                    }
+                    if (cell == null) { tableIsActive=false; tableSelStart=null; tableSelEnd=null; activeTableItem=null; currentTool=Tool.SELECT; invalidate(); return }
                     val now = System.currentTimeMillis()
                     if (cell == tableSingleTapCell && (now - tableSingleTapTime) < TABLE_DOUBLE_TAP_MS) {
-                        tableSingleTapCell = null
-                        val rect = table.cellRect(cell.first, cell.second)
-                        val sx = worldToScreenX(rect.left); val sy = worldToScreenY(rect.top)
-                        onTableCellEditRequest?.invoke(table, cell.first, cell.second, sx, sy)
+                        tableSingleTapCell=null
+                        val rect=table.cellRect(cell.first,cell.second)
+                        onTableCellEditRequest?.invoke(table,cell.first,cell.second,worldToScreenX(rect.left),worldToScreenY(rect.top))
                     } else {
-                        tableSingleTapCell = cell; tableSingleTapTime = now
-                        if (tableSelStart == null) { tableSelStart = cell; tableSelEnd = null }
-                        else if (tableSelEnd == null && cell != tableSelStart) tableSelEnd = cell
-                        else { tableSelStart = cell; tableSelEnd = null }
+                        tableSingleTapCell=cell; tableSingleTapTime=now
+                        if(tableSelStart==null){tableSelStart=cell;tableSelEnd=null} else if(tableSelEnd==null&&cell!=tableSelStart) tableSelEnd=cell else{tableSelStart=cell;tableSelEnd=null}
                         invalidate()
                     }
                 } else if (table != null && !tableIsActive) {
-                    val cell = table.hitTestCell(wx, wy)
-                    if (cell != null) {
-                        tableIsActive = true; tableSelStart = null; tableSelEnd = null
-                        tableSingleTapCell = null; invalidate()
-                    } else { activeTableItem = null; invalidate() }
+                    val cell=table.hitTestCell(wx,wy)
+                    if(cell!=null){tableIsActive=true;tableSelStart=null;tableSelEnd=null;tableSingleTapCell=null;invalidate()} else{activeTableItem=null;invalidate()}
                 } else {
-                    for (action in actions.reversed()) {
-                        if (action is TableItem) {
-                            val b = getBounds(action) ?: continue
-                            if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) {
-                                activeTableItem = action; tableIsActive = false
-                                tableSelStart = null; tableSelEnd = null; tableSingleTapCell = null
-                                invalidate(); return
-                            }
-                        }
-                    }
+                    for(action in actions.reversed()){ if(action is TableItem){ val b=getBounds(action)?:continue; if(wx>=b[0]&&wx<=b[2]&&wy>=b[1]&&wy<=b[3]){activeTableItem=action;tableIsActive=false;tableSelStart=null;tableSelEnd=null;tableSingleTapCell=null;invalidate();return} } }
                 }
             }
             MotionEvent.ACTION_MOVE -> {
-                val table = activeTableItem ?: return
-                if (!tableIsActive) return
-                if (tableDragRowBorder >= 0) { table.rowHeights[tableDragRowBorder] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(20f); invalidate() }
-                else if (tableDragColBorder >= 0) { table.colWidths[tableDragColBorder] = (tableDragOrigSize + (wx - tableDragStartX)).coerceAtLeast(30f); invalidate() }
+                val table=activeTableItem?:return; if(!tableIsActive) return
+                if(tableDragRowBorder>=0){table.rowHeights[tableDragRowBorder]=(tableDragOrigSize+(wy-tableDragStartY)).coerceAtLeast(20f);invalidate()}
+                else if(tableDragColBorder>=0){table.colWidths[tableDragColBorder]=(tableDragOrigSize+(wx-tableDragStartX)).coerceAtLeast(30f);invalidate()}
             }
-            MotionEvent.ACTION_UP -> {
-                if (tableDragRowBorder >= 0 || tableDragColBorder >= 0) { tableDragRowBorder = -1; tableDragColBorder = -1 }
-            }
+            MotionEvent.ACTION_UP -> { if(tableDragRowBorder>=0||tableDragColBorder>=0){tableDragRowBorder=-1;tableDragColBorder=-1} }
         }
     }
 
-    fun addTableRow(afterRow: Int) {
-        val table = activeTableItem ?: return
-        val insertAt = (afterRow + 1).coerceIn(0, table.rowHeights.size)
-        table.rowHeights.add(insertAt, 60f); table.rows = table.rowHeights.size
-        table.insertRow(insertAt); invalidate()
-    }
-
-    fun addTableCol(afterCol: Int) {
-        val table = activeTableItem ?: return
-        val insertAt = (afterCol + 1).coerceIn(0, table.colWidths.size)
-        table.colWidths.add(insertAt, 80f); table.cols = table.colWidths.size
-        table.insertCol(insertAt); invalidate()
-    }
-
-    fun removeTableRow(row: Int) {
-        val table = activeTableItem ?: return; if (table.rows <= 1) return
-        val delAt = row.coerceIn(0, table.rowHeights.size - 1)
-        table.rowHeights.removeAt(delAt); table.rows = table.rowHeights.size
-        table.deleteRow(delAt); invalidate()
-    }
-
-    fun removeTableCol(col: Int) {
-        val table = activeTableItem ?: return; if (table.cols <= 1) return
-        val delAt = col.coerceIn(0, table.colWidths.size - 1)
-        table.colWidths.removeAt(delAt); table.cols = table.colWidths.size
-        table.deleteCol(delAt); invalidate()
-    }
-
-    fun mergeCellSelection() {
-        val table = activeTableItem ?: return
-        val s = tableSelStart ?: return; val e = tableSelEnd ?: return
-        table.mergeCells(s.first, s.second, e.first, e.second)
-        tableSelStart = null; tableSelEnd = null; invalidate()
-    }
-
-    fun unmergeCellSelection() {
-        val table = activeTableItem ?: return
-        val s = tableSelStart ?: return
-        table.unmergeCells(s.first, s.second)
-        tableSelStart = null; tableSelEnd = null; invalidate()
-    }
-
+    fun addTableRow(afterRow: Int) { val t=activeTableItem?:return; val i=(afterRow+1).coerceIn(0,t.rowHeights.size); t.rowHeights.add(i,60f); t.rows=t.rowHeights.size; t.insertRow(i); invalidate() }
+    fun addTableCol(afterCol: Int) { val t=activeTableItem?:return; val i=(afterCol+1).coerceIn(0,t.colWidths.size); t.colWidths.add(i,80f); t.cols=t.colWidths.size; t.insertCol(i); invalidate() }
+    fun removeTableRow(row: Int) { val t=activeTableItem?:return; if(t.rows<=1) return; val d=row.coerceIn(0,t.rowHeights.size-1); t.rowHeights.removeAt(d); t.rows=t.rowHeights.size; t.deleteRow(d); invalidate() }
+    fun removeTableCol(col: Int) { val t=activeTableItem?:return; if(t.cols<=1) return; val d=col.coerceIn(0,t.colWidths.size-1); t.colWidths.removeAt(d); t.cols=t.colWidths.size; t.deleteCol(d); invalidate() }
+    fun mergeCellSelection() { val t=activeTableItem?:return; val s=tableSelStart?:return; val e=tableSelEnd?:return; t.mergeCells(s.first,s.second,e.first,e.second); tableSelStart=null;tableSelEnd=null;invalidate() }
+    fun unmergeCellSelection() { val t=activeTableItem?:return; val s=tableSelStart?:return; t.unmergeCells(s.first,s.second); tableSelStart=null;tableSelEnd=null;invalidate() }
     fun getActiveTable(): TableItem? = activeTableItem
-    fun getTableSelection(): Pair<Pair<Int, Int>?, Pair<Int, Int>?> = Pair(tableSelStart, tableSelEnd)
+    fun getTableSelection(): Pair<Pair<Int,Int>?,Pair<Int,Int>?> = Pair(tableSelStart,tableSelEnd)
 
     fun worldToScreenX(wx: Float): Float = wx * scaleFactor + translateX
     fun worldToScreenY(wy: Float): Float = wy * scaleFactor + translateY
 
     private fun drawTableOverlay(canvas: Canvas) {
-        val table = activeTableItem ?: return
-        val selColor = if (tableIsActive) "#2196F3" else "#9E9E9E"
-        val op = Paint(); op.color = Color.parseColor(selColor); op.style = Paint.Style.STROKE
-        op.strokeWidth = (if (tableIsActive) 2f else 1.5f) / scaleFactor
-        canvas.drawRect(table.x, table.y, table.x + table.totalWidth(), table.y + table.totalHeight(), op)
-        if (!tableIsActive) return
-        val s = tableSelStart; val e = tableSelEnd
-        if (s != null) {
-            val minR = if (e != null) minOf(s.first, e.first) else s.first
-            val maxR = if (e != null) maxOf(s.first, e.first) else s.first
-            val minC = if (e != null) minOf(s.second, e.second) else s.second
-            val maxC = if (e != null) maxOf(s.second, e.second) else s.second
-            val hlP = Paint(); hlP.color = Color.parseColor("#442196F3"); hlP.style = Paint.Style.FILL
-            for (r in minR..maxR) for (c in minC..maxC) {
-                try { canvas.drawRect(table.cellRect(r, c), hlP) } catch (ex: Exception) {}
-            }
+        val table=activeTableItem?:return
+        val selColor=if(tableIsActive)"#2196F3" else "#9E9E9E"
+        val op=Paint(); op.color=Color.parseColor(selColor); op.style=Paint.Style.STROKE; op.strokeWidth=(if(tableIsActive)2f else 1.5f)/scaleFactor
+        canvas.drawRect(table.x,table.y,table.x+table.totalWidth(),table.y+table.totalHeight(),op)
+        if(!tableIsActive) return
+        val s=tableSelStart; val e=tableSelEnd
+        if(s!=null){
+            val minR=if(e!=null)minOf(s.first,e.first) else s.first; val maxR=if(e!=null)maxOf(s.first,e.first) else s.first
+            val minC=if(e!=null)minOf(s.second,e.second) else s.second; val maxC=if(e!=null)maxOf(s.second,e.second) else s.second
+            val hlP=Paint(); hlP.color=Color.parseColor("#442196F3"); hlP.style=Paint.Style.FILL
+            for(r in minR..maxR) for(c in minC..maxC){ try{canvas.drawRect(table.cellRect(r,c),hlP)}catch(ex:Exception){} }
         }
     }
 
     private fun handleSelect(event: MotionEvent) {
-        val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
-        val at = activeTableItem
-        if (at != null) { handleTable(event); return }
+        val wx=screenToWorldX(event.x); val wy=screenToWorldY(event.y)
+
+        // Audio item tap check
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-            for (action in actions.reversed()) {
-                if (action is TableItem) {
-                    val b = getBounds(action) ?: continue
-                    if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) {
-                        activeTableItem = action; tableIsActive = false
-                        tableSelStart = null; tableSelEnd = null; tableSingleTapCell = null
-                        invalidate(); return
-                    }
+            for (audio in audioItems) {
+                val iconSize = 48f / scaleFactor
+                val pillH = iconSize + 16f / scaleFactor
+                val pillW = iconSize + 200f / scaleFactor
+                if (wx >= audio.x && wx <= audio.x + pillW && wy >= audio.y && wy <= audio.y + pillH) {
+                    onAudioItemTap?.invoke(audio); return
                 }
             }
         }
-        when (event.actionMasked) {
+
+        val at=activeTableItem
+        if(at!=null){handleTable(event);return}
+        if(event.actionMasked==MotionEvent.ACTION_DOWN){
+            for(action in actions.reversed()){ if(action is TableItem){ val b=getBounds(action)?:continue; if(wx>=b[0]&&wx<=b[2]&&wy>=b[1]&&wy<=b[3]){activeTableItem=action;tableIsActive=false;tableSelStart=null;tableSelEnd=null;tableSingleTapCell=null;invalidate();return} } }
+        }
+        when(event.actionMasked){
             MotionEvent.ACTION_DOWN -> {
-                longPressRunnable?.let { longPressHandler.removeCallbacks(it) }; longPressRunnable = null
-                val item = selectedItem; var handled = false
-                if (item != null) {
-                    val b = getBounds(item)
-                    if (b != null) {
-                        val rot = getRotation(item); val (px, py) = getPivot(item, b)
-                        val (lx, ly) = rotatePoint(wx, wy, px, py, -rot)
-                        val hr = 18f / scaleFactor; val hit = 50f / scaleFactor
-                        val delX = b[2] + hr * 5f; val delY = b[1] - hr * 5f
-                        if (distance(lx, ly, delX, delY) <= hit * 1.2f) {
-                            actions.remove(item); selectedItem = null; handled = true; invalidate(); return
-                        }
-                        val canRot = item is ImageItem || item is TextItem || (item is StrokeItem && item.data.type != Tool.PEN && item.data.type != Tool.ARC)
-                        if (!handled && canRot) {
-                            val cx = (b[0] + b[2]) / 2f; val ry = b[1] - 60f / scaleFactor
-                            if (distance(lx, ly, cx, ry) <= hit) {
-                                activeHandle = HandleType.ROTATE; dragStartAngle = computeAngle(item, wx, wy)
-                                dragStartRotation = rot; handled = true
-                            }
-                        }
-                        val isBbox = item is ImageItem || item is TextItem || (item is StrokeItem && BBOX_RESIZE_SHAPES.contains(item.data.type))
-                        val isEndpoint = item is StrokeItem && ENDPOINT_RESIZE_SHAPES.contains(item.data.type)
-                        if (!handled && isBbox) {
-                            for ((type, pos) in bboxHandlePositions(b)) {
-                                if (distance(lx, ly, pos.first, pos.second) <= hit) {
-                                    activeHandle = type; dragStartPivotX = px; dragStartPivotY = py
-                                    dragStartRotation = rot; resizePrevWorldX = wx; resizePrevWorldY = wy
-                                    handled = true; break
-                                }
-                            }
-                        }
-                        if (!handled && isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
-                            val p0x = item.data.points[0]; val p0y = item.data.points[1]
-                            val p1x = item.data.points[2]; val p1y = item.data.points[3]
-                            if (distance(wx, wy, p0x, p0y) <= hit) { activeHandle = HandleType.TL; resizePrevWorldX = wx; resizePrevWorldY = wy; handled = true }
-                            else if (distance(wx, wy, p1x, p1y) <= hit) { activeHandle = HandleType.BR; resizePrevWorldX = wx; resizePrevWorldY = wy; handled = true }
-                        }
-                        if (!handled && lx >= b[0] - hit && lx <= b[2] + hit && ly >= b[1] - hit && ly <= b[3] + hit) {
-                            activeHandle = HandleType.MOVE; dragStartWorldX = wx; dragStartWorldY = wy; handled = true
-                        }
+                longPressRunnable?.let{longPressHandler.removeCallbacks(it)};longPressRunnable=null
+                val item=selectedItem; var handled=false
+                if(item!=null){
+                    val b=getBounds(item)
+                    if(b!=null){
+                        val rot=getRotation(item);val(px,py)=getPivot(item,b);val(lx,ly)=rotatePoint(wx,wy,px,py,-rot)
+                        val hr=18f/scaleFactor;val hit=50f/scaleFactor
+                        val delX=b[2]+hr*5f;val delY=b[1]-hr*5f
+                        if(distance(lx,ly,delX,delY)<=hit*1.2f){actions.remove(item);selectedItem=null;handled=true;invalidate();return}
+                        val canRot=item is ImageItem||item is TextItem||(item is StrokeItem&&item.data.type!=Tool.PEN&&item.data.type!=Tool.ARC)
+                        if(!handled&&canRot){val cx=(b[0]+b[2])/2f;val ry=b[1]-60f/scaleFactor;if(distance(lx,ly,cx,ry)<=hit){activeHandle=HandleType.ROTATE;dragStartAngle=computeAngle(item,wx,wy);dragStartRotation=rot;handled=true}}
+                        val isBbox=item is ImageItem||item is TextItem||(item is StrokeItem&&BBOX_RESIZE_SHAPES.contains(item.data.type))
+                        val isEndpoint=item is StrokeItem&&ENDPOINT_RESIZE_SHAPES.contains(item.data.type)
+                        if(!handled&&isBbox){for((type,pos) in bboxHandlePositions(b)){if(distance(lx,ly,pos.first,pos.second)<=hit){activeHandle=type;dragStartPivotX=px;dragStartPivotY=py;dragStartRotation=rot;resizePrevWorldX=wx;resizePrevWorldY=wy;handled=true;break}}}
+                        if(!handled&&isEndpoint&&item is StrokeItem&&item.data.points.size>=4){val p0x=item.data.points[0];val p0y=item.data.points[1];val p1x=item.data.points[2];val p1y=item.data.points[3];if(distance(wx,wy,p0x,p0y)<=hit){activeHandle=HandleType.TL;resizePrevWorldX=wx;resizePrevWorldY=wy;handled=true}else if(distance(wx,wy,p1x,p1y)<=hit){activeHandle=HandleType.BR;resizePrevWorldX=wx;resizePrevWorldY=wy;handled=true}}
+                        if(!handled&&lx>=b[0]-hit&&lx<=b[2]+hit&&ly>=b[1]-hit&&ly<=b[3]+hit){activeHandle=HandleType.MOVE;dragStartWorldX=wx;dragStartWorldY=wy;handled=true}
                     }
                 }
-                if (!handled) { activeHandle = HandleType.NONE; selectedItem = findItemAt(wx, wy) }
-                val sel = selectedItem
-                if (sel is TextItem) {
-                    val r = Runnable { sel.isEditing = true; invalidate(); onTextEditRequest?.invoke(sel, event.x, event.y, wx, wy) }
-                    longPressRunnable = r; longPressHandler.postDelayed(r, 500)
-                }
+                if(!handled){activeHandle=HandleType.NONE;selectedItem=findItemAt(wx,wy)}
+                val sel=selectedItem; if(sel is TextItem){val r=Runnable{sel.isEditing=true;invalidate();onTextEditRequest?.invoke(sel,event.x,event.y,wx,wy)};longPressRunnable=r;longPressHandler.postDelayed(r,500)}
                 invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
-                longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
-                val item = selectedItem ?: return
-                when (activeHandle) {
-                    HandleType.MOVE -> { moveItem(item, wx - dragStartWorldX, wy - dragStartWorldY); dragStartWorldX = wx; dragStartWorldY = wy }
-                    HandleType.ROTATE -> { val newAngle = computeAngle(item, wx, wy); setRotation(item, dragStartRotation + (newAngle - dragStartAngle)) }
-                    HandleType.NONE -> return
-                    else -> resizeItem(item, activeHandle, wx, wy)
+                longPressRunnable?.let{longPressHandler.removeCallbacks(it);longPressRunnable=null}
+                val item=selectedItem?:return
+                when(activeHandle){
+                    HandleType.MOVE->{moveItem(item,wx-dragStartWorldX,wy-dragStartWorldY);dragStartWorldX=wx;dragStartWorldY=wy}
+                    HandleType.ROTATE->{val newAngle=computeAngle(item,wx,wy);setRotation(item,dragStartRotation+(newAngle-dragStartAngle))}
+                    HandleType.NONE->return
+                    else->resizeItem(item,activeHandle,wx,wy)
                 }
                 invalidate()
             }
-            MotionEvent.ACTION_UP -> {
-                longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
-                activeHandle = HandleType.NONE
-            }
+            MotionEvent.ACTION_UP -> { longPressRunnable?.let{longPressHandler.removeCallbacks(it);longPressRunnable=null}; activeHandle=HandleType.NONE }
         }
     }
 
     private fun handleArc(event: MotionEvent) {
-        val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                val arc = activeArcItem
-                if (arc != null) {
-                    val r = 30f / scaleFactor; var found = -1; var i = 0
-                    while (i + 1 < arc.data.points.size) {
-                        if (distance(wx, wy, arc.data.points[i], arc.data.points[i + 1]) <= r) { found = i; break }; i += 2
-                    }
-                    if (found >= 0) arcDragPointIndex = found
-                    else {
-                        activeArcItem = null
-                        val d = StrokeData(Tool.ARC, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, false)
-                        currentItem = StrokeItem(d, d.buildPath(), d.toPaint())
-                    }
-                } else {
-                    val d = StrokeData(Tool.ARC, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, false)
-                    currentItem = StrokeItem(d, d.buildPath(), d.toPaint())
-                }
+        val wx=screenToWorldX(event.x);val wy=screenToWorldY(event.y)
+        when(event.actionMasked){
+            MotionEvent.ACTION_DOWN->{
+                val arc=activeArcItem
+                if(arc!=null){val r=30f/scaleFactor;var found=-1;var i=0;while(i+1<arc.data.points.size){if(distance(wx,wy,arc.data.points[i],arc.data.points[i+1])<=r){found=i;break};i+=2};if(found>=0) arcDragPointIndex=found else{activeArcItem=null;val d=StrokeData(Tool.ARC,mutableListOf(wx,wy,wx,wy),currentColor,currentStrokeWidth,false);currentItem=StrokeItem(d,d.buildPath(),d.toPaint())}}
+                else{val d=StrokeData(Tool.ARC,mutableListOf(wx,wy,wx,wy),currentColor,currentStrokeWidth,false);currentItem=StrokeItem(d,d.buildPath(),d.toPaint())}
                 invalidate()
             }
-            MotionEvent.ACTION_MOVE -> {
-                if (arcDragPointIndex >= 0) {
-                    val arc = activeArcItem ?: return
-                    arc.data.points[arcDragPointIndex] = wx; arc.data.points[arcDragPointIndex + 1] = wy
-                    arc.path = arc.data.buildPath()
-                } else {
-                    val item = currentItem ?: return
-                    item.data.points[2] = wx; item.data.points[3] = wy; item.path = item.data.buildPath()
-                }
+            MotionEvent.ACTION_MOVE->{
+                if(arcDragPointIndex>=0){val arc=activeArcItem?:return;arc.data.points[arcDragPointIndex]=wx;arc.data.points[arcDragPointIndex+1]=wy;arc.path=arc.data.buildPath()}
+                else{val item=currentItem?:return;item.data.points[2]=wx;item.data.points[3]=wy;item.path=item.data.buildPath()}
                 invalidate()
             }
-            MotionEvent.ACTION_UP -> {
-                if (arcDragPointIndex >= 0) { arcDragPointIndex = -1 }
-                else {
-                    val item = currentItem
-                    if (item != null) {
-                        val p0x = item.data.points[0]; val p0y = item.data.points[1]
-                        val p1x = item.data.points[2]; val p1y = item.data.points[3]
-                        val n = arcDivisions.coerceIn(1, 20); val pts = mutableListOf<Float>()
-                        for (i in 0..n) { val t = i.toFloat() / n; pts.add(p0x + (p1x - p0x) * t); pts.add(p0y + (p1y - p0y) * t) }
-                        val d = StrokeData(Tool.ARC, pts, item.data.color, item.data.strokeWidth, false)
-                        val ni = StrokeItem(d, d.buildPath(), d.toPaint())
-                        actions.add(ni); redoStack.clear(); activeArcItem = ni; currentItem = null
-                    }
-                }
+            MotionEvent.ACTION_UP->{
+                if(arcDragPointIndex>=0){arcDragPointIndex=-1}
+                else{val item=currentItem;if(item!=null){val p0x=item.data.points[0];val p0y=item.data.points[1];val p1x=item.data.points[2];val p1y=item.data.points[3];val n=arcDivisions.coerceIn(1,20);val pts=mutableListOf<Float>();for(i in 0..n){val t=i.toFloat()/n;pts.add(p0x+(p1x-p0x)*t);pts.add(p0y+(p1y-p0y)*t)};val d=StrokeData(Tool.ARC,pts,item.data.color,item.data.strokeWidth,false);val ni=StrokeItem(d,d.buildPath(),d.toPaint());actions.add(ni);redoStack.clear();activeArcItem=ni;currentItem=null}}
                 invalidate()
             }
         }
     }
 
     private fun scaleItemInGroup(item: Any, ox: Float, oy: Float, sx: Float, sy: Float) {
-        when (item) {
-            is StrokeItem -> {
-                var i = 0
-                while (i + 1 < item.data.points.size) {
-                    item.data.points[i] = ox + (item.data.points[i] - ox) * sx
-                    item.data.points[i + 1] = oy + (item.data.points[i + 1] - oy) * sy; i += 2
-                }
-                item.path = item.data.buildPath()
-            }
-            is TextItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.size = (item.size * ((sx + sy) / 2f)).coerceIn(6f, 500f) }
-            is ImageItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.w *= sx; item.h *= sy }
-            is FillItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.w *= sx; item.h *= sy }
+        when(item){
+            is StrokeItem->{var i=0;while(i+1<item.data.points.size){item.data.points[i]=ox+(item.data.points[i]-ox)*sx;item.data.points[i+1]=oy+(item.data.points[i+1]-oy)*sy;i+=2};item.path=item.data.buildPath()}
+            is TextItem->{item.x=ox+(item.x-ox)*sx;item.y=oy+(item.y-oy)*sy;item.size=(item.size*((sx+sy)/2f)).coerceIn(6f,500f)}
+            is ImageItem->{item.x=ox+(item.x-ox)*sx;item.y=oy+(item.y-oy)*sy;item.w*=sx;item.h*=sy}
+            is FillItem->{item.x=ox+(item.x-ox)*sx;item.y=oy+(item.y-oy)*sy;item.w*=sx;item.h*=sy}
         }
     }
 
     private fun groupBounds(group: List<Any>): FloatArray? {
-        var res: FloatArray? = null
-        for (item in group) {
-            val b = getBounds(item) ?: continue
-            res = if (res == null) b.copyOf() else floatArrayOf(minOf(res[0], b[0]), minOf(res[1], b[1]), maxOf(res[2], b[2]), maxOf(res[3], b[3]))
-        }
+        var res:FloatArray?=null
+        for(item in group){val b=getBounds(item)?:continue;res=if(res==null) b.copyOf() else floatArrayOf(minOf(res[0],b[0]),minOf(res[1],b[1]),maxOf(res[2],b[2]),maxOf(res[3],b[3]))}
         return res
     }
 
     private fun buildRegion(path: Path): Region {
-        val rf = RectF(); path.computeBounds(rf, true)
-        val clip = Rect(kotlin.math.floor(rf.left).toInt() - 1, kotlin.math.floor(rf.top).toInt() - 1, kotlin.math.ceil(rf.right).toInt() + 1, kotlin.math.ceil(rf.bottom).toInt() + 1)
-        val region = Region(); region.setPath(path, Region(clip)); return region
+        val rf=RectF();path.computeBounds(rf,true)
+        val clip=Rect(kotlin.math.floor(rf.left).toInt()-1,kotlin.math.floor(rf.top).toInt()-1,kotlin.math.ceil(rf.right).toInt()+1,kotlin.math.ceil(rf.bottom).toInt()+1)
+        val region=Region();region.setPath(path,Region(clip));return region
     }
 
     private fun splitStrokeByRegion(data: StrokeData, region: Region): Pair<List<StrokeItem>, List<StrokeItem>> {
-        val pts = data.points
-        if (pts.size < 4) return Pair(emptyList(), listOf(StrokeItem(data, data.buildPath(), data.toPaint())))
-        val inSegs = mutableListOf<MutableList<Float>>(); val outSegs = mutableListOf<MutableList<Float>>()
-        var curIn = mutableListOf<Float>(); var curOut = mutableListOf<Float>(); var last: Boolean? = null; var i = 0
-        while (i + 1 < pts.size) {
-            val x = pts[i]; val y = pts[i + 1]; val isIn = region.contains(x.toInt(), y.toInt())
-            if (last != null && last != isIn) {
-                if (last) { if (curIn.size >= 4) inSegs.add(curIn); curIn = mutableListOf() }
-                else { if (curOut.size >= 4) outSegs.add(curOut); curOut = mutableListOf() }
-            }
-            if (isIn) { curIn.add(x); curIn.add(y) } else { curOut.add(x); curOut.add(y) }
-            last = isIn; i += 2
-        }
-        if (curIn.size >= 4) inSegs.add(curIn); if (curOut.size >= 4) outSegs.add(curOut)
-        fun makeItems(segs: List<MutableList<Float>>): List<StrokeItem> = segs.map {
-            val d = StrokeData(data.type, it, data.color, data.strokeWidth, data.fill); StrokeItem(d, d.buildPath(), d.toPaint())
-        }
-        return Pair(makeItems(inSegs), makeItems(outSegs))
+        val pts=data.points
+        if(pts.size<4) return Pair(emptyList(),listOf(StrokeItem(data,data.buildPath(),data.toPaint())))
+        val inSegs=mutableListOf<MutableList<Float>>();val outSegs=mutableListOf<MutableList<Float>>()
+        var curIn=mutableListOf<Float>();var curOut=mutableListOf<Float>();var last:Boolean?=null;var i=0
+        while(i+1<pts.size){val x=pts[i];val y=pts[i+1];val isIn=region.contains(x.toInt(),y.toInt());if(last!=null&&last!=isIn){if(last){if(curIn.size>=4)inSegs.add(curIn);curIn=mutableListOf()}else{if(curOut.size>=4)outSegs.add(curOut);curOut=mutableListOf()}};if(isIn){curIn.add(x);curIn.add(y)}else{curOut.add(x);curOut.add(y)};last=isIn;i+=2}
+        if(curIn.size>=4)inSegs.add(curIn);if(curOut.size>=4)outSegs.add(curOut)
+        fun makeItems(segs:List<MutableList<Float>>):List<StrokeItem>=segs.map{val d=StrokeData(data.type,it,data.color,data.strokeWidth,data.fill);StrokeItem(d,d.buildPath(),d.toPaint())}
+        return Pair(makeItems(inSegs),makeItems(outSegs))
     }
 
     private fun selectItemsInRegion(region: Region) {
-        val group = mutableListOf<Any>(); val newActions = mutableListOf<Any>()
-        for (action in actions) {
-            if (action is FillItem) { newActions.add(action); continue }
-            if (action is StrokeItem && (action.data.type == Tool.PEN || action.data.type == Tool.ERASER || action.data.type == Tool.ARC) && autoSelectDivide == AutoSelectDivide.DIVIDED) {
-                val (inside, outside) = splitStrokeByRegion(action.data, region); newActions.addAll(outside); group.addAll(inside); continue
-            }
-            val b = getBounds(action); if (b == null) { newActions.add(action); continue }
-            val cx = (b[0] + b[2]) / 2f; val cy = (b[1] + b[3]) / 2f
-            if (region.contains(cx.toInt(), cy.toInt())) group.add(action) else newActions.add(action)
+        val group=mutableListOf<Any>();val newActions=mutableListOf<Any>()
+        for(action in actions){
+            if(action is FillItem){newActions.add(action);continue}
+            if(action is StrokeItem&&(action.data.type==Tool.PEN||action.data.type==Tool.ERASER||action.data.type==Tool.ARC)&&autoSelectDivide==AutoSelectDivide.DIVIDED){val(inside,outside)=splitStrokeByRegion(action.data,region);newActions.addAll(outside);group.addAll(inside);continue}
+            val b=getBounds(action);if(b==null){newActions.add(action);continue}
+            val cx=(b[0]+b[2])/2f;val cy=(b[1]+b[3])/2f
+            if(region.contains(cx.toInt(),cy.toInt())) group.add(action) else newActions.add(action)
         }
-        newActions.addAll(group); actions.clear(); actions.addAll(newActions); redoStack.clear()
-        selectedGroup = if (group.isNotEmpty()) group else null
+        newActions.addAll(group);actions.clear();actions.addAll(newActions);redoStack.clear()
+        selectedGroup=if(group.isNotEmpty()) group else null
     }
 
     private fun handleAutoSelect(event: MotionEvent) {
-        val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
-        val hr = 18f / scaleFactor; val hit = 50f / scaleFactor
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                val group = selectedGroup
-                if (group != null && group.isNotEmpty()) {
-                    val gb = groupBounds(group)
-                    if (gb != null) {
-                        val delX = gb[2] + hr * 5f; val delY = gb[1] - hr * 5f
-                        if (distance(wx, wy, delX, delY) <= hit) {
-                            for (it in group) actions.remove(it); selectedGroup = null; invalidate(); return
-                        }
-                        val gcx = (gb[0] + gb[2]) / 2f
-                        val gHandles = listOf(gb[0] to gb[1], gcx to gb[1], gb[2] to gb[1], gb[0] to (gb[1]+gb[3])/2f, gb[2] to (gb[1]+gb[3])/2f, gb[0] to gb[3], gcx to gb[3], gb[2] to gb[3])
-                        var found = -1
-                        for ((hi, hpos) in gHandles.withIndex()) { if (distance(wx, wy, hpos.first, hpos.second) <= hit) { found = hi; break } }
-                        if (found >= 0) { groupResizeHandle = found; groupResizeOrigBounds = gb.copyOf(); groupResizeItemSnapshots = group.map { getBounds(it)?.copyOf() }; invalidate(); return }
-                        if (wx in gb[0]..gb[2] && wy in gb[1]..gb[3]) { groupMoveStartX = wx; groupMoveStartY = wy; groupResizeHandle = -1; invalidate(); return }
+        val wx=screenToWorldX(event.x);val wy=screenToWorldY(event.y);val hr=18f/scaleFactor;val hit=50f/scaleFactor
+        when(event.actionMasked){
+            MotionEvent.ACTION_DOWN->{
+                val group=selectedGroup
+                if(group!=null&&group.isNotEmpty()){
+                    val gb=groupBounds(group)
+                    if(gb!=null){
+                        val delX=gb[2]+hr*5f;val delY=gb[1]-hr*5f
+                        if(distance(wx,wy,delX,delY)<=hit){for(it in group)actions.remove(it);selectedGroup=null;invalidate();return}
+                        val gcx=(gb[0]+gb[2])/2f
+                        val gHandles=listOf(gb[0] to gb[1],gcx to gb[1],gb[2] to gb[1],gb[0] to(gb[1]+gb[3])/2f,gb[2] to(gb[1]+gb[3])/2f,gb[0] to gb[3],gcx to gb[3],gb[2] to gb[3])
+                        var found=-1;for((hi,hpos) in gHandles.withIndex()){if(distance(wx,wy,hpos.first,hpos.second)<=hit){found=hi;break}}
+                        if(found>=0){groupResizeHandle=found;groupResizeOrigBounds=gb.copyOf();groupResizeItemSnapshots=group.map{getBounds(it)?.copyOf()};invalidate();return}
+                        if(wx in gb[0]..gb[2]&&wy in gb[1]..gb[3]){groupMoveStartX=wx;groupMoveStartY=wy;groupResizeHandle=-1;invalidate();return}
                     }
-                    selectedGroup = null
+                    selectedGroup=null
                 }
-                regionStart = Pair(wx, wy); regionPath = Path().apply { moveTo(wx, wy) }; invalidate()
+                regionStart=Pair(wx,wy);regionPath=Path().apply{moveTo(wx,wy)};invalidate()
             }
-            MotionEvent.ACTION_MOVE -> {
-                val group = selectedGroup
-                if (group != null && group.isNotEmpty()) {
-                    if (groupResizeHandle >= 0) {
-                        val origW = (groupResizeOrigBounds[2] - groupResizeOrigBounds[0]).coerceAtLeast(1f)
-                        val origH = (groupResizeOrigBounds[3] - groupResizeOrigBounds[1]).coerceAtLeast(1f)
-                        var nl = groupResizeOrigBounds[0]; var nt = groupResizeOrigBounds[1]; var nr = groupResizeOrigBounds[2]; var nb = groupResizeOrigBounds[3]
-                        when (groupResizeHandle) { 0 -> { nl = wx; nt = wy }; 1 -> nt = wy; 2 -> { nr = wx; nt = wy }; 3 -> nl = wx; 4 -> nr = wx; 5 -> { nl = wx; nb = wy }; 6 -> nb = wy; 7 -> { nr = wx; nb = wy } }
-                        val sx = (nr - nl).coerceAtLeast(10f) / origW; val sy = (nb - nt).coerceAtLeast(10f) / origH
-                        for (it in group) scaleItemInGroup(it, groupResizeOrigBounds[0], groupResizeOrigBounds[1], sx, sy)
-                    } else { val dx = wx - groupMoveStartX; val dy = wy - groupMoveStartY; for (it in group) moveItem(it, dx, dy); groupMoveStartX = wx; groupMoveStartY = wy }
-                    invalidate(); return
+            MotionEvent.ACTION_MOVE->{
+                val group=selectedGroup
+                if(group!=null&&group.isNotEmpty()){
+                    if(groupResizeHandle>=0){val origW=(groupResizeOrigBounds[2]-groupResizeOrigBounds[0]).coerceAtLeast(1f);val origH=(groupResizeOrigBounds[3]-groupResizeOrigBounds[1]).coerceAtLeast(1f);var nl=groupResizeOrigBounds[0];var nt=groupResizeOrigBounds[1];var nr=groupResizeOrigBounds[2];var nb=groupResizeOrigBounds[3];when(groupResizeHandle){0->{nl=wx;nt=wy};1->nt=wy;2->{nr=wx;nt=wy};3->nl=wx;4->nr=wx;5->{nl=wx;nb=wy};6->nb=wy;7->{nr=wx;nb=wy}};val sx=(nr-nl).coerceAtLeast(10f)/origW;val sy=(nb-nt).coerceAtLeast(10f)/origH;for(it in group)scaleItemInGroup(it,groupResizeOrigBounds[0],groupResizeOrigBounds[1],sx,sy)}
+                    else{val dx=wx-groupMoveStartX;val dy=wy-groupMoveStartY;for(it in group)moveItem(it,dx,dy);groupMoveStartX=wx;groupMoveStartY=wy}
+                    invalidate();return
                 }
-                if (autoSelectShape == AutoSelectShape.RECTANGLE) {
-                    val s = regionStart ?: return
-                    regionPath = Path().apply { addRect(minOf(s.first, wx), minOf(s.second, wy), maxOf(s.first, wx), maxOf(s.second, wy), Path.Direction.CW) }
-                } else regionPath?.lineTo(wx, wy)
+                if(autoSelectShape==AutoSelectShape.RECTANGLE){val s=regionStart?:return;regionPath=Path().apply{addRect(minOf(s.first,wx),minOf(s.second,wy),maxOf(s.first,wx),maxOf(s.second,wy),Path.Direction.CW)}}
+                else regionPath?.lineTo(wx,wy)
                 invalidate()
             }
-            MotionEvent.ACTION_UP -> {
-                groupResizeHandle = -1
-                val group = selectedGroup; if (group != null && group.isNotEmpty()) return
-                val rp = regionPath
-                if (rp != null) { if (autoSelectShape == AutoSelectShape.FREEFORM) rp.close(); selectItemsInRegion(buildRegion(rp)) }
-                regionPath = null; regionStart = null; invalidate()
+            MotionEvent.ACTION_UP->{
+                groupResizeHandle=-1;val group=selectedGroup;if(group!=null&&group.isNotEmpty()) return
+                val rp=regionPath;if(rp!=null){if(autoSelectShape==AutoSelectShape.FREEFORM)rp.close();selectItemsInRegion(buildRegion(rp))};regionPath=null;regionStart=null;invalidate()
             }
         }
     }
 
     private fun drawExportWindowOverlay(canvas: Canvas) {
-        val s = exportWindowStart ?: return; val e = exportWindowEnd ?: return
-        val left = minOf(s.first, e.first); val top = minOf(s.second, e.second)
-        val right = maxOf(s.first, e.first); val bottom = maxOf(s.second, e.second)
-        val dimP = Paint(); dimP.color = Color.parseColor("#88000000"); dimP.style = Paint.Style.FILL
-        val vl = screenToWorldX(0f); val vt = screenToWorldY(0f)
-        val vr = screenToWorldX(width.toFloat()); val vb = screenToWorldY(height.toFloat())
-        canvas.drawRect(vl, vt, vr, top, dimP); canvas.drawRect(vl, bottom, vr, vb, dimP)
-        canvas.drawRect(vl, top, left, bottom, dimP); canvas.drawRect(right, top, vr, bottom, dimP)
-        val bp = Paint(); bp.color = Color.parseColor("#2196F3"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 3f / scaleFactor
-        bp.pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f / scaleFactor, 6f / scaleFactor), 0f)
-        canvas.drawRect(left, top, right, bottom, bp)
-        val hr = 10f / scaleFactor
-        val hf = Paint(); hf.color = Color.WHITE; hf.style = Paint.Style.FILL
-        val hs = Paint(); hs.color = Color.parseColor("#2196F3"); hs.style = Paint.Style.STROKE; hs.strokeWidth = 2f / scaleFactor
-        for ((cx, cy) in listOf(left to top, right to top, left to bottom, right to bottom)) { canvas.drawCircle(cx, cy, hr, hf); canvas.drawCircle(cx, cy, hr, hs) }
-        val wp = ((right - left) / 3.7795f).toInt(); val hp = ((bottom - top) / 3.7795f).toInt()
-        val lp = Paint(); lp.color = Color.WHITE; lp.textSize = 28f / scaleFactor; lp.isAntiAlias = true; lp.setShadowLayer(3f / scaleFactor, 0f, 0f, Color.BLACK)
-        canvas.drawText("${wp}×${hp}mm", left + 8f / scaleFactor, top - 12f / scaleFactor, lp)
+        val s=exportWindowStart?:return;val e=exportWindowEnd?:return
+        val left=minOf(s.first,e.first);val top=minOf(s.second,e.second);val right=maxOf(s.first,e.first);val bottom=maxOf(s.second,e.second)
+        val dimP=Paint();dimP.color=Color.parseColor("#88000000");dimP.style=Paint.Style.FILL
+        val vl=screenToWorldX(0f);val vt=screenToWorldY(0f);val vr=screenToWorldX(width.toFloat());val vb=screenToWorldY(height.toFloat())
+        canvas.drawRect(vl,vt,vr,top,dimP);canvas.drawRect(vl,bottom,vr,vb,dimP);canvas.drawRect(vl,top,left,bottom,dimP);canvas.drawRect(right,top,vr,bottom,dimP)
+        val bp=Paint();bp.color=Color.parseColor("#2196F3");bp.style=Paint.Style.STROKE;bp.strokeWidth=3f/scaleFactor;bp.pathEffect=android.graphics.DashPathEffect(floatArrayOf(12f/scaleFactor,6f/scaleFactor),0f)
+        canvas.drawRect(left,top,right,bottom,bp)
+        val hr=10f/scaleFactor;val hf=Paint();hf.color=Color.WHITE;hf.style=Paint.Style.FILL;val hs=Paint();hs.color=Color.parseColor("#2196F3");hs.style=Paint.Style.STROKE;hs.strokeWidth=2f/scaleFactor
+        for((cx,cy) in listOf(left to top,right to top,left to bottom,right to bottom)){canvas.drawCircle(cx,cy,hr,hf);canvas.drawCircle(cx,cy,hr,hs)}
+        val wp=((right-left)/3.7795f).toInt();val hp=((bottom-top)/3.7795f).toInt()
+        val lp=Paint();lp.color=Color.WHITE;lp.textSize=28f/scaleFactor;lp.isAntiAlias=true;lp.setShadowLayer(3f/scaleFactor,0f,0f,Color.BLACK)
+        canvas.drawText("${wp}×${hp}mm",left+8f/scaleFactor,top-12f/scaleFactor,lp)
     }
 
     private fun drawAutoSelectOverlay(canvas: Canvas) {
-        regionPath?.let { rp ->
-            val fp = Paint(); fp.color = Color.parseColor("#332196F3"); fp.style = Paint.Style.FILL
-            val sp = Paint(); sp.color = Color.parseColor("#2196F3"); sp.style = Paint.Style.STROKE; sp.strokeWidth = 2f / scaleFactor
-            sp.pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f / scaleFactor, 6f / scaleFactor), 0f)
-            canvas.drawPath(rp, fp); canvas.drawPath(rp, sp)
-        }
-        val group = selectedGroup
-        if (group != null && group.isNotEmpty()) {
-            val hp = Paint(); hp.color = Color.parseColor("#332196F3"); hp.style = Paint.Style.FILL
-            for (item in group) { val b = getBounds(item) ?: continue; canvas.drawRect(b[0], b[1], b[2], b[3], hp) }
-            val gb = groupBounds(group)
-            if (gb != null) {
-                val bp = Paint(); bp.color = Color.parseColor("#2196F3"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 2f / scaleFactor
-                canvas.drawRect(gb[0], gb[1], gb[2], gb[3], bp)
-                val r = 18f / scaleFactor; val cx = (gb[0] + gb[2]) / 2f
-                val hf = Paint(); hf.style = Paint.Style.FILL; hf.color = Color.WHITE
-                val hs = Paint(); hs.style = Paint.Style.STROKE; hs.color = Color.parseColor("#2196F3"); hs.strokeWidth = 2f / scaleFactor
-                for ((hx, hy) in listOf(gb[0] to gb[1], cx to gb[1], gb[2] to gb[1], gb[0] to (gb[1]+gb[3])/2f, gb[2] to (gb[1]+gb[3])/2f, gb[0] to gb[3], cx to gb[3], gb[2] to gb[3])) {
-                    canvas.drawCircle(hx, hy, r, hf); canvas.drawCircle(hx, hy, r, hs)
-                }
-                val dp = Paint(); dp.color = Color.parseColor("#F44336"); dp.style = Paint.Style.FILL
-                canvas.drawCircle(gb[2] + r * 5f, gb[1] - r * 5f, r * 1.4f, dp)
+        regionPath?.let{rp->val fp=Paint();fp.color=Color.parseColor("#332196F3");fp.style=Paint.Style.FILL;val sp=Paint();sp.color=Color.parseColor("#2196F3");sp.style=Paint.Style.STROKE;sp.strokeWidth=2f/scaleFactor;sp.pathEffect=android.graphics.DashPathEffect(floatArrayOf(10f/scaleFactor,6f/scaleFactor),0f);canvas.drawPath(rp,fp);canvas.drawPath(rp,sp)}
+        val group=selectedGroup
+        if(group!=null&&group.isNotEmpty()){
+            val hp=Paint();hp.color=Color.parseColor("#332196F3");hp.style=Paint.Style.FILL
+            for(item in group){val b=getBounds(item)?:continue;canvas.drawRect(b[0],b[1],b[2],b[3],hp)}
+            val gb=groupBounds(group)
+            if(gb!=null){
+                val bp=Paint();bp.color=Color.parseColor("#2196F3");bp.style=Paint.Style.STROKE;bp.strokeWidth=2f/scaleFactor;canvas.drawRect(gb[0],gb[1],gb[2],gb[3],bp)
+                val r=18f/scaleFactor;val cx=(gb[0]+gb[2])/2f;val hf=Paint();hf.style=Paint.Style.FILL;hf.color=Color.WHITE;val hs=Paint();hs.style=Paint.Style.STROKE;hs.color=Color.parseColor("#2196F3");hs.strokeWidth=2f/scaleFactor
+                for((hx,hy) in listOf(gb[0] to gb[1],cx to gb[1],gb[2] to gb[1],gb[0] to(gb[1]+gb[3])/2f,gb[2] to(gb[1]+gb[3])/2f,gb[0] to gb[3],cx to gb[3],gb[2] to gb[3])){canvas.drawCircle(hx,hy,r,hf);canvas.drawCircle(hx,hy,r,hs)}
+                val dp=Paint();dp.color=Color.parseColor("#F44336");dp.style=Paint.Style.FILL;canvas.drawCircle(gb[2]+r*5f,gb[1]-r*5f,r*1.4f,dp)
             }
         }
     }
 
     private fun drawCursor(canvas: Canvas) {
-        val hx = hoverX ?: return; val hy = hoverY ?: return
-        val p = Paint(); p.isAntiAlias = true
-        when (currentTool) {
-            Tool.PEN -> { p.color = currentColor; p.style = Paint.Style.FILL; canvas.drawCircle(hx, hy, (currentStrokeWidth * scaleFactor / 2f).coerceAtLeast(2f), p) }
-            Tool.ERASER -> {
-                p.color = if (eraserMode == EraserMode.OBJECT) Color.DKGRAY else Color.RED; p.style = Paint.Style.STROKE; p.strokeWidth = 2f
-                val half = eraserSize * scaleFactor / 2f
-                if (eraserMode == EraserMode.OBJECT) canvas.drawRect(hx - half, hy - half, hx + half, hy + half, p)
-                else canvas.drawCircle(hx, hy, half, p)
-            }
-            else -> { p.color = Color.DKGRAY; p.style = Paint.Style.FILL; canvas.drawCircle(hx, hy, 5f, p) }
+        val hx=hoverX?:return;val hy=hoverY?:return;val p=Paint();p.isAntiAlias=true
+        when(currentTool){
+            Tool.PEN->{p.color=currentColor;p.style=Paint.Style.FILL;canvas.drawCircle(hx,hy,(currentStrokeWidth*scaleFactor/2f).coerceAtLeast(2f),p)}
+            Tool.ERASER->{p.color=if(eraserMode==EraserMode.OBJECT)Color.DKGRAY else Color.RED;p.style=Paint.Style.STROKE;p.strokeWidth=2f;val half=eraserSize*scaleFactor/2f;if(eraserMode==EraserMode.OBJECT)canvas.drawRect(hx-half,hy-half,hx+half,hy+half,p) else canvas.drawCircle(hx,hy,half,p)}
+            else->{p.color=Color.DKGRAY;p.style=Paint.Style.FILL;canvas.drawCircle(hx,hy,5f,p)}
         }
     }
 
-    private fun pageWidthPx(): Float {
-        val m = 3.7795f
-        return if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
-    }
-
-    private fun pageHeightPx(): Float {
-        val m = 3.7795f
-        return if (pageOrientation == Orientation.PORTRAIT) paperSize.heightMM * m else paperSize.widthMM * m
-    }
+    private fun pageWidthPx(): Float { val m=3.7795f; return if(pageOrientation==Orientation.PORTRAIT) paperSize.widthMM*m else paperSize.heightMM*m }
+    private fun pageHeightPx(): Float { val m=3.7795f; return if(pageOrientation==Orientation.PORTRAIT) paperSize.heightMM*m else paperSize.widthMM*m }
 
     private fun drawBackground(canvas: Canvas) {
-        val vl = -translateX / scaleFactor; val vt = -translateY / scaleFactor
-        val vr = vl + width / scaleFactor; val vb = vt + height / scaleFactor
-        when (canvasMode) {
-            CanvasMode.INFINITE -> {
-                if (paperType == PaperType.BLANK_COLORED) {
-                    val p = Paint(); p.color = paperColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, p)
-                } else if (paperType != PaperType.BLANK) drawPaperPattern(canvas, vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f)
+        val vl=-translateX/scaleFactor;val vt=-translateY/scaleFactor;val vr=vl+width/scaleFactor;val vb=vt+height/scaleFactor
+        when(canvasMode){
+            CanvasMode.INFINITE->{
+                if(paperType==PaperType.BLANK_COLORED){val p=Paint();p.color=paperColor;canvas.drawRect(vl-2000f,vt-2000f,vr+2000f,vb+2000f,p)}
+                else if(paperType!=PaperType.BLANK) drawPaperPattern(canvas,vl-2000f,vt-2000f,vr+2000f,vb+2000f)
             }
-            CanvasMode.FIXED -> {
-                val pw = pageWidthPx(); val ph = pageHeightPx()
-                val gp = Paint(); gp.color = Color.parseColor("#D5D5D5"); canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
-                val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else Color.WHITE
-                canvas.drawRect(0f, 0f, pw, ph, wp)
-                if (paperType != PaperType.BLANK && paperType != PaperType.BLANK_COLORED) {
-                    canvas.save(); canvas.clipRect(0f, 0f, pw, ph); drawPaperPattern(canvas, 0f, 0f, pw, ph); canvas.restore()
-                }
-                val bp = Paint(); bp.color = Color.parseColor("#909090"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 2f / scaleFactor
-                canvas.drawRect(0f, 0f, pw, ph, bp)
+            CanvasMode.FIXED->{
+                val pw=pageWidthPx();val ph=pageHeightPx()
+                val gp=Paint();gp.color=Color.parseColor("#D5D5D5");canvas.drawRect(vl-2000f,vt-2000f,vr+2000f,vb+2000f,gp)
+                val wp=Paint();wp.color=if(paperType==PaperType.BLANK_COLORED)paperColor else Color.WHITE;canvas.drawRect(0f,0f,pw,ph,wp)
+                if(paperType!=PaperType.BLANK&&paperType!=PaperType.BLANK_COLORED){canvas.save();canvas.clipRect(0f,0f,pw,ph);drawPaperPattern(canvas,0f,0f,pw,ph);canvas.restore()}
+                val bp=Paint();bp.color=Color.parseColor("#909090");bp.style=Paint.Style.STROKE;bp.strokeWidth=2f/scaleFactor;canvas.drawRect(0f,0f,pw,ph,bp)
             }
-            CanvasMode.PAGINATED -> {
-                val pw = pageWidthPx(); val ph = pageHeightPx(); val gap = 40f
-                val gp = Paint(); gp.color = Color.parseColor("#D5D5D5"); canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+            CanvasMode.PAGINATED->{
+                val pw=pageWidthPx();val ph=pageHeightPx();val gap=40f
+                val gp=Paint();gp.color=Color.parseColor("#D5D5D5");canvas.drawRect(vl-2000f,vt-2000f,vr+2000f,vb+2000f,gp)
+                val wp=Paint();wp.color=if(paperType==PaperType.BLANK_COLORED)paperColor else Color.WHITE
+                val bp=Paint();bp.color=Color.parseColor("#909090");bp.style=Paint.Style.STROKE;bp.strokeWidth=2f/scaleFactor
+                val period=ph+gap;val si=(kotlin.math.floor(vt/period).toInt()-1).coerceAtLeast(0);val ei=kotlin.math.ceil(vb/period).toInt()+1
+                for(i in si..ei){val top=i*period;canvas.drawRect(0f,top,pw,top+ph,wp);if(paperType!=PaperType.BLANK&&paperType!=PaperType.BLANK_COLORED){canvas.save();canvas.clipRect(0f,top,pw,top+ph);drawPaperPattern(canvas,0f,top,pw,top+ph);canvas.restore()};canvas.drawRect(0f,top,pw,top+ph,bp)}
+            }
+            CanvasMode.CONVENIENT -> {
+                // Pages sized to screen: width = screen width (world), height = screen height (world)
+                val pageW = width.toFloat()   // at scaleFactor=1, world = screen
+                val pageH = height.toFloat()
+                val gap   = 24f
+                val gp = Paint(); gp.color = Color.parseColor("#D8D8D8")
+                canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
                 val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else Color.WHITE
-                val bp = Paint(); bp.color = Color.parseColor("#909090"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 2f / scaleFactor
-                val period = ph + gap
+                val bp = Paint(); bp.color = Color.parseColor("#B0B0B0"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 1f / scaleFactor
+                val period = pageH + gap
                 val si = (kotlin.math.floor(vt / period).toInt() - 1).coerceAtLeast(0)
                 val ei = kotlin.math.ceil(vb / period).toInt() + 1
+                val lp = Paint(); lp.color = Color.parseColor("#C0C0C0"); lp.textSize = 24f / scaleFactor; lp.isAntiAlias = true
                 for (i in si..ei) {
                     val top = i * period
-                    canvas.drawRect(0f, top, pw, top + ph, wp)
+                    canvas.drawRect(0f, top, pageW, top + pageH, wp)
                     if (paperType != PaperType.BLANK && paperType != PaperType.BLANK_COLORED) {
-                        canvas.save(); canvas.clipRect(0f, top, pw, top + ph); drawPaperPattern(canvas, 0f, top, pw, top + ph); canvas.restore()
+                        canvas.save(); canvas.clipRect(0f, top, pageW, top + pageH)
+                        drawPaperPattern(canvas, 0f, top, pageW, top + pageH); canvas.restore()
                     }
-                    canvas.drawRect(0f, top, pw, top + ph, bp)
+                    canvas.drawRect(0f, top, pageW, top + pageH, bp)
+                    // Page number bottom-right
+                    canvas.drawText("${i + 1}", pageW - 60f / scaleFactor, top + pageH - 10f / scaleFactor, lp)
                 }
             }
         }
     }
 
     private fun drawPaperPattern(canvas: Canvas, left: Float, top: Float, right: Float, bottom: Float) {
-        when (paperType) {
-            PaperType.LINED -> {
-                val p = Paint(); p.color = Color.parseColor("#C8D6F0"); p.strokeWidth = 1f
-                val s = 60f; var y = (top / s).toInt() * s
-                while (y < bottom) { canvas.drawLine(left, y, right, y, p); y += s }
-            }
-            PaperType.GRID -> {
-                val p = Paint(); p.color = Color.parseColor("#D0D0D0"); p.strokeWidth = 1f
-                val s = 50f
-                var x = (left / s).toInt() * s; while (x < right) { canvas.drawLine(x, top, x, bottom, p); x += s }
-                var y = (top / s).toInt() * s; while (y < bottom) { canvas.drawLine(left, y, right, y, p); y += s }
-            }
-            PaperType.DOTS -> {
-                val p = Paint(); p.color = Color.parseColor("#B0B0B0"); p.style = Paint.Style.FILL
-                val s = 50f; var x = (left / s).toInt() * s
-                while (x < right) { var y = (top / s).toInt() * s; while (y < bottom) { canvas.drawCircle(x, y, 2f, p); y += s }; x += s }
-            }
-            PaperType.ENGINEERING -> {
-                val mp = Paint(); mp.color = Color.parseColor("#E0E8F5"); mp.strokeWidth = 1f
-                val Mp = Paint(); Mp.color = Color.parseColor("#A8C0E8"); Mp.strokeWidth = 1.5f
-                val ms = 20f; val me = 5
-                var i = (left / ms).toInt(); var x = i * ms
-                while (x < right) { canvas.drawLine(x, top, x, bottom, if (i % me == 0) Mp else mp); i++; x = i * ms }
-                var j = (top / ms).toInt(); var y = j * ms
-                while (y < bottom) { canvas.drawLine(left, y, right, y, if (j % me == 0) Mp else mp); j++; y = j * ms }
-            }
-            else -> {}
+        when(paperType){
+            PaperType.LINED->{val p=Paint();p.color=Color.parseColor("#C8D6F0");p.strokeWidth=1f;val s=60f;var y=(top/s).toInt()*s;while(y<bottom){canvas.drawLine(left,y,right,y,p);y+=s}}
+            PaperType.GRID->{val p=Paint();p.color=Color.parseColor("#D0D0D0");p.strokeWidth=1f;val s=50f;var x=(left/s).toInt()*s;while(x<right){canvas.drawLine(x,top,x,bottom,p);x+=s};var y=(top/s).toInt()*s;while(y<bottom){canvas.drawLine(left,y,right,y,p);y+=s}}
+            PaperType.DOTS->{val p=Paint();p.color=Color.parseColor("#B0B0B0");p.style=Paint.Style.FILL;val s=50f;var x=(left/s).toInt()*s;while(x<right){var y=(top/s).toInt()*s;while(y<bottom){canvas.drawCircle(x,y,2f,p);y+=s};x+=s}}
+            PaperType.ENGINEERING->{val mp=Paint();mp.color=Color.parseColor("#E0E8F5");mp.strokeWidth=1f;val Mp=Paint();Mp.color=Color.parseColor("#A8C0E8");Mp.strokeWidth=1.5f;val ms=20f;val me=5;var i=(left/ms).toInt();var x=i*ms;while(x<right){canvas.drawLine(x,top,x,bottom,if(i%me==0)Mp else mp);i++;x=i*ms};var j=(top/ms).toInt();var y=j*ms;while(y<bottom){canvas.drawLine(left,y,right,y,if(j%me==0)Mp else mp);j++;y=j*ms}}
+            else->{}
         }
     }
 
@@ -1277,444 +1142,203 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     fun getScaleFactor(): Float = scaleFactor
 
     override fun onHoverEvent(event: MotionEvent): Boolean {
-        when (event.action) {
-            MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> { hoverX = event.x; hoverY = event.y; invalidate() }
-            MotionEvent.ACTION_HOVER_EXIT -> { hoverX = null; hoverY = null; invalidate() }
-        }
+        when(event.action){MotionEvent.ACTION_HOVER_ENTER,MotionEvent.ACTION_HOVER_MOVE->{hoverX=event.x;hoverY=event.y;invalidate()};MotionEvent.ACTION_HOVER_EXIT->{hoverX=null;hoverY=null;invalidate()}}
         return true
     }
 
-    // ════════════════════════════════════════════════════════════
-    //  TOUCH EVENT — central dispatcher
-    //
-    //  Rules:
-    //  1. Two fingers → scale + pan only, NEVER draw
-    //  2. Stylus down → reject any finger touches until stylus lifts
-    //  3. Drawing tools in fixed/paginated → single finger draws only,
-    //     NO scroll (pan is two-finger only)
-    //  4. Non-drawing tools → gesture detector handles taps
-    //  5. Infinite canvas non-drawing → gesture detector handles pan
-    // ════════════════════════════════════════════════════════════
     override fun onTouchEvent(event: MotionEvent): Boolean {
-
-        // ── Two-finger: scale + pan, never draw ─────────────────
-        if (event.pointerCount >= 2) {
-            // Cancel any in-progress single-finger stroke
-            if (currentItem != null) { currentItem = null; invalidate() }
-            isStylusDown = false; drawingPointerId = -1
-
+        if(event.pointerCount>=2){
+            if(currentItem!=null){currentItem=null;invalidate()}
+            isStylusDown=false;drawingPointerId=-1
             scaleDetector.onTouchEvent(event)
-
-            // Two-finger pan for fixed / paginated canvas
-            if (canvasMode != CanvasMode.INFINITE) {
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_MOVE -> {
-                        val fx = (event.getX(0) + event.getX(1)) / 2f
-                        val fy = (event.getY(0) + event.getY(1)) / 2f
-                        if (twoFingerLastX != 0f || twoFingerLastY != 0f) {
-                            translateX += fx - twoFingerLastX
-                            translateY += fy - twoFingerLastY
-                            clampTranslation()
-                            onScaleChanged?.invoke(scaleFactor)
-                            onCanvasTransformed?.invoke()
-                            invalidate()
-                        }
-                        twoFingerLastX = fx; twoFingerLastY = fy
-                    }
-                    MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        twoFingerLastX = 0f; twoFingerLastY = 0f
-                    }
+            if(canvasMode==CanvasMode.PAGINATED||canvasMode==CanvasMode.FIXED||canvasMode==CanvasMode.CONVENIENT){
+                when(event.actionMasked){
+                    MotionEvent.ACTION_MOVE->{val fx=(event.getX(0)+event.getX(1))/2f;val fy=(event.getY(0)+event.getY(1))/2f;if(twoFingerLastX!=0f||twoFingerLastY!=0f){translateX+=fx-twoFingerLastX;translateY+=fy-twoFingerLastY;clampTranslation();onScaleChanged?.invoke(scaleFactor);onCanvasTransformed?.invoke();invalidate()};twoFingerLastX=fx;twoFingerLastY=fy}
+                    MotionEvent.ACTION_POINTER_UP,MotionEvent.ACTION_UP,MotionEvent.ACTION_CANCEL->{twoFingerLastX=0f;twoFingerLastY=0f}
                 }
             }
             return true
         }
-
-        // ── Single pointer from here ─────────────────────────────
-        twoFingerLastX = 0f; twoFingerLastY = 0f
-
-        val toolType = event.getToolType(0)
-        val isStylus = toolType == MotionEvent.TOOL_TYPE_STYLUS ||
-                       toolType == MotionEvent.TOOL_TYPE_ERASER
-        val isFinger = toolType == MotionEvent.TOOL_TYPE_FINGER ||
-                       toolType == MotionEvent.TOOL_TYPE_UNKNOWN
-
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                if (isStylus) {
-                    isStylusDown = true
-                    drawingPointerId = event.getPointerId(0)
-                } else {
-                    // Reject finger if stylus is already on screen
-                    if (isStylusDown) return true
-                    drawingPointerId = event.getPointerId(0)
-                }
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                if (isStylus) isStylusDown = false
-                drawingPointerId = -1
-            }
-            MotionEvent.ACTION_MOVE -> {
-                // Reject finger move while stylus is drawing
-                if (isStylusDown && isFinger) return true
-            }
+        twoFingerLastX=0f;twoFingerLastY=0f
+        val toolType=event.getToolType(0)
+        val isStylus=toolType==MotionEvent.TOOL_TYPE_STYLUS||toolType==MotionEvent.TOOL_TYPE_ERASER
+        val isFinger=toolType==MotionEvent.TOOL_TYPE_FINGER||toolType==MotionEvent.TOOL_TYPE_UNKNOWN
+        when(event.actionMasked){
+            MotionEvent.ACTION_DOWN->{if(isStylus){isStylusDown=true;drawingPointerId=event.getPointerId(0)}else{if(isStylusDown) return true;drawingPointerId=event.getPointerId(0)}}
+            MotionEvent.ACTION_UP,MotionEvent.ACTION_CANCEL->{if(isStylus)isStylusDown=false;drawingPointerId=-1}
+            MotionEvent.ACTION_MOVE->{if(isStylusDown&&isFinger) return true}
         }
-
-        // ── Route to correct handler ─────────────────────────────
-
-        // Text and Fill tools only need gesture detector (tap detection)
-        if (currentTool == Tool.TEXT || currentTool == Tool.FILL) {
-            gestureDetector.onTouchEvent(event)
-            return true
-        }
-
-        // Select tool — gesture detector for taps, handleSelect for drag
-        if (currentTool == Tool.SELECT) {
-            gestureDetector.onTouchEvent(event)
-            handleSelect(event)
-            return true
-        }
-
-        // Arc tool
-        if (currentTool == Tool.ARC) {
-            handleArc(event)
-            return true
-        }
-
-        // AutoSelect tool
-        if (currentTool == Tool.AUTOSELECT) {
-            gestureDetector.onTouchEvent(event)
-            handleAutoSelect(event)
-            return true
-        }
-
-        // Export window tool
-        if (currentTool == Tool.EXPORT_WINDOW) {
-            handleExportWindow(event)
-            return true
-        }
-
-        // Drawing tools (PEN, ERASER, shapes)
-        // On infinite canvas: also allow single-finger pan when not actively drawing
-        if (canvasMode == CanvasMode.INFINITE && currentItem == null &&
-            event.actionMasked == MotionEvent.ACTION_MOVE && isFinger) {
-            // Let gesture detector handle pan scroll on infinite canvas
-            gestureDetector.onTouchEvent(event)
-        }
-
-        handleDrawing(event)
-        return true
+        if(currentTool==Tool.TEXT||currentTool==Tool.FILL){gestureDetector.onTouchEvent(event);return true}
+        if(currentTool==Tool.SELECT){gestureDetector.onTouchEvent(event);handleSelect(event);return true}
+        if(currentTool==Tool.ARC){handleArc(event);return true}
+        if(currentTool==Tool.AUTOSELECT){gestureDetector.onTouchEvent(event);handleAutoSelect(event);return true}
+        if(currentTool==Tool.EXPORT_WINDOW){handleExportWindow(event);return true}
+        if((canvasMode==CanvasMode.INFINITE||canvasMode==CanvasMode.CONVENIENT)&&currentItem==null&&event.actionMasked==MotionEvent.ACTION_MOVE&&isFinger){gestureDetector.onTouchEvent(event)}
+        handleDrawing(event);return true
     }
 
     private fun handleExportWindow(event: MotionEvent) {
-        val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { exportWindowStart = Pair(wx, wy); exportWindowEnd = Pair(wx, wy); invalidate() }
-            MotionEvent.ACTION_MOVE -> { exportWindowEnd = Pair(wx, wy); invalidate() }
-            MotionEvent.ACTION_UP -> {
-                val s = exportWindowStart ?: return; val e = exportWindowEnd ?: return
-                val left = minOf(s.first, e.first); val top = minOf(s.second, e.second)
-                val right = maxOf(s.first, e.first); val bottom = maxOf(s.second, e.second)
-                if (right - left > 20f && bottom - top > 20f) onExportWindowSelected?.invoke(left, top, right, bottom)
-                exportWindowStart = null; exportWindowEnd = null; currentTool = Tool.SELECT; invalidate()
-            }
+        val wx=screenToWorldX(event.x);val wy=screenToWorldY(event.y)
+        when(event.actionMasked){
+            MotionEvent.ACTION_DOWN->{exportWindowStart=Pair(wx,wy);exportWindowEnd=Pair(wx,wy);invalidate()}
+            MotionEvent.ACTION_MOVE->{exportWindowEnd=Pair(wx,wy);invalidate()}
+            MotionEvent.ACTION_UP->{val s=exportWindowStart?:return;val e=exportWindowEnd?:return;val left=minOf(s.first,e.first);val top=minOf(s.second,e.second);val right=maxOf(s.first,e.first);val bottom=maxOf(s.second,e.second);if(right-left>20f&&bottom-top>20f)onExportWindowSelected?.invoke(left,top,right,bottom);exportWindowStart=null;exportWindowEnd=null;currentTool=Tool.SELECT;invalidate()}
         }
     }
 
     private fun handleDrawing(event: MotionEvent) {
-        hoverX = event.x; hoverY = event.y
-        val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
-        val pressure = event.pressure.coerceIn(0.3f, 1.5f)
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                if (currentTool == Tool.ERASER) { eraseAt(wx, wy); invalidate(); return }
-                val data = when {
-                    currentTool == Tool.PEN -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false)
-                    SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, fillShapes)
-                    else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false)
-                }
-                currentItem = StrokeItem(data, data.buildPath(), data.toPaint()); invalidate()
-            }
-            MotionEvent.ACTION_MOVE -> {
-                if (currentTool == Tool.ERASER) { eraseAt(wx, wy); invalidate(); return }
-                val item = currentItem ?: return
-                if (currentTool == Tool.PEN) { item.data.points.add(wx); item.data.points.add(wy) }
-                else if (SHAPE_TOOLS.contains(currentTool)) { item.data.points[2] = wx; item.data.points[3] = wy }
-                item.path = item.data.buildPath(); invalidate()
-            }
-            MotionEvent.ACTION_UP -> { currentItem?.let { actions.add(it); redoStack.clear() }; currentItem = null; invalidate() }
+        hoverX=event.x;hoverY=event.y;val wx=screenToWorldX(event.x);val wy=screenToWorldY(event.y);val pressure=event.pressure.coerceIn(0.3f,1.5f)
+        when(event.actionMasked){
+            MotionEvent.ACTION_DOWN->{if(currentTool==Tool.ERASER){eraseAt(wx,wy);invalidate();return};val data=when{currentTool==Tool.PEN->StrokeData(Tool.PEN,mutableListOf(wx,wy),currentColor,currentStrokeWidth*pressure,false);SHAPE_TOOLS.contains(currentTool)->StrokeData(currentTool,mutableListOf(wx,wy,wx,wy),currentColor,currentStrokeWidth,fillShapes);else->StrokeData(Tool.PEN,mutableListOf(wx,wy),currentColor,currentStrokeWidth*pressure,false)};currentItem=StrokeItem(data,data.buildPath(),data.toPaint());invalidate()}
+            MotionEvent.ACTION_MOVE->{if(currentTool==Tool.ERASER){eraseAt(wx,wy);invalidate();return};val item=currentItem?:return;if(currentTool==Tool.PEN){item.data.points.add(wx);item.data.points.add(wy)}else if(SHAPE_TOOLS.contains(currentTool)){item.data.points[2]=wx;item.data.points[3]=wy};item.path=item.data.buildPath();invalidate()}
+            MotionEvent.ACTION_UP->{currentItem?.let{actions.add(it);redoStack.clear()};currentItem=null;invalidate()}
         }
     }
 
     private fun eraseAt(x: Float, y: Float) {
-        val r = eraserSize / 2f
-        if (eraserMode == EraserMode.OBJECT) {
-            val it = actions.iterator()
-            while (it.hasNext()) {
-                val a = it.next()
-                val hit = when (a) {
-                    is StrokeItem -> strokeHitTest(a.data, x, y, r)
-                    is TextItem -> distance(x, y, a.x, a.y) <= r + a.size
-                    is ImageItem -> distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) <= r + maxOf(a.w, a.h) / 2f
-                    is FillItem -> distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) <= r + maxOf(a.w, a.h) / 2f
-                    else -> false
-                }
-                if (hit) it.remove()
-            }
-        } else {
-            val newActions = mutableListOf<Any>()
-            for (a in actions) {
-                when (a) {
-                    is StrokeItem -> {
-                        if (a.data.type == Tool.PEN || a.data.type == Tool.ERASER || a.data.type == Tool.ARC)
-                            newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r))
-                        else if (!strokeHitTest(a.data, x, y, r)) newActions.add(a)
-                    }
-                    is TextItem -> { if (distance(x, y, a.x, a.y) > r + a.size) newActions.add(a) }
-                    is ImageItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) }
-                    is FillItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) }
-                    else -> newActions.add(a)
-                }
-            }
-            actions.clear(); actions.addAll(newActions)
-        }
+        val r=eraserSize/2f
+        if(eraserMode==EraserMode.OBJECT){val it=actions.iterator();while(it.hasNext()){val a=it.next();val hit=when(a){is StrokeItem->strokeHitTest(a.data,x,y,r);is TextItem->distance(x,y,a.x,a.y)<=r+a.size;is ImageItem->distance(x,y,a.x+a.w/2f,a.y+a.h/2f)<=r+maxOf(a.w,a.h)/2f;is FillItem->distance(x,y,a.x+a.w/2f,a.y+a.h/2f)<=r+maxOf(a.w,a.h)/2f;else->false};if(hit)it.remove()}}
+        else{val newActions=mutableListOf<Any>();for(a in actions){when(a){is StrokeItem->{if(a.data.type==Tool.PEN||a.data.type==Tool.ERASER||a.data.type==Tool.ARC)newActions.addAll(splitStrokeAroundEraser(a.data,x,y,r)) else if(!strokeHitTest(a.data,x,y,r))newActions.add(a)};is TextItem->{if(distance(x,y,a.x,a.y)>r+a.size)newActions.add(a)};is ImageItem->{if(distance(x,y,a.x+a.w/2f,a.y+a.h/2f)>r+maxOf(a.w,a.h)/2f)newActions.add(a)};is FillItem->{if(distance(x,y,a.x+a.w/2f,a.y+a.h/2f)>r+maxOf(a.w,a.h)/2f)newActions.add(a)};else->newActions.add(a)}};actions.clear();actions.addAll(newActions)}
     }
 
     private fun splitStrokeAroundEraser(data: StrokeData, ex: Float, ey: Float, r: Float): List<StrokeItem> {
-        val pts = data.points
-        if (pts.size < 4) { if (pts.size >= 2 && distance(ex, ey, pts[0], pts[1]) <= r) return emptyList(); return listOf(StrokeItem(data, data.buildPath(), data.toPaint())) }
-        val segs = mutableListOf<MutableList<Float>>(); var cur = mutableListOf<Float>(); var i = 0
-        while (i + 1 < pts.size) {
-            if (distance(ex, ey, pts[i], pts[i + 1]) <= r) { if (cur.size >= 4) segs.add(cur); cur = mutableListOf() }
-            else { cur.add(pts[i]); cur.add(pts[i + 1]) }; i += 2
-        }
-        if (cur.size >= 4) segs.add(cur)
-        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill); StrokeItem(d, d.buildPath(), d.toPaint()) }
+        val pts=data.points
+        if(pts.size<4){if(pts.size>=2&&distance(ex,ey,pts[0],pts[1])<=r)return emptyList();return listOf(StrokeItem(data,data.buildPath(),data.toPaint()))}
+        val segs=mutableListOf<MutableList<Float>>();var cur=mutableListOf<Float>();var i=0
+        while(i+1<pts.size){if(distance(ex,ey,pts[i],pts[i+1])<=r){if(cur.size>=4)segs.add(cur);cur=mutableListOf()}else{cur.add(pts[i]);cur.add(pts[i+1])};i+=2}
+        if(cur.size>=4)segs.add(cur)
+        return segs.map{sp->val d=StrokeData(data.type,sp,data.color,data.strokeWidth,data.fill);StrokeItem(d,d.buildPath(),d.toPaint())}
     }
 
     private fun strokeHitTest(data: StrokeData, x: Float, y: Float, r: Float): Boolean {
-        if (data.type == Tool.PEN || data.type == Tool.ERASER || data.type == Tool.ARC) {
-            if (data.points.size == 2) return distance(x, y, data.points[0], data.points[1]) <= r
-            var i = 0
-            while (i + 3 < data.points.size) { if (distToSeg(x, y, data.points[i], data.points[i + 1], data.points[i + 2], data.points[i + 3]) <= r) return true; i += 2 }
-            return false
-        } else {
-            if (data.points.size >= 4) {
-                val l = minOf(data.points[0], data.points[2]) - r; val ri = maxOf(data.points[0], data.points[2]) + r
-                val t = minOf(data.points[1], data.points[3]) - r; val b = maxOf(data.points[1], data.points[3]) + r
-                return x in l..ri && y in t..b
-            }
-            return false
-        }
+        if(data.type==Tool.PEN||data.type==Tool.ERASER||data.type==Tool.ARC){if(data.points.size==2)return distance(x,y,data.points[0],data.points[1])<=r;var i=0;while(i+3<data.points.size){if(distToSeg(x,y,data.points[i],data.points[i+1],data.points[i+2],data.points[i+3])<=r)return true;i+=2};return false}
+        else{if(data.points.size>=4){val l=minOf(data.points[0],data.points[2])-r;val ri=maxOf(data.points[0],data.points[2])+r;val t=minOf(data.points[1],data.points[3])-r;val b=maxOf(data.points[1],data.points[3])+r;return x in l..ri&&y in t..b};return false}
     }
 
-    private fun distance(x1: Float, y1: Float, x2: Float, y2: Float): Float =
-        kotlin.math.hypot((x2 - x1).toDouble(), (y2 - y1).toDouble()).toFloat()
-
+    private fun distance(x1: Float, y1: Float, x2: Float, y2: Float): Float = kotlin.math.hypot((x2-x1).toDouble(),(y2-y1).toDouble()).toFloat()
     private fun distToSeg(px: Float, py: Float, x1: Float, y1: Float, x2: Float, y2: Float): Float {
-        val dx = x2 - x1; val dy = y2 - y1
-        if (dx == 0f && dy == 0f) return distance(px, py, x1, y1)
-        val t = (((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)).coerceIn(0f, 1f)
-        return distance(px, py, x1 + t * dx, y1 + t * dy)
+        val dx=x2-x1;val dy=y2-y1;if(dx==0f&&dy==0f)return distance(px,py,x1,y1)
+        val t=(((px-x1)*dx+(py-y1)*dy)/(dx*dx+dy*dy)).coerceIn(0f,1f)
+        return distance(px,py,x1+t*dx,y1+t*dy)
     }
 
     fun addText(text: String, x: Float, y: Float, size: Float, rotation: Float, color: Int, spans: MutableList<TextSpanData> = mutableListOf()) {
-        if (text.isBlank()) return
-        val item = TextItem(text, x, y, color, size, rotation); item.spans = spans
-        actions.add(item); redoStack.clear(); invalidate()
+        if(text.isBlank()) return
+        val item=TextItem(text,x,y,color,size,rotation);item.spans=spans;actions.add(item);redoStack.clear();invalidate()
     }
-
     fun removeTextItem(item: TextItem) { actions.remove(item); invalidate() }
 
     fun addImage(path: String, wx: Float, wy: Float, w: Float, h: Float) {
-        val item = ImageItem(path, wx - w / 2f, wy - h / 2f, w, h, 0f)
-        actions.add(item); redoStack.clear()
-        loadBitmapAsync(path) { bmp -> item.bitmap = bmp; item.loading = false; invalidate() }
-        invalidate()
+        val item=ImageItem(path,wx-w/2f,wy-h/2f,w,h,0f);actions.add(item);redoStack.clear()
+        loadBitmapAsync(path){bmp->item.bitmap=bmp;item.loading=false;invalidate()};invalidate()
+    }
+
+    fun addAudioItem(item: AudioItem) {
+        audioItems.add(item); redoStack.clear(); invalidate()
     }
 
     fun addTable(rows: Int, cols: Int, wx: Float, wy: Float, screenWidth: Float) {
-        val table = TableItem(wx, wy)
-        table.rows = rows; table.cols = cols
-        val cellW = (screenWidth / scaleFactor / 2f) / cols; val cellH = 60f
-        table.rowHeights.clear(); repeat(rows) { table.rowHeights.add(cellH) }
-        table.colWidths.clear(); repeat(cols) { table.colWidths.add(cellW) }
-        for (r in 0 until rows) for (c in 0 until cols) table.getCellPublic(r, c)
-        actions.add(table); redoStack.clear()
-        activeTableItem = table; invalidate()
+        val table=TableItem(wx,wy);table.rows=rows;table.cols=cols
+        val cellW=(screenWidth/scaleFactor/2f)/cols;val cellH=60f
+        table.rowHeights.clear();repeat(rows){table.rowHeights.add(cellH)};table.colWidths.clear();repeat(cols){table.colWidths.add(cellW)}
+        for(r in 0 until rows) for(c in 0 until cols) table.getCellPublic(r,c)
+        actions.add(table);redoStack.clear();activeTableItem=table;invalidate()
     }
 
     fun migrateOldNotes(filesDir: File) {
-        val oldFolder = File(filesDir, "drawings"); if (!oldFolder.exists()) return
-        val newFolder = File(File(filesDir, "books"), "General"); if (!newFolder.exists()) newFolder.mkdirs()
-        oldFolder.listFiles()?.filter { it.extension == "eng" }?.forEach { file ->
-            val dest = File(newFolder, file.name); if (!dest.exists()) file.copyTo(dest)
-        }
+        val oldFolder=File(filesDir,"drawings");if(!oldFolder.exists()) return
+        val newFolder=File(File(filesDir,"books"),"General");if(!newFolder.exists())newFolder.mkdirs()
+        oldFolder.listFiles()?.filter{it.extension=="eng"}?.forEach{file->val dest=File(newFolder,file.name);if(!dest.exists())file.copyTo(dest)}
     }
 
     fun exportWindow(left: Float, top: Float, right: Float, bottom: Float): Bitmap {
-        val tmpBmp = Bitmap.createBitmap(this.width, this.height, Bitmap.Config.ARGB_8888)
-        draw(Canvas(tmpBmp))
-        val sx = worldToScreenX(left).toInt().coerceAtLeast(0)
-        val sy = worldToScreenY(top).toInt().coerceAtLeast(0)
-        val ex = worldToScreenX(right).toInt().coerceAtMost(this.width)
-        val ey = worldToScreenY(bottom).toInt().coerceAtMost(this.height)
-        val cw = (ex - sx).coerceAtLeast(1); val ch = (ey - sy).coerceAtLeast(1)
-        return Bitmap.createBitmap(tmpBmp, sx, sy, cw, ch)
+        val tmpBmp=Bitmap.createBitmap(this.width,this.height,Bitmap.Config.ARGB_8888);draw(Canvas(tmpBmp))
+        val sx=worldToScreenX(left).toInt().coerceAtLeast(0);val sy=worldToScreenY(top).toInt().coerceAtLeast(0)
+        val ex=worldToScreenX(right).toInt().coerceAtMost(this.width);val ey=worldToScreenY(bottom).toInt().coerceAtMost(this.height)
+        val cw=(ex-sx).coerceAtLeast(1);val ch=(ey-sy).coerceAtLeast(1)
+        return Bitmap.createBitmap(tmpBmp,sx,sy,cw,ch)
     }
 
-    fun undo() { if (actions.isNotEmpty()) { redoStack.add(actions.removeAt(actions.size - 1)); invalidate() } }
-    fun redo() { if (redoStack.isNotEmpty()) { actions.add(redoStack.removeAt(redoStack.size - 1)); invalidate() } }
-    fun clearAll() { actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null; invalidate() }
-    fun hasContent(): Boolean = actions.isNotEmpty()
-    fun exportBitmap(): Bitmap { val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888); draw(Canvas(bmp)); return bmp }
+    fun undo() { if(actions.isNotEmpty()){redoStack.add(actions.removeAt(actions.size-1));invalidate()} }
+    fun redo() { if(redoStack.isNotEmpty()){actions.add(redoStack.removeAt(redoStack.size-1));invalidate()} }
+    fun clearAll() { actions.clear();redoStack.clear();audioItems.clear();selectedItem=null;activeTableItem=null;invalidate() }
+    fun hasContent(): Boolean = actions.isNotEmpty() || audioItems.isNotEmpty()
+    fun exportBitmap(): Bitmap { val bmp=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888);draw(Canvas(bmp));return bmp }
+
+    /**
+     * When switching Convenient → Print, scale text positions proportionally.
+     * Convenient world unit = 1 screen pixel. Print world unit = 1 screen pixel at 75% zoom.
+     */
+    fun rearrangeTextForPrint() {
+        val convW = width.toFloat().coerceAtLeast(1f)
+        val printW = pageWidthPx()
+        val ratio = printW / convW
+        for (a in actions) {
+            if (a is TextItem) { a.x *= ratio; a.y *= ratio; a.size = (a.size * ratio).coerceIn(8f, 300f) }
+        }
+        invalidate()
+    }
 
     fun renderStrokesOnly(scale: Float): Bitmap {
-        val w = (width * scale).toInt().coerceAtLeast(1); val h = (height * scale).toInt().coerceAtLeast(1)
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); val canvas = Canvas(bmp)
-        canvas.save(); canvas.scale(scale, scale); canvas.translate(translateX, translateY)
-        canvas.scale(scaleFactor, scaleFactor)
-        for (a in actions) drawActionItem(canvas, a, false)
-        canvas.restore(); return bmp
+        val w=(width*scale).toInt().coerceAtLeast(1);val h=(height*scale).toInt().coerceAtLeast(1)
+        val bmp=Bitmap.createBitmap(w,h,Bitmap.Config.ARGB_8888);val canvas=Canvas(bmp)
+        canvas.save();canvas.scale(scale,scale);canvas.translate(translateX,translateY);canvas.scale(scaleFactor,scaleFactor)
+        for(a in actions)drawActionItem(canvas,a,false);canvas.restore();return bmp
     }
 
     fun zoomTo(wx: Float, wy: Float, scale: Float) {
-        scaleFactor = scale.coerceIn(0.2f, 6f)
-        translateX = width / 2f - wx * scaleFactor; translateY = height / 2f - wy * scaleFactor
-        clampTranslation(); invalidate()
+        scaleFactor=scale.coerceIn(0.2f,6f);translateX=width/2f-wx*scaleFactor;translateY=height/2f-wy*scaleFactor;clampTranslation();invalidate()
     }
 
-    private fun clusterEdgePoints(points: List<Pair<Int, Int>>): List<Pair<Int, Int>> {
-        val clusters = mutableListOf<MutableList<Pair<Int, Int>>>()
-        for (p in points) {
-            var added = false
-            for (c in clusters) { val c0 = c[0]; if (kotlin.math.abs(c0.first - p.first) < 30 && kotlin.math.abs(c0.second - p.second) < 30) { c.add(p); added = true; break } }
-            if (!added) clusters.add(mutableListOf(p))
-        }
-        return clusters.map { Pair(it.map { it.first }.average().toInt(), it.map { it.second }.average().toInt()) }
+    private fun clusterEdgePoints(points: List<Pair<Int,Int>>): List<Pair<Int,Int>> {
+        val clusters=mutableListOf<MutableList<Pair<Int,Int>>>()
+        for(p in points){var added=false;for(c in clusters){val c0=c[0];if(kotlin.math.abs(c0.first-p.first)<30&&kotlin.math.abs(c0.second-p.second)<30){c.add(p);added=true;break}};if(!added)clusters.add(mutableListOf(p))}
+        return clusters.map{Pair(it.map{it.first}.average().toInt(),it.map{it.second}.average().toInt())}
     }
 
     fun performFill(screenX: Float, screenY: Float) {
-        val scale = 0.4f; val bmp = renderStrokesOnly(scale)
-        val w = bmp.width; val h = bmp.height
-        val px = (screenX * scale).toInt().coerceIn(0, w - 1); val py = (screenY * scale).toInt().coerceIn(0, h - 1)
-        val pixels = IntArray(w * h); bmp.getPixels(pixels, 0, w, 0, 0, w, h)
-        fun isEmpty(x: Int, y: Int): Boolean = ((pixels[y * w + x] ushr 24) and 0xFF) < 10
-        if (!isEmpty(px, py)) { invalidate(); return }
-        val visited = BooleanArray(w * h); val queue = ArrayDeque<Int>()
-        val start = py * w + px; queue.add(start); visited[start] = true
-        var filled = 0; val edgeHits = mutableListOf<Pair<Int, Int>>()
-        val maxFill = (w * h * 0.7f).toInt(); var leaked = false
-        while (queue.isNotEmpty()) {
-            val idx = queue.removeFirst(); val x = idx % w; val y = idx / w; filled++
-            if (x == 0 || x == w - 1 || y == 0 || y == h - 1) edgeHits.add(Pair(x, y))
-            if (filled > maxFill) { leaked = true; break }
-            if (x > 0) { val n = idx - 1; if (!visited[n] && isEmpty(x - 1, y)) { visited[n] = true; queue.add(n) } }
-            if (x < w - 1) { val n = idx + 1; if (!visited[n] && isEmpty(x + 1, y)) { visited[n] = true; queue.add(n) } }
-            if (y > 0) { val n = idx - w; if (!visited[n] && isEmpty(x, y - 1)) { visited[n] = true; queue.add(n) } }
-            if (y < h - 1) { val n = idx + w; if (!visited[n] && isEmpty(x, y + 1)) { visited[n] = true; queue.add(n) } }
-        }
-        if (leaked) {
-            val clusters = clusterEdgePoints(edgeHits)
-            if (clusters.isNotEmpty()) {
-                val (cx, cy) = clusters[0]
-                zoomTo(screenToWorldX(cx / scale), screenToWorldY(cy / scale), (scaleFactor * 2.5f).coerceAtMost(6f))
-            }
-            invalidate()
-        } else {
-            val fp = IntArray(w * h) { if (visited[it]) fillColor else Color.TRANSPARENT }
-            val fb = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); fb.setPixels(fp, 0, w, 0, 0, w, h)
-            val folder = File(ctx.filesDir, "images"); if (!folder.exists()) folder.mkdirs()
-            val outFile = File(folder, "fill_${System.currentTimeMillis()}.png")
-            try { FileOutputStream(outFile).use { fb.compress(Bitmap.CompressFormat.PNG, 100, it) } } catch (e: Exception) { invalidate(); return }
-            val wx0 = screenToWorldX(0f); val wy0 = screenToWorldY(0f)
-            val wx1 = screenToWorldX(width.toFloat()); val wy1 = screenToWorldY(height.toFloat())
-            actions.add(0, FillItem(outFile.absolutePath, wx0, wy0, wx1 - wx0, wy1 - wy0)); redoStack.clear(); invalidate()
-        }
+        val scale=0.4f;val bmp=renderStrokesOnly(scale);val w=bmp.width;val h=bmp.height
+        val px=(screenX*scale).toInt().coerceIn(0,w-1);val py=(screenY*scale).toInt().coerceIn(0,h-1)
+        val pixels=IntArray(w*h);bmp.getPixels(pixels,0,w,0,0,w,h)
+        fun isEmpty(x:Int,y:Int):Boolean=((pixels[y*w+x] ushr 24) and 0xFF)<10
+        if(!isEmpty(px,py)){invalidate();return}
+        val visited=BooleanArray(w*h);val queue=ArrayDeque<Int>();val start=py*w+px;queue.add(start);visited[start]=true
+        var filled=0;val edgeHits=mutableListOf<Pair<Int,Int>>();val maxFill=(w*h*0.7f).toInt();var leaked=false
+        while(queue.isNotEmpty()){val idx=queue.removeFirst();val x=idx%w;val y=idx/w;filled++;if(x==0||x==w-1||y==0||y==h-1)edgeHits.add(Pair(x,y));if(filled>maxFill){leaked=true;break};if(x>0){val n=idx-1;if(!visited[n]&&isEmpty(x-1,y)){visited[n]=true;queue.add(n)}};if(x<w-1){val n=idx+1;if(!visited[n]&&isEmpty(x+1,y)){visited[n]=true;queue.add(n)}};if(y>0){val n=idx-w;if(!visited[n]&&isEmpty(x,y-1)){visited[n]=true;queue.add(n)}};if(y<h-1){val n=idx+w;if(!visited[n]&&isEmpty(x,y+1)){visited[n]=true;queue.add(n)}}}
+        if(leaked){val clusters=clusterEdgePoints(edgeHits);if(clusters.isNotEmpty()){val(cx,cy)=clusters[0];zoomTo(screenToWorldX(cx/scale),screenToWorldY(cy/scale),(scaleFactor*2.5f).coerceAtMost(6f))};invalidate()}
+        else{val fp=IntArray(w*h){if(visited[it])fillColor else Color.TRANSPARENT};val fb=Bitmap.createBitmap(w,h,Bitmap.Config.ARGB_8888);fb.setPixels(fp,0,w,0,0,w,h);val folder=File(ctx.filesDir,"images");if(!folder.exists())folder.mkdirs();val outFile=File(folder,"fill_${System.currentTimeMillis()}.png");try{FileOutputStream(outFile).use{fb.compress(Bitmap.CompressFormat.PNG,100,it)}}catch(e:Exception){invalidate();return};val wx0=screenToWorldX(0f);val wy0=screenToWorldY(0f);val wx1=screenToWorldX(width.toFloat());val wy1=screenToWorldY(height.toFloat());actions.add(0,FillItem(outFile.absolutePath,wx0,wy0,wx1-wx0,wy1-wy0));redoStack.clear();invalidate()}
     }
 
     fun serialize(): String {
-        val sb = StringBuilder()
+        val sb=StringBuilder()
         sb.append("META\u0001${paperType.name}\u0001${canvasMode.name}\u0001${paperSize.name}\u0001${pageOrientation.name}\u0001$paperColor\n")
-        for (a in actions) when (a) {
-            is TableItem -> sb.append(a.serialize())
-            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}\n")
-            is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\n")
-            is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\n")
-            is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\n")
+        for(a in actions) when(a){
+            is TableItem->sb.append(a.serialize())
+            is StrokeItem->sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}\n")
+            is TextItem->sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";"){ "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n","\u0002")}\n")
+            is ImageItem->sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\n")
+            is FillItem->sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\n")
         }
+        for(audio in audioItems) sb.append(audio.serialize())
         return sb.toString()
     }
 
     fun loadFromString(content: String) {
-        actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null
-        val lines = content.lines(); var i = 0
-        while (i < lines.size) {
-            val line = lines[i]
-            if (line.isBlank()) { i++; continue }
+        actions.clear();redoStack.clear();audioItems.clear();selectedItem=null;activeTableItem=null
+        val lines=content.lines();var i=0
+        while(i<lines.size){
+            val line=lines[i];if(line.isBlank()){i++;continue}
             try {
-                when {
-                    line.startsWith("META\u0001") -> {
-                        val p = line.split("\u0001")
-                        try { if (p.size > 1) paperType = PaperType.valueOf(p[1]) } catch (e: Exception) {}
-                        try { if (p.size > 2) canvasMode = CanvasMode.valueOf(p[2]) } catch (e: Exception) {}
-                        try { if (p.size > 3) paperSize = PaperSizeOption.valueOf(p[3]) } catch (e: Exception) {}
-                        try { if (p.size > 4) pageOrientation = Orientation.valueOf(p[4]) } catch (e: Exception) {}
-                        try { if (p.size > 5) paperColor = p[5].toInt() } catch (e: Exception) {}
-                        i++
-                    }
-                    line.startsWith("TABLE\u0001") -> {
-                        val tableLines = mutableListOf<String>(); var j = i
-                        while (j < lines.size && !lines[j].startsWith("TABLEEND")) { tableLines.add(lines[j]); j++ }
-                        val (tableItem, _) = TableItem.deserialize(tableLines, 0)
-                        if (tableItem != null) actions.add(tableItem); i = j + 1
-                    }
-                    line.startsWith("TEXT\u0001") -> {
-                        val p = line.split("\u0001"); if (p.size >= 7) {
-                            val item = TextItem("", p[1].toFloat(), p[2].toFloat(), p[3].toInt(), p[4].toFloat(), p[5].toFloat())
-                            if (p.size >= 9) {
-                                val bold = p[6].toBoolean(); val italic = p[7].toBoolean()
-                                item.text = p[8].replace("\u0002", "\n")
-                                val style = if (bold && italic) Typeface.BOLD_ITALIC else if (bold) Typeface.BOLD else if (italic) Typeface.ITALIC else -1
-                                if (style >= 0) item.spans.add(TextSpanData(0, item.text.length, 'S', style))
-                            } else {
-                                if (p[6].isNotBlank()) for (t in p[6].split(";")) { val sp = t.split(","); if (sp.size == 4) item.spans.add(TextSpanData(sp[0].toInt(), sp[1].toInt(), sp[2][0], sp[3].toInt())) }
-                                item.text = if (p.size > 7) p[7].replace("\u0002", "\n") else ""
-                            }
-                            actions.add(item)
-                        }
-                        i++
-                    }
-                    line.startsWith("IMAGE\u0001") -> {
-                        val p = line.split("\u0001")
-                        if (p.size >= 7) {
-                            val item = ImageItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat(), p[6].toFloat())
-                            actions.add(item)
-                            loadBitmapAsync(p[1]) { bmp -> item.bitmap = bmp; item.loading = false; invalidate() }
-                        }
-                        i++
-                    }
-                    line.startsWith("FILL\u0001") -> {
-                        val p = line.split("\u0001")
-                        if (p.size >= 6) actions.add(FillItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat()))
-                        i++
-                    }
-                    else -> {
-                        val p = line.split("|")
-                        if (p.size >= 5) {
-                            val type = Tool.valueOf(p[0]); val color = p[1].toInt(); val sw = p[2].toFloat(); val fill = p[3].toBoolean()
-                            if (p.size >= 6) {
-                                val rot = p[4].toFloat()
-                                val pts = if (p[5].isBlank()) mutableListOf() else p[5].split(",").map { it.toFloat() }.toMutableList()
-                                val d = StrokeData(type, pts, color, sw, fill, rot); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
-                            } else {
-                                val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
-                                val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
-                            }
-                        }
-                        i++
-                    }
+                when{
+                    line.startsWith("META\u0001")->{val p=line.split("\u0001");try{if(p.size>1)paperType=PaperType.valueOf(p[1])}catch(e:Exception){};try{if(p.size>2)canvasMode=CanvasMode.valueOf(p[2])}catch(e:Exception){};try{if(p.size>3)paperSize=PaperSizeOption.valueOf(p[3])}catch(e:Exception){};try{if(p.size>4)pageOrientation=Orientation.valueOf(p[4])}catch(e:Exception){};try{if(p.size>5)paperColor=p[5].toInt()}catch(e:Exception){};i++}
+                    line.startsWith("TABLE\u0001")->{val tableLines=mutableListOf<String>();var j=i;while(j<lines.size&&!lines[j].startsWith("TABLEEND")){tableLines.add(lines[j]);j++};val(tableItem,_)=TableItem.deserialize(tableLines,0);if(tableItem!=null)actions.add(tableItem);i=j+1}
+                    line.startsWith("AUDIO\u0001")->{val audio=AudioItem.deserialize(line);if(audio!=null)audioItems.add(audio);i++}
+                    line.startsWith("TEXT\u0001")->{val p=line.split("\u0001");if(p.size>=7){val item=TextItem("",p[1].toFloat(),p[2].toFloat(),p[3].toInt(),p[4].toFloat(),p[5].toFloat());if(p.size>=9){val bold=p[6].toBoolean();val italic=p[7].toBoolean();item.text=p[8].replace("\u0002","\n");val style=if(bold&&italic)Typeface.BOLD_ITALIC else if(bold)Typeface.BOLD else if(italic)Typeface.ITALIC else -1;if(style>=0)item.spans.add(TextSpanData(0,item.text.length,'S',style))}else{if(p[6].isNotBlank())for(t in p[6].split(";")){val sp=t.split(",");if(sp.size==4)item.spans.add(TextSpanData(sp[0].toInt(),sp[1].toInt(),sp[2][0],sp[3].toInt()))};item.text=if(p.size>7)p[7].replace("\u0002","\n") else""};actions.add(item)};i++}
+                    line.startsWith("IMAGE\u0001")->{val p=line.split("\u0001");if(p.size>=7){val item=ImageItem(p[1],p[2].toFloat(),p[3].toFloat(),p[4].toFloat(),p[5].toFloat(),p[6].toFloat());actions.add(item);loadBitmapAsync(p[1]){bmp->item.bitmap=bmp;item.loading=false;invalidate()}};i++}
+                    line.startsWith("FILL\u0001")->{val p=line.split("\u0001");if(p.size>=6)actions.add(FillItem(p[1],p[2].toFloat(),p[3].toFloat(),p[4].toFloat(),p[5].toFloat()));i++}
+                    else->{val p=line.split("|");if(p.size>=5){val type=Tool.valueOf(p[0]);val color=p[1].toInt();val sw=p[2].toFloat();val fill=p[3].toBoolean();if(p.size>=6){val rot=p[4].toFloat();val pts=if(p[5].isBlank())mutableListOf() else p[5].split(",").map{it.toFloat()}.toMutableList();val d=StrokeData(type,pts,color,sw,fill,rot);actions.add(StrokeItem(d,d.buildPath(),d.toPaint()))}else{val pts=if(p[4].isBlank())mutableListOf() else p[4].split(",").map{it.toFloat()}.toMutableList();val d=StrokeData(type,pts,color,sw,fill);actions.add(StrokeItem(d,d.buildPath(),d.toPaint()))}};i++}
                 }
-            } catch (e: Exception) { i++ }
+            }catch(e:Exception){i++}
         }
         invalidate()
     }
