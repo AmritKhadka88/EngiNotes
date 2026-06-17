@@ -449,7 +449,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawActionItem(canvas: Canvas, action: Any, includeFills: Boolean) {
 
-                when (action) {
+        when (action) {
             is TableItem -> action.draw(canvas, scaleFactor)
             is FillItem -> {
                 if (!includeFills) return
@@ -977,7 +977,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         var curIn=mutableListOf<Float>();var curOut=mutableListOf<Float>();var last:Boolean?=null;var i=0
         while(i+1<pts.size){val x=pts[i];val y=pts[i+1];val isIn=region.contains(x.toInt(),y.toInt());if(last!=null&&last!=isIn){if(last){if(curIn.size>=4)inSegs.add(curIn);curIn=mutableListOf()}else{if(curOut.size>=4)outSegs.add(curOut);curOut=mutableListOf()}};if(isIn){curIn.add(x);curIn.add(y)}else{curOut.add(x);curOut.add(y)};last=isIn;i+=2}
         if(curIn.size>=4)inSegs.add(curIn);if(curOut.size>=4)outSegs.add(curOut)
-        fun makeItems(segs:List<MutableList<Float>>):List<StrokeItem>=segs.map{val d=StrokeData(data.type,it,data.color,data.strokeWidth,data.fill);StrokeItem(d,d.buildPath(),d.toPaint())}
+        fun makeItems(segs: List<MutableList<Float>>): List<StrokeItem> {
+            return segs.map { seg ->
+                val d = StrokeData(data.type, seg, data.color, data.strokeWidth, data.fill)
+                StrokeItem(d, d.buildPath(), d.toPaint())
+            }
+        }
         return Pair(makeItems(inSegs),makeItems(outSegs))
     }
 
@@ -1333,7 +1338,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     line.startsWith("META\u0001")->{val p=line.split("\u0001");try{if(p.size>1)paperType=PaperType.valueOf(p[1])}catch(e:Exception){};try{if(p.size>2)canvasMode=CanvasMode.valueOf(p[2])}catch(e:Exception){};try{if(p.size>3)paperSize=PaperSizeOption.valueOf(p[3])}catch(e:Exception){};try{if(p.size>4)pageOrientation=Orientation.valueOf(p[4])}catch(e:Exception){};try{if(p.size>5)paperColor=p[5].toInt()}catch(e:Exception){};i++}
                     line.startsWith("TABLE\u0001")->{val tableLines=mutableListOf<String>();var j=i;while(j<lines.size&&!lines[j].startsWith("TABLEEND")){tableLines.add(lines[j]);j++};val(tableItem,_)=TableItem.deserialize(tableLines,0);if(tableItem!=null)actions.add(tableItem);i=j+1}
                     line.startsWith("AUDIO\u0001")->{val audio=AudioItem.deserialize(line);if(audio!=null)audioItems.add(audio);i++}
-                    line.startsWith("TEXT\u0001")->{val p=line.split("\u0001");if(p.size>=7){val item=TextItem("",p[1].toFloat(),p[2].toFloat(),p[3].toInt(),p[4].toFloat(),p[5].toFloat());if(p.size>=9){val bold=p[6].toBoolean();val italic=p[7].toBoolean();item.text=p[8].replace("\u0002","\n");val style=if(bold&&italic)Typeface.BOLD_ITALIC else if(bold)Typeface.BOLD else if(italic)Typeface.ITALIC else -1;if(style>=0)item.spans.add(TextSpanData(0,item.text.length,'S',style))}else{if(p[6].isNotBlank())for(t in p[6].split(";")){val sp=t.split(",");if(sp.size==4)item.spans.add(TextSpanData(sp[0].toInt(),sp[1].toInt(),sp[2][0],sp[3].toInt()))};item.text=if(p.size>7)p[7].replace("\u0002","\n") else""};actions.add(item)};i++}
+                    line.startsWith("TEXT\u0001")->{val p=line.split("\u0001");if(p.size>=7){val item=TextItem("",p[1].toFloat(),p[2].toFloat(),p[3].toInt(),p[4].toFloat(),p[5].toFloat());if(p.size>=9){val bold=p[6].toBoolean();val italic=p[7].toBoolean();item.text=p[8].replace("\u0002","\n");val style=if(bold&&italic)Typeface.BOLD_ITALIC else if(bold)Typeface.BOLD else if(italic)Typeface.ITALIC else -1;if(style>=0)item.spans.add(TextSpanData(0,item.text.length,'S',style))}else{if(p[6].isNotBlank())for(t in p[6].split(";")){val sp=t.split(",");if(sp.size==4)item.spans.add(TextSpanData(sp[0].toInt(),sp[1].toInt(),sp[2][0],sp[3].toInt()))};item.text=if(p.size>7)p[7].replace("\u0002","\n") else ""};actions.add(item)};i++}
                     line.startsWith("IMAGE\u0001")->{val p=line.split("\u0001");if(p.size>=7){val item=ImageItem(p[1],p[2].toFloat(),p[3].toFloat(),p[4].toFloat(),p[5].toFloat(),p[6].toFloat());actions.add(item);loadBitmapAsync(p[1]){bmp->item.bitmap=bmp;item.loading=false;invalidate()}};i++}
                     line.startsWith("FILL\u0001")->{val p=line.split("\u0001");if(p.size>=6)actions.add(FillItem(p[1],p[2].toFloat(),p[3].toFloat(),p[4].toFloat(),p[5].toFloat()));i++}
                     else->{val p=line.split("|");if(p.size>=5){val type=Tool.valueOf(p[0]);val color=p[1].toInt();val sw=p[2].toFloat();val fill=p[3].toBoolean();if(p.size>=6){val rot=p[4].toFloat();val pts=if(p[5].isBlank())mutableListOf() else p[5].split(",").map{it.toFloat()}.toMutableList();val d=StrokeData(type,pts,color,sw,fill,rot);actions.add(StrokeItem(d,d.buildPath(),d.toPaint()))}else{val pts=if(p[4].isBlank())mutableListOf() else p[4].split(",").map{it.toFloat()}.toMutableList();val d=StrokeData(type,pts,color,sw,fill);actions.add(StrokeItem(d,d.buildPath(),d.toPaint()))}};i++}
@@ -1343,3 +1348,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         invalidate()
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        
