@@ -587,8 +587,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is FillItem -> floatArrayOf(item.x, item.y, item.x + item.w, item.y + item.h)
             is TextItem -> {
                 val tp = TextPaint(); tp.textSize = item.size
-                val lines = item.text.split("\
-")
+                val lines = item.text.split("\")
                 val w = lines.maxOf { tp.measureText(it) }.coerceAtLeast(10f)
                 val h = item.size * 1.4f * lines.size
                 floatArrayOf(item.x, item.y - h, item.x + w, item.y)
@@ -728,8 +727,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         for (a in actions.reversed()) {
             if (a is TextItem) {
                 val tp = TextPaint(); tp.textSize = a.size
-                val lines = a.text.split("\
-")
+                val lines = a.text.split("\")
                 val w = lines.maxOf { tp.measureText(it) }.coerceAtLeast(10f)
                 val h = a.size * 1.4f * lines.size
                 val pad = 24f / scaleFactor
@@ -1638,20 +1636,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val sb = StringBuilder()
         sb.append("META\${paperType.name}\${canvasMode.name}\${paperSize.name}\${pageOrientation.name}\$paperColor\
 ")
-        for (a in actions) when (a) {
+        for (a in actions) {
+            when (a) {
             is TableItem -> sb.append(a.serialize())
-            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}\
-")
-            is TextItem -> sb.append("TEXT\${a.x}\${a.y}\${a.color}\${a.size}\${a.rotation}\${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\${a.text.replace("\
-", "\")}\
-")
-            is ImageItem -> sb.append("IMAGE\${a.path}\${a.x}\${a.y}\${a.w}\${a.h}\${a.rotation}\
-")
-            is FillItem -> sb.append("FILL\${a.path}\${a.x}\${a.y}\${a.w}\${a.h}\
-")
+            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}\")
+            is TextItem -> sb.append("TEXT\${a.x}\${a.y}\${a.color}\${a.size}\${a.rotation}\${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\${a.text.replace("\", "\")}\")
+            is ImageItem -> sb.append("IMAGE\${a.path}\${a.x}\${a.y}\${a.w}\${a.h}\${a.rotation}\")
+            is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\n")
+            }
         }
         return sb.toString()
-    }
+                                      }
 
     fun loadFromString(content: String) {
         actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null
