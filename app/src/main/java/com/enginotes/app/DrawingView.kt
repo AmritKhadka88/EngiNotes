@@ -258,11 +258,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var tableDragStartX = 0f
     private var tableDragOrigSize = 0f
     private var tableSelStart: Pair<Int, Int>? = null
-private var tableSelEnd: Pair<Int, Int>? = null
-private var tableIsActive: Boolean = false  // true = user tapped in, editing mode
-private var tableSingleTapCell: Pair<Int, Int>? = null
-private var tableSingleTapTime: Long = 0L
-private val TABLE_DOUBLE_TAP_MS = 300L
+    private var tableSelEnd: Pair<Int, Int>? = null
+    private var tableIsActive: Boolean = false
+    private var tableSingleTapCell: Pair<Int, Int>? = null
+    private var tableSingleTapTime: Long = 0L
+    private val TABLE_DOUBLE_TAP_MS = 300L
 
     var onTextEditRequest: ((TextItem?, Float, Float, Float, Float) -> Unit)? = null
     var onTableCellEditRequest: ((TableItem, Int, Int, Float, Float) -> Unit)? = null
@@ -277,7 +277,19 @@ private val TABLE_DOUBLE_TAP_MS = 300L
     private var scaleFactor = 1f
     private var translateX = 0f; private var translateY = 0f
     private var prevFocusX = 0f; private var prevFocusY = 0f
+    private var twoFingerLastX = 0f; private var twoFingerLastY = 0f
     private var hoverX: Float? = null; private var hoverY: Float? = null
+
+    // ── Palm rejection / stylus tracking ────────────────────────
+    private var isStylusDown = false   // true while stylus pointer is on screen
+    private var drawingPointerId = -1  // pointer id that started the current stroke
+
+    // ── helper: tools that draw on canvas ───────────────────────
+    private fun isDrawingTool() = currentTool == Tool.PEN ||
+        currentTool == Tool.ERASER ||
+        currentTool in SHAPE_TOOLS ||
+        currentTool == Tool.ARC ||
+        currentTool == Tool.FILL
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
@@ -345,9 +357,9 @@ private val TABLE_DOUBLE_TAP_MS = 300L
         }
 
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
-            if (canvasMode != CanvasMode.INFINITE) {
+            // Only allow single-finger scroll on INFINITE canvas and only for non-drawing tools
+            if (canvasMode == CanvasMode.INFINITE && !isDrawingTool()) {
                 translateX -= distanceX; translateY -= distanceY
-                clampTranslation()
                 onScaleChanged?.invoke(scaleFactor)
                 onCanvasTransformed?.invoke()
                 invalidate(); return true
@@ -478,8 +490,10 @@ private val TABLE_DOUBLE_TAP_MS = 300L
         super.onLayout(changed, left, top, right, bottom)
         if (canvasMode != CanvasMode.INFINITE && width > 0 && height > 0 && changed) {
             val margin = 20f
-            scaleFactor = (width.toFloat() - margin * 2f) / pageWidthPx()
-            translateX = margin; translateY = margin
+            // Fit page to 75% of screen width so there is comfortable margin around it
+            scaleFactor = (width.toFloat() - margin * 2f) / pageWidthPx() * 0.75f
+            translateX = (width - pageWidthPx() * scaleFactor) / 2f
+            translateY = margin
             clampTranslation(); invalidate()
         }
     }
@@ -641,173 +655,62 @@ private val TABLE_DOUBLE_TAP_MS = 300L
 
     private fun resizeItem(item: Any, handle: HandleType, wx: Float, wy: Float) {
         val min = 15f
-
         when (item) {
             is ImageItem -> {
                 val rot = Math.toRadians(item.rotation.toDouble())
-                val cos = kotlin.math.cos(rot).toFloat()
-                val sin = kotlin.math.sin(rot).toFloat()
-
-                val oldCx = item.x + item.w / 2f
-                val oldCy = item.y + item.h / 2f
+                val cos = kotlin.math.cos(rot).toFloat(); val sin = kotlin.math.sin(rot).toFloat()
+                val oldCx = item.x + item.w / 2f; val oldCy = item.y + item.h / 2f
                 val dx = wx - oldCx; val dy = wy - oldCy
-                val lx = dx * cos + dy * sin
-                val ly = -dx * sin + dy * cos
-
+                val lx = dx * cos + dy * sin; val ly = -dx * sin + dy * cos
                 val oldW = item.w; val oldH = item.h
-
-                val fixedLocalX = when (handle) {
-                    HandleType.TL, HandleType.ML, HandleType.BL -> oldW / 2f
-                    HandleType.TR, HandleType.MR, HandleType.BR -> -oldW / 2f
-                    else -> 0f
-                }
-                val fixedLocalY = when (handle) {
-                    HandleType.TL, HandleType.TM, HandleType.TR -> oldH / 2f
-                    HandleType.BL, HandleType.BM, HandleType.BR -> -oldH / 2f
-                    else -> 0f
-                }
-
+                val fixedLocalX = when (handle) { HandleType.TL, HandleType.ML, HandleType.BL -> oldW / 2f; HandleType.TR, HandleType.MR, HandleType.BR -> -oldW / 2f; else -> 0f }
+                val fixedLocalY = when (handle) { HandleType.TL, HandleType.TM, HandleType.TR -> oldH / 2f; HandleType.BL, HandleType.BM, HandleType.BR -> -oldH / 2f; else -> 0f }
                 val fixedWorldX = oldCx + fixedLocalX * cos - fixedLocalY * sin
                 val fixedWorldY = oldCy + fixedLocalX * sin + fixedLocalY * cos
-
-                var nl = -oldW / 2f; var nt = -oldH / 2f
-                var nr = oldW / 2f; var nb = oldH / 2f
-
-                when (handle) {
-                    HandleType.TL -> { nl = lx; nt = ly }
-                    HandleType.TM -> { nt = ly }
-                    HandleType.TR -> { nr = lx; nt = ly }
-                    HandleType.ML -> { nl = lx }
-                    HandleType.MR -> { nr = lx }
-                    HandleType.BL -> { nl = lx; nb = ly }
-                    HandleType.BM -> { nb = ly }
-                    HandleType.BR -> { nr = lx; nb = ly }
-                    else -> return
-                }
-
-                if (nr - nl < min) {
-                    if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) nl = nr - min else nr = nl + min
-                }
-                if (nb - nt < min) {
-                    if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) nt = nb - min else nb = nt + min
-                }
-
+                var nl = -oldW / 2f; var nt = -oldH / 2f; var nr = oldW / 2f; var nb = oldH / 2f
+                when (handle) { HandleType.TL -> { nl = lx; nt = ly }; HandleType.TM -> { nt = ly }; HandleType.TR -> { nr = lx; nt = ly }; HandleType.ML -> { nl = lx }; HandleType.MR -> { nr = lx }; HandleType.BL -> { nl = lx; nb = ly }; HandleType.BM -> { nb = ly }; HandleType.BR -> { nr = lx; nb = ly }; else -> return }
+                if (nr - nl < min) { if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) nl = nr - min else nr = nl + min }
+                if (nb - nt < min) { if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) nt = nb - min else nb = nt + min }
                 val newW = nr - nl; val newH = nb - nt
-
-                val newFixedLocalX = when (handle) {
-                    HandleType.TL, HandleType.ML, HandleType.BL -> newW / 2f
-                    HandleType.TR, HandleType.MR, HandleType.BR -> -newW / 2f
-                    else -> 0f
-                }
-                val newFixedLocalY = when (handle) {
-                    HandleType.TL, HandleType.TM, HandleType.TR -> newH / 2f
-                    HandleType.BL, HandleType.BM, HandleType.BR -> -newH / 2f
-                    else -> 0f
-                }
-
+                val newFixedLocalX = when (handle) { HandleType.TL, HandleType.ML, HandleType.BL -> newW / 2f; HandleType.TR, HandleType.MR, HandleType.BR -> -newW / 2f; else -> 0f }
+                val newFixedLocalY = when (handle) { HandleType.TL, HandleType.TM, HandleType.TR -> newH / 2f; HandleType.BL, HandleType.BM, HandleType.BR -> -newH / 2f; else -> 0f }
                 val newCx = fixedWorldX - (newFixedLocalX * cos - newFixedLocalY * sin)
                 val newCy = fixedWorldY - (newFixedLocalX * sin + newFixedLocalY * cos)
-
-                item.x = newCx - newW / 2f
-                item.y = newCy - newH / 2f
-                item.w = newW
-                item.h = newH
+                item.x = newCx - newW / 2f; item.y = newCy - newH / 2f; item.w = newW; item.h = newH
             }
-
             is StrokeItem -> {
                 if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
                     val rot = Math.toRadians(item.data.rotation.toDouble())
-                    val cos = kotlin.math.cos(rot).toFloat()
-                    val sin = kotlin.math.sin(rot).toFloat()
-
-                    var l = minOf(item.data.points[0], item.data.points[2])
-                    var t = minOf(item.data.points[1], item.data.points[3])
-                    var r = maxOf(item.data.points[0], item.data.points[2])
-                    var b = maxOf(item.data.points[1], item.data.points[3])
-
-                    val oldW = r - l; val oldH = b - t
-                    val oldCx = (l + r) / 2f; val oldCy = (t + b) / 2f
-
+                    val cos = kotlin.math.cos(rot).toFloat(); val sin = kotlin.math.sin(rot).toFloat()
+                    val l = minOf(item.data.points[0], item.data.points[2]); val t = minOf(item.data.points[1], item.data.points[3])
+                    val r = maxOf(item.data.points[0], item.data.points[2]); val b = maxOf(item.data.points[1], item.data.points[3])
+                    val oldW = r - l; val oldH = b - t; val oldCx = (l + r) / 2f; val oldCy = (t + b) / 2f
                     val dx = wx - oldCx; val dy = wy - oldCy
-                    val lx = dx * cos + dy * sin
-                    val ly = -dx * sin + dy * cos
-
-                    val fixedLocalX = when (handle) {
-                        HandleType.TL, HandleType.ML, HandleType.BL -> oldW / 2f
-                        HandleType.TR, HandleType.MR, HandleType.BR -> -oldW / 2f
-                        else -> 0f
-                    }
-                    val fixedLocalY = when (handle) {
-                        HandleType.TL, HandleType.TM, HandleType.TR -> oldH / 2f
-                        HandleType.BL, HandleType.BM, HandleType.BR -> -oldH / 2f
-                        else -> 0f
-                    }
-
+                    val lx = dx * cos + dy * sin; val ly = -dx * sin + dy * cos
+                    val fixedLocalX = when (handle) { HandleType.TL, HandleType.ML, HandleType.BL -> oldW / 2f; HandleType.TR, HandleType.MR, HandleType.BR -> -oldW / 2f; else -> 0f }
+                    val fixedLocalY = when (handle) { HandleType.TL, HandleType.TM, HandleType.TR -> oldH / 2f; HandleType.BL, HandleType.BM, HandleType.BR -> -oldH / 2f; else -> 0f }
                     val fixedWorldX = oldCx + fixedLocalX * cos - fixedLocalY * sin
                     val fixedWorldY = oldCy + fixedLocalX * sin + fixedLocalY * cos
-
-                    var nl = -oldW / 2f; var nt = -oldH / 2f
-                    var nr = oldW / 2f; var nb = oldH / 2f
-
-                    when (handle) {
-                        HandleType.TL -> { nl = lx; nt = ly }
-                        HandleType.TM -> { nt = ly }
-                        HandleType.TR -> { nr = lx; nt = ly }
-                        HandleType.ML -> { nl = lx }
-                        HandleType.MR -> { nr = lx }
-                        HandleType.BL -> { nl = lx; nb = ly }
-                        HandleType.BM -> { nb = ly }
-                        HandleType.BR -> { nr = lx; nb = ly }
-                        else -> return
-                    }
-
-                    if (nr - nl < min) {
-                        if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) nl = nr - min else nr = nl + min
-                    }
-                    if (nb - nt < min) {
-                        if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) nt = nb - min else nb = nt + min
-                    }
-
+                    var nl = -oldW / 2f; var nt = -oldH / 2f; var nr = oldW / 2f; var nb = oldH / 2f
+                    when (handle) { HandleType.TL -> { nl = lx; nt = ly }; HandleType.TM -> { nt = ly }; HandleType.TR -> { nr = lx; nt = ly }; HandleType.ML -> { nl = lx }; HandleType.MR -> { nr = lx }; HandleType.BL -> { nl = lx; nb = ly }; HandleType.BM -> { nb = ly }; HandleType.BR -> { nr = lx; nb = ly }; else -> return }
+                    if (nr - nl < min) { if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) nl = nr - min else nr = nl + min }
+                    if (nb - nt < min) { if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) nt = nb - min else nb = nt + min }
                     val newW = nr - nl; val newH = nb - nt
-
-                    val newFixedLocalX = when (handle) {
-                        HandleType.TL, HandleType.ML, HandleType.BL -> newW / 2f
-                        HandleType.TR, HandleType.MR, HandleType.BR -> -newW / 2f
-                        else -> 0f
-                    }
-                    val newFixedLocalY = when (handle) {
-                        HandleType.TL, HandleType.TM, HandleType.TR -> newH / 2f
-                        HandleType.BL, HandleType.BM, HandleType.BR -> -newH / 2f
-                        else -> 0f
-                    }
-
+                    val newFixedLocalX = when (handle) { HandleType.TL, HandleType.ML, HandleType.BL -> newW / 2f; HandleType.TR, HandleType.MR, HandleType.BR -> -newW / 2f; else -> 0f }
+                    val newFixedLocalY = when (handle) { HandleType.TL, HandleType.TM, HandleType.TR -> newH / 2f; HandleType.BL, HandleType.BM, HandleType.BR -> -newH / 2f; else -> 0f }
                     val newCx = fixedWorldX - (newFixedLocalX * cos - newFixedLocalY * sin)
                     val newCy = fixedWorldY - (newFixedLocalX * sin + newFixedLocalY * cos)
-
-                    item.data.points[0] = newCx - newW / 2f
-                    item.data.points[1] = newCy - newH / 2f
-                    item.data.points[2] = newCx + newW / 2f
-                    item.data.points[3] = newCy + newH / 2f
+                    item.data.points[0] = newCx - newW / 2f; item.data.points[1] = newCy - newH / 2f
+                    item.data.points[2] = newCx + newW / 2f; item.data.points[3] = newCy + newH / 2f
                     item.path = item.data.buildPath()
-
                 } else if (ENDPOINT_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    when (handle) {
-                        HandleType.TL -> { item.data.points[0] = wx; item.data.points[1] = wy }
-                        HandleType.BR -> { item.data.points[2] = wx; item.data.points[3] = wy }
-                        else -> {}
-                    }
+                    when (handle) { HandleType.TL -> { item.data.points[0] = wx; item.data.points[1] = wy }; HandleType.BR -> { item.data.points[2] = wx; item.data.points[3] = wy }; else -> {} }
                     item.path = item.data.buildPath()
                 }
             }
-
-            is TextItem -> {
-                val dy = wy - resizePrevWorldY
-                item.size = (item.size + dy * 0.5f).coerceIn(8f, 300f)
-            }
+            is TextItem -> { val dy = wy - resizePrevWorldY; item.size = (item.size + dy * 0.5f).coerceIn(8f, 300f) }
         }
-
-        resizePrevWorldX = wx
-        resizePrevWorldY = wy
+        resizePrevWorldX = wx; resizePrevWorldY = wy
     }
 
     private fun findItemAt(x: Float, y: Float): Any? {
@@ -838,84 +741,63 @@ private val TABLE_DOUBLE_TAP_MS = 300L
     private var longPressRunnable: Runnable? = null
 
     private fun handleTable(event: MotionEvent) {
-    val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
-    val tol = 18f / scaleFactor
-    when (event.actionMasked) {
-        MotionEvent.ACTION_DOWN -> {
-            val table = activeTableItem
-            if (table != null && tableIsActive) {
-                // We're in active editing mode — check borders first
-                val rb = table.hitTestRowBorder(wy, tol)
-                val cb = table.hitTestColBorder(wx, tol)
-                if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; return }
-                if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; return }
-
-                val cell = table.hitTestCell(wx, wy)
-                if (cell == null) {
-                    // Tapped outside table bounds — exit table mode, switch to SELECT
-                    tableIsActive = false
-                    tableSelStart = null; tableSelEnd = null
-                    activeTableItem = null
-                    currentTool = Tool.SELECT
-                    invalidate(); return
-                }
-                // Tapped a cell — check for double tap
-                val now = System.currentTimeMillis()
-                if (cell == tableSingleTapCell && (now - tableSingleTapTime) < TABLE_DOUBLE_TAP_MS) {
-                    // Double tap → open editor
-                    tableSingleTapCell = null
-                    val rect = table.cellRect(cell.first, cell.second)
-                    val sx = worldToScreenX(rect.left); val sy = worldToScreenY(rect.top)
-                    onTableCellEditRequest?.invoke(table, cell.first, cell.second, sx, sy)
+        val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
+        val tol = 18f / scaleFactor
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val table = activeTableItem
+                if (table != null && tableIsActive) {
+                    val rb = table.hitTestRowBorder(wy, tol)
+                    val cb = table.hitTestColBorder(wx, tol)
+                    if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; return }
+                    if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; return }
+                    val cell = table.hitTestCell(wx, wy)
+                    if (cell == null) {
+                        tableIsActive = false; tableSelStart = null; tableSelEnd = null
+                        activeTableItem = null; currentTool = Tool.SELECT; invalidate(); return
+                    }
+                    val now = System.currentTimeMillis()
+                    if (cell == tableSingleTapCell && (now - tableSingleTapTime) < TABLE_DOUBLE_TAP_MS) {
+                        tableSingleTapCell = null
+                        val rect = table.cellRect(cell.first, cell.second)
+                        val sx = worldToScreenX(rect.left); val sy = worldToScreenY(rect.top)
+                        onTableCellEditRequest?.invoke(table, cell.first, cell.second, sx, sy)
+                    } else {
+                        tableSingleTapCell = cell; tableSingleTapTime = now
+                        if (tableSelStart == null) { tableSelStart = cell; tableSelEnd = null }
+                        else if (tableSelEnd == null && cell != tableSelStart) tableSelEnd = cell
+                        else { tableSelStart = cell; tableSelEnd = null }
+                        invalidate()
+                    }
+                } else if (table != null && !tableIsActive) {
+                    val cell = table.hitTestCell(wx, wy)
+                    if (cell != null) {
+                        tableIsActive = true; tableSelStart = null; tableSelEnd = null
+                        tableSingleTapCell = null; invalidate()
+                    } else { activeTableItem = null; invalidate() }
                 } else {
-                    // Single tap → select cell
-                    tableSingleTapCell = cell; tableSingleTapTime = now
-                    if (tableSelStart == null) { tableSelStart = cell; tableSelEnd = null }
-                    else if (tableSelEnd == null && cell != tableSelStart) tableSelEnd = cell
-                    else { tableSelStart = cell; tableSelEnd = null }
-                    invalidate()
-                }
-            } else if (table != null && !tableIsActive) {
-                // Table exists but not active — single tap activates it
-                val cell = table.hitTestCell(wx, wy)
-                if (cell != null) {
-                    tableIsActive = true
-                    tableSelStart = null; tableSelEnd = null
-                    tableSingleTapCell = null
-                    invalidate()
-                } else {
-                    // Tapped completely outside — deselect
-                    activeTableItem = null
-                    invalidate()
-                }
-            } else {
-                // No active table — find one
-                for (action in actions.reversed()) {
-                    if (action is TableItem) {
-                        val b = getBounds(action) ?: continue
-                        if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) {
-                            activeTableItem = action
-                            tableIsActive = false  // selected, not yet in editing mode
-                            tableSelStart = null; tableSelEnd = null
-                            tableSingleTapCell = null
-                            invalidate(); return
+                    for (action in actions.reversed()) {
+                        if (action is TableItem) {
+                            val b = getBounds(action) ?: continue
+                            if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) {
+                                activeTableItem = action; tableIsActive = false
+                                tableSelStart = null; tableSelEnd = null; tableSingleTapCell = null
+                                invalidate(); return
+                            }
                         }
                     }
                 }
             }
+            MotionEvent.ACTION_MOVE -> {
+                val table = activeTableItem ?: return
+                if (!tableIsActive) return
+                if (tableDragRowBorder >= 0) { table.rowHeights[tableDragRowBorder] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(20f); invalidate() }
+                else if (tableDragColBorder >= 0) { table.colWidths[tableDragColBorder] = (tableDragOrigSize + (wx - tableDragStartX)).coerceAtLeast(30f); invalidate() }
+            }
+            MotionEvent.ACTION_UP -> {
+                if (tableDragRowBorder >= 0 || tableDragColBorder >= 0) { tableDragRowBorder = -1; tableDragColBorder = -1 }
+            }
         }
-
-        
-        MotionEvent.ACTION_MOVE -> {
-            val table = activeTableItem ?: return
-            if (!tableIsActive) return
-            if (tableDragRowBorder >= 0) { table.rowHeights[tableDragRowBorder] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(20f); invalidate() }
-            else if (tableDragColBorder >= 0) { table.colWidths[tableDragColBorder] = (tableDragOrigSize + (wx - tableDragStartX)).coerceAtLeast(30f); invalidate() }
-        }
-        MotionEvent.ACTION_UP -> {
-            if (tableDragRowBorder >= 0 || tableDragColBorder >= 0) { tableDragRowBorder = -1; tableDragColBorder = -1; return }
-        }
-    }
     }
 
     fun addTableRow(afterRow: Int) {
@@ -967,52 +849,41 @@ private val TABLE_DOUBLE_TAP_MS = 300L
     fun worldToScreenY(wy: Float): Float = wy * scaleFactor + translateY
 
     private fun drawTableOverlay(canvas: Canvas) {
-    val table = activeTableItem ?: return
-
-    // Outer selection border — always shown when table is selected
-    val selColor = if (tableIsActive) "#2196F3" else "#9E9E9E"
-    val op = Paint(); op.color = Color.parseColor(selColor); op.style = Paint.Style.STROKE
-    op.strokeWidth = (if (tableIsActive) 2f else 1.5f) / scaleFactor
-    canvas.drawRect(table.x, table.y, table.x + table.totalWidth(), table.y + table.totalHeight(), op)
-
-    if (!tableIsActive) return  // only show outline when not in editing mode
-
-    // Cell selection highlight
-    val s = tableSelStart; val e = tableSelEnd
-    if (s != null) {
-        val minR = if (e != null) minOf(s.first, e.first) else s.first
-        val maxR = if (e != null) maxOf(s.first, e.first) else s.first
-        val minC = if (e != null) minOf(s.second, e.second) else s.second
-        val maxC = if (e != null) maxOf(s.second, e.second) else s.second
-        val hlP = Paint(); hlP.color = Color.parseColor("#442196F3"); hlP.style = Paint.Style.FILL
-        for (r in minR..maxR) for (c in minC..maxC) {
-            try { canvas.drawRect(table.cellRect(r, c), hlP) } catch (ex: Exception) {}
+        val table = activeTableItem ?: return
+        val selColor = if (tableIsActive) "#2196F3" else "#9E9E9E"
+        val op = Paint(); op.color = Color.parseColor(selColor); op.style = Paint.Style.STROKE
+        op.strokeWidth = (if (tableIsActive) 2f else 1.5f) / scaleFactor
+        canvas.drawRect(table.x, table.y, table.x + table.totalWidth(), table.y + table.totalHeight(), op)
+        if (!tableIsActive) return
+        val s = tableSelStart; val e = tableSelEnd
+        if (s != null) {
+            val minR = if (e != null) minOf(s.first, e.first) else s.first
+            val maxR = if (e != null) maxOf(s.first, e.first) else s.first
+            val minC = if (e != null) minOf(s.second, e.second) else s.second
+            val maxC = if (e != null) maxOf(s.second, e.second) else s.second
+            val hlP = Paint(); hlP.color = Color.parseColor("#442196F3"); hlP.style = Paint.Style.FILL
+            for (r in minR..maxR) for (c in minC..maxC) {
+                try { canvas.drawRect(table.cellRect(r, c), hlP) } catch (ex: Exception) {}
+            }
         }
-    }
     }
 
     private fun handleSelect(event: MotionEvent) {
         val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
         val at = activeTableItem
-if (at != null) {
-    // Always route to handleTable when a table is selected
-    handleTable(event); return
-}
-if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-    for (action in actions.reversed()) {
-        if (action is TableItem) {
-            val b = getBounds(action) ?: continue
-            if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) {
-                activeTableItem = action
-                tableIsActive = false
-                tableSelStart = null; tableSelEnd = null
-                tableSingleTapCell = null
-                invalidate(); return
+        if (at != null) { handleTable(event); return }
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            for (action in actions.reversed()) {
+                if (action is TableItem) {
+                    val b = getBounds(action) ?: continue
+                    if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) {
+                        activeTableItem = action; tableIsActive = false
+                        tableSelStart = null; tableSelEnd = null; tableSingleTapCell = null
+                        invalidate(); return
+                    }
+                }
             }
         }
-    }
-}
-
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it) }; longPressRunnable = null
@@ -1023,18 +894,15 @@ if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                         val rot = getRotation(item); val (px, py) = getPivot(item, b)
                         val (lx, ly) = rotatePoint(wx, wy, px, py, -rot)
                         val hr = 18f / scaleFactor; val hit = 50f / scaleFactor
-
                         val delX = b[2] + hr * 5f; val delY = b[1] - hr * 5f
                         if (distance(lx, ly, delX, delY) <= hit * 1.2f) {
                             actions.remove(item); selectedItem = null; handled = true; invalidate(); return
                         }
-
                         val canRot = item is ImageItem || item is TextItem || (item is StrokeItem && item.data.type != Tool.PEN && item.data.type != Tool.ARC)
                         if (!handled && canRot) {
                             val cx = (b[0] + b[2]) / 2f; val ry = b[1] - 60f / scaleFactor
                             if (distance(lx, ly, cx, ry) <= hit) {
-                                activeHandle = HandleType.ROTATE
-                                dragStartAngle = computeAngle(item, wx, wy)
+                                activeHandle = HandleType.ROTATE; dragStartAngle = computeAngle(item, wx, wy)
                                 dragStartRotation = rot; handled = true
                             }
                         }
@@ -1043,10 +911,8 @@ if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                         if (!handled && isBbox) {
                             for ((type, pos) in bboxHandlePositions(b)) {
                                 if (distance(lx, ly, pos.first, pos.second) <= hit) {
-                                    activeHandle = type
-                                    dragStartPivotX = px; dragStartPivotY = py
-                                    dragStartRotation = rot
-                                    resizePrevWorldX = wx; resizePrevWorldY = wy
+                                    activeHandle = type; dragStartPivotX = px; dragStartPivotY = py
+                                    dragStartRotation = rot; resizePrevWorldX = wx; resizePrevWorldY = wy
                                     handled = true; break
                                 }
                             }
@@ -1054,24 +920,15 @@ if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                         if (!handled && isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
                             val p0x = item.data.points[0]; val p0y = item.data.points[1]
                             val p1x = item.data.points[2]; val p1y = item.data.points[3]
-                            if (distance(wx, wy, p0x, p0y) <= hit) {
-                                activeHandle = HandleType.TL
-                                resizePrevWorldX = wx; resizePrevWorldY = wy; handled = true
-                            } else if (distance(wx, wy, p1x, p1y) <= hit) {
-                                activeHandle = HandleType.BR
-                                resizePrevWorldX = wx; resizePrevWorldY = wy; handled = true
-                            }
+                            if (distance(wx, wy, p0x, p0y) <= hit) { activeHandle = HandleType.TL; resizePrevWorldX = wx; resizePrevWorldY = wy; handled = true }
+                            else if (distance(wx, wy, p1x, p1y) <= hit) { activeHandle = HandleType.BR; resizePrevWorldX = wx; resizePrevWorldY = wy; handled = true }
                         }
                         if (!handled && lx >= b[0] - hit && lx <= b[2] + hit && ly >= b[1] - hit && ly <= b[3] + hit) {
-                            activeHandle = HandleType.MOVE
-                            dragStartWorldX = wx; dragStartWorldY = wy; handled = true
+                            activeHandle = HandleType.MOVE; dragStartWorldX = wx; dragStartWorldY = wy; handled = true
                         }
                     }
                 }
-                if (!handled) {
-                    activeHandle = HandleType.NONE
-                    selectedItem = findItemAt(wx, wy)
-                }
+                if (!handled) { activeHandle = HandleType.NONE; selectedItem = findItemAt(wx, wy) }
                 val sel = selectedItem
                 if (sel is TextItem) {
                     val r = Runnable { sel.isEditing = true; invalidate(); onTextEditRequest?.invoke(sel, event.x, event.y, wx, wy) }
@@ -1083,14 +940,8 @@ if (event.actionMasked == MotionEvent.ACTION_DOWN) {
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
                 val item = selectedItem ?: return
                 when (activeHandle) {
-                    HandleType.MOVE -> {
-                        moveItem(item, wx - dragStartWorldX, wy - dragStartWorldY)
-                        dragStartWorldX = wx; dragStartWorldY = wy
-                    }
-                    HandleType.ROTATE -> {
-                        val newAngle = computeAngle(item, wx, wy)
-                        setRotation(item, dragStartRotation + (newAngle - dragStartAngle))
-                    }
+                    HandleType.MOVE -> { moveItem(item, wx - dragStartWorldX, wy - dragStartWorldY); dragStartWorldX = wx; dragStartWorldY = wy }
+                    HandleType.ROTATE -> { val newAngle = computeAngle(item, wx, wy); setRotation(item, dragStartRotation + (newAngle - dragStartAngle)) }
                     HandleType.NONE -> return
                     else -> resizeItem(item, activeHandle, wx, wy)
                 }
@@ -1433,15 +1284,125 @@ if (event.actionMasked == MotionEvent.ACTION_DOWN) {
         return true
     }
 
+    // ════════════════════════════════════════════════════════════
+    //  TOUCH EVENT — central dispatcher
+    //
+    //  Rules:
+    //  1. Two fingers → scale + pan only, NEVER draw
+    //  2. Stylus down → reject any finger touches until stylus lifts
+    //  3. Drawing tools in fixed/paginated → single finger draws only,
+    //     NO scroll (pan is two-finger only)
+    //  4. Non-drawing tools → gesture detector handles taps
+    //  5. Infinite canvas non-drawing → gesture detector handles pan
+    // ════════════════════════════════════════════════════════════
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.pointerCount >= 2) { scaleDetector.onTouchEvent(event); return true }
-        gestureDetector.onTouchEvent(event)
-        if (currentTool == Tool.TEXT || currentTool == Tool.FILL) return true
-        if (currentTool == Tool.SELECT) { handleSelect(event); return true }
-        if (currentTool == Tool.ARC) { handleArc(event); return true }
-        if (currentTool == Tool.AUTOSELECT) { handleAutoSelect(event); return true }
-        if (currentTool == Tool.EXPORT_WINDOW) { handleExportWindow(event); return true }
-        handleDrawing(event); return true
+
+        // ── Two-finger: scale + pan, never draw ─────────────────
+        if (event.pointerCount >= 2) {
+            // Cancel any in-progress single-finger stroke
+            if (currentItem != null) { currentItem = null; invalidate() }
+            isStylusDown = false; drawingPointerId = -1
+
+            scaleDetector.onTouchEvent(event)
+
+            // Two-finger pan for fixed / paginated canvas
+            if (canvasMode != CanvasMode.INFINITE) {
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_MOVE -> {
+                        val fx = (event.getX(0) + event.getX(1)) / 2f
+                        val fy = (event.getY(0) + event.getY(1)) / 2f
+                        if (twoFingerLastX != 0f || twoFingerLastY != 0f) {
+                            translateX += fx - twoFingerLastX
+                            translateY += fy - twoFingerLastY
+                            clampTranslation()
+                            onScaleChanged?.invoke(scaleFactor)
+                            onCanvasTransformed?.invoke()
+                            invalidate()
+                        }
+                        twoFingerLastX = fx; twoFingerLastY = fy
+                    }
+                    MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        twoFingerLastX = 0f; twoFingerLastY = 0f
+                    }
+                }
+            }
+            return true
+        }
+
+        // ── Single pointer from here ─────────────────────────────
+        twoFingerLastX = 0f; twoFingerLastY = 0f
+
+        val toolType = event.getToolType(0)
+        val isStylus = toolType == MotionEvent.TOOL_TYPE_STYLUS ||
+                       toolType == MotionEvent.TOOL_TYPE_ERASER
+        val isFinger = toolType == MotionEvent.TOOL_TYPE_FINGER ||
+                       toolType == MotionEvent.TOOL_TYPE_UNKNOWN
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if (isStylus) {
+                    isStylusDown = true
+                    drawingPointerId = event.getPointerId(0)
+                } else {
+                    // Reject finger if stylus is already on screen
+                    if (isStylusDown) return true
+                    drawingPointerId = event.getPointerId(0)
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (isStylus) isStylusDown = false
+                drawingPointerId = -1
+            }
+            MotionEvent.ACTION_MOVE -> {
+                // Reject finger move while stylus is drawing
+                if (isStylusDown && isFinger) return true
+            }
+        }
+
+        // ── Route to correct handler ─────────────────────────────
+
+        // Text and Fill tools only need gesture detector (tap detection)
+        if (currentTool == Tool.TEXT || currentTool == Tool.FILL) {
+            gestureDetector.onTouchEvent(event)
+            return true
+        }
+
+        // Select tool — gesture detector for taps, handleSelect for drag
+        if (currentTool == Tool.SELECT) {
+            gestureDetector.onTouchEvent(event)
+            handleSelect(event)
+            return true
+        }
+
+        // Arc tool
+        if (currentTool == Tool.ARC) {
+            handleArc(event)
+            return true
+        }
+
+        // AutoSelect tool
+        if (currentTool == Tool.AUTOSELECT) {
+            gestureDetector.onTouchEvent(event)
+            handleAutoSelect(event)
+            return true
+        }
+
+        // Export window tool
+        if (currentTool == Tool.EXPORT_WINDOW) {
+            handleExportWindow(event)
+            return true
+        }
+
+        // Drawing tools (PEN, ERASER, shapes)
+        // On infinite canvas: also allow single-finger pan when not actively drawing
+        if (canvasMode == CanvasMode.INFINITE && currentItem == null &&
+            event.actionMasked == MotionEvent.ACTION_MOVE && isFinger) {
+            // Let gesture detector handle pan scroll on infinite canvas
+            gestureDetector.onTouchEvent(event)
+        }
+
+        handleDrawing(event)
+        return true
     }
 
     private fun handleExportWindow(event: MotionEvent) {
