@@ -380,10 +380,19 @@ class ChartView(context: Context) : View(context) {
     }
 
     private fun color(idx:Int):Int=if(idx<series.size)series[idx].color else defaultColors[idx%defaultColors.size]
-    private fun xRange():Pair<Float,Float>{val allX=series.flatMap{it.points.map{p->p.xVal}};val min=allX.minOrNull()?:0f;val max=allX.maxOrNull()?:1f;return if(min==max)Pair(min-1f,max+1f)else Pair(min,max)}
-    private fun yRange():Pair<Float,Float>{val allY=series.flatMap{it.points.map{p->p.yVal}};val max=allY.maxOrNull()?.coerceAtLeast(1f)?:1f;return Pair(0f,max)}
-    private fun allLabels():List<String>=series.firstOrNull()?.points?.map{it.xLabel}?:emptyList()
-    private fun allValues():List<Float>=series.flatMap{it.points.map{p->p.yVal}}
+    private fun xRange(): Pair<Float, Float> {
+        val allX = series.flatMap { s -> s.points.map { p -> p.xVal } }
+        val min = allX.minOrNull() ?: 0f
+        val max = allX.maxOrNull() ?: 1f
+        return if (min == max) Pair(min - 1f, max + 1f) else Pair(min, max)
+    }
+    private fun yRange(): Pair<Float, Float> {
+        val allY = series.flatMap { s -> s.points.map { p -> p.yVal } }
+        val max = allY.maxOrNull()?.coerceAtLeast(1f) ?: 1f
+        return Pair(0f, max)
+    }
+    private fun allLabels(): List<String> = series.firstOrNull()?.points?.map { it.xLabel } ?: emptyList()
+    private fun allValues(): List<Float> = series.flatMap { s -> s.points.map { p -> p.yVal } }
     private fun maxVal():Float=allValues().maxOrNull()?.coerceAtLeast(1f)?:1f
     private fun xToScreen(xVal:Float,area:RectF):Float{val(xMin,xMax)=xRange();return area.left+(xVal-xMin)/(xMax-xMin)*area.width()}
     private fun yToScreen(yVal:Float,area:RectF):Float{val(_,yMax)=yRange();return area.bottom-yVal/yMax*area.height()}
