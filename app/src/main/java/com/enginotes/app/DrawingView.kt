@@ -838,7 +838,6 @@ private val TABLE_DOUBLE_TAP_MS = 300L
     private var longPressRunnable: Runnable? = null
 
     private fun handleTable(event: MotionEvent) {
-    private fun handleTable(event: MotionEvent) {
     val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
     val tol = 18f / scaleFactor
     when (event.actionMasked) {
