@@ -183,7 +183,7 @@ class MainActivity : AppCompatActivity() {
         drawingView    = findViewById(R.id.drawingView)
         canvasContainer= findViewById(R.id.canvasContainer)
         tvTitle        = findViewById(R.id.tvTitle)
-        btnLayoutToggle = findViewById(R.id.btnLayoutToggle)
+        btnLayoutToggle = safeFind("btnLayoutToggle")
 
         // Apply default paper from prefs
         val prefs = getPrefs()
@@ -249,6 +249,17 @@ class MainActivity : AppCompatActivity() {
         autosaveHandler.postDelayed(autosaveRunnable, 10_000L)
     }
 
+
+    // Safe findViewById that returns null if the ID doesn't exist in current layout
+    private inline fun <reified T : View> safeFind(name: String): T? {
+        val id = resources.getIdentifier(name, "id", packageName)
+        if (id == 0) return null
+        return findViewById(id)
+    }
+
+
+
+
     private fun setupBottomToolbar() {
         findViewById<Button>(R.id.btnUndo).setOnClickListener { closeInlineEditor(true); drawingView.undo() }
         findViewById<Button>(R.id.btnRedo).setOnClickListener { closeInlineEditor(true); drawingView.redo() }
@@ -269,7 +280,7 @@ class MainActivity : AppCompatActivity() {
 
         // Select button (in the extra row)
         // In the new layout "btnSelect" is in the bottom row
-        try { val btnSelect = findViewById<Button>(R.id.btnSelect); btnSelect?.setOnClickListener { closeInlineEditor(true); setActiveTool(it as Button, Tool.SELECT, "Select") } } catch(e: Exception) {}
+        safeFind<Button>("btnSelect")?.setOnClickListener { closeInlineEditor(true); setActiveTool(it as Button, Tool.SELECT, "Select") }
 
         findViewById<Button>(R.id.btnText).setOnClickListener {
             closeInlineEditor(true); setActiveTool(it as Button, Tool.TEXT, "Text")
@@ -282,28 +293,26 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnTools).setOnClickListener { showToolsMenu() }
 
         // Expand toggle shows/hides extra row
-        val toolbarScroll = findViewById<View>(R.id.toolbarScroll)
-        val btnExpand = findViewById<Button>(R.id.btnExpand)
-        btnExpand.setOnClickListener {
-            val show = toolbarScroll.visibility != View.VISIBLE
-            toolbarScroll.visibility = if (show) View.VISIBLE else View.GONE
+        val toolbarScroll = safeFind<View>("toolbarScroll")
+        val btnExpand = safeFind<Button>("btnExpand")
+        btnExpand?.setOnClickListener {
+            val show = toolbarScroll?.visibility != View.VISIBLE
+            toolbarScroll?.visibility = if (show) View.VISIBLE else View.GONE
             btnExpand.text = if (show) "∧" else "∨"
         }
 
         // Extra row buttons
-        try { val btnArc = findViewById<Button>(R.id.btnArc); btnArc?.setOnClickListener { closeInlineEditor(true); setActiveTool(it as Button, Tool.ARC, "Arc") } } catch(e: Exception) {}
+        safeFind<Button>("btnArc")?.setOnClickListener { closeInlineEditor(true); setActiveTool(it as Button, Tool.ARC, "Arc") }
 
-        try { val btnAutoSelect = findViewById<Button>(R.id.btnAutoSelect); btnAutoSelect?.setOnClickListener { showAutoSelectModeDialog(); setActiveToolbarBtn(it as Button) } } catch(e: Exception) {}
+        safeFind<Button>("btnAutoSelect")?.setOnClickListener { showAutoSelectModeDialog(); setActiveToolbarBtn(it as Button) }
 
-        try { val btnShapes = findViewById<Button>(R.id.btnShapes); btnShapes?.setOnClickListener { showShapesPicker(it as Button) } } catch(e: Exception) {}
+        safeFind<Button>("btnShapes")?.setOnClickListener { showShapesPicker(it as Button) }
 
-        val btnQuickColor = findViewById<Button>(R.id.btnQuickColor)
-        btnQuickColor?.setOnClickListener { showColorGridDialog { c -> drawingView.currentColor = c } }
+        safeFind<Button>("btnQuickColor")?.setOnClickListener { showColorGridDialog { c -> drawingView.currentColor = c } }
 
-        val btnQuickSize = findViewById<Button>(R.id.btnQuickSize)
-        btnQuickSize?.setOnClickListener { showSizePicker() }
+        safeFind<Button>("btnQuickSize")?.setOnClickListener { showSizePicker() }
 
-        val btnQuickFill = findViewById<Button>(R.id.btnQuickFill)
+        val btnQuickFill = safeFind<Button>("btnQuickFill")
         btnQuickFill?.setOnClickListener {
             showColorGridDialog { c -> drawingView.fillColor = c }
             setActiveTool(null, Tool.FILL, "Fill")
