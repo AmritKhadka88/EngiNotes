@@ -42,7 +42,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var canvasContainer: FrameLayout
     private lateinit var tvTitle: TextView
     private lateinit var tvActiveTool: TextView
-    private lateinit var btnLayoutToggle: Button
+    private var btnLayoutToggle: Button? = null
 
     private var currentFileName: String? = null
     private var lastSavedContent: String = ""
@@ -183,7 +183,7 @@ class MainActivity : AppCompatActivity() {
         drawingView    = findViewById(R.id.drawingView)
         canvasContainer= findViewById(R.id.canvasContainer)
         tvTitle        = findViewById(R.id.tvTitle)
-        btnLayoutToggle= findViewById(R.id.btnLayoutToggle)
+        btnLayoutToggle = findViewById(R.id.btnLayoutToggle)
 
         // Apply default paper from prefs
         val prefs = getPrefs()
@@ -226,7 +226,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Layout toggle button
-        btnLayoutToggle.setOnClickListener { toggleLayout() }
+        btnLayoutToggle?.setOnClickListener { toggleLayout() }
 
         // ── Bottom toolbar buttons ──
         setupBottomToolbar()
@@ -269,8 +269,7 @@ class MainActivity : AppCompatActivity() {
 
         // Select button (in the extra row)
         // In the new layout "btnSelect" is in the bottom row
-        val btnSelect = findViewById<Button?>(R.id.btnSelect)
-        btnSelect?.setOnClickListener { closeInlineEditor(true); setActiveTool(it as Button, Tool.SELECT, "Select") }
+        try { val btnSelect = findViewById<Button>(R.id.btnSelect); btnSelect?.setOnClickListener { closeInlineEditor(true); setActiveTool(it as Button, Tool.SELECT, "Select") } } catch(e: Exception) {}
 
         findViewById<Button>(R.id.btnText).setOnClickListener {
             closeInlineEditor(true); setActiveTool(it as Button, Tool.TEXT, "Text")
@@ -292,22 +291,19 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Extra row buttons
-        val btnArc = findViewById<Button?>(R.id.btnArc)
-        btnArc?.setOnClickListener { closeInlineEditor(true); setActiveTool(it as Button, Tool.ARC, "Arc") }
+        try { val btnArc = findViewById<Button>(R.id.btnArc); btnArc?.setOnClickListener { closeInlineEditor(true); setActiveTool(it as Button, Tool.ARC, "Arc") } } catch(e: Exception) {}
 
-        val btnAutoSelect = findViewById<Button?>(R.id.btnAutoSelect)
-        btnAutoSelect?.setOnClickListener { showAutoSelectModeDialog(); setActiveToolbarBtn(it as Button) }
+        try { val btnAutoSelect = findViewById<Button>(R.id.btnAutoSelect); btnAutoSelect?.setOnClickListener { showAutoSelectModeDialog(); setActiveToolbarBtn(it as Button) } } catch(e: Exception) {}
 
-        val btnShapes = findViewById<Button?>(R.id.btnShapes)
-        btnShapes?.setOnClickListener { showShapesPicker(it as Button) }
+        try { val btnShapes = findViewById<Button>(R.id.btnShapes); btnShapes?.setOnClickListener { showShapesPicker(it as Button) } } catch(e: Exception) {}
 
-        val btnQuickColor = findViewById<Button?>(R.id.btnQuickColor)
+        val btnQuickColor = findViewById<Button>(R.id.btnQuickColor)
         btnQuickColor?.setOnClickListener { showColorGridDialog { c -> drawingView.currentColor = c } }
 
-        val btnQuickSize = findViewById<Button?>(R.id.btnQuickSize)
+        val btnQuickSize = findViewById<Button>(R.id.btnQuickSize)
         btnQuickSize?.setOnClickListener { showSizePicker() }
 
-        val btnQuickFill = findViewById<Button?>(R.id.btnQuickFill)
+        val btnQuickFill = findViewById<Button>(R.id.btnQuickFill)
         btnQuickFill?.setOnClickListener {
             showColorGridDialog { c -> drawingView.fillColor = c }
             setActiveTool(null, Tool.FILL, "Fill")
@@ -320,9 +316,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun applyConvenientLayout() {
         isConvenientLayout = true
-        btnLayoutToggle.text = "Convenient"
-        btnLayoutToggle.setBackgroundColor(Color.parseColor("#EDE7F6"))
-        btnLayoutToggle.setTextColor(Color.parseColor("#6200EE"))
+        btnLayoutToggle?.text = "Convenient"
+        btnLayoutToggle?.setBackgroundColor(Color.parseColor("#EDE7F6"))
+        btnLayoutToggle?.setTextColor(Color.parseColor("#6200EE"))
         // Convenient = PAGINATED with page height = screen height
         drawingView.canvasMode = CanvasMode.CONVENIENT
         drawingView.invalidate()
@@ -330,9 +326,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun applyPrintLayout() {
         isConvenientLayout = false
-        btnLayoutToggle.text = "Print"
-        btnLayoutToggle.setBackgroundColor(Color.parseColor("#E3F2FD"))
-        btnLayoutToggle.setTextColor(Color.parseColor("#1565C0"))
+        btnLayoutToggle?.text = "Print"
+        btnLayoutToggle?.setBackgroundColor(Color.parseColor("#E3F2FD"))
+        btnLayoutToggle?.setTextColor(Color.parseColor("#1565C0"))
         drawingView.canvasMode = CanvasMode.PAGINATED
         drawingView.paperSize = PaperSizeOption.A4
         drawingView.invalidate()
@@ -456,7 +452,7 @@ class MainActivity : AppCompatActivity() {
     // Wire up the menu button from XML (it doesn't have onClick attr — wire in setupBottomToolbar-equivalent)
     // The btnMenu is referenced in activity_main.xml — hook it up here
     private fun hookMenuButton() {
-        val btnMenu = findViewById<Button?>(R.id.btnMenu)
+        val btnMenu = findViewById<Button>(R.id.btnMenu)
         btnMenu?.setOnClickListener { onMenuClick(it) }
     }
 
