@@ -258,7 +258,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var tableDragStartX = 0f
     private var tableDragOrigSize = 0f
     private var tableSelStart: Pair<Int, Int>? = null
-    private var tableSelEnd: Pair<Int, Int>? = null
+private var tableSelEnd: Pair<Int, Int>? = null
+private var tableIsActive: Boolean = false  // true = user tapped in, editing mode
+private var tableSingleTapCell: Pair<Int, Int>? = null
+private var tableSingleTapTime: Long = 0L
+private val TABLE_DOUBLE_TAP_MS = 300L
 
     var onTextEditRequest: ((TextItem?, Float, Float, Float, Float) -> Unit)? = null
     var onTableCellEditRequest: ((TableItem, Int, Int, Float, Float) -> Unit)? = null
@@ -834,53 +838,85 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var longPressRunnable: Runnable? = null
 
     private fun handleTable(event: MotionEvent) {
-        val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
-        val tol = 18f / scaleFactor
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                val table = activeTableItem
-                if (table != null) {
-                    val rb = table.hitTestRowBorder(wy, tol)
-                    val cb = table.hitTestColBorder(wx, tol)
-                    if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; return }
-                    if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; return }
-                    val cell = table.hitTestCell(wx, wy)
-                    if (cell != null) {
-                        if (tableSelStart == null) { tableSelStart = cell; tableSelEnd = null }
-                        else if (tableSelEnd == null && cell != tableSelStart) tableSelEnd = cell
-                        else { tableSelStart = cell; tableSelEnd = null }
-                        invalidate(); return
-                    }
-                    activeTableItem = null; tableSelStart = null; tableSelEnd = null; invalidate()
+    private fun handleTable(event: MotionEvent) {
+    val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
+    val tol = 18f / scaleFactor
+    when (event.actionMasked) {
+        MotionEvent.ACTION_DOWN -> {
+            val table = activeTableItem
+            if (table != null && tableIsActive) {
+                // We're in active editing mode — check borders first
+                val rb = table.hitTestRowBorder(wy, tol)
+                val cb = table.hitTestColBorder(wx, tol)
+                if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; return }
+                if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; return }
+
+                val cell = table.hitTestCell(wx, wy)
+                if (cell == null) {
+                    // Tapped outside table bounds — exit table mode, switch to SELECT
+                    tableIsActive = false
+                    tableSelStart = null; tableSelEnd = null
+                    activeTableItem = null
+                    currentTool = Tool.SELECT
+                    invalidate(); return
+                }
+                // Tapped a cell — check for double tap
+                val now = System.currentTimeMillis()
+                if (cell == tableSingleTapCell && (now - tableSingleTapTime) < TABLE_DOUBLE_TAP_MS) {
+                    // Double tap → open editor
+                    tableSingleTapCell = null
+                    val rect = table.cellRect(cell.first, cell.second)
+                    val sx = worldToScreenX(rect.left); val sy = worldToScreenY(rect.top)
+                    onTableCellEditRequest?.invoke(table, cell.first, cell.second, sx, sy)
                 } else {
-                    for (action in actions.reversed()) {
-                        if (action is TableItem) {
-                            val b = getBounds(action) ?: continue
-                            if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) {
-                                activeTableItem = action; tableSelStart = null; tableSelEnd = null; invalidate(); return
-                            }
+                    // Single tap → select cell
+                    tableSingleTapCell = cell; tableSingleTapTime = now
+                    if (tableSelStart == null) { tableSelStart = cell; tableSelEnd = null }
+                    else if (tableSelEnd == null && cell != tableSelStart) tableSelEnd = cell
+                    else { tableSelStart = cell; tableSelEnd = null }
+                    invalidate()
+                }
+            } else if (table != null && !tableIsActive) {
+                // Table exists but not active — single tap activates it
+                val cell = table.hitTestCell(wx, wy)
+                if (cell != null) {
+                    tableIsActive = true
+                    tableSelStart = null; tableSelEnd = null
+                    tableSingleTapCell = null
+                    invalidate()
+                } else {
+                    // Tapped completely outside — deselect
+                    activeTableItem = null
+                    invalidate()
+                }
+            } else {
+                // No active table — find one
+                for (action in actions.reversed()) {
+                    if (action is TableItem) {
+                        val b = getBounds(action) ?: continue
+                        if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) {
+                            activeTableItem = action
+                            tableIsActive = false  // selected, not yet in editing mode
+                            tableSelStart = null; tableSelEnd = null
+                            tableSingleTapCell = null
+                            invalidate(); return
                         }
                     }
                 }
             }
-            MotionEvent.ACTION_MOVE -> {
-                val table = activeTableItem ?: return
-                if (tableDragRowBorder >= 0) { table.rowHeights[tableDragRowBorder] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(20f); invalidate() }
-                else if (tableDragColBorder >= 0) { table.colWidths[tableDragColBorder] = (tableDragOrigSize + (wx - tableDragStartX)).coerceAtLeast(30f); invalidate() }
-            }
-            MotionEvent.ACTION_UP -> {
-                if (tableDragRowBorder >= 0 || tableDragColBorder >= 0) { tableDragRowBorder = -1; tableDragColBorder = -1; return }
-                val table = activeTableItem ?: return
-                val cell = table.hitTestCell(wx, wy) ?: return
-                val selStart = tableSelStart
-                if (selStart != null && tableSelEnd == null && selStart == cell) {
-                    val rect = table.cellRect(cell.first, cell.second)
-                    val sx = worldToScreenX(rect.left); val sy = worldToScreenY(rect.top)
-                    onTableCellEditRequest?.invoke(table, cell.first, cell.second, sx, sy)
-                    tableSelStart = null
-                }
-            }
         }
+
+        
+        MotionEvent.ACTION_MOVE -> {
+            val table = activeTableItem ?: return
+            if (!tableIsActive) return
+            if (tableDragRowBorder >= 0) { table.rowHeights[tableDragRowBorder] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(20f); invalidate() }
+            else if (tableDragColBorder >= 0) { table.colWidths[tableDragColBorder] = (tableDragOrigSize + (wx - tableDragStartX)).coerceAtLeast(30f); invalidate() }
+        }
+        MotionEvent.ACTION_UP -> {
+            if (tableDragRowBorder >= 0 || tableDragColBorder >= 0) { tableDragRowBorder = -1; tableDragColBorder = -1; return }
+        }
+    }
     }
 
     fun addTableRow(afterRow: Int) {
@@ -932,44 +968,51 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     fun worldToScreenY(wy: Float): Float = wy * scaleFactor + translateY
 
     private fun drawTableOverlay(canvas: Canvas) {
-        val table = activeTableItem ?: return
-        val s = tableSelStart; val e = tableSelEnd
-        if (s != null) {
-            val minR = if (e != null) minOf(s.first, e.first) else s.first
-            val maxR = if (e != null) maxOf(s.first, e.first) else s.first
-            val minC = if (e != null) minOf(s.second, e.second) else s.second
-            val maxC = if (e != null) maxOf(s.second, e.second) else s.second
-            val hlP = Paint(); hlP.color = Color.parseColor("#442196F3"); hlP.style = Paint.Style.FILL
-            for (r in minR..maxR) for (c in minC..maxC) {
-                try { canvas.drawRect(table.cellRect(r, c), hlP) } catch (ex: Exception) {}
-            }
+    val table = activeTableItem ?: return
+
+    // Outer selection border — always shown when table is selected
+    val selColor = if (tableIsActive) "#2196F3" else "#9E9E9E"
+    val op = Paint(); op.color = Color.parseColor(selColor); op.style = Paint.Style.STROKE
+    op.strokeWidth = (if (tableIsActive) 2f else 1.5f) / scaleFactor
+    canvas.drawRect(table.x, table.y, table.x + table.totalWidth(), table.y + table.totalHeight(), op)
+
+    if (!tableIsActive) return  // only show outline when not in editing mode
+
+    // Cell selection highlight
+    val s = tableSelStart; val e = tableSelEnd
+    if (s != null) {
+        val minR = if (e != null) minOf(s.first, e.first) else s.first
+        val maxR = if (e != null) maxOf(s.first, e.first) else s.first
+        val minC = if (e != null) minOf(s.second, e.second) else s.second
+        val maxC = if (e != null) maxOf(s.second, e.second) else s.second
+        val hlP = Paint(); hlP.color = Color.parseColor("#442196F3"); hlP.style = Paint.Style.FILL
+        for (r in minR..maxR) for (c in minC..maxC) {
+            try { canvas.drawRect(table.cellRect(r, c), hlP) } catch (ex: Exception) {}
         }
-        val op = Paint(); op.color = Color.parseColor("#2196F3"); op.style = Paint.Style.STROKE; op.strokeWidth = 2f / scaleFactor
-        canvas.drawRect(table.x, table.y, table.x + table.totalWidth(), table.y + table.totalHeight(), op)
+    }
     }
 
     private fun handleSelect(event: MotionEvent) {
         val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
         val at = activeTableItem
-        if (at != null) {
-            val b = getBounds(at)
-            if (b != null) {
-                val pad = 20f / scaleFactor
-                if (wx >= b[0] - pad && wx <= b[2] + pad && wy >= b[1] - pad && wy <= b[3] + pad) {
-                    handleTable(event); return
-                }
+if (at != null) {
+    // Always route to handleTable when a table is selected
+    handleTable(event); return
+}
+if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+    for (action in actions.reversed()) {
+        if (action is TableItem) {
+            val b = getBounds(action) ?: continue
+            if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) {
+                activeTableItem = action
+                tableIsActive = false
+                tableSelStart = null; tableSelEnd = null
+                tableSingleTapCell = null
+                invalidate(); return
             }
         }
-        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-            for (action in actions.reversed()) {
-                if (action is TableItem) {
-                    val b = getBounds(action) ?: continue
-                    if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) {
-                        activeTableItem = action; tableSelStart = null; tableSelEnd = null; invalidate(); return
-                    }
-                }
-            }
-        }
+    }
+}
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
