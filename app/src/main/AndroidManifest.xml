@@ -1,42 +1,325 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application
-        android:allowBackup="true"
-        android:label="EngiNotes"
-        android:theme="@style/Theme.MaterialComponents.Light.NoActionBar"
-        android:supportsRtl="true">
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#F5F5F5">
 
-        <activity
-            android:name=".BooksActivity"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+    <!-- Minimal top bar: back | title | layout toggle | menu -->
+    <LinearLayout
+        android:id="@+id/topBar"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:orientation="horizontal"
+        android:background="#FFFFFF"
+        android:elevation="4dp"
+        android:gravity="center_vertical"
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp">
 
-        <activity
-            android:name=".HomeActivity"
-            android:exported="false" />
+        <Button
+            android:id="@+id/btnBack"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:text="←"
+            android:textSize="18sp"
+            android:textColor="#212121"
+            android:backgroundTint="@android:color/transparent"
+            android:padding="0dp"
+            android:minWidth="0dp"
+            android:minHeight="0dp" />
 
-        <activity
-            android:name=".MainActivity"
-            android:exported="false"
-            android:windowSoftInputMode="adjustResize" />
+        <TextView
+            android:id="@+id/tvTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="New Note"
+            android:textColor="#212121"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:maxLines="1"
+            android:ellipsize="end" />
 
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
-        </provider>
+        <Button
+            android:id="@+id/btnLayoutToggle"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="Convenient"
+            android:textSize="11sp"
+            android:textColor="#6200EE"
+            android:backgroundTint="#EDE7F6"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:minWidth="0dp"
+            android:minHeight="0dp" />
 
-        <activity android:name=".PdfViewerActivity" android:label="PDF Viewer" />
-        <activity android:name=".ChartActivity" android:label="Chart Builder" />
-        <activity android:name=".HandwritingActivity" android:label="Handwriting Recognition" />
+        <Button
+            android:id="@+id/btnMenu"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:text="⋮"
+            android:textSize="20sp"
+            android:textColor="#212121"
+            android:backgroundTint="@android:color/transparent"
+            android:padding="0dp"
+            android:minWidth="0dp"
+            android:minHeight="0dp" />
 
-    </application>
-</manifest>
+    </LinearLayout>
+
+    <!-- Canvas fills space between top bar and bottom toolbar -->
+    <FrameLayout
+        android:id="@+id/canvasContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_marginTop="52dp"
+        android:layout_marginBottom="56dp">
+
+        <com.enginotes.app.DrawingView
+            android:id="@+id/drawingView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+    </FrameLayout>
+
+    <!-- Bottom toolbar: icon row -->
+    <LinearLayout
+        android:id="@+id/bottomToolbar"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:layout_gravity="bottom"
+        android:orientation="horizontal"
+        android:background="#FFFFFF"
+        android:elevation="8dp"
+        android:gravity="center_vertical"
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp">
+
+        <Button
+            android:id="@+id/btnUndo"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="↩"
+            android:textSize="18sp"
+            android:textColor="#424242"
+            android:backgroundTint="@android:color/transparent"
+            android:minWidth="0dp"
+            android:minHeight="0dp" />
+
+        <Button
+            android:id="@+id/btnRedo"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="↪"
+            android:textSize="18sp"
+            android:textColor="#424242"
+            android:backgroundTint="@android:color/transparent"
+            android:minWidth="0dp"
+            android:minHeight="0dp" />
+
+        <Button
+            android:id="@+id/btnDraw"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="✏"
+            android:textSize="20sp"
+            android:textColor="#424242"
+            android:backgroundTint="@android:color/transparent"
+            android:minWidth="0dp"
+            android:minHeight="0dp" />
+
+        <Button
+            android:id="@+id/btnQuickEraser"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="⌫"
+            android:textSize="20sp"
+            android:textColor="#424242"
+            android:backgroundTint="@android:color/transparent"
+            android:minWidth="0dp"
+            android:minHeight="0dp" />
+
+        <Button
+            android:id="@+id/btnSelect"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="☝"
+            android:textSize="20sp"
+            android:textColor="#424242"
+            android:backgroundTint="@android:color/transparent"
+            android:minWidth="0dp"
+            android:minHeight="0dp" />
+
+        <Button
+            android:id="@+id/btnText"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="T"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="#424242"
+            android:backgroundTint="@android:color/transparent"
+            android:minWidth="0dp"
+            android:minHeight="0dp" />
+
+        <Button
+            android:id="@+id/btnInsert"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="⊕"
+            android:textSize="20sp"
+            android:textColor="#424242"
+            android:backgroundTint="@android:color/transparent"
+            android:minWidth="0dp"
+            android:minHeight="0dp" />
+
+        <Button
+            android:id="@+id/btnTools"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="🎨"
+            android:textSize="18sp"
+            android:textColor="#424242"
+            android:backgroundTint="@android:color/transparent"
+            android:minWidth="0dp"
+            android:minHeight="0dp" />
+
+        <Button
+            android:id="@+id/btnExpand"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="∨"
+            android:textSize="16sp"
+            android:textColor="#424242"
+            android:backgroundTint="@android:color/transparent"
+            android:minWidth="0dp"
+            android:minHeight="0dp" />
+
+    </LinearLayout>
+
+    <!-- Extra tool row — shown above bottom toolbar when btnExpand tapped -->
+    <HorizontalScrollView
+        android:id="@+id/toolbarScroll"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="56dp"
+        android:background="#F8F8F8"
+        android:elevation="6dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:orientation="horizontal"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:gravity="center_vertical">
+
+            <Button
+                android:id="@+id/btnQuickColor"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="🎨 Color"
+                android:textSize="12sp"
+                android:backgroundTint="#EEEEEE"
+                android:textColor="#212121"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:layout_marginEnd="6dp" />
+
+            <Button
+                android:id="@+id/btnQuickSize"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="📏 Size"
+                android:textSize="12sp"
+                android:backgroundTint="#EEEEEE"
+                android:textColor="#212121"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:layout_marginEnd="6dp" />
+
+            <Button
+                android:id="@+id/btnQuickFill"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="🪣 Fill"
+                android:textSize="12sp"
+                android:backgroundTint="#EEEEEE"
+                android:textColor="#212121"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:layout_marginEnd="6dp" />
+
+            <Button
+                android:id="@+id/btnArc"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="⌇ Arc"
+                android:textSize="12sp"
+                android:backgroundTint="#EEEEEE"
+                android:textColor="#212121"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:layout_marginEnd="6dp" />
+
+            <Button
+                android:id="@+id/btnAutoSelect"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="🔲 AutoSel"
+                android:textSize="12sp"
+                android:backgroundTint="#EEEEEE"
+                android:textColor="#212121"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:layout_marginEnd="6dp" />
+
+            <Button
+                android:id="@+id/btnShapes"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="▭ Shapes"
+                android:textSize="12sp"
+                android:backgroundTint="#EEEEEE"
+                android:textColor="#212121"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:layout_marginEnd="6dp" />
+
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <!-- Stub IDs kept for legacy code references -->
+    <View
+        android:id="@+id/collapsedBar"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone" />
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>
