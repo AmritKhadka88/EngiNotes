@@ -280,11 +280,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var twoFingerLastX = 0f; private var twoFingerLastY = 0f
     private var hoverX: Float? = null; private var hoverY: Float? = null
 
-    // \u2500\u2500 Palm rejection / stylus tracking \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    private var isStylusDown = false   // true while stylus pointer is on screen
-    private var drawingPointerId = -1  // pointer id that started the current stroke
+    private var isStylusDown = false
+    private var drawingPointerId = -1
 
-    // \u2500\u2500 helper: tools that draw on canvas \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     private fun isDrawingTool() = currentTool == Tool.PEN ||
         currentTool == Tool.ERASER ||
         currentTool in SHAPE_TOOLS ||
@@ -357,7 +355,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
 
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
-            // Only allow single-finger scroll on INFINITE canvas and only for non-drawing tools
             if (canvasMode == CanvasMode.INFINITE && !isDrawingTool()) {
                 translateX -= distanceX; translateY -= distanceY
                 onScaleChanged?.invoke(scaleFactor)
@@ -490,7 +487,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         super.onLayout(changed, left, top, right, bottom)
         if (canvasMode != CanvasMode.INFINITE && width > 0 && height > 0 && changed) {
             val margin = 20f
-            // Fit page to 75% of screen width so there is comfortable margin around it
             scaleFactor = (width.toFloat() - margin * 2f) / pageWidthPx() * 0.75f
             translateX = (width - pageWidthPx() * scaleFactor) / 2f
             translateY = margin
@@ -587,7 +583,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is FillItem -> floatArrayOf(item.x, item.y, item.x + item.w, item.y + item.h)
             is TextItem -> {
                 val tp = TextPaint(); tp.textSize = item.size
-                val lines = item.text.split("\")
+                val lines = item.text.split("\n")
                 val w = lines.maxOf { tp.measureText(it) }.coerceAtLeast(10f)
                 val h = item.size * 1.4f * lines.size
                 floatArrayOf(item.x, item.y - h, item.x + w, item.y)
@@ -727,7 +723,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         for (a in actions.reversed()) {
             if (a is TextItem) {
                 val tp = TextPaint(); tp.textSize = a.size
-                val lines = a.text.split("\")
+                val lines = a.text.split("\n")
                 val w = lines.maxOf { tp.measureText(it) }.coerceAtLeast(10f)
                 val h = a.size * 1.4f * lines.size
                 val pad = 24f / scaleFactor
@@ -1284,125 +1280,48 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return true
     }
 
-    // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
-    //  TOUCH EVENT \u2014 central dispatcher
-    //
-    //  Rules:
-    //  1. Two fingers \u2192 scale + pan only, NEVER draw
-    //  2. Stylus down \u2192 reject any finger touches until stylus lifts
-    //  3. Drawing tools in fixed/paginated \u2192 single finger draws only,
-    //     NO scroll (pan is two-finger only)
-    //  4. Non-drawing tools \u2192 gesture detector handles taps
-    //  5. Infinite canvas non-drawing \u2192 gesture detector handles pan
-    // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
     override fun onTouchEvent(event: MotionEvent): Boolean {
-
-        // \u2500\u2500 Two-finger: scale + pan, never draw \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
         if (event.pointerCount >= 2) {
-            // Cancel any in-progress single-finger stroke
             if (currentItem != null) { currentItem = null; invalidate() }
             isStylusDown = false; drawingPointerId = -1
-
             scaleDetector.onTouchEvent(event)
-
-            // Two-finger pan for fixed / paginated canvas
             if (canvasMode != CanvasMode.INFINITE) {
                 when (event.actionMasked) {
                     MotionEvent.ACTION_MOVE -> {
                         val fx = (event.getX(0) + event.getX(1)) / 2f
                         val fy = (event.getY(0) + event.getY(1)) / 2f
                         if (twoFingerLastX != 0f || twoFingerLastY != 0f) {
-                            translateX += fx - twoFingerLastX
-                            translateY += fy - twoFingerLastY
-                            clampTranslation()
-                            onScaleChanged?.invoke(scaleFactor)
-                            onCanvasTransformed?.invoke()
-                            invalidate()
+                            translateX += fx - twoFingerLastX; translateY += fy - twoFingerLastY
+                            clampTranslation(); onScaleChanged?.invoke(scaleFactor); onCanvasTransformed?.invoke(); invalidate()
                         }
                         twoFingerLastX = fx; twoFingerLastY = fy
                     }
-                    MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        twoFingerLastX = 0f; twoFingerLastY = 0f
-                    }
+                    MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { twoFingerLastX = 0f; twoFingerLastY = 0f }
                 }
             }
             return true
         }
-
-        // \u2500\u2500 Single pointer from here \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
         twoFingerLastX = 0f; twoFingerLastY = 0f
-
         val toolType = event.getToolType(0)
-        val isStylus = toolType == MotionEvent.TOOL_TYPE_STYLUS ||
-                       toolType == MotionEvent.TOOL_TYPE_ERASER
-        val isFinger = toolType == MotionEvent.TOOL_TYPE_FINGER ||
-                       toolType == MotionEvent.TOOL_TYPE_UNKNOWN
-
+        val isStylus = toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER
+        val isFinger = toolType == MotionEvent.TOOL_TYPE_FINGER || toolType == MotionEvent.TOOL_TYPE_UNKNOWN
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (isStylus) {
-                    isStylusDown = true
-                    drawingPointerId = event.getPointerId(0)
-                } else {
-                    // Reject finger if stylus is already on screen
-                    if (isStylusDown) return true
-                    drawingPointerId = event.getPointerId(0)
-                }
+                if (isStylus) { isStylusDown = true; drawingPointerId = event.getPointerId(0) }
+                else { if (isStylusDown) return true; drawingPointerId = event.getPointerId(0) }
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                if (isStylus) isStylusDown = false
-                drawingPointerId = -1
-            }
-            MotionEvent.ACTION_MOVE -> {
-                // Reject finger move while stylus is drawing
-                if (isStylusDown && isFinger) return true
-            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { if (isStylus) isStylusDown = false; drawingPointerId = -1 }
+            MotionEvent.ACTION_MOVE -> { if (isStylusDown && isFinger) return true }
         }
-
-        // \u2500\u2500 Route to correct handler \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-
-        // Text and Fill tools only need gesture detector (tap detection)
-        if (currentTool == Tool.TEXT || currentTool == Tool.FILL) {
-            gestureDetector.onTouchEvent(event)
-            return true
-        }
-
-        // Select tool \u2014 gesture detector for taps, handleSelect for drag
-        if (currentTool == Tool.SELECT) {
-            gestureDetector.onTouchEvent(event)
-            handleSelect(event)
-            return true
-        }
-
-        // Arc tool
-        if (currentTool == Tool.ARC) {
-            handleArc(event)
-            return true
-        }
-
-        // AutoSelect tool
-        if (currentTool == Tool.AUTOSELECT) {
-            gestureDetector.onTouchEvent(event)
-            handleAutoSelect(event)
-            return true
-        }
-
-        // Export window tool
-        if (currentTool == Tool.EXPORT_WINDOW) {
-            handleExportWindow(event)
-            return true
-        }
-
-        // Drawing tools (PEN, ERASER, shapes)
-        // On infinite canvas: also allow single-finger pan when not actively drawing
-        if (canvasMode == CanvasMode.INFINITE && currentItem == null &&
-            event.actionMasked == MotionEvent.ACTION_MOVE && isFinger) {
-            // Let gesture detector handle pan scroll on infinite canvas
+        if (currentTool == Tool.TEXT || currentTool == Tool.FILL) { gestureDetector.onTouchEvent(event); return true }
+        if (currentTool == Tool.SELECT) { gestureDetector.onTouchEvent(event); handleSelect(event); return true }
+        if (currentTool == Tool.ARC) { handleArc(event); return true }
+        if (currentTool == Tool.AUTOSELECT) { gestureDetector.onTouchEvent(event); handleAutoSelect(event); return true }
+        if (currentTool == Tool.EXPORT_WINDOW) { handleExportWindow(event); return true }
+        if (canvasMode == CanvasMode.INFINITE && currentItem == null && event.actionMasked == MotionEvent.ACTION_MOVE && isFinger) {
             gestureDetector.onTouchEvent(event)
         }
-
-        handleDrawing(event)
-        return true
+        handleDrawing(event); return true
     }
 
     private fun handleExportWindow(event: MotionEvent) {
@@ -1634,19 +1553,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     fun serialize(): String {
         val sb = StringBuilder()
-        sb.append("META\${paperType.name}\${canvasMode.name}\${paperSize.name}\${pageOrientation.name}\$paperColor\
-")
-        for (a in actions) {
-            when (a) {
+        sb.append("META\u0001${paperType.name}\u0001${canvasMode.name}\u0001${paperSize.name}\u0001${pageOrientation.name}\u0001$paperColor\n")
+        for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
-            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}\")
-            is TextItem -> sb.append("TEXT\${a.x}\${a.y}\${a.color}\${a.size}\${a.rotation}\${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\${a.text.replace("\", "\")}\")
-            is ImageItem -> sb.append("IMAGE\${a.path}\${a.x}\${a.y}\${a.w}\${a.h}\${a.rotation}\")
+            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}\n")
+            is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\n")
+            is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\n")
-            }
         }
         return sb.toString()
-                                      }
+    }
 
     fun loadFromString(content: String) {
         actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null
@@ -1656,8 +1572,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (line.isBlank()) { i++; continue }
             try {
                 when {
-                    line.startsWith("META\") -> {
-                        val p = line.split("\")
+                    line.startsWith("META\u0001") -> {
+                        val p = line.split("\u0001")
                         try { if (p.size > 1) paperType = PaperType.valueOf(p[1]) } catch (e: Exception) {}
                         try { if (p.size > 2) canvasMode = CanvasMode.valueOf(p[2]) } catch (e: Exception) {}
                         try { if (p.size > 3) paperSize = PaperSizeOption.valueOf(p[3]) } catch (e: Exception) {}
@@ -1665,32 +1581,30 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         try { if (p.size > 5) paperColor = p[5].toInt() } catch (e: Exception) {}
                         i++
                     }
-                    line.startsWith("TABLE\") -> {
+                    line.startsWith("TABLE\u0001") -> {
                         val tableLines = mutableListOf<String>(); var j = i
                         while (j < lines.size && !lines[j].startsWith("TABLEEND")) { tableLines.add(lines[j]); j++ }
                         val (tableItem, _) = TableItem.deserialize(tableLines, 0)
                         if (tableItem != null) actions.add(tableItem); i = j + 1
                     }
-                    line.startsWith("TEXT\") -> {
-                        val p = line.split("\"); if (p.size >= 7) {
+                    line.startsWith("TEXT\u0001") -> {
+                        val p = line.split("\u0001"); if (p.size >= 7) {
                             val item = TextItem("", p[1].toFloat(), p[2].toFloat(), p[3].toInt(), p[4].toFloat(), p[5].toFloat())
                             if (p.size >= 9) {
                                 val bold = p[6].toBoolean(); val italic = p[7].toBoolean()
-                                item.text = p[8].replace("\", "\
-")
+                                item.text = p[8].replace("\u0002", "\n")
                                 val style = if (bold && italic) Typeface.BOLD_ITALIC else if (bold) Typeface.BOLD else if (italic) Typeface.ITALIC else -1
                                 if (style >= 0) item.spans.add(TextSpanData(0, item.text.length, 'S', style))
                             } else {
                                 if (p[6].isNotBlank()) for (t in p[6].split(";")) { val sp = t.split(","); if (sp.size == 4) item.spans.add(TextSpanData(sp[0].toInt(), sp[1].toInt(), sp[2][0], sp[3].toInt())) }
-                                item.text = if (p.size > 7) p[7].replace("\", "\
-") else ""
+                                item.text = if (p.size > 7) p[7].replace("\u0002", "\n") else ""
                             }
                             actions.add(item)
                         }
                         i++
                     }
-                    line.startsWith("IMAGE\") -> {
-                        val p = line.split("\")
+                    line.startsWith("IMAGE\u0001") -> {
+                        val p = line.split("\u0001")
                         if (p.size >= 7) {
                             val item = ImageItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat(), p[6].toFloat())
                             actions.add(item)
@@ -1698,8 +1612,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         }
                         i++
                     }
-                    line.startsWith("FILL\") -> {
-                        val p = line.split("\")
+                    line.startsWith("FILL\u0001") -> {
+                        val p = line.split("\u0001")
                         if (p.size >= 6) actions.add(FillItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat()))
                         i++
                     }
@@ -1723,4 +1637,4 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         invalidate()
     }
-                                                                         }
+                                     }
