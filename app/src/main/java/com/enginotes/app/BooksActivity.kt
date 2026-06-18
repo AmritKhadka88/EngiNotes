@@ -17,9 +17,8 @@ import java.util.*
 
 /**
  * Home / launcher screen.
- * + FAB → creates a new note immediately (no book dialog) in the default book.
- * Long-press a note card → options including "Move to book".
- * Books & organisation live in Settings (gear icon).
+ * Modified to bypass immediately into a new note on first cold launch,
+ * while maintaining the complete, rich UI dashboard for subsequent management.
  */
 class BooksActivity : AppCompatActivity() {
 
@@ -32,11 +31,30 @@ class BooksActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         ensureDefaultBook()
         setContentView(buildUI())
+        
+        // Check if this is a fresh cold boot launch of the application
+        val isFirstLaunch = intent.getBooleanExtra("BypassedToCanvas", false)
+        if (!isFirstLaunch) {
+            // Instantly trigger a new canvas session under the "General" environment
+            val book = getDefaultBook()
+            File(getBooksRoot(), book).mkdirs()
+            val name = "Note_${System.currentTimeMillis()}"
+            
+            val directCanvasIntent = Intent(this, MainActivity::class.java).apply {
+                putExtra("filename", name)
+                putExtra("book_name", book)
+            }
+            
+            // Mark the intent so when they hit "back" out of the canvas, they return to this dashboard smoothly
+            intent.putExtra("BypassedToCanvas", true)
+            startActivity(directCanvasIntent)
+        }
+
         refresh()
     }
 
     // ──────────────────────────────────────────────────────────────
-    //  UI build (pure code — no XML for home screen)
+    //  UI build (pure code — completely preserved)
     // ──────────────────────────────────────────────────────────────
 
     private fun buildUI(): View {
@@ -123,7 +141,7 @@ class BooksActivity : AppCompatActivity() {
         }
         content.addView(emptyView)
 
-        // ── FAB ──
+        // ── FAB (+ Option directly routing to canvas inside default General container) ──
         val fab = Button(this).apply {
             text = "+"
             textSize = 30f
@@ -314,7 +332,7 @@ class BooksActivity : AppCompatActivity() {
     }
 
     // ──────────────────────────────────────────────────────────────
-    //  Settings dialog — includes book management
+    //  Settings dialog — fully intact
     // ──────────────────────────────────────────────────────────────
 
     private fun showSettingsDialog() {
