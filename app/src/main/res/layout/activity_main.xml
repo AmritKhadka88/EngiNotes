@@ -1,112 +1,304 @@
-<?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical">
+// 1. Root Container (vertical layout)
+val rootLayout = LinearLayout(this).apply {
+    layoutParams = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT,
+        LinearLayout.LayoutParams.MATCH_PARENT
+    )
+    orientation = LinearLayout.VERTICAL
+}
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:background="#6200EE"
-        android:padding="8dp"
-        android:gravity="center_vertical">
+// val topBar = LinearLayout(this).apply {
+    layoutParams = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT,
+        LinearLayout.LayoutParams.WRAP_CONTENT
+    )
+    orientation = LinearLayout.HORIZONTAL
+    setBackgroundColor(Color.parseColor("#6200EE"))
+    setPadding(dp(4), dp(4), dp(4), dp(4))
+    gravity = Gravity.CENTER_VERTICAL
+}
 
-        <Button
-            android:id="@+id/btnBack"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="←"
-            android:textColor="#FFFFFF"
-            android:backgroundTint="#6200EE" />
+val btnBack = Button(this).apply {
+    id = R.id.btnBack
+    layoutParams = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.WRAP_CONTENT,
+        LinearLayout.LayoutParams.WRAP_CONTENT
+    )
+    text = "←"
+    setTextColor(Color.parseColor("#FFFFFF"))
+    textSize = 18f
+    minWidth = 0
+    setPadding(dp(8), 0, dp(8), 0)
+    backgroundTintList = ColorStateList.valueOf(Color.parseColor("#6200EE"))
+}
 
-        <TextView
-            android:id="@+id/tvTitle"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="New Note"
-            android:textColor="#FFFFFF"
-            android:textSize="16sp"
-            android:gravity="center" />
+val tvTitle = TextView(this).apply {
+    id = R.id.tvTitle
+    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+        weight = 1f
+    }
+    text = "New Note"
+    setTextColor(Color.parseColor("#FFFFFF"))
+    textSize = 15f
+    gravity = Gravity.CENTER
+    maxLines = 1
+    ellipsize = android.text.TextUtils.TruncateAt.END
+}
 
-        <Button
-            android:id="@+id/btnMenu"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="⋮"
-            android:textColor="#FFFFFF"
-            android:textSize="20sp"
-            android:backgroundTint="#6200EE" />
+val btnLayoutToggle = Button(this).apply {
+    id = R.id.btnLayoutToggle
+    layoutParams = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.WRAP_CONTENT,
+        dp(32)
+    )
+    text = "Convenient"
+    textSize = 11f
+    setTextColor(Color.parseColor("#6200EE"))
+    backgroundTintList = ColorStateList.valueOf(Color.parseColor("#EDE7F6"))
+    minWidth = 0
+    setPadding(dp(8), 0, dp(8), 0)
+}
 
-    </LinearLayout>
+val btnMenu = Button(this).apply {
+    id = R.id.btnMenu
+    layoutParams = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.WRAP_CONTENT,
+        LinearLayout.LayoutParams.WRAP_CONTENT
+    )
+    text = "⋮"
+    setTextColor(Color.parseColor("#FFFFFF"))
+    textSize = 20f
+    minWidth = 0
+    setPadding(dp(8), 0, dp(8), 0)
+    backgroundTintList = ColorStateList.valueOf(Color.parseColor("#6200EE"))
+}
 
-    <HorizontalScrollView
-        android:id="@+id/toolbarScroll"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="#EEEEEE">
-
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:padding="6dp"
-            android:gravity="center_vertical">
-
-            <Button android:id="@+id/btnText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🔤 Text" android:textSize="14sp" />
-            <Button android:id="@+id/btnDraw" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="✏ Draw ▾" android:textSize="14sp" />
-            <Button android:id="@+id/btnTools" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🛠 Tools ▾" android:textSize="14sp" />
-            <Button android:id="@+id/btnInsert" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="📎 Insert ▾" android:textSize="14sp" />
-            <Button android:id="@+id/btnUndo" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="↩" android:textSize="18sp" />
-            <Button android:id="@+id/btnRedo" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="↪" android:textSize="18sp" />
-
-        </LinearLayout>
-    </HorizontalScrollView>
-
-    <LinearLayout
-        android:id="@+id/collapsedBar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:background="#22000000"
-        android:padding="4dp"
-        android:gravity="center_vertical"
-        android:visibility="gone">
-
-        <Button
-            android:id="@+id/btnExpand"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="›"
-            android:textSize="18sp"
-            android:textColor="#FFFFFF"
-            android:backgroundTint="#882196F3" />
-
-        <View
-            android:layout_width="0dp"
-            android:layout_height="1dp"
-            android:layout_weight="1" />
-
-        <Button android:id="@+id/btnQuickColor" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🎨" android:textSize="18sp" android:backgroundTint="#55FFFFFF" />
-        <Button android:id="@+id/btnQuickSize" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="📏" android:textSize="18sp" android:backgroundTint="#55FFFFFF" />
-        <Button android:id="@+id/btnQuickFill" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🪣" android:textSize="18sp" android:backgroundTint="#55FFFFFF" />
-        <Button android:id="@+id/btnQuickEraser" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="🧹" android:textSize="18sp" android:backgroundTint="#55FFFFFF" />
-
-    </LinearLayout>
+topBar.addView(btnBack)
+topBar.addView(tvTitle)
+topBar.addView(btnLayoutToggle)
+topBar.addView(btnMenu)
+rootLayout.addView(topBar)
 
 
+// val primaryScrollView = HorizontalScrollView(this).apply {
+    layoutParams = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT,
+        LinearLayout.LayoutParams.WRAP_CONTENT
+    )
+    setBackgroundColor(Color.parseColor("#F5F5F5"))
+    isHorizontalScrollBarEnabled = false
+}
 
-    <FrameLayout
-        android:id="@+id/canvasContainer"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent">
+val primaryToolbarInner = LinearLayout(this).apply {
+    layoutParams = FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.WRAP_CONTENT,
+        FrameLayout.LayoutParams.WRAP_CONTENT
+    )
+    orientation = LinearLayout.HORIZONTAL
+    setPadding(dp(4), dp(4), dp(4), dp(4))
+    gravity = Gravity.CENTER_VERTICAL
+}
 
-        <com.enginotes.app.DrawingView
-            android:id="@+id/drawingView"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent" />
+val btnSelect = Button(this).apply {
+    id = R.id.btnSelect
+    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(36))
+    text = "👆"
+    textSize = 16f
+    minWidth = 0
+    setPadding(dp(10), 0, dp(10), 0)
+}
 
-    </FrameLayout>
+val btnDraw = Button(this).apply {
+    id = R.id.btnDraw
+    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(36))
+    text = "✏ Draw"
+    textSize = 13f
+    minWidth = 0
+    setPadding(dp(10), 0, dp(10), 0)
+}
 
-</LinearLayout>
+val btnText = Button(this).apply {
+    id = R.id.btnText
+    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(36))
+    text = "T Text"
+    textSize = 13f
+    minWidth = 0
+    setPadding(dp(10), 0, dp(10), 0)
+}
+
+val btnQuickEraser = Button(this).apply {
+    id = R.id.btnQuickEraser
+    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(36))
+    text = "🧹"
+    textSize = 16f
+    minWidth = 0
+    setPadding(dp(10), 0, dp(10), 0)
+}
+
+val btnInsert = Button(this).apply {
+    id = R.id.btnInsert
+    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(36))
+    text = "📎 Insert"
+    textSize = 13f
+    minWidth = 0
+    setPadding(dp(10), 0, dp(10), 0)
+}
+
+val btnTools = Button(this).apply {
+    id = R.id.btnTools
+    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(36))
+    text = "🛠 Tools"
+    textSize = 13f
+    minWidth = 0
+    setPadding(dp(10), 0, dp(10), 0)
+}
+
+val btnUndo = Button(this).apply {
+    id = R.id.btnUndo
+    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(36))
+    text = "↩"
+    textSize = 18f
+    minWidth = 0
+    setPadding(dp(10), 0, dp(10), 0)
+}
+
+val btnRedo = Button(this).apply {
+    id = R.id.btnRedo
+    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(36))
+    text = "↪"
+    textSize = 18f
+    minWidth = 0
+    setPadding(dp(10), 0, dp(10), 0)
+}
+
+val btnExpand = Button(this).apply {
+    id = R.id.btnExpand
+    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(36))
+    text = "∨"
+    textSize = 14f
+    minWidth = 0
+    setPadding(dp(10), 0, dp(10), 0)
+    backgroundTintList = ColorStateList.valueOf(Color.parseColor("#882196F3"))
+    setTextColor(Color.parseColor("#FFFFFF"))
+}
+
+primaryToolbarInner.addView(btnSelect)
+primaryToolbarInner.addView(btnDraw)
+primaryToolbarInner.addView(btnText)
+primaryToolbarInner.addView(btnQuickEraser)
+primaryToolbarInner.addView(btnInsert)
+primaryToolbarInner.addView(btnTools)
+primaryToolbarInner.addView(btnUndo)
+primaryToolbarInner.addView(btnRedo)
+primaryToolbarInner.addView(btnExpand)
+primaryScrollView.addView(primaryToolbarInner)
+rootLayout.addView(primaryScrollView)
+
+
+// val toolbarScroll = HorizontalScrollView(this).apply {
+    id = R.id.toolbarScroll
+    layoutParams = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT,
+        LinearLayout.LayoutParams.WRAP_CONTENT
+    )
+    setBackgroundColor(Color.parseColor("#EEEEEE"))
+    isHorizontalScrollBarEnabled = false
+    visibility = View.GONE
+}
+
+val secondaryToolbarInner = LinearLayout(this).apply {
+    layoutParams = FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.WRAP_CONTENT,
+        FrameLayout.LayoutParams.WRAP_CONTENT
+    )
+    orientation = LinearLayout.HORIZONTAL
+    setPadding(dp(4), dp(4), dp(4), dp(4))
+    gravity = Gravity.CENTER_VERTICAL
+}
+
+val btnShapes = Button(this).apply {
+    id = R.id.btnShapes
+    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(36))
+    text = "⬡ Shapes"
+    textSize = 13f
+    minWidth = 0
+    setPadding(dp(10), 0, dp(10), 0)
+}
+
+val btnArc = Button(this).apply {
+    id = R.id.btnArc
+    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(36))
+    text = "⌇ Arc"
+    textSize = 13f
+    minWidth = 0
+    setPadding(dp(10), 0, dp(10), 0)
+}
+
+val btnAutoSelect = Button(this).apply {
+    id = R.id.btnAutoSelect
+    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(36))
+    text = "⬚ Auto"
+    textSize = 13f
+    minWidth = 0
+    setPadding(dp(10), 0, dp(10), 0)
+}
+
+val btnQuickColor = Button(this).apply {
+    id = R.id.btnQuickColor
+    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(36))
+    text = "🎨 Color"
+    textSize = 13f
+    minWidth = 0
+    setPadding(dp(10), 0, dp(10), 0)
+}
+
+val btnQuickSize = Button(this).apply {
+    id = R.id.btnQuickSize
+    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(36))
+    text = "📏 Size"
+    textSize = 13f
+    minWidth = 0
+    setPadding(dp(10), 0, dp(10), 0)
+}
+
+val btnQuickFill = Button(this).apply {
+    id = R.id.btnQuickFill
+    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(36))
+    text = "🪣 Fill"
+    textSize = 13f
+    minWidth = 0
+    setPadding(dp(10), 0, dp(10), 0)
+}
+
+secondaryToolbarInner.addView(btnShapes)
+secondaryToolbarInner.addView(btnArc)
+secondaryToolbarInner.addView(btnAutoSelect)
+secondaryToolbarInner.addView(btnQuickColor)
+secondaryToolbarInner.addView(btnQuickSize)
+secondaryToolbarInner.addView(btnQuickFill)
+toolbarScroll.addView(secondaryToolbarInner)
+rootLayout.addView(toolbarScroll)
+
+
+// val canvasContainer = FrameLayout(this).apply {
+    id = R.id.canvasContainer
+    layoutParams = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT,
+        0
+    ).apply {
+        weight = 1f
+    }
+}
+
+val drawingView = com.enginotes.app.DrawingView(this).apply {
+    id = R.id.drawingView
+    layoutParams = FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.MATCH_PARENT,
+        FrameLayout.LayoutParams.MATCH_PARENT
+    )
+}
+
+canvasContainer.addView(drawingView)
+rootLayout.addView(canvasContainer)
+
+setContentView(rootLayout)
