@@ -52,7 +52,7 @@ class MainActivity : AppCompatActivity() {
     private var lastSavedContent: String = ""
     private val PT_TO_PX = 1.333f
 
-    private val shapeSymbols = listOf("\u2571 Line", "\u25ad Rectangle", "\u25a2 Rounded Rect", "\u25cb Circle", "\u2b2d Ellipse", "\u25b3 Triangle", "\u25c7 Diamond", "\u2794 Arrow", "\u2605 Star", "\u2b20 Pentagon", "\u2b21 Hexagon", "\u301c Curve", "\u271b Cross")
+    private val shapeSymbols = listOf("╱ Line", "▭ Rectangle", "▢ Rounded Rect", "○ Circle", "⬭ Ellipse", "△ Triangle", "◇ Diamond", "➔ Arrow", "★ Star", "⬠ Pentagon", "⬡ Hexagon", "〜 Curve", "✛ Cross")
     private val shapeTools = listOf(Tool.LINE, Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.CIRCLE, Tool.ELLIPSE, Tool.TRIANGLE, Tool.DIAMOND, Tool.ARROW, Tool.STAR, Tool.PENTAGON, Tool.HEXAGON, Tool.CURVE, Tool.CROSS)
 
     private var activeEditText: EditText? = null
@@ -192,15 +192,11 @@ class MainActivity : AppCompatActivity() {
             val engFile = currentFileName?.let { File(getDrawingsFolder(), "$it.eng") }
                 ?: run { Toast.makeText(this, "Save the note first!", Toast.LENGTH_SHORT).show(); return@registerForActivityResult }
             val sb = StringBuilder()
-            sb.append("=== ${currentFileName} ===\
-\
-")
+            sb.append("=== ${currentFileName} ===\n\n")
             for (line in engFile.readLines()) {
-                if (line.startsWith("TEXT\")) {
-                    val parts = line.split("\")
-                    if (parts.size > 7) sb.append(parts.last().replace("\", "\
-")).append("\
-")
+                if (line.startsWith("TEXT\u0001")) {
+                    val parts = line.split("\u0001")
+                    if (parts.size > 7) sb.append(parts.last().replace("\u0002", "\n")).append("\n")
                 }
             }
             contentResolver.openOutputStream(uri)?.use { it.write(sb.toString().toByteArray()) }
@@ -222,12 +218,11 @@ class MainActivity : AppCompatActivity() {
             val titleRun = doc.createParagraph().createRun()
             titleRun.setText(currentFileName ?: "EngiNote"); titleRun.isBold = true; titleRun.fontSize = 18
             for (line in engFile.readLines()) {
-                if (line.startsWith("TEXT\")) {
-                    val parts = line.split("\")
+                if (line.startsWith("TEXT\u0001")) {
+                    val parts = line.split("\u0001")
                     if (parts.size > 7) {
                         val run = doc.createParagraph().createRun()
-                        run.setText(parts.last().replace("\", "\
-"))
+                        run.setText(parts.last().replace("\u0002", "\n"))
                         try { run.fontSize = (parts[4].toFloat() / PT_TO_PX).toInt().coerceIn(8, 72) } catch (e: Exception) {}
                     }
                 }
@@ -308,7 +303,7 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.btnDraw).setOnClickListener { btn ->
             closeInlineEditor(commit = true)
-            val options = listOf("\ud83d\udc46 Select", "\ud83e\udea3 Fill", "\u270f Pen", "\u2307 Arc", "\ud83d\udd32 AutoSelect") + shapeSymbols
+            val options = listOf("👆 Select", "🪣 Fill", "✏ Pen", "⌇ Arc", "🔲 AutoSelect") + shapeSymbols
             AlertDialog.Builder(this).setTitle("Draw")
                 .setItems(options.toTypedArray()) { _, i ->
                     when (i) {
@@ -325,7 +320,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnTools).setOnClickListener { btn ->
             closeInlineEditor(commit = true)
             AlertDialog.Builder(this).setTitle("Tools")
-                .setItems(arrayOf("\ud83e\uddf9 Eraser", "\ud83c\udfa8 Color", "\ud83e\udea3 Fill Shapes", "\ud83d\udccf Size")) { _, i ->
+                .setItems(arrayOf("🧹 Eraser", "🎨 Color", "🪣 Fill Shapes", "📏 Size")) { _, i ->
                     when (i) {
                         0 -> if (drawingView.currentTool == Tool.ERASER) {
                             drawingView.eraserMode = if (drawingView.eraserMode == EraserMode.OBJECT) EraserMode.AREA else EraserMode.OBJECT
@@ -341,7 +336,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnInsert).setOnClickListener {
             closeInlineEditor(commit = true)
             AlertDialog.Builder(this).setTitle("Insert")
-                .setItems(arrayOf("\ud83d\uddbc Image from Gallery", "\ud83d\udcf7 Take Photo", "\u229e Table")) { _, i ->
+                .setItems(arrayOf("🖼 Image from Gallery", "📷 Take Photo", "⊞ Table")) { _, i ->
                     when (i) {
                         0 -> pickImageLauncher.launch("image/*")
                         1 -> launchCamera()
@@ -367,7 +362,7 @@ class MainActivity : AppCompatActivity() {
             val popup = PopupMenu(this, anchor)
             listOf("Save", "Save As", "Export", "Export Window", "Clear Canvas").forEach { popup.menu.add(it) }
             if (currentFileName != null) popup.menu.add("Delete This Note")
-            listOf("\ud83d\udcc4 Open PDF", "\ud83d\udcca Chart Builder", "\u270d Handwriting to Text", "\u2699 Settings", "Exit").forEach { popup.menu.add(it) }
+            listOf("📄 Open PDF", "📊 Chart Builder", "✍ Handwriting to Text", "⚙ Settings", "Exit").forEach { popup.menu.add(it) }
             popup.setOnMenuItemClickListener { item ->
                 when (item.title) {
                     "Save" -> saveCurrent()
@@ -383,10 +378,10 @@ class MainActivity : AppCompatActivity() {
                     }
                     "Clear Canvas" -> confirmThenClear()
                     "Delete This Note" -> deleteCurrentNote()
-                    "\ud83d\udcc4 Open PDF" -> pickPdfLauncher.launch("application/pdf")
-                    "\ud83d\udcca Chart Builder" -> chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java))
-                    "\u270d Handwriting to Text" -> startActivity(android.content.Intent(this, HandwritingActivity::class.java))
-                    "\u2699 Settings" -> showSettingsDialog()
+                    "📄 Open PDF" -> pickPdfLauncher.launch("application/pdf")
+                    "📊 Chart Builder" -> chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java))
+                    "✍ Handwriting to Text" -> startActivity(android.content.Intent(this, HandwritingActivity::class.java))
+                    "⚙ Settings" -> showSettingsDialog()
                     "Exit" -> confirmThenExit()
                 }
                 true
@@ -443,7 +438,7 @@ class MainActivity : AppCompatActivity() {
     private fun showExportWindowDialog() {
         val bmp = exportWindowBitmap ?: return
         val name = (currentFileName ?: "EngiNote_${System.currentTimeMillis()}").replace(" ", "_")
-        val formats = arrayOf("\ud83d\udcc4 PDF", "\ud83d\uddbc JPG", "\ud83d\uddbc PNG", "\ud83d\uddbc BMP")
+        val formats = arrayOf("📄 PDF", "🖼 JPG", "🖼 PNG", "🖼 BMP")
         AlertDialog.Builder(this).setTitle("Export Selection as...")
             .setItems(formats) { _, i ->
                 pendingExportBitmap = bmp
@@ -460,7 +455,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showExportDialog() {
         val name = (currentFileName ?: "EngiNote_${System.currentTimeMillis()}").replace(" ", "_")
-        val formats = arrayOf("\ud83d\udcc4 PDF", "\ud83d\uddbc JPG", "\ud83d\uddbc PNG", "\ud83d\uddbc BMP", "\ud83d\udcdd TXT", "\ud83d\udcdd DOCX")
+        val formats = arrayOf("📄 PDF", "🖼 JPG", "🖼 PNG", "🖼 BMP", "📝 TXT", "📝 DOCX")
         AlertDialog.Builder(this).setTitle("Export as...")
             .setItems(formats) { _, i ->
                 pendingExportBitmap = drawingView.exportBitmap()
@@ -601,7 +596,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val scroll = ScrollView(this); scroll.addView(container)
-        AlertDialog.Builder(this).setTitle("\u2699 Settings").setView(scroll)
+        AlertDialog.Builder(this).setTitle("⚙ Settings").setView(scroll)
             .setPositiveButton("Done") { _, _ ->
                 prefs.edit().putBoolean("confirm_exit_clear", checkbox.isChecked).apply()
                 val n = (arcInput.text.toString().toIntOrNull() ?: 3).coerceIn(2, 12)
@@ -662,7 +657,6 @@ class MainActivity : AppCompatActivity() {
         for (value in listOf(1.0f, 0.85f, 0.7f, 0.5f, 0.3f))
             for (hue in listOf(0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330))
                 addSwatch(Color.HSVToColor(floatArrayOf(hue.toFloat(), 0.65f, value)))
-
         val scroll = ScrollView(this); scroll.addView(grid)
         dialog = AlertDialog.Builder(this).setTitle("Color").setView(scroll).create()
         dialog.show()
@@ -699,7 +693,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showAutoSelectModeDialog() {
-        val modes = arrayOf("\u25ad Rectangle \u2013 Whole", "\u25ad Rectangle \u2013 Divided", "\u270f Freeform \u2013 Whole", "\u270f Freeform \u2013 Divided")
+        val modes = arrayOf("▭ Rectangle – Whole", "▭ Rectangle – Divided", "✏ Freeform – Whole", "✏ Freeform – Divided")
         AlertDialog.Builder(this).setTitle("AutoSelect Mode").setItems(modes) { _, i ->
             when (i) {
                 0 -> { drawingView.autoSelectShape = AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide = AutoSelectDivide.WHOLE }
@@ -722,7 +716,7 @@ class MainActivity : AppCompatActivity() {
         val rowInput = EditText(this); rowInput.inputType = android.text.InputType.TYPE_CLASS_NUMBER; rowInput.setText("3"); container.addView(rowInput)
         val colLabel = TextView(this); colLabel.text = "Columns:"; colLabel.textSize = 15f; colLabel.setPadding(0, dp(12), 0, 0); container.addView(colLabel)
         val colInput = EditText(this); colInput.inputType = android.text.InputType.TYPE_CLASS_NUMBER; colInput.setText("3"); container.addView(colInput)
-        AlertDialog.Builder(this).setTitle("\u229e Insert Table").setView(container)
+        AlertDialog.Builder(this).setTitle("⊞ Insert Table").setView(container)
             .setPositiveButton("Insert") { _, _ ->
                 val rows = (rowInput.text.toString().toIntOrNull() ?: 3).coerceIn(1, 20)
                 val cols = (colInput.text.toString().toIntOrNull() ?: 3).coerceIn(1, 20)
@@ -784,8 +778,8 @@ class MainActivity : AppCompatActivity() {
             showCellStyleDialog(t, r, c, se)
         }
 
-        // Done button \u2014 no refresh needed, just removes toolbar
-        val doneBtn = Button(this); doneBtn.text = "\u2713 Done"; doneBtn.textSize = 12f
+        // Done button — no refresh needed, just removes toolbar
+        val doneBtn = Button(this); doneBtn.text = "✓ Done"; doneBtn.textSize = 12f
         doneBtn.setTextColor(Color.parseColor("#FFD700"))
         doneBtn.typeface = Typeface.DEFAULT_BOLD
         doneBtn.setBackgroundColor(Color.parseColor("#55FFFFFF"))
@@ -838,8 +832,7 @@ class MainActivity : AppCompatActivity() {
             b.setOnClickListener { action(); drawingView.invalidate() }; presetRow.addView(b)
         }
 
-        presetBtn("Header\
-Row") {
+        presetBtn("Header\nRow") {
             for (c in 0 until table.cols) {
                 val hc = table.getCellPublic(0, c)
                 hc.bgColor = Color.parseColor("#37474F"); hc.textColor = Color.WHITE
@@ -851,22 +844,19 @@ Row") {
                 nc.borderColor = Color.DKGRAY; nc.borderWidth = 1.5f
             }
         }
-        presetBtn("Zebra\
-Rows") {
+        presetBtn("Zebra\nRows") {
             for (r in 0 until table.rows) for (c in 0 until table.cols) {
                 val nc = table.getCellPublic(r, c)
                 nc.bgColor = if (r % 2 == 0) Color.WHITE else Color.parseColor("#F5F5F5")
                 nc.textColor = Color.BLACK; nc.borderColor = Color.parseColor("#BDBDBD"); nc.borderWidth = 1f
             }
         }
-        presetBtn("Bold\
-Borders") {
+        presetBtn("Bold\nBorders") {
             for (r in 0 until table.rows) for (c in 0 until table.cols) {
                 table.getCellPublic(r, c).also { it.borderColor = Color.BLACK; it.borderWidth = 3f }
             }
         }
-        presetBtn("No\
-Borders") {
+        presetBtn("No\nBorders") {
             for (r in 0 until table.rows) for (c in 0 until table.cols) {
                 table.getCellPublic(r, c).also { it.borderColor = Color.TRANSPARENT; it.borderWidth = 0f }
             }
@@ -878,7 +868,7 @@ Borders") {
         dlp.setMargins(0, dp(12), 0, dp(4)); div.layoutParams = dlp
         div.setBackgroundColor(Color.LTGRAY); container.addView(div)
 
-        val selDesc = if (selEnd != null) "R${minR+1}C${minC+1} \u2192 R${maxR+1}C${maxC+1}" else "R${row+1}C${col+1}"
+        val selDesc = if (selEnd != null) "R${minR+1}C${minC+1} → R${maxR+1}C${maxC+1}" else "R${row+1}C${col+1}"
         label("Cell Style  ($selDesc)")
 
         label("Text Color")
@@ -969,7 +959,7 @@ Borders") {
         editText.isSingleLine = false
         editText.imeOptions = EditorInfo.IME_ACTION_DONE
 
-        // Auto-commit every keystroke \u2014 no confirm button needed
+        // Auto-commit every keystroke — no confirm button needed
         editText.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
@@ -1115,13 +1105,13 @@ Borders") {
             if (editText.selectionStart != editText.selectionEnd) toggleUnderlineOnSelection(editText)
             else { pendingUnderline = !pendingUnderline; btn.setBackgroundColor(if (pendingUnderline) activeC else inactiveC) }
         }
-        toolBtn("\ud83d\udd8d") { btn ->
+        toolBtn("🖍") { btn ->
             showColorGridDialog { color ->
                 if (editText.selectionStart != editText.selectionEnd) applyHighlightToSelection(editText, color)
                 else { pendingHighlight = color; btn.setBackgroundColor(color) }
             }
         }
-        toolBtn("\ud83c\udfa8") { showColorGridDialog { color -> applyColorToSelection(editText, color) } }
+        toolBtn("🎨") { showColorGridDialog { color -> applyColorToSelection(editText, color) } }
         val ptSize = (editSize / PT_TO_PX).toInt().coerceIn(1, 144)
         toolBtn(ptSize.toString()) { btn ->
             AlertDialog.Builder(this).setTitle("Font Size (pt)")
@@ -1133,10 +1123,10 @@ Borders") {
                     drawingView.onScaleChanged?.invoke(drawingView.getScaleFactor())
                 }.show()
         }
-        toolBtn("\u21ba") { editRotation -= 15f; if (!useActualSize) editText.rotation = editRotation }
-        toolBtn("\u21bb") { editRotation += 15f; if (!useActualSize) editText.rotation = editRotation }
-        toolBtn("\u2713") { closeInlineEditor(commit = true) }
-        toolBtn("\ud83d\uddd1") { closeInlineEditor(commit = false, delete = true) }
+        toolBtn("↺") { editRotation -= 15f; if (!useActualSize) editText.rotation = editRotation }
+        toolBtn("↻") { editRotation += 15f; if (!useActualSize) editText.rotation = editRotation }
+        toolBtn("✓") { closeInlineEditor(commit = true) }
+        toolBtn("🗑") { closeInlineEditor(commit = false, delete = true) }
 
         val tp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
         canvasContainer.addView(toolbar, tp)
@@ -1316,4 +1306,4 @@ Borders") {
         closeInlineEditor(commit = true)
         autoSave()
     }
-                  }
+}
