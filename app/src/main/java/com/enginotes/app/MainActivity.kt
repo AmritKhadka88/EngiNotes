@@ -251,6 +251,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnText).setOnClickListener { closeInlineEditor(true); setActiveTool(it as Button, Tool.TEXT, "Text") }
         findViewById<Button>(R.id.btnInsert).setOnClickListener { showInsertMenu() }
         findViewById<Button>(R.id.btnTools).setOnClickListener { showToolsMenu() }
+        findViewById<Button?>(R.id.btnBack)?.setOnClickListener { confirmThenExit() }
 
         val toolbarScroll = findViewById<View>(R.id.toolbarScroll)
         val btnExpand = findViewById<Button>(R.id.btnExpand)
