@@ -18,10 +18,10 @@
             android:layout_height="wrap_content"
             android:text="&#8592;"
             android:textColor="#FFFFFF"
-            android:textSize="18sp"
+            android:textSize="20sp"
             android:minWidth="0dp"
-            android:paddingStart="8dp"
-            android:paddingEnd="8dp"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
             android:backgroundTint="#6200EE" />
 
         <TextView
@@ -31,7 +31,7 @@
             android:layout_weight="1"
             android:text="New Note"
             android:textColor="#FFFFFF"
-            android:textSize="15sp"
+            android:textSize="14sp"
             android:gravity="center"
             android:maxLines="1"
             android:ellipsize="end" />
@@ -41,7 +41,7 @@
             android:layout_width="wrap_content"
             android:layout_height="32dp"
             android:text="Convenient"
-            android:textSize="11sp"
+            android:textSize="10sp"
             android:textColor="#6200EE"
             android:backgroundTint="#EDE7F6"
             android:minWidth="0dp"
@@ -54,120 +54,158 @@
             android:layout_height="wrap_content"
             android:text="&#8942;"
             android:textColor="#FFFFFF"
-            android:textSize="20sp"
+            android:textSize="22sp"
             android:minWidth="0dp"
-            android:paddingStart="8dp"
-            android:paddingEnd="8dp"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
             android:backgroundTint="#6200EE" />
 
     </LinearLayout>
 
+    <!-- Primary toolbar: always visible, symbol-based circular buttons -->
     <HorizontalScrollView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#F5F5F5"
-        android:scrollbars="none">
+        android:background="#1A1A2E"
+        android:scrollbars="none"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp">
 
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:padding="4dp"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp"
             android:gravity="center_vertical">
 
             <Button android:id="@+id/btnSelect"
-                android:layout_width="wrap_content" android:layout_height="36dp"
-                android:text="Select" android:textSize="13sp"
-                android:minWidth="0dp" android:paddingStart="10dp" android:paddingEnd="10dp" />
-
-            <Button android:id="@+id/btnDraw"
-                android:layout_width="wrap_content" android:layout_height="36dp"
-                android:text="Draw" android:textSize="13sp"
-                android:minWidth="0dp" android:paddingStart="10dp" android:paddingEnd="10dp" />
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:text="&#x2196;" android:textSize="22sp"
+                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
+                android:minWidth="0dp" android:padding="0dp"
+                android:layout_marginEnd="4dp" />
 
             <Button android:id="@+id/btnText"
-                android:layout_width="wrap_content" android:layout_height="36dp"
-                android:text="Text" android:textSize="13sp"
-                android:minWidth="0dp" android:paddingStart="10dp" android:paddingEnd="10dp" />
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:text="T" android:textSize="22sp"
+                android:textStyle="bold"
+                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
+                android:minWidth="0dp" android:padding="0dp"
+                android:layout_marginEnd="4dp" />
+
+            <Button android:id="@+id/btnDraw"
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:text="&#x270F;" android:textSize="22sp"
+                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
+                android:minWidth="0dp" android:padding="0dp"
+                android:layout_marginEnd="4dp" />
 
             <Button android:id="@+id/btnQuickEraser"
-                android:layout_width="wrap_content" android:layout_height="36dp"
-                android:text="Erase" android:textSize="13sp"
-                android:minWidth="0dp" android:paddingStart="10dp" android:paddingEnd="10dp" />
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:text="&#x2610;" android:textSize="20sp"
+                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
+                android:minWidth="0dp" android:padding="0dp"
+                android:layout_marginEnd="4dp" />
 
-            <Button android:id="@+id/btnInsert"
-                android:layout_width="wrap_content" android:layout_height="36dp"
-                android:text="Insert" android:textSize="13sp"
-                android:minWidth="0dp" android:paddingStart="10dp" android:paddingEnd="10dp" />
+            <Button android:id="@+id/btnAutoSelect"
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:text="&#x25A2;" android:textSize="22sp"
+                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
+                android:minWidth="0dp" android:padding="0dp"
+                android:layout_marginEnd="4dp" />
+
+            <Button android:id="@+id/btnShapes"
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:text="&#x25B3;" android:textSize="20sp"
+                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
+                android:minWidth="0dp" android:padding="0dp"
+                android:layout_marginEnd="4dp" />
+
+            <Button android:id="@+id/btnQuickSize"
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:text="&#x25A1;" android:textSize="20sp"
+                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
+                android:minWidth="0dp" android:padding="0dp"
+                android:layout_marginEnd="4dp" />
 
             <Button android:id="@+id/btnTools"
-                android:layout_width="wrap_content" android:layout_height="36dp"
-                android:text="Tools" android:textSize="13sp"
-                android:minWidth="0dp" android:paddingStart="10dp" android:paddingEnd="10dp" />
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:text="&#x2692;" android:textSize="20sp"
+                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
+                android:minWidth="0dp" android:padding="0dp"
+                android:layout_marginEnd="4dp" />
 
             <Button android:id="@+id/btnUndo"
-                android:layout_width="wrap_content" android:layout_height="36dp"
-                android:text="Undo" android:textSize="13sp"
-                android:minWidth="0dp" android:paddingStart="10dp" android:paddingEnd="10dp" />
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:text="&#x21BA;" android:textSize="22sp"
+                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
+                android:minWidth="0dp" android:padding="0dp"
+                android:layout_marginEnd="4dp" />
 
             <Button android:id="@+id/btnRedo"
-                android:layout_width="wrap_content" android:layout_height="36dp"
-                android:text="Redo" android:textSize="13sp"
-                android:minWidth="0dp" android:paddingStart="10dp" android:paddingEnd="10dp" />
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:text="&#x21BB;" android:textSize="22sp"
+                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
+                android:minWidth="0dp" android:padding="0dp"
+                android:layout_marginEnd="4dp" />
+
+            <Button android:id="@+id/btnQuickColor"
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:text="C" android:textSize="22sp"
+                android:textStyle="bold"
+                android:textColor="#E91E63" android:background="@drawable/btn_circle_gold"
+                android:minWidth="0dp" android:padding="0dp"
+                android:layout_marginEnd="4dp" />
+
+            <Button android:id="@+id/btnInsert"
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:text="+" android:textSize="26sp"
+                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
+                android:minWidth="0dp" android:padding="0dp"
+                android:layout_marginEnd="4dp" />
 
             <Button android:id="@+id/btnExpand"
-                android:layout_width="wrap_content" android:layout_height="36dp"
-                android:text="More" android:textSize="13sp"
-                android:minWidth="0dp" android:paddingStart="10dp" android:paddingEnd="10dp"
-                android:backgroundTint="#882196F3" android:textColor="#FFFFFF" />
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:text="&#x22EF;" android:textSize="20sp"
+                android:textColor="#FFD700" android:background="@drawable/btn_circle_dark"
+                android:minWidth="0dp" android:padding="0dp" />
 
         </LinearLayout>
     </HorizontalScrollView>
 
+    <!-- Secondary toolbar: extra tools, hidden by default -->
     <HorizontalScrollView
         android:id="@+id/toolbarScroll"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#EEEEEE"
+        android:background="#2A2A40"
         android:scrollbars="none"
-        android:visibility="gone">
+        android:visibility="gone"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp">
 
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:padding="4dp"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp"
             android:gravity="center_vertical">
 
-            <Button android:id="@+id/btnShapes"
-                android:layout_width="wrap_content" android:layout_height="36dp"
-                android:text="Shapes" android:textSize="13sp"
-                android:minWidth="0dp" android:paddingStart="10dp" android:paddingEnd="10dp" />
-
             <Button android:id="@+id/btnArc"
-                android:layout_width="wrap_content" android:layout_height="36dp"
-                android:text="Arc" android:textSize="13sp"
-                android:minWidth="0dp" android:paddingStart="10dp" android:paddingEnd="10dp" />
-
-            <Button android:id="@+id/btnAutoSelect"
-                android:layout_width="wrap_content" android:layout_height="36dp"
-                android:text="AutoSel" android:textSize="13sp"
-                android:minWidth="0dp" android:paddingStart="10dp" android:paddingEnd="10dp" />
-
-            <Button android:id="@+id/btnQuickColor"
-                android:layout_width="wrap_content" android:layout_height="36dp"
-                android:text="Color" android:textSize="13sp"
-                android:minWidth="0dp" android:paddingStart="10dp" android:paddingEnd="10dp" />
-
-            <Button android:id="@+id/btnQuickSize"
-                android:layout_width="wrap_content" android:layout_height="36dp"
-                android:text="Size" android:textSize="13sp"
-                android:minWidth="0dp" android:paddingStart="10dp" android:paddingEnd="10dp" />
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:text="&#x2312;" android:textSize="20sp"
+                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
+                android:minWidth="0dp" android:padding="0dp"
+                android:layout_marginEnd="4dp" />
 
             <Button android:id="@+id/btnQuickFill"
-                android:layout_width="wrap_content" android:layout_height="36dp"
-                android:text="Fill" android:textSize="13sp"
-                android:minWidth="0dp" android:paddingStart="10dp" android:paddingEnd="10dp" />
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:text="&#x25C6;" android:textSize="20sp"
+                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
+                android:minWidth="0dp" android:padding="0dp"
+                android:layout_marginEnd="4dp" />
 
         </LinearLayout>
     </HorizontalScrollView>
