@@ -2,214 +2,67 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical">
+    android:orientation="vertical"
+    android:background="#FAF6EF">
 
+    <!-- Top bar: minimal, no filename shown -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:background="#6200EE"
-        android:padding="4dp"
-        android:gravity="center_vertical">
+        android:background="#FFFFFF"
+        android:paddingTop="10dp"
+        android:paddingBottom="10dp"
+        android:paddingStart="6dp"
+        android:paddingEnd="6dp"
+        android:gravity="center_vertical"
+        android:elevation="2dp">
 
-        <Button
+        <ImageButton
             android:id="@+id/btnBack"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="&#8592;"
-            android:textColor="#FFFFFF"
-            android:textSize="20sp"
-            android:minWidth="0dp"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
-            android:backgroundTint="#6200EE" />
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:src="@drawable/ic_select"
+            android:rotation="135"
+            android:scaleType="centerInside"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Back" />
 
         <TextView
             android:id="@+id/tvTitle"
             android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="New Note"
-            android:textColor="#FFFFFF"
-            android:textSize="14sp"
-            android:gravity="center"
-            android:maxLines="1"
-            android:ellipsize="end" />
+            android:layout_height="0dp"
+            android:visibility="gone"
+            android:text="New Note" />
 
-        <Button
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <ImageButton
             android:id="@+id/btnLayoutToggle"
-            android:layout_width="wrap_content"
-            android:layout_height="32dp"
-            android:text="Convenient"
-            android:textSize="10sp"
-            android:textColor="#6200EE"
-            android:backgroundTint="#EDE7F6"
-            android:minWidth="0dp"
-            android:paddingStart="8dp"
-            android:paddingEnd="8dp" />
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:src="@drawable/ic_size"
+            android:scaleType="centerInside"
+            android:padding="9dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Layout" />
 
-        <Button
+        <ImageButton
             android:id="@+id/btnMenu"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="&#8942;"
-            android:textColor="#FFFFFF"
-            android:textSize="22sp"
-            android:minWidth="0dp"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
-            android:backgroundTint="#6200EE" />
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:src="@drawable/ic_tools"
+            android:scaleType="centerInside"
+            android:padding="10dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Menu" />
 
     </LinearLayout>
 
-    <!-- Primary toolbar: always visible, symbol-based circular buttons -->
-    <HorizontalScrollView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="#1A1A2E"
-        android:scrollbars="none"
-        android:paddingTop="6dp"
-        android:paddingBottom="6dp">
-
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:paddingStart="6dp"
-            android:paddingEnd="6dp"
-            android:gravity="center_vertical">
-
-            <Button android:id="@+id/btnSelect"
-                android:layout_width="48dp" android:layout_height="48dp"
-                android:text="&#x2196;" android:textSize="22sp"
-                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
-                android:minWidth="0dp" android:padding="0dp"
-                android:layout_marginEnd="4dp" />
-
-            <Button android:id="@+id/btnText"
-                android:layout_width="48dp" android:layout_height="48dp"
-                android:text="T" android:textSize="22sp"
-                android:textStyle="bold"
-                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
-                android:minWidth="0dp" android:padding="0dp"
-                android:layout_marginEnd="4dp" />
-
-            <Button android:id="@+id/btnDraw"
-                android:layout_width="48dp" android:layout_height="48dp"
-                android:text="&#x270F;" android:textSize="22sp"
-                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
-                android:minWidth="0dp" android:padding="0dp"
-                android:layout_marginEnd="4dp" />
-
-            <Button android:id="@+id/btnQuickEraser"
-                android:layout_width="48dp" android:layout_height="48dp"
-                android:text="&#x2610;" android:textSize="20sp"
-                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
-                android:minWidth="0dp" android:padding="0dp"
-                android:layout_marginEnd="4dp" />
-
-            <Button android:id="@+id/btnAutoSelect"
-                android:layout_width="48dp" android:layout_height="48dp"
-                android:text="&#x25A2;" android:textSize="22sp"
-                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
-                android:minWidth="0dp" android:padding="0dp"
-                android:layout_marginEnd="4dp" />
-
-            <Button android:id="@+id/btnShapes"
-                android:layout_width="48dp" android:layout_height="48dp"
-                android:text="&#x25B3;" android:textSize="20sp"
-                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
-                android:minWidth="0dp" android:padding="0dp"
-                android:layout_marginEnd="4dp" />
-
-            <Button android:id="@+id/btnQuickSize"
-                android:layout_width="48dp" android:layout_height="48dp"
-                android:text="&#x25A1;" android:textSize="20sp"
-                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
-                android:minWidth="0dp" android:padding="0dp"
-                android:layout_marginEnd="4dp" />
-
-            <Button android:id="@+id/btnTools"
-                android:layout_width="48dp" android:layout_height="48dp"
-                android:text="&#x2692;" android:textSize="20sp"
-                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
-                android:minWidth="0dp" android:padding="0dp"
-                android:layout_marginEnd="4dp" />
-
-            <Button android:id="@+id/btnUndo"
-                android:layout_width="48dp" android:layout_height="48dp"
-                android:text="&#x21BA;" android:textSize="22sp"
-                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
-                android:minWidth="0dp" android:padding="0dp"
-                android:layout_marginEnd="4dp" />
-
-            <Button android:id="@+id/btnRedo"
-                android:layout_width="48dp" android:layout_height="48dp"
-                android:text="&#x21BB;" android:textSize="22sp"
-                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
-                android:minWidth="0dp" android:padding="0dp"
-                android:layout_marginEnd="4dp" />
-
-            <Button android:id="@+id/btnQuickColor"
-                android:layout_width="48dp" android:layout_height="48dp"
-                android:text="C" android:textSize="22sp"
-                android:textStyle="bold"
-                android:textColor="#E91E63" android:background="@drawable/btn_circle_gold"
-                android:minWidth="0dp" android:padding="0dp"
-                android:layout_marginEnd="4dp" />
-
-            <Button android:id="@+id/btnInsert"
-                android:layout_width="48dp" android:layout_height="48dp"
-                android:text="+" android:textSize="26sp"
-                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
-                android:minWidth="0dp" android:padding="0dp"
-                android:layout_marginEnd="4dp" />
-
-            <Button android:id="@+id/btnExpand"
-                android:layout_width="48dp" android:layout_height="48dp"
-                android:text="&#x22EF;" android:textSize="20sp"
-                android:textColor="#FFD700" android:background="@drawable/btn_circle_dark"
-                android:minWidth="0dp" android:padding="0dp" />
-
-        </LinearLayout>
-    </HorizontalScrollView>
-
-    <!-- Secondary toolbar: extra tools, hidden by default -->
-    <HorizontalScrollView
-        android:id="@+id/toolbarScroll"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="#2A2A40"
-        android:scrollbars="none"
-        android:visibility="gone"
-        android:paddingTop="4dp"
-        android:paddingBottom="4dp">
-
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:paddingStart="6dp"
-            android:paddingEnd="6dp"
-            android:gravity="center_vertical">
-
-            <Button android:id="@+id/btnArc"
-                android:layout_width="48dp" android:layout_height="48dp"
-                android:text="&#x2312;" android:textSize="20sp"
-                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
-                android:minWidth="0dp" android:padding="0dp"
-                android:layout_marginEnd="4dp" />
-
-            <Button android:id="@+id/btnQuickFill"
-                android:layout_width="48dp" android:layout_height="48dp"
-                android:text="&#x25C6;" android:textSize="20sp"
-                android:textColor="#1A1A2E" android:background="@drawable/btn_circle_gold"
-                android:minWidth="0dp" android:padding="0dp"
-                android:layout_marginEnd="4dp" />
-
-        </LinearLayout>
-    </HorizontalScrollView>
-
+    <!-- Canvas -->
     <FrameLayout
         android:id="@+id/canvasContainer"
         android:layout_width="match_parent"
@@ -222,5 +75,130 @@
             android:layout_height="match_parent" />
 
     </FrameLayout>
+
+    <!-- Secondary toolbar row: collapsible, sits ABOVE primary row when expanded -->
+    <HorizontalScrollView
+        android:id="@+id/toolbarScroll"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#FFFFFF"
+        android:scrollbars="none"
+        android:visibility="gone"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:gravity="center_vertical">
+
+            <ImageButton android:id="@+id/btnShapes"
+                android:layout_width="38dp" android:layout_height="38dp"
+                android:layout_marginEnd="2dp"
+                android:src="@drawable/ic_shapes" android:scaleType="centerInside" android:padding="7dp"
+                android:background="@drawable/btn_toolbar_selector" />
+
+            <ImageButton android:id="@+id/btnAutoSelect"
+                android:layout_width="38dp" android:layout_height="38dp"
+                android:layout_marginEnd="2dp"
+                android:src="@drawable/ic_autoselect" android:scaleType="centerInside" android:padding="8dp"
+                android:background="@drawable/btn_toolbar_selector" />
+
+            <ImageButton android:id="@+id/btnQuickColor"
+                android:layout_width="38dp" android:layout_height="38dp"
+                android:layout_marginEnd="2dp"
+                android:src="@drawable/ic_color" android:scaleType="centerInside" android:padding="7dp"
+                android:background="@drawable/btn_toolbar_selector" />
+
+            <ImageButton android:id="@+id/btnQuickSize"
+                android:layout_width="38dp" android:layout_height="38dp"
+                android:layout_marginEnd="2dp"
+                android:src="@drawable/ic_size" android:scaleType="centerInside" android:padding="8dp"
+                android:background="@drawable/btn_toolbar_selector" />
+
+            <ImageButton android:id="@+id/btnQuickFill"
+                android:layout_width="38dp" android:layout_height="38dp"
+                android:src="@drawable/ic_fill" android:scaleType="centerInside" android:padding="7dp"
+                android:background="@drawable/btn_toolbar_selector" />
+
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <!-- Primary toolbar: small icons, cream/white, at BOTTOM -->
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#FFFFFF"
+        android:scrollbars="none"
+        android:paddingTop="5dp"
+        android:paddingBottom="5dp"
+        android:elevation="4dp">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:gravity="center_vertical">
+
+            <ImageButton android:id="@+id/btnSelect"
+                android:layout_width="40dp" android:layout_height="40dp"
+                android:layout_marginEnd="2dp"
+                android:src="@drawable/ic_select" android:scaleType="centerInside" android:padding="8dp"
+                android:background="@drawable/btn_toolbar_selector" />
+
+            <ImageButton android:id="@+id/btnText"
+                android:layout_width="40dp" android:layout_height="40dp"
+                android:layout_marginEnd="2dp"
+                android:src="@drawable/ic_text" android:scaleType="centerInside" android:padding="8dp"
+                android:background="@drawable/btn_toolbar_selector" />
+
+            <ImageButton android:id="@+id/btnDraw"
+                android:layout_width="40dp" android:layout_height="40dp"
+                android:layout_marginEnd="2dp"
+                android:src="@drawable/ic_pen" android:scaleType="centerInside" android:padding="8dp"
+                android:background="@drawable/btn_toolbar_selector" />
+
+            <ImageButton android:id="@+id/btnQuickEraser"
+                android:layout_width="40dp" android:layout_height="40dp"
+                android:layout_marginEnd="2dp"
+                android:src="@drawable/ic_eraser" android:scaleType="centerInside" android:padding="8dp"
+                android:background="@drawable/btn_toolbar_selector" />
+
+            <ImageButton android:id="@+id/btnInsert"
+                android:layout_width="40dp" android:layout_height="40dp"
+                android:layout_marginEnd="2dp"
+                android:src="@drawable/ic_insert" android:scaleType="centerInside" android:padding="9dp"
+                android:background="@drawable/btn_toolbar_selector" />
+
+            <ImageButton android:id="@+id/btnTools"
+                android:layout_width="40dp" android:layout_height="40dp"
+                android:layout_marginEnd="2dp"
+                android:src="@drawable/ic_tools" android:scaleType="centerInside" android:padding="9dp"
+                android:background="@drawable/btn_toolbar_selector" />
+
+            <ImageButton android:id="@+id/btnUndo"
+                android:layout_width="40dp" android:layout_height="40dp"
+                android:layout_marginEnd="2dp"
+                android:src="@drawable/ic_undo" android:scaleType="centerInside" android:padding="9dp"
+                android:background="@drawable/btn_toolbar_selector" />
+
+            <ImageButton android:id="@+id/btnRedo"
+                android:layout_width="40dp" android:layout_height="40dp"
+                android:layout_marginEnd="2dp"
+                android:src="@drawable/ic_redo" android:scaleType="centerInside" android:padding="9dp"
+                android:background="@drawable/btn_toolbar_selector" />
+
+            <ImageButton android:id="@+id/btnExpand"
+                android:layout_width="40dp" android:layout_height="40dp"
+                android:src="@drawable/ic_expand" android:scaleType="centerInside" android:padding="9dp"
+                android:background="@drawable/btn_toolbar_selector" />
+
+        </LinearLayout>
+    </HorizontalScrollView>
 
 </LinearLayout>
