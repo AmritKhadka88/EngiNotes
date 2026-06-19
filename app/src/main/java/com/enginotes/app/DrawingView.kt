@@ -65,6 +65,8 @@ data class TextSpanData(val start: Int, val end: Int, val type: Char, val value:
 
 private val imageLoadExecutor = ThreadPoolExecutor(2, 3, 60L, TimeUnit.SECONDS, LinkedBlockingQueue())
 
+private val PAPER_BASE_COLOR = Color.parseColor("#FFFDF6")
+
 private val bitmapCache = object : LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
     private val MAX_SIZE = 80 * 1024 * 1024L
     private var currentSize = 0L
@@ -182,6 +184,7 @@ class StrokeItem(val data: StrokeData, var path: Path, var paint: Paint)
 class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var size: Float, var rotation: Float) {
     var spans: MutableList<TextSpanData> = mutableListOf()
     var isEditing: Boolean = false
+    var maxWidth: Float = 0f  // 0 = unbounded (legacy); >0 = wrap to this width
 }
 
 class ImageItem(var path: String, var x: Float, var y: Float, var w: Float, var h: Float, var rotation: Float) {
@@ -357,7 +360,25 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 onTextEditRequest?.invoke(hit, e.x, e.y, wx, wy)
                 return true
             }
-            if (currentTool == Tool.TEXT) onTextEditRequest?.invoke(null, e.x, e.y, wx, wy)
+            if (currentTool == Tool.TEXT) { onTextEditRequest?.invoke(null, e.x, e.y, wx, wy); return true }
+            // Double-tap a table in SELECT tool: enter cell-editing mode and open the tapped cell
+            if (currentTool == Tool.SELECT) {
+                for (action in actions.reversed()) {
+                    if (action is TableItem) {
+                        val b = getBounds(action) ?: continue
+                        if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) {
+                            activeTableItem = action; tableIsActive = true; selectedItem = null
+                            val cell = action.hitTestCell(wx, wy)
+                            if (cell != null) {
+                                tableSelStart = cell; tableSelEnd = null
+                                val rect = action.cellRect(cell.first, cell.second)
+                                onTableCellEditRequest?.invoke(action, cell.first, cell.second, worldToScreenX(rect.left), worldToScreenY(rect.top))
+                            }
+                            invalidate(); return true
+                        }
+                    }
+                }
+            }
             return true
         }
 
@@ -374,19 +395,23 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun clampTranslation() {
         if (canvasMode == CanvasMode.INFINITE) return
         val pw = pageWidthPx() * scaleFactor; val ph = pageHeightPx() * scaleFactor
-        val margin = if (canvasMode == CanvasMode.CONVENIENT) 0f else 20f
+        val margin = 16f
         val minTx = width - pw - margin; val maxTx = margin
         translateX = translateX.coerceIn(minTx.coerceAtMost(maxTx), maxTx)
         if (canvasMode == CanvasMode.FIXED) {
             val minTy = height - ph - margin; val maxTy = margin
             translateY = translateY.coerceIn(minTy.coerceAtMost(maxTy), maxTy)
+        } else if (canvasMode == CanvasMode.CONVENIENT || canvasMode == CanvasMode.PAGINATED) {
+            // Prevent dragging above the first page (top) or far below content - small overscroll allowed
+            val maxTy = margin
+            translateY = translateY.coerceAtMost(maxTy)
         }
-        // For convenient/paginated: restrict minimum scale so page never goes smaller than screen
+        // Restrict minimum scale so page never goes smaller than screen (no zooming out past paper)
         if (canvasMode == CanvasMode.CONVENIENT || canvasMode == CanvasMode.PAGINATED) {
             val minScale = (width.toFloat() / pageWidthPx()).coerceAtLeast(0.3f)
             if (scaleFactor < minScale) {
                 scaleFactor = minScale
-                translateX = 0f
+                translateX = (width - pageWidthPx() * scaleFactor) / 2f
             }
         }
     }
@@ -515,17 +540,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
         if (width > 0 && height > 0 && changed) {
-            convenientPageW = width.toFloat()
-            convenientPageH = height.toFloat()
+            // Convenient page is a comfortable writing column, smaller than screen width (like a notebook page)
+            convenientPageW = width.toFloat() * 0.82f
+            convenientPageH = height.toFloat() * 1.1f
             when (canvasMode) {
                 CanvasMode.CONVENIENT -> {
-                    // Page fills screen width exactly, scale=1
-                    scaleFactor = 1f; translateX = 0f; translateY = 0f; invalidate()
+                    val margin = 16f
+                    scaleFactor = ((width.toFloat() - margin * 2f) / pageWidthPx()).coerceAtMost(1f)
+                    translateX = (width - pageWidthPx() * scaleFactor) / 2f
+                    translateY = margin
+                    clampTranslation(); invalidate()
                 }
                 CanvasMode.INFINITE -> {}
                 else -> {
                     val margin = 20f
-                    // Scale so page fits within screen with small margin (shows full page width)
+                    // Print = full real A4 size filling screen width
                     scaleFactor = (width.toFloat() - margin * 2f) / pageWidthPx()
                     translateX = margin
                     translateY = margin
@@ -535,14 +564,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
-    // Rearranges text items to fit within print layout page width
+    // Rearranges text items to wrap and fit within the current page width (used when switching to print)
     fun rearrangeTextForPrint() {
-        val printW = pageWidthPx() * 0.85f
+        val pw = pageWidthPx()
         for (a in actions) {
             if (a is TextItem) {
-                a.x = a.x.coerceAtMost(printW - 50f).coerceAtLeast(20f)
+                a.x = a.x.coerceIn(16f, pw - 60f)
+                a.maxWidth = (pw - a.x - 16f).coerceAtLeast(80f)
             }
         }
+        invalidate()
+    }
+
+    // Keeps text exactly as typed (no rewrapping) - single logical line per paragraph, may extend past visual edge
+    fun keepTextAsIs() {
+        for (a in actions) { if (a is TextItem) a.maxWidth = 4000f }
         invalidate()
     }
 
@@ -552,6 +588,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val p = Paint(); p.color = Color.parseColor("#2196F3"); p.style = Paint.Style.FILL
         val r = 12f / scaleFactor; var i = 0
         while (i + 1 < arc.data.points.size) { canvas.drawCircle(arc.data.points[i], arc.data.points[i + 1], r, p); i += 2 }
+    }
+
+    private fun textWrapWidth(item: TextItem): Int {
+        if (item.maxWidth > 0f) return item.maxWidth.toInt().coerceAtLeast(40)
+        if (canvasMode == CanvasMode.INFINITE) return 4000
+        // Default: wrap to remaining page width from item.x to page edge
+        val pw = pageWidthPx()
+        return (pw - item.x - 16f).toInt().coerceAtLeast(80)
     }
 
     private fun drawTextItem(canvas: Canvas, item: TextItem) {
@@ -566,7 +610,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 'H' -> spannable.setSpan(BackgroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
         }
-        val w = (tp.measureText(item.text).toInt() + item.size.toInt() + 10).coerceAtLeast(1)
+        val w = textWrapWidth(item)
         val layout = StaticLayout.Builder.obtain(spannable, 0, spannable.length, tp, w).setIncludePad(true).build()
         canvas.save(); canvas.translate(item.x, item.y - layout.height)
         canvas.rotate(item.rotation, 0f, layout.height.toFloat()); layout.draw(canvas); canvas.restore()
@@ -637,10 +681,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is FillItem -> floatArrayOf(item.x, item.y, item.x + item.w, item.y + item.h)
             is AudioItem -> { val r = 48f; floatArrayOf(item.x - r, item.y - r, item.x + r, item.y + r + 40f) }
             is TextItem -> {
-                val tp = TextPaint(); tp.textSize = item.size
-                val lines = item.text.split("\n")
-                val w = lines.maxOf { tp.measureText(it) }.coerceAtLeast(10f)
-                val h = item.size * 1.4f * lines.size
+                val tp = TextPaint(); tp.textSize = item.size; tp.isAntiAlias = true
+                val ww = textWrapWidth(item)
+                val layout = StaticLayout.Builder.obtain(item.text, 0, item.text.length, tp, ww).setIncludePad(true).build()
+                val w = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(10f) ?: 10f
+                val h = layout.height.toFloat().coerceAtLeast(item.size * 1.2f)
                 floatArrayOf(item.x, item.y - h, item.x + w, item.y)
             }
             is StrokeItem -> {
@@ -798,7 +843,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun handleTable(event: MotionEvent) {
         val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
-        val tol = 18f / scaleFactor
+        val tol = 22f / scaleFactor
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 val table = activeTableItem
@@ -808,23 +853,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; return }
                     val cell = table.hitTestCell(wx, wy)
                     if (cell == null) { tableIsActive = false; tableSelStart = null; tableSelEnd = null; activeTableItem = null; currentTool = Tool.SELECT; invalidate(); return }
-                    val now = System.currentTimeMillis()
-                    if (cell == tableSingleTapCell && (now - tableSingleTapTime) < TABLE_DOUBLE_TAP_MS) {
-                        tableSingleTapCell = null
+                    // Excel-like: a single tap on a cell immediately opens it for editing
+                    tableSelStart = cell; tableSelEnd = null
+                    val rect = table.cellRect(cell.first, cell.second)
+                    val sx = worldToScreenX(rect.left); val sy = worldToScreenY(rect.top)
+                    onTableCellEditRequest?.invoke(table, cell.first, cell.second, sx, sy)
+                    invalidate()
+                } else if (table != null && !tableIsActive) {
+                    val cell = table.hitTestCell(wx, wy)
+                    if (cell != null) {
+                        tableIsActive = true; tableSelStart = cell; tableSelEnd = null; tableSingleTapCell = null
                         val rect = table.cellRect(cell.first, cell.second)
                         val sx = worldToScreenX(rect.left); val sy = worldToScreenY(rect.top)
                         onTableCellEditRequest?.invoke(table, cell.first, cell.second, sx, sy)
-                    } else {
-                        tableSingleTapCell = cell; tableSingleTapTime = now
-                        if (tableSelStart == null) { tableSelStart = cell; tableSelEnd = null }
-                        else if (tableSelEnd == null && cell != tableSelStart) tableSelEnd = cell
-                        else { tableSelStart = cell; tableSelEnd = null }
                         invalidate()
-                    }
-                } else if (table != null && !tableIsActive) {
-                    val cell = table.hitTestCell(wx, wy)
-                    if (cell != null) { tableIsActive = true; tableSelStart = null; tableSelEnd = null; tableSingleTapCell = null; invalidate() }
-                    else { activeTableItem = null; invalidate() }
+                    } else { activeTableItem = null; invalidate() }
                 } else {
                     for (action in actions.reversed()) {
                         if (action is TableItem) {
@@ -845,6 +888,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
+    // Long-press extends selection to a range (for merge) without opening the editor
+    fun extendTableSelection(wx: Float, wy: Float) {
+        val table = activeTableItem ?: return; if (!tableIsActive) return
+        val cell = table.hitTestCell(wx, wy) ?: return
+        if (tableSelStart == null) tableSelStart = cell else tableSelEnd = cell
+        invalidate()
+    }
+
     fun addTableRow(afterRow: Int) { val table = activeTableItem ?: return; val insertAt = (afterRow + 1).coerceIn(0, table.rowHeights.size); table.rowHeights.add(insertAt, 60f); table.rows = table.rowHeights.size; table.insertRow(insertAt); invalidate() }
     fun addTableCol(afterCol: Int) { val table = activeTableItem ?: return; val insertAt = (afterCol + 1).coerceIn(0, table.colWidths.size); table.colWidths.add(insertAt, 80f); table.cols = table.colWidths.size; table.insertCol(insertAt); invalidate() }
     fun removeTableRow(row: Int) { val table = activeTableItem ?: return; if (table.rows <= 1) return; val delAt = row.coerceIn(0, table.rowHeights.size - 1); table.rowHeights.removeAt(delAt); table.rows = table.rowHeights.size; table.deleteRow(delAt); invalidate() }
@@ -853,6 +904,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     fun unmergeCellSelection() { val table = activeTableItem ?: return; val s = tableSelStart ?: return; table.unmergeCells(s.first, s.second); tableSelStart = null; tableSelEnd = null; invalidate() }
     fun getActiveTable(): TableItem? = activeTableItem
     fun getTableSelection(): Pair<Pair<Int, Int>?, Pair<Int, Int>?> = Pair(tableSelStart, tableSelEnd)
+    fun exitTableEditMode() { tableIsActive = false; invalidate() }
+    fun deselectTable() { activeTableItem = null; tableIsActive = false; tableSelStart = null; tableSelEnd = null; invalidate() }
 
     fun worldToScreenX(wx: Float): Float = wx * scaleFactor + translateX
     fun worldToScreenY(wy: Float): Float = wy * scaleFactor + translateY
@@ -875,14 +928,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun handleSelect(event: MotionEvent) {
         val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
-        val at = activeTableItem
-        if (at != null) { handleTable(event); return }
+        // In SELECT tool, tables behave like any other selectable/movable/resizable item.
+        // Cell editing only happens when the table was entered via direct tap while no other tool drag is active
+        // and the table is the currently selectedItem (so user explicitly chose to edit, not move).
+        if (event.actionMasked == MotionEvent.ACTION_DOWN && activeTableItem != null && selectedItem !== activeTableItem) {
+            // Clicking elsewhere while a table was mid-edit: deactivate cell editing, fall through to normal select
+            tableIsActive = false; tableSelStart = null; tableSelEnd = null
+        }
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             for (action in actions.reversed()) {
                 if (action is TableItem) {
                     val b = getBounds(action) ?: continue
                     if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) {
-                        activeTableItem = action; tableIsActive = false; tableSelStart = null; tableSelEnd = null; tableSingleTapCell = null; invalidate(); return
+                        activeTableItem = action; tableIsActive = false; tableSelStart = null; tableSelEnd = null; tableSingleTapCell = null
+                        // fall through to normal item selection below so the table can be moved/resized
+                        break
                     }
                 }
             }
@@ -896,7 +956,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     if (b != null) {
                         val rot = getRotation(item); val (px, py) = getPivot(item, b)
                         val (lx, ly) = rotatePoint(wx, wy, px, py, -rot)
-                        val hr = 18f / scaleFactor; val hit = 50f / scaleFactor
+                        val hr = 16f / scaleFactor; val hit = 70f / scaleFactor
                         val delX = b[2] + hr * 5f; val delY = b[1] - hr * 5f
                         if (distance(lx, ly, delX, delY) <= hit * 1.2f) { actions.remove(item); selectedItem = null; handled = true; invalidate(); return }
                         val canRot = item is ImageItem || item is TextItem || item is AudioItem || (item is StrokeItem && item.data.type != Tool.PEN && item.data.type != Tool.ARC)
@@ -948,7 +1008,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_DOWN -> {
                 val arc = activeArcItem
                 if (arc != null) {
-                    val r = 30f / scaleFactor; var found = -1; var i = 0
+                    val r = 50f / scaleFactor; var found = -1; var i = 0
                     while (i + 1 < arc.data.points.size) { if (distance(wx, wy, arc.data.points[i], arc.data.points[i + 1]) <= r) { found = i; break }; i += 2 }
                     if (found >= 0) arcDragPointIndex = found
                     else { activeArcItem = null; val d = StrokeData(Tool.ARC, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, false); currentItem = StrokeItem(d, d.buildPath(), d.toPaint()) }
@@ -1036,7 +1096,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun handleAutoSelect(event: MotionEvent) {
         val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
-        val hr = 18f / scaleFactor; val hit = 50f / scaleFactor
+        val hr = 16f / scaleFactor; val hit = 70f / scaleFactor
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 val group = selectedGroup
@@ -1167,29 +1227,31 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             CanvasMode.FIXED -> {
                 val pw = pageWidthPx(); val ph = pageHeightPx()
-                val gp = Paint(); gp.color = Color.parseColor("#D5D5D5"); canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
-                val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else Color.WHITE; canvas.drawRect(0f, 0f, pw, ph, wp)
+                val gp = Paint(); gp.color = Color.parseColor("#EDEAE3"); canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else PAPER_BASE_COLOR; canvas.drawRect(0f, 0f, pw, ph, wp)
                 if (paperType != PaperType.BLANK && paperType != PaperType.BLANK_COLORED) { canvas.save(); canvas.clipRect(0f, 0f, pw, ph); drawPaperPattern(canvas, 0f, 0f, pw, ph); canvas.restore() }
-                val bp = Paint(); bp.color = Color.parseColor("#909090"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 2f / scaleFactor; canvas.drawRect(0f, 0f, pw, ph, bp)
+                val bp = Paint(); bp.color = Color.parseColor("#C8C0B0"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 1.5f / scaleFactor; canvas.drawRect(0f, 0f, pw, ph, bp)
             }
             CanvasMode.CONVENIENT -> {
-                // Screen-sized pages, paginated
-                val pw = pageWidthPx(); val ph = pageHeightPx(); val gap = 0f
-                val gp = Paint(); gp.color = Color.parseColor("#E0E0E0"); canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
-                val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else Color.WHITE
+                val pw = pageWidthPx(); val ph = pageHeightPx(); val gap = 24f
+                val gp = Paint(); gp.color = Color.parseColor("#EDEAE3"); canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else PAPER_BASE_COLOR
+                val sp = Paint(); sp.color = Color.parseColor("#00000022"); sp.style = Paint.Style.FILL
                 val period = ph + gap
                 val si = (kotlin.math.floor(vt / period).toInt() - 1).coerceAtLeast(0)
                 val ei = kotlin.math.ceil(vb / period).toInt() + 1
                 for (i in si..ei) {
-                    val top = i * period; canvas.drawRect(0f, top, pw, top + ph, wp)
+                    val top = i * period
+                    canvas.drawRect(2f / scaleFactor, top + 2f / scaleFactor, pw + 2f / scaleFactor, top + ph + 2f / scaleFactor, sp)
+                    canvas.drawRect(0f, top, pw, top + ph, wp)
                     if (paperType != PaperType.BLANK && paperType != PaperType.BLANK_COLORED) { canvas.save(); canvas.clipRect(0f, top, pw, top + ph); drawPaperPattern(canvas, 0f, top, pw, top + ph); canvas.restore() }
                 }
             }
             CanvasMode.PAGINATED -> {
                 val pw = pageWidthPx(); val ph = pageHeightPx(); val gap = 40f
-                val gp = Paint(); gp.color = Color.parseColor("#D5D5D5"); canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
-                val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else Color.WHITE
-                val bp = Paint(); bp.color = Color.parseColor("#909090"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 2f / scaleFactor
+                val gp = Paint(); gp.color = Color.parseColor("#EDEAE3"); canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else PAPER_BASE_COLOR
+                val bp = Paint(); bp.color = Color.parseColor("#C8C0B0"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 1.5f / scaleFactor
                 val period = ph + gap
                 val si = (kotlin.math.floor(vt / period).toInt() - 1).coerceAtLeast(0)
                 val ei = kotlin.math.ceil(vb / period).toInt() + 1
@@ -1295,9 +1357,25 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
+    private fun clampToPage(wx: Float, wy: Float): Pair<Float, Float> {
+        if (canvasMode == CanvasMode.INFINITE) return Pair(wx, wy)
+        val pw = pageWidthPx(); val ph = pageHeightPx()
+        val pageTop = if (canvasMode == CanvasMode.CONVENIENT || canvasMode == CanvasMode.PAGINATED) {
+            val gap = if (canvasMode == CanvasMode.CONVENIENT) 24f else 40f
+            val period = ph + gap
+            kotlin.math.floor(wy / period) * period
+        } else 0f
+        val cx = wx.coerceIn(0f, pw)
+        val cy = wy.coerceIn(pageTop, pageTop + ph)
+        return Pair(cx, cy)
+    }
+
     private fun handleDrawing(event: MotionEvent) {
         hoverX = event.x; hoverY = event.y
-        val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
+        var wx = screenToWorldX(event.x); var wy = screenToWorldY(event.y)
+        if (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool)) {
+            val (cx, cy) = clampToPage(wx, wy); wx = cx; wy = cy
+        }
         val pressure = event.pressure.coerceIn(0.3f, 1.5f)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -1375,11 +1453,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     fun addText(text: String, x: Float, y: Float, size: Float, rotation: Float, color: Int, spans: MutableList<TextSpanData> = mutableListOf()) {
         if (text.isBlank()) return
-        val item = TextItem(text, x, y, color, size, rotation); item.spans = spans
+        val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPage(x, y) else Pair(x, y)
+        val item = TextItem(text, cx, cy, color, size, rotation); item.spans = spans
         actions.add(item); redoStack.clear(); invalidate()
     }
 
     fun removeTextItem(item: TextItem) { actions.remove(item); invalidate() }
+
+    // Clamps an existing text item's position to the page boundary (used when committing edits)
+    fun clampTextItemToPage(item: TextItem) {
+        if (canvasMode == CanvasMode.INFINITE) return
+        val pw = pageWidthPx()
+        item.x = item.x.coerceIn(8f, pw - 40f)
+        if (item.maxWidth <= 0f || item.maxWidth > pw) item.maxWidth = (pw - item.x - 16f).coerceAtLeast(80f)
+    }
 
     fun addImage(path: String, wx: Float, wy: Float, w: Float, h: Float) {
         val item = ImageItem(path, wx - w / 2f, wy - h / 2f, w, h, 0f)
@@ -1484,7 +1571,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
             is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}\n")
-            is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\n")
+            is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\n")
             is AudioItem -> sb.append("AUDIO\u0001${a.filePath}\u0001${a.title.replace("\u0001","_")}\u0001${a.x}\u0001${a.y}\u0001${a.durationMs}\n")
@@ -1524,48 +1611,4 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             val item = TextItem("", p[1].toFloat(), p[2].toFloat(), p[3].toInt(), p[4].toFloat(), p[5].toFloat())
                             if (p.size >= 9) {
                                 val bold = p[6].toBoolean(); val italic = p[7].toBoolean()
-                                item.text = p[8].replace("\u0002", "\n")
-                                val style = if (bold && italic) Typeface.BOLD_ITALIC else if (bold) Typeface.BOLD else if (italic) Typeface.ITALIC else -1
-                                if (style >= 0) item.spans.add(TextSpanData(0, item.text.length, 'S', style))
-                            } else {
-                                if (p[6].isNotBlank()) for (t in p[6].split(";")) { val sp = t.split(","); if (sp.size == 4) item.spans.add(TextSpanData(sp[0].toInt(), sp[1].toInt(), sp[2][0], sp[3].toInt())) }
-                                item.text = if (p.size > 7) p[7].replace("\u0002", "\n") else ""
-                            }
-                            actions.add(item)
-                        }
-                        i++
-                    }
-                    line.startsWith("IMAGE\u0001") -> {
-                        val p = line.split("\u0001")
-                        if (p.size >= 7) {
-                            val item = ImageItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat(), p[6].toFloat())
-                            actions.add(item); loadBitmapAsync(p[1]) { bmp -> item.bitmap = bmp; item.loading = false; invalidate() }
-                        }
-                        i++
-                    }
-                    line.startsWith("FILL\u0001") -> {
-                        val p = line.split("\u0001")
-                        if (p.size >= 6) actions.add(FillItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat()))
-                        i++
-                    }
-                    else -> {
-                        val p = line.split("|")
-                        if (p.size >= 5) {
-                            val type = Tool.valueOf(p[0]); val color = p[1].toInt(); val sw = p[2].toFloat(); val fill = p[3].toBoolean()
-                            if (p.size >= 6) {
-                                val rot = p[4].toFloat()
-                                val pts = if (p[5].isBlank()) mutableListOf() else p[5].split(",").map { it.toFloat() }.toMutableList()
-                                val d = StrokeData(type, pts, color, sw, fill, rot); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
-                            } else {
-                                val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
-                                val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
-                            }
-                        }
-                        i++
-                    }
-                }
-            } catch (e: Exception) { i++ }
-        }
-        invalidate()
-    }
-}
+ 
