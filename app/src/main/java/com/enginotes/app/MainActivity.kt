@@ -251,7 +251,6 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnText).setOnClickListener { closeInlineEditor(true); setActiveTool(it as Button, Tool.TEXT, "Text") }
         findViewById<Button>(R.id.btnInsert).setOnClickListener { showInsertMenu() }
         findViewById<Button>(R.id.btnTools).setOnClickListener { showToolsMenu() }
-        findViewById<Button?>(R.id.btnBack)?.setOnClickListener { confirmThenExit() }
 
         val toolbarScroll = findViewById<View>(R.id.toolbarScroll)
         val btnExpand = findViewById<Button>(R.id.btnExpand)
@@ -380,15 +379,34 @@ class MainActivity : AppCompatActivity() {
     private fun showInsertMenu() {
         closeInlineEditor(true)
         AlertDialog.Builder(this).setTitle("Insert")
-            .setItems(arrayOf("🖼 Image from Gallery","📷 Take Photo","⊞ Table","🎙 Record Audio","✂ Snip from PDF")) { _, i ->
+            .setItems(arrayOf("🖼 Image from Gallery","📷 Take Photo","⊞ Table","🎙 Record Audio","✂ Snip from PDF","🔲 Toggle Canvas Mode")) { _, i ->
                 when(i) {
                     0 -> pickImageLauncher.launch("image/*")
                     1 -> launchCamera()
                     2 -> showTableInsertDialog()
-                    3 -> showAudioRecordDialog()
+                    3 -> checkAndRecordAudio()
                     4 -> pickPdfLauncher.launch("application/pdf")
+                    5 -> toggleCanvasMode()
                 }
             }.show()
+    }
+
+    private fun toggleCanvasMode() {
+        val modes = arrayOf("Convenient (screen-sized pages)", "Infinite Canvas", "Print Layout (A4)")
+        AlertDialog.Builder(this).setTitle("Canvas Mode").setItems(modes) { _, i ->
+            when(i) {
+                0 -> applyConvenientLayout()
+                1 -> {
+                    isConvenientLayout = false
+                    btnLayoutToggle.text = "Infinite"
+                    btnLayoutToggle.setBackgroundColor(Color.parseColor("#FFF9C4"))
+                    btnLayoutToggle.setTextColor(Color.parseColor("#F57F17"))
+                    drawingView.canvasMode = CanvasMode.INFINITE
+                    drawingView.invalidate()
+                }
+                2 -> applyPrintLayout()
+            }
+        }.show()
     }
 
     private fun showToolsMenu() {
@@ -511,6 +529,21 @@ class MainActivity : AppCompatActivity() {
                 dialog.dismiss()
                 stopRecordingAndPlace(titleInput.text.toString().trim().ifEmpty { "Audio" })
             }
+        }
+    }
+
+    private val requestMicPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) showAudioRecordDialog()
+        else Toast.makeText(this, "Microphone permission is required to record audio", Toast.LENGTH_LONG).show()
+    }
+
+    private fun checkAndRecordAudio() {
+        when {
+            checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED -> showAudioRecordDialog()
+            else -> requestMicPermission.launch(android.Manifest.permission.RECORD_AUDIO)
         }
     }
 
@@ -709,29 +742,66 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun dismissCellEditor() {
-        val et=activeCellEditText?:return
-        try{ canvasContainer.removeView(et) }catch(e:Exception){}
-        activeCellEditText=null; activeCellToolbar=null
-        val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        imm.hideSoftInputFromWindow(et.windowToken,0); drawingView.invalidate()
+        val et = activeCellEditText ?: return
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(et.windowToken, 0)
+        try { canvasContainer.removeView(activeCellToolbar) } catch(e:Exception){}
+        try { canvasContainer.removeView(tableToolbarOverlay) } catch(e:Exception){}
+        try { canvasContainer.removeView(et) } catch(e:Exception){}
+        activeCellEditText = null; activeCellToolbar = null; tableToolbarOverlay = null
+        drawingView.invalidate()
     }
 
     private fun showTableCellEditor(table:TableItem,row:Int,col:Int,screenX:Float,screenY:Float) {
         val cell=table.cells[row][col]
-        val et=EditText(this).apply{
-            setText(cell.text); setTextColor(cell.textColor)
-            textSize=(cell.textSize*drawingView.getScaleFactor()/resources.displayMetrics.density).coerceAtLeast(8f)
-            setBackgroundColor(Color.parseColor("#EEFFFFFF")); setPadding(dp(6),dp(4),dp(6),dp(4)); minWidth=dp(80)
-            isSingleLine=false; imeOptions=EditorInfo.IME_ACTION_DONE
-            addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){} override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ cell.text=s?.toString()?:""; drawingView.invalidate() } override fun afterTextChanged(s:Editable?){} })
+        // Use a bottom sheet style editor for reliable keyboard focus
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#F5F5F5"))
+            elevation = dp(8).toFloat()
+            setPadding(dp(8),dp(6),dp(8),dp(6))
         }
-        val params=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
-        params.leftMargin=screenX.toInt().coerceIn(0,canvasContainer.width-dp(100))
-        params.topMargin=(screenY+dp(4)).toInt().coerceIn(dp(40),canvasContainer.height-dp(80))
-        canvasContainer.addView(et,params); activeCellEditText=et; activeCellToolbar=null
+        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val headerLbl = TextView(this).apply {
+            text = "Cell R${row+1}C${col+1}"; textSize = 13f
+            setTextColor(Color.parseColor("#666666"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val doneBtn = Button(this).apply {
+            text = "Done"; textSize = 13f
+            setBackgroundColor(Color.parseColor("#6200EE")); setTextColor(Color.WHITE)
+            setPadding(dp(12),dp(4),dp(12),dp(4)); minWidth=0; minimumWidth=0
+            setOnClickListener { dismissCellEditor() }
+        }
+        header.addView(headerLbl); header.addView(doneBtn); container.addView(header)
+
+        val et = EditText(this).apply {
+            setText(cell.text)
+            setTextColor(cell.textColor)
+            textSize = 16f
+            setBackgroundColor(Color.WHITE)
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            minLines = 3; maxLines = 8
+            isSingleLine = false
+            imeOptions = EditorInfo.IME_FLAG_NO_ENTER_ACTION
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).also { it.topMargin = dp(4) }
+            addTextChangedListener(object:TextWatcher{
+                override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
+                override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ cell.text=s?.toString()?:""; drawingView.invalidate() }
+                override fun afterTextChanged(s:Editable?){}
+            })
+        }
+        container.addView(et)
+        activeCellEditText = et; activeCellToolbar = container; tableToolbarOverlay = container
+
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        canvasContainer.addView(container, lp)
+
         et.requestFocus(); et.setSelection(et.text.length)
-        val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        imm.showSoftInput(et,InputMethodManager.SHOW_FORCED)
+        et.post {
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.showSoftInput(et, InputMethodManager.SHOW_IMPLICIT)
+        }
     }
 
     // ── Text editing (inline) ─────────────────────────────────────
