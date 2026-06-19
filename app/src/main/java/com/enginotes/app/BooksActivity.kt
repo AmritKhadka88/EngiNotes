@@ -23,12 +23,12 @@ class BooksActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
 
         val root = android.widget.FrameLayout(this)
-        root.setBackgroundColor(android.graphics.Color.parseColor("#F5F5F5"))
+        root.setBackgroundColor(android.graphics.Color.parseColor("#FAF6EF"))
 
         // Top bar
         val topBar = LinearLayout(this)
         topBar.orientation = LinearLayout.HORIZONTAL
-        topBar.setBackgroundColor(android.graphics.Color.parseColor("#FF6200EE"))
+        topBar.setBackgroundColor(android.graphics.Color.parseColor("#8D6E63"))
         topBar.setPadding(dp(16), dp(12), dp(16), dp(12))
         topBar.gravity = Gravity.CENTER_VERTICAL
         val topLp = android.widget.FrameLayout.LayoutParams(
@@ -134,7 +134,7 @@ class BooksActivity : AppCompatActivity() {
         fab.post {
             fab.background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(android.graphics.Color.parseColor("#FF6200EE"))
+                setColor(android.graphics.Color.parseColor("#8D6E63"))
             }
         }
         // Direct: create new note in General book
