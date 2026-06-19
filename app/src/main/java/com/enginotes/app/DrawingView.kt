@@ -1,4 +1,3 @@
-
 package com.enginotes.app
 
 import android.content.Context
@@ -375,12 +374,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun clampTranslation() {
         if (canvasMode == CanvasMode.INFINITE) return
         val pw = pageWidthPx() * scaleFactor; val ph = pageHeightPx() * scaleFactor
-        val margin = 20f
+        val margin = if (canvasMode == CanvasMode.CONVENIENT) 0f else 20f
         val minTx = width - pw - margin; val maxTx = margin
         translateX = translateX.coerceIn(minTx.coerceAtMost(maxTx), maxTx)
         if (canvasMode == CanvasMode.FIXED) {
             val minTy = height - ph - margin; val maxTy = margin
             translateY = translateY.coerceIn(minTy.coerceAtMost(maxTy), maxTy)
+        }
+        // For convenient/paginated: restrict minimum scale so page never goes smaller than screen
+        if (canvasMode == CanvasMode.CONVENIENT || canvasMode == CanvasMode.PAGINATED) {
+            val minScale = (width.toFloat() / pageWidthPx()).coerceAtLeast(0.3f)
+            if (scaleFactor < minScale) {
+                scaleFactor = minScale
+                translateX = 0f
+            }
         }
     }
 
@@ -512,13 +519,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             convenientPageH = height.toFloat()
             when (canvasMode) {
                 CanvasMode.CONVENIENT -> {
+                    // Page fills screen width exactly, scale=1
                     scaleFactor = 1f; translateX = 0f; translateY = 0f; invalidate()
                 }
                 CanvasMode.INFINITE -> {}
                 else -> {
                     val margin = 20f
-                    scaleFactor = (width.toFloat() - margin * 2f) / pageWidthPx() * 0.75f
-                    translateX = (width - pageWidthPx() * scaleFactor) / 2f
+                    // Scale so page fits within screen with small margin (shows full page width)
+                    scaleFactor = (width.toFloat() - margin * 2f) / pageWidthPx()
+                    translateX = margin
                     translateY = margin
                     clampTranslation(); invalidate()
                 }
@@ -760,6 +769,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         for (a in actions.reversed()) {
             if (a is FillItem) continue
             if (a is AudioItem) { if (distance(x, y, a.x, a.y) <= 60f / scaleFactor) return a; continue }
+            if (a is TableItem) {
+                val b = getBounds(a) ?: continue
+                if (x in (b[0] - pad)..(b[2] + pad) && y in (b[1] - pad)..(b[3] + pad)) return a; continue
+            }
             val b = getBounds(a) ?: continue
             if (x in (b[0] - pad)..(b[2] + pad) && y in (b[1] - pad)..(b[3] + pad)) return a
         }
@@ -1132,10 +1145,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun pageHeightPx(): Float {
+        // Convenient = one screen-height page (tall, comfortable reading/writing)
         if (canvasMode == CanvasMode.CONVENIENT) return if (convenientPageH > 0) convenientPageH else height.toFloat()
         val m = 3.7795f
         return if (pageOrientation == Orientation.PORTRAIT) paperSize.heightMM * m else paperSize.widthMM * m
     }
+
+    // Convenient line spacing = 80px (large, comfortable)
+    // Print line spacing = 40px (A4 realistic)
+    private fun lineSpacingPx(): Float = if (canvasMode == CanvasMode.CONVENIENT) 80f else 40f
+    private fun gridSpacingPx(): Float = if (canvasMode == CanvasMode.CONVENIENT) 80f else 40f
+    private fun dotSpacingPx(): Float = if (canvasMode == CanvasMode.CONVENIENT) 80f else 40f
 
     private fun drawBackground(canvas: Canvas) {
         val vl = -translateX / scaleFactor; val vt = -translateY / scaleFactor
@@ -1183,14 +1203,25 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun drawPaperPattern(canvas: Canvas, left: Float, top: Float, right: Float, bottom: Float) {
+        val ls = lineSpacingPx(); val gs = gridSpacingPx(); val ds = dotSpacingPx()
         when (paperType) {
-            PaperType.LINED -> { val p = Paint(); p.color = Color.parseColor("#C8D6F0"); p.strokeWidth = 1f; val s = 60f; var y = (top / s).toInt() * s; while (y < bottom) { canvas.drawLine(left, y, right, y, p); y += s } }
-            PaperType.GRID -> { val p = Paint(); p.color = Color.parseColor("#D0D0D0"); p.strokeWidth = 1f; val s = 50f; var x = (left / s).toInt() * s; while (x < right) { canvas.drawLine(x, top, x, bottom, p); x += s }; var y = (top / s).toInt() * s; while (y < bottom) { canvas.drawLine(left, y, right, y, p); y += s } }
-            PaperType.DOTS -> { val p = Paint(); p.color = Color.parseColor("#B0B0B0"); p.style = Paint.Style.FILL; val s = 50f; var x = (left / s).toInt() * s; while (x < right) { var y = (top / s).toInt() * s; while (y < bottom) { canvas.drawCircle(x, y, 2f, p); y += s }; x += s } }
+            PaperType.LINED -> {
+                val p = Paint(); p.color = Color.parseColor("#C8D6F0"); p.strokeWidth = 1f
+                var y = (top / ls).toInt() * ls; while (y < bottom) { canvas.drawLine(left, y, right, y, p); y += ls }
+            }
+            PaperType.GRID -> {
+                val p = Paint(); p.color = Color.parseColor("#D0D0D0"); p.strokeWidth = 1f
+                var x = (left / gs).toInt() * gs; while (x < right) { canvas.drawLine(x, top, x, bottom, p); x += gs }
+                var y = (top / gs).toInt() * gs; while (y < bottom) { canvas.drawLine(left, y, right, y, p); y += gs }
+            }
+            PaperType.DOTS -> {
+                val p = Paint(); p.color = Color.parseColor("#B0B0B0"); p.style = Paint.Style.FILL
+                var x = (left / ds).toInt() * ds; while (x < right) { var y = (top / ds).toInt() * ds; while (y < bottom) { canvas.drawCircle(x, y, 2.5f, p); y += ds }; x += ds }
+            }
             PaperType.ENGINEERING -> {
+                val ms = if (canvasMode == CanvasMode.CONVENIENT) 40f else 20f; val me = 5
                 val mp = Paint(); mp.color = Color.parseColor("#E0E8F5"); mp.strokeWidth = 1f
                 val Mp = Paint(); Mp.color = Color.parseColor("#A8C0E8"); Mp.strokeWidth = 1.5f
-                val ms = 20f; val me = 5
                 var i = (left / ms).toInt(); var x = i * ms; while (x < right) { canvas.drawLine(x, top, x, bottom, if (i % me == 0) Mp else mp); i++; x = i * ms }
                 var j = (top / ms).toInt(); var y = j * ms; while (y < bottom) { canvas.drawLine(left, y, right, y, if (j % me == 0) Mp else mp); j++; y = j * ms }
             }
