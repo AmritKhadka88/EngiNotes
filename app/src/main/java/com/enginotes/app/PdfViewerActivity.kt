@@ -17,8 +17,8 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
-import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -36,92 +36,89 @@ class PdfViewerActivity : AppCompatActivity() {
     private var pdfFile: File? = null
     private val annotationFiles = mutableMapOf<Int, String>()
 
-    // Snipping state
     private var isSnipMode = false
-    private var snipStart: PointF? = null
-    private var snipEnd: PointF? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val root = FrameLayout(this)
+        root.setBackgroundColor(Color.parseColor("#EDEAE3"))
 
         pdfCanvas = PdfAnnotationView(this)
-        root.addView(pdfCanvas, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
-        ))
+        root.addView(pdfCanvas, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
-        // Snip overlay (drawn on top of PDF during snip mode)
         val snipOverlay = SnipOverlayView(this)
         snipOverlay.visibility = View.GONE
-        root.addView(snipOverlay, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
-        ))
+        root.addView(snipOverlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
-        // Bottom toolbar
         val toolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Color.parseColor("#CC1A1A2E"))
-            setPadding(dp(4), dp(4), dp(4), dp(4))
+            setBackgroundColor(Color.parseColor("#FFFFFF"))
+            setPadding(dp(6), dp(6), dp(6), dp(6))
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        fun btn(label: String, action: () -> Unit): Button {
-            return Button(this).apply {
-                text = label; textSize = 12f; setTextColor(Color.WHITE)
-                setBackgroundColor(Color.parseColor("#55FFFFFF"))
-                val p = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                p.setMargins(dp(2), 0, dp(2), 0); layoutParams = p
-                setPadding(dp(8), dp(4), dp(8), dp(4)); minWidth = 0; minimumWidth = 0
+        fun iconBtn(emoji: String, action: () -> Unit): TextView {
+            return TextView(this).apply {
+                text = emoji; textSize = 18f; setTextColor(Color.parseColor("#4A4A4A"))
+                gravity = Gravity.CENTER
+                val p = LinearLayout.LayoutParams(dp(38), dp(38)); p.setMargins(dp(2), 0, dp(2), 0)
+                layoutParams = p
                 setOnClickListener { action() }
                 toolbar.addView(this)
             }
         }
 
-        btn("◀") { if (currentPage > 0) { saveCurrentAnnotations(); currentPage--; loadPage() } }
-        tvPageInfo = TextView(this).apply {
-            setTextColor(Color.WHITE); textSize = 13f; setPadding(dp(8), 0, dp(8), 0)
-            toolbar.addView(this)
-        }
-        btn("▶") { if (currentPage < totalPages - 1) { saveCurrentAnnotations(); currentPage++; loadPage() } }
+        iconBtn("‹") { if (currentPage > 0) { saveCurrentAnnotations(); currentPage--; loadPage() } }
+        tvPageInfo = TextView(this).apply { setTextColor(Color.parseColor("#4A4A4A")); textSize = 13f; setPadding(dp(4), 0, dp(4), 0); gravity = Gravity.CENTER }
+        toolbar.addView(tvPageInfo)
+        iconBtn("›") { if (currentPage < totalPages - 1) { saveCurrentAnnotations(); currentPage++; loadPage() } }
 
-        val penBtn    = btn("✏ Pen")  { pdfCanvas.currentTool = PdfTool.PEN;       setSnipMode(false, snipOverlay) }
-        val hiBtn     = btn("🖊 Hi")   { pdfCanvas.currentTool = PdfTool.HIGHLIGHT;  setSnipMode(false, snipOverlay) }
-        val txtBtn    = btn("T Text") { pdfCanvas.currentTool = PdfTool.TEXT;      setSnipMode(false, snipOverlay) }
-        val erBtn     = btn("⌫ Erase"){ pdfCanvas.currentTool = PdfTool.ERASER;    setSnipMode(false, snipOverlay) }
+        iconBtn("✎") { pdfCanvas.currentTool = PdfTool.PEN; setSnipMode(false, snipOverlay) }
+        iconBtn("✒") { pdfCanvas.currentTool = PdfTool.HIGHLIGHT; setSnipMode(false, snipOverlay) }
+        iconBtn("⌫") { pdfCanvas.currentTool = PdfTool.ERASER; setSnipMode(false, snipOverlay) }
 
-        // Snip button
-        val snipBtn = btn("✂ Snip") {
+        iconBtn("✂") {
             val entering = !isSnipMode
             setSnipMode(entering, snipOverlay)
-            if (entering) Toast.makeText(this, "Draw a rectangle over the area to snip", Toast.LENGTH_SHORT).show()
+            if (entering) Toast.makeText(this, "Draw a rectangle over the area to snip, then tap inside to confirm", Toast.LENGTH_LONG).show()
         }
 
-        btn("💾 Save") { saveCurrentAnnotations(); Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show() }
-        btn("✕") { saveCurrentAnnotations(); finish() }
+        iconBtn("💾") { saveCurrentAnnotations(); Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show() }
+        iconBtn("✕") { saveCurrentAnnotations(); finish() }
 
         val tlp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
         root.addView(toolbar, tlp)
 
         setContentView(root)
 
-        // Wire snip overlay touch
+        // Snip overlay: confirmed selection -> crop at FULL PDF render resolution for crisp quality,
+        // matching the on-screen rectangle's aspect ratio and relative size exactly.
         snipOverlay.onSnipSelected = { rect ->
             val pageBmp = pdfCanvas.getPageBitmap()
             if (pageBmp != null) {
-                val scale = pdfCanvas.getPageScale()
-                val sx = (rect.left / scale).toInt().coerceIn(0, pageBmp.width)
-                val sy = (rect.top  / scale).toInt().coerceIn(0, pageBmp.height)
-                val sw = ((rect.width())  / scale).toInt().coerceAtLeast(1).coerceAtMost(pageBmp.width  - sx)
-                val sh = ((rect.height()) / scale).toInt().coerceAtLeast(1).coerceAtMost(pageBmp.height - sy)
-                val cropped = Bitmap.createBitmap(pageBmp, sx, sy, sw, sh)
-                sendSnipToNote(cropped)
+                val pageScreenRect = pdfCanvas.getPageScreenRect()
+                if (pageScreenRect != null && pageScreenRect.width() > 0 && pageScreenRect.height() > 0) {
+                    // Map screen rect -> normalized page-relative coords -> bitmap pixel coords
+                    val relLeft = ((rect.left - pageScreenRect.left) / pageScreenRect.width()).coerceIn(0f, 1f)
+                    val relTop = ((rect.top - pageScreenRect.top) / pageScreenRect.height()).coerceIn(0f, 1f)
+                    val relRight = ((rect.right - pageScreenRect.left) / pageScreenRect.width()).coerceIn(0f, 1f)
+                    val relBottom = ((rect.bottom - pageScreenRect.top) / pageScreenRect.height()).coerceIn(0f, 1f)
+
+                    val sx = (relLeft * pageBmp.width).toInt().coerceIn(0, pageBmp.width - 1)
+                    val sy = (relTop * pageBmp.height).toInt().coerceIn(0, pageBmp.height - 1)
+                    val sw = ((relRight - relLeft) * pageBmp.width).toInt().coerceAtLeast(1).coerceAtMost(pageBmp.width - sx)
+                    val sh = ((relBottom - relTop) * pageBmp.height).toInt().coerceAtLeast(1).coerceAtMost(pageBmp.height - sy)
+
+                    val cropped = Bitmap.createBitmap(pageBmp, sx, sy, sw, sh)
+                    sendSnipToNote(cropped)
+                }
             }
             setSnipMode(false, snipOverlay)
         }
 
         val uriString = intent.getStringExtra("pdf_uri")
-        val filePath  = intent.getStringExtra("pdf_path")
+        val filePath = intent.getStringExtra("pdf_path")
         when {
             filePath != null -> openPdf(File(filePath))
             uriString != null -> copyAndOpenPdf(Uri.parse(uriString))
@@ -132,6 +129,7 @@ class PdfViewerActivity : AppCompatActivity() {
         isSnipMode = on
         overlay.visibility = if (on) View.VISIBLE else View.GONE
         pdfCanvas.isEnabled = !on
+        if (!on) overlay.reset()
     }
 
     private fun copyAndOpenPdf(uri: Uri) {
@@ -158,14 +156,15 @@ class PdfViewerActivity : AppCompatActivity() {
     private fun loadPage() {
         val renderer = pdfRenderer ?: return
         val page = renderer.openPage(currentPage)
-        val scale = pdfCanvas.width.toFloat() / page.width
-        val bmpW = (page.width * scale).toInt().coerceAtLeast(1)
-        val bmpH = (page.height * scale).toInt().coerceAtLeast(1)
+        // Render at 2x display resolution for crisp snips regardless of zoom
+        val renderScale = (pdfCanvas.width.toFloat() / page.width) * 2f
+        val bmpW = (page.width * renderScale).toInt().coerceAtLeast(1)
+        val bmpH = (page.height * renderScale).toInt().coerceAtLeast(1)
         val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
         Canvas(bmp).drawColor(Color.WHITE)
         page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
         page.close()
-        pdfCanvas.setPageBitmap(bmp, scale)
+        pdfCanvas.setPageBitmap(bmp)
         annotationFiles[currentPage]?.let { pdfCanvas.loadAnnotations(it) } ?: pdfCanvas.clearAnnotations()
         tvPageInfo.text = "${currentPage + 1} / $totalPages"
     }
@@ -183,11 +182,12 @@ class PdfViewerActivity : AppCompatActivity() {
             val folder = File(filesDir, "images").also { it.mkdirs() }
             val out = File(folder, "snip_${System.currentTimeMillis()}.png")
             FileOutputStream(out).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
-            // Return to whoever launched us (MainActivity's chartLauncher or pickPdfLauncher)
             val intent = Intent()
             intent.putExtra("snip_image_path", out.absolutePath)
+            intent.putExtra("snip_width", bmp.width)
+            intent.putExtra("snip_height", bmp.height)
             setResult(RESULT_OK, intent)
-            Toast.makeText(this, "Snip sent to note! Close PDF to place it.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Snip sent to note!", Toast.LENGTH_SHORT).show()
             finish()
         } catch (e: Exception) {
             Toast.makeText(this, "Snip failed: ${e.message}", Toast.LENGTH_LONG).show()
@@ -200,77 +200,115 @@ class PdfViewerActivity : AppCompatActivity() {
 }
 
 // ──────────────────────────────────────────────────────────────────
-//  Snip overlay: user draws a rectangle, callback fires with RectF
+//  Snip overlay: user draws AND resizes a rectangle before confirming
 // ──────────────────────────────────────────────────────────────────
 class SnipOverlayView(context: Context) : View(context) {
     var onSnipSelected: ((RectF) -> Unit)? = null
 
-    private var startX = 0f; private var startY = 0f
-    private var endX   = 0f; private var endY   = 0f
+    private var left = 0f; private var top = 0f; private var right = 0f; private var bottom = 0f
+    private var hasSelection = false
     private var dragging = false
+    private var activeHandle = -1 // -1=none, 0=TL,1=TR,2=BL,3=BR, 4=move, 5=creating new
+    private var lastX = 0f; private var lastY = 0f
 
-    private val dimPaint = Paint().apply { color = Color.parseColor("#66000000"); style = Paint.Style.FILL }
+    private val dimPaint = Paint().apply { color = Color.parseColor("#88000000"); style = Paint.Style.FILL }
     private val borderPaint = Paint().apply {
-        color = Color.parseColor("#2196F3"); style = Paint.Style.STROKE; strokeWidth = 3f
+        color = Color.parseColor("#8D6E63"); style = Paint.Style.STROKE; strokeWidth = 3f
         pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 6f), 0f)
         isAntiAlias = true
     }
-    private val handlePaint = Paint().apply { color = Color.WHITE; style = Paint.Style.FILL }
+    private val handlePaint = Paint().apply { color = Color.WHITE; style = Paint.Style.FILL; isAntiAlias = true }
+    private val handleBorderPaint = Paint().apply { color = Color.parseColor("#8D6E63"); style = Paint.Style.STROKE; strokeWidth = 2.5f; isAntiAlias = true }
     private val instructPaint = Paint().apply {
-        color = Color.WHITE; textSize = 36f; isAntiAlias = true
+        color = Color.WHITE; textSize = 32f; isAntiAlias = true
         setShadowLayer(4f, 0f, 0f, Color.BLACK)
     }
+    private val confirmBgPaint = Paint().apply { color = Color.parseColor("#8D6E63"); style = Paint.Style.FILL; isAntiAlias = true }
+    private val confirmTextPaint = Paint().apply { color = Color.WHITE; textSize = 30f; isAntiAlias = true; textAlign = Paint.Align.CENTER }
+
+    private val handleRadius = 14f
+    private val handleTouchRadius = 50f // large invisible touch target
+
+    fun reset() { hasSelection = false; dragging = false; activeHandle = -1; invalidate() }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        if (!dragging && startX == endX) {
-            // Show instruction
+        if (!hasSelection) {
             canvas.drawColor(Color.parseColor("#44000000"))
-            canvas.drawText("Draw to select area", 40f, height / 2f, instructPaint)
+            canvas.drawText("Draw a rectangle to select an area", 40f, height / 2f, instructPaint)
             return
         }
-        val l = minOf(startX, endX); val t = minOf(startY, endY)
-        val r = maxOf(startX, endX); val b = maxOf(startY, endY)
-        // Dim everything outside selection
+        val l = minOf(left, right); val t = minOf(top, bottom)
+        val r = maxOf(left, right); val b = maxOf(top, bottom)
+
         canvas.drawRect(0f, 0f, width.toFloat(), t, dimPaint)
         canvas.drawRect(0f, b, width.toFloat(), height.toFloat(), dimPaint)
         canvas.drawRect(0f, t, l, b, dimPaint)
         canvas.drawRect(r, t, width.toFloat(), b, dimPaint)
-        // Selection border
         canvas.drawRect(l, t, r, b, borderPaint)
-        // Corner handles
+
         for ((hx, hy) in listOf(l to t, r to t, l to b, r to b)) {
-            canvas.drawCircle(hx, hy, 10f, handlePaint); canvas.drawCircle(hx, hy, 10f, borderPaint)
+            canvas.drawCircle(hx, hy, handleRadius, handlePaint)
+            canvas.drawCircle(hx, hy, handleRadius, handleBorderPaint)
         }
-        if (!dragging && r - l > 20f && b - t > 20f) {
-            val tp = Paint().apply { color = Color.WHITE; textSize = 28f; isAntiAlias = true; setShadowLayer(3f,0f,0f,Color.BLACK) }
-            canvas.drawText("Tap inside to snip", l + 8f, t - 12f, tp)
+
+        if (!dragging && r - l > 30f && b - t > 30f) {
+            val cx = (l + r) / 2f
+            val btnY = (b + 50f).coerceAtMost(height - 60f)
+            canvas.drawRoundRect(RectF(cx - 70f, btnY, cx + 70f, btnY + 56f), 28f, 28f, confirmBgPaint)
+            canvas.drawText("Confirm", cx, btnY + 37f, confirmTextPaint)
         }
     }
 
+    private fun hitHandle(x: Float, y: Float): Int {
+        val l = minOf(left, right); val t = minOf(top, bottom); val r = maxOf(left, right); val b = maxOf(top, bottom)
+        if (dist(x, y, l, t) <= handleTouchRadius) return 0
+        if (dist(x, y, r, t) <= handleTouchRadius) return 1
+        if (dist(x, y, l, b) <= handleTouchRadius) return 2
+        if (dist(x, y, r, b) <= handleTouchRadius) return 3
+        return -1
+    }
+
+    private fun dist(x1: Float, y1: Float, x2: Float, y2: Float) = kotlin.math.hypot((x2 - x1).toDouble(), (y2 - y1).toDouble()).toFloat()
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        val x = event.x; val y = event.y
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                // If we already have a selection and user taps inside it → confirm snip
-                if (!dragging && startX != endX) {
-                    val l = minOf(startX,endX); val t2 = minOf(startY,endY)
-                    val r = maxOf(startX,endX); val b = maxOf(startY,endY)
-                    if (event.x in l..r && event.y in t2..b) {
-                        onSnipSelected?.invoke(RectF(l,t2,r,b)); return true
+                if (hasSelection) {
+                    val h = hitHandle(x, y)
+                    if (h >= 0) { activeHandle = h; dragging = true; lastX = x; lastY = y; return true }
+                    val l = minOf(left, right); val t = minOf(top, bottom); val r = maxOf(left, right); val b = maxOf(top, bottom)
+                    // Confirm button area
+                    val cx = (l + r) / 2f; val btnY = (b + 50f).coerceAtMost(height - 60f)
+                    if (x in (cx - 70f)..(cx + 70f) && y in btnY..(btnY + 56f)) {
+                        onSnipSelected?.invoke(RectF(l, t, r, b)); return true
                     }
+                    if (x in l..r && y in t..b) { activeHandle = 4; dragging = true; lastX = x; lastY = y; return true }
                 }
-                startX = event.x; startY = event.y
-                endX = event.x; endY = event.y; dragging = true; invalidate()
+                // Start a new selection
+                left = x; top = y; right = x; bottom = y; hasSelection = true; dragging = true; activeHandle = 5
+                invalidate()
             }
-            MotionEvent.ACTION_MOVE -> { endX = event.x; endY = event.y; invalidate() }
-            MotionEvent.ACTION_UP -> { endX = event.x; endY = event.y; dragging = false; invalidate() }
+            MotionEvent.ACTION_MOVE -> {
+                when (activeHandle) {
+                    5 -> { right = x; bottom = y }
+                    0 -> { left = x; top = y }
+                    1 -> { right = x; top = y }
+                    2 -> { left = x; bottom = y }
+                    3 -> { right = x; bottom = y }
+                    4 -> { val dx = x - lastX; val dy = y - lastY; left += dx; top += dy; right += dx; bottom += dy; lastX = x; lastY = y }
+                }
+                invalidate()
+            }
+            MotionEvent.ACTION_UP -> { dragging = false; activeHandle = -1; invalidate() }
         }
         return true
     }
 }
 
 // ──────────────────────────────────────────────────────────────────
-//  PdfAnnotationView (unchanged from original + getPageBitmap/getPageScale)
+//  PdfAnnotationView - tracks exact page screen rect for snip mapping
 // ──────────────────────────────────────────────────────────────────
 enum class PdfTool { PEN, HIGHLIGHT, TEXT, ERASER }
 data class PdfStroke(val points: MutableList<Float>, val color: Int, val width: Float, val alpha: Int)
@@ -278,7 +316,6 @@ data class PdfStroke(val points: MutableList<Float>, val color: Int, val width: 
 class PdfAnnotationView(context: Context) : View(context) {
     var currentTool = PdfTool.PEN
     private var pageBitmap: Bitmap? = null
-    private var pageScale: Float = 1f
     private val strokes = mutableListOf<PdfStroke>()
     private var currentStroke: PdfStroke? = null
     private var scaleFactor = 1f
@@ -286,19 +323,29 @@ class PdfAnnotationView(context: Context) : View(context) {
     private var prevFocusX = 0f; private var prevFocusY = 0f
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-        override fun onScaleBegin(d: ScaleGestureDetector): Boolean { prevFocusX=d.focusX; prevFocusY=d.focusY; return true }
+        override fun onScaleBegin(d: ScaleGestureDetector): Boolean { prevFocusX = d.focusX; prevFocusY = d.focusY; return true }
         override fun onScale(d: ScaleGestureDetector): Boolean {
-            val ns=(scaleFactor*d.scaleFactor).coerceIn(0.5f,5f); val f=ns/scaleFactor
-            translateX=d.focusX-(d.focusX-translateX)*f; translateY=d.focusY-(d.focusY-translateY)*f; scaleFactor=ns
-            translateX+=d.focusX-prevFocusX; translateY+=d.focusY-prevFocusY
-            prevFocusX=d.focusX; prevFocusY=d.focusY; invalidate(); return true
+            val ns = (scaleFactor * d.scaleFactor).coerceIn(0.5f, 5f); val f = ns / scaleFactor
+            translateX = d.focusX - (d.focusX - translateX) * f; translateY = d.focusY - (d.focusY - translateY) * f; scaleFactor = ns
+            translateX += d.focusX - prevFocusX; translateY += d.focusY - prevFocusY
+            prevFocusX = d.focusX; prevFocusY = d.focusY; invalidate(); return true
         }
     })
 
-    fun setPageBitmap(bmp: Bitmap, scale: Float=1f) { pageBitmap=bmp; pageScale=scale; scaleFactor=1f; translateX=0f; translateY=0f; invalidate() }
+    fun setPageBitmap(bmp: Bitmap) { pageBitmap = bmp; scaleFactor = 1f; translateX = 0f; translateY = 0f; invalidate() }
     fun clearAnnotations() { strokes.clear(); invalidate() }
     fun getPageBitmap(): Bitmap? = pageBitmap
-    fun getPageScale(): Float = pageScale
+
+    // Returns the page's current on-screen rectangle (accounting for pan/zoom), used to map snip coords precisely
+    fun getPageScreenRect(): RectF? {
+        val bmp = pageBitmap ?: return null
+        // Page is drawn at base scale = width/bmp.width (to fit view width) then further scaleFactor/translate applied
+        val baseScale = width.toFloat() / bmp.width
+        val totalScale = baseScale * scaleFactor
+        val pageW = bmp.width * totalScale
+        val pageH = bmp.height * totalScale
+        return RectF(translateX, translateY, translateX + pageW, translateY + pageH)
+    }
 
     fun saveAnnotations(path: String) {
         File(path).writeText(strokes.joinToString("\n") { "${it.color}|${it.width}|${it.alpha}|${it.points.joinToString(",")}" })
@@ -308,50 +355,60 @@ class PdfAnnotationView(context: Context) : View(context) {
         strokes.clear()
         try {
             File(path).forEachLine { line ->
-                if(line.isBlank()) return@forEachLine
-                val p=line.split("|"); if(p.size<4) return@forEachLine
-                val pts=if(p[3].isBlank()) mutableListOf() else p[3].split(",").mapNotNull{it.toFloatOrNull()}.toMutableList()
-                strokes.add(PdfStroke(pts,p[0].toInt(),p[1].toFloat(),p[2].toInt()))
+                if (line.isBlank()) return@forEachLine
+                val p = line.split("|"); if (p.size < 4) return@forEachLine
+                val pts = if (p[3].isBlank()) mutableListOf() else p[3].split(",").mapNotNull { it.toFloatOrNull() }.toMutableList()
+                strokes.add(PdfStroke(pts, p[0].toInt(), p[1].toFloat(), p[2].toInt()))
             }
-        } catch(e:Exception){}
+        } catch (e: Exception) {}
         invalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        canvas.drawColor(Color.parseColor("#AAAAAA"))
-        canvas.save(); canvas.translate(translateX,translateY); canvas.scale(scaleFactor,scaleFactor)
-        pageBitmap?.let{ canvas.drawBitmap(it,0f,0f,null) }
-        for(s in strokes) drawStroke(canvas,s); currentStroke?.let{ drawStroke(canvas,it) }
-        canvas.restore()
+        canvas.drawColor(Color.parseColor("#EDEAE3"))
+        val bmp = pageBitmap
+        if (bmp != null) {
+            val baseScale = width.toFloat() / bmp.width
+            canvas.save()
+            canvas.translate(translateX, translateY)
+            canvas.scale(baseScale * scaleFactor, baseScale * scaleFactor)
+            canvas.drawBitmap(bmp, 0f, 0f, null)
+            for (s in strokes) drawStroke(canvas, s)
+            currentStroke?.let { drawStroke(canvas, it) }
+            canvas.restore()
+        }
     }
 
     private fun drawStroke(canvas: Canvas, stroke: PdfStroke) {
-        if(stroke.points.size<4) return
-        val p=Paint(); p.color=stroke.color; p.alpha=stroke.alpha; p.strokeWidth=stroke.width; p.style=Paint.Style.STROKE; p.isAntiAlias=true; p.strokeCap=Paint.Cap.ROUND; p.strokeJoin=Paint.Join.ROUND
-        val path=Path(); path.moveTo(stroke.points[0],stroke.points[1]); var i=2; while(i+1<stroke.points.size){ path.lineTo(stroke.points[i],stroke.points[i+1]); i+=2 }
-        canvas.drawPath(path,p)
+        if (stroke.points.size < 4) return
+        val p = Paint(); p.color = stroke.color; p.alpha = stroke.alpha; p.strokeWidth = stroke.width; p.style = Paint.Style.STROKE; p.isAntiAlias = true; p.strokeCap = Paint.Cap.ROUND; p.strokeJoin = Paint.Join.ROUND
+        val path = Path(); path.moveTo(stroke.points[0], stroke.points[1]); var i = 2; while (i + 1 < stroke.points.size) { path.lineTo(stroke.points[i], stroke.points[i + 1]); i += 2 }
+        canvas.drawPath(path, p)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if(event.pointerCount>=2){ scaleDetector.onTouchEvent(event); return true }
-        val wx=(event.x-translateX)/scaleFactor; val wy=(event.y-translateY)/scaleFactor
-        when(event.actionMasked){
+        if (event.pointerCount >= 2) { scaleDetector.onTouchEvent(event); return true }
+        val bmp = pageBitmap ?: return true
+        val baseScale = width.toFloat() / bmp.width
+        val totalScale = baseScale * scaleFactor
+        val wx = (event.x - translateX) / totalScale; val wy = (event.y - translateY) / totalScale
+        when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if(currentTool==PdfTool.ERASER){ eraseAt(wx,wy); invalidate(); return true }
-                val color=when(currentTool){ PdfTool.HIGHLIGHT->Color.YELLOW; else->Color.BLUE }
-                val width=when(currentTool){ PdfTool.HIGHLIGHT->20f; else->4f }
-                val alpha=if(currentTool==PdfTool.HIGHLIGHT) 100 else 255
-                currentStroke=PdfStroke(mutableListOf(wx,wy),color,width,alpha)
+                if (currentTool == PdfTool.ERASER) { eraseAt(wx, wy, totalScale); invalidate(); return true }
+                val color = when (currentTool) { PdfTool.HIGHLIGHT -> Color.parseColor("#FFEB3B"); else -> Color.parseColor("#3B5BDB") }
+                val width2 = when (currentTool) { PdfTool.HIGHLIGHT -> 20f; else -> 4f }
+                val alpha = if (currentTool == PdfTool.HIGHLIGHT) 100 else 255
+                currentStroke = PdfStroke(mutableListOf(wx, wy), color, width2, alpha)
             }
-            MotionEvent.ACTION_MOVE -> { if(currentTool==PdfTool.ERASER){ eraseAt(wx,wy); invalidate(); return true }; currentStroke?.points?.addAll(listOf(wx,wy)); invalidate() }
-            MotionEvent.ACTION_UP -> { currentStroke?.let{ strokes.add(it) }; currentStroke=null; invalidate() }
+            MotionEvent.ACTION_MOVE -> { if (currentTool == PdfTool.ERASER) { eraseAt(wx, wy, totalScale); invalidate(); return true }; currentStroke?.points?.addAll(listOf(wx, wy)); invalidate() }
+            MotionEvent.ACTION_UP -> { currentStroke?.let { strokes.add(it) }; currentStroke = null; invalidate() }
         }
         return true
     }
 
-    private fun eraseAt(x:Float,y:Float) {
-        val r=30f/scaleFactor
-        strokes.removeAll{ s -> var i=0; while(i+1<s.points.size){ val dx=s.points[i]-x;val dy=s.points[i+1]-y; if(dx*dx+dy*dy<=r*r) return@removeAll true; i+=2 }; false }
+    private fun eraseAt(x: Float, y: Float, totalScale: Float) {
+        val r = 30f / totalScale
+        strokes.removeAll { s -> var i = 0; while (i + 1 < s.points.size) { val dx = s.points[i] - x; val dy = s.points[i + 1] - y; if (dx * dx + dy * dy <= r * r) return@removeAll true; i += 2 }; false }
     }
 }
