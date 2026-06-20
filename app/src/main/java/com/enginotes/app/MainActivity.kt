@@ -48,8 +48,24 @@ class MainActivity : AppCompatActivity() {
     private val PT_TO_PX = 1.333f
     private var isConvenientLayout = true
 
-    private val shapeSymbols = listOf("Line","Rectangle","Rounded Rect","Circle","Ellipse","Triangle","Diamond","Arrow","Star","Pentagon","Hexagon","Curve","Cross","Arc")
-    private val shapeTools: List<Tool?> = listOf(Tool.LINE,Tool.RECTANGLE,Tool.ROUNDED_RECT,Tool.CIRCLE,Tool.ELLIPSE,Tool.TRIANGLE,Tool.DIAMOND,Tool.ARROW,Tool.STAR,Tool.PENTAGON,Tool.HEXAGON,Tool.CURVE,Tool.CROSS,Tool.ARC)
+    private val shapeEntries: List<Pair<String, Tool>> = listOf(
+        "L" to Tool.LINE, "R" to Tool.RECTANGLE, "Rr" to Tool.ROUNDED_RECT, "O" to Tool.CIRCLE,
+        "E" to Tool.ELLIPSE, "Tr" to Tool.TRIANGLE, "Td" to Tool.TRIANGLE_DOWN, "Di" to Tool.DIAMOND,
+        "->" to Tool.ARROW, "<->" to Tool.DOUBLE_ARROW, "St" to Tool.STAR, "P5" to Tool.PENTAGON,
+        "H6" to Tool.HEXAGON, "H7" to Tool.HEPTAGON, "O8" to Tool.OCTAGON, "N9" to Tool.NONAGON,
+        "D10" to Tool.DECAGON, "~" to Tool.CURVE, "+" to Tool.CROSS, "Arc" to Tool.ARC,
+        "Tz" to Tool.TRAPEZOID, "Pg" to Tool.PARALLELOGRAM, "Rt" to Tool.RIGHT_TRIANGLE,
+        "Is" to Tool.ISOSCELES_TRIANGLE, "Sc" to Tool.SEMICIRCLE, "He" to Tool.HALF_ELLIPSE,
+        "Dr" to Tool.TEARDROP, "Ht" to Tool.HEART, "Pl" to Tool.PLUS_THICK,
+        "[" to Tool.BRACKET_L, "]" to Tool.BRACKET_R, "Cl" to Tool.CLOUD,
+        "Sb" to Tool.SPEECH_BUBBLE, "Lt" to Tool.LIGHTNING, "Mn" to Tool.MOON,
+        ">" to Tool.CHEVRON_RIGHT, "<" to Tool.CHEVRON_LEFT, "^" to Tool.CHEVRON_UP,
+        "v" to Tool.CHEVRON_DOWN, "Rh" to Tool.RHOMBUS_TALL, "Gr" to Tool.GEAR,
+        "Sh" to Tool.SHIELD, "Rg" to Tool.RING, "Ar" to Tool.BLOCK_ARROW_RIGHT,
+        "Al" to Tool.BLOCK_ARROW_LEFT, "Au" to Tool.BLOCK_ARROW_UP, "Ad" to Tool.BLOCK_ARROW_DOWN,
+        "Sq" to Tool.SQUARE_ROUNDED_SMALL, "Bu" to Tool.BURST, "Fb" to Tool.FIVE_POINT_BURST,
+        "Fr" to Tool.FRAME, "Pq" to Tool.PLAQUE, "St8" to Tool.OCTAGON_STOP
+    )
 
     private var activeEditText: EditText? = null
     private var activeToolbar: LinearLayout? = null
@@ -59,12 +75,14 @@ class MainActivity : AppCompatActivity() {
     private var editSize = 12f * 1.333f
     private var pendingBold = false; private var pendingItalic = false
     private var pendingUnderline = false; private var pendingHighlight: Int? = null
+    private var pendingFontFamily: String = "sans-serif"
     private var cameraImageFile: File? = null
     private var activeToolbarButton: ImageButton? = null
     private var isSwitchingTextEditor = false
     private var exportWindowBitmap: Bitmap? = null
     private var pendingExportBitmap: Bitmap? = null
     private var pendingExportFormat: String = "png"
+    private var shapesPickerOverlay: LinearLayout? = null
 
     private var activeCellEditText: EditText? = null
     private var activeCellToolbar: LinearLayout? = null
@@ -82,7 +100,39 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ── Launchers ─────────────────────────────────────────────────
+    private val availableFonts = listOf(
+        "Default (Sans)" to "sans-serif",
+        "Serif" to "serif",
+        "Monospace" to "monospace",
+        "Sans Condensed" to "sans-serif-condensed",
+        "Sans Light" to "sans-serif-light",
+        "Sans Thin" to "sans-serif-thin",
+        "Sans Medium" to "sans-serif-medium",
+        "Sans Black" to "sans-serif-black",
+        "Serif Monospace" to "serif-monospace",
+        "Casual" to "casual",
+        "Cursive" to "cursive",
+        "Sans-serif Smallcaps" to "sans-serif-smallcaps",
+        "Notosans" to "sans-serif",
+        "Roboto Condensed Light" to "sans-serif-condensed-light",
+        "Sans Condensed Medium" to "sans-serif-condensed-medium",
+        "Source Sans" to "sans-serif",
+        "Sans Narrow" to "sans-serif-condensed",
+        "Serif Light" to "serif",
+        "Comic" to "casual",
+        "Elegant Script" to "cursive"
+    )
+
+    private fun showFontPickerDialog(et: EditText) {
+        val names = availableFonts.map { it.first }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("Font").setItems(names) { _, i ->
+            val family = availableFonts[i].second
+            val item = editingItem
+            pendingFontFamily = family
+            if (item != null) item.fontFamily = family
+            try { et.typeface = Typeface.create(family, Typeface.NORMAL) } catch (e: Exception) {}
+        }.show()
+    }
 
     private val chartLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -104,8 +154,6 @@ class MainActivity : AppCompatActivity() {
         if (result.resultCode == RESULT_OK) {
             val path = result.data?.getStringExtra("snip_image_path") ?: return@registerForActivityResult
             val bmp = android.graphics.BitmapFactory.decodeFile(path) ?: return@registerForActivityResult
-            // Convert the snip's actual pixel size (96dpi-equivalent) to world units so it appears
-            // at a natural physical size matching what was selected on the PDF, capped to fit the page.
             val density = resources.displayMetrics.density
             var w = bmp.width / density
             var h = bmp.height / density
@@ -126,6 +174,20 @@ class MainActivity : AppCompatActivity() {
     }
     private val takePictureLauncher = registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         if (success) cameraImageFile?.let { addImageFromFile(it) }
+    }
+
+    private val requestCameraPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) launchCameraInternal()
+        else Toast.makeText(this, "Camera permission is required to take photos", Toast.LENGTH_LONG).show()
+    }
+
+    private val requestMicPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) showAudioRecordDialog()
+        else Toast.makeText(this, "Microphone permission is required to record audio", Toast.LENGTH_LONG).show()
     }
 
     private val savePdfLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
@@ -184,8 +246,6 @@ class MainActivity : AppCompatActivity() {
         } catch(e:Exception){ Toast.makeText(this,"DOCX failed: ${e.message}",Toast.LENGTH_LONG).show() }
     }
 
-    // ── onCreate ──────────────────────────────────────────────────
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -234,17 +294,23 @@ class MainActivity : AppCompatActivity() {
         autosaveHandler.postDelayed(autosaveRunnable, 10_000L)
     }
 
-    // ── Bottom toolbar ────────────────────────────────────────────
-
     private fun setupBottomToolbar() {
         findViewById<ImageButton>(R.id.btnUndo).setOnClickListener { closeInlineEditor(true); drawingView.undo() }
         findViewById<ImageButton>(R.id.btnRedo).setOnClickListener { closeInlineEditor(true); drawingView.redo() }
         findViewById<ImageButton>(R.id.btnDraw).setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.PEN) }
-        findViewById<ImageButton>(R.id.btnQuickEraser).setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.ERASER) }
-        findViewById<ImageButton?>(R.id.btnSelect)?.setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.SELECT) }
+        findViewById<ImageButton>(R.id.btnQuickEraser).setOnClickListener { btn ->
+            closeInlineEditor(true)
+            if (drawingView.currentTool == Tool.ERASER) showEraserModePopup(btn)
+            else setActiveTool(btn as ImageButton, Tool.ERASER)
+        }
+        findViewById<ImageButton?>(R.id.btnSelect)?.setOnClickListener { btn ->
+            closeInlineEditor(true)
+            if (drawingView.currentTool == Tool.SELECT) showSelectModePopup(btn)
+            else setActiveTool(btn as ImageButton, Tool.SELECT)
+        }
         findViewById<ImageButton>(R.id.btnText).setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.TEXT) }
         findViewById<ImageButton>(R.id.btnInsert).setOnClickListener { showInsertMenu() }
-        findViewById<ImageButton>(R.id.btnTools).setOnClickListener { showToolsMenu() }
+        findViewById<ImageButton>(R.id.btnTools).setOnClickListener { showShapesPicker(it as ImageButton) }
 
         val toolbarScroll = findViewById<View>(R.id.toolbarScroll)
         val btnExpand = findViewById<ImageButton>(R.id.btnExpand)
@@ -258,14 +324,16 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton?>(R.id.btnShapes)?.setOnClickListener { showShapesPicker(it as ImageButton) }
         findViewById<ImageButton?>(R.id.btnQuickColor)?.setOnClickListener { showColorGridDialog { c -> drawingView.currentColor = c } }
         findViewById<ImageButton?>(R.id.btnQuickSize)?.setOnClickListener { showSizePicker() }
-        findViewById<ImageButton?>(R.id.btnQuickFill)?.setOnClickListener { showColorGridDialog { c -> drawingView.fillColor = c }; setActiveTool(it as ImageButton, Tool.FILL) }
+        findViewById<ImageButton?>(R.id.btnQuickFill)?.setOnClickListener { btn ->
+            closeInlineEditor(true)
+            if (drawingView.currentTool == Tool.FILL) showFillModePopup(btn)
+            else { setActiveTool(btn as ImageButton, Tool.FILL) }
+        }
 
         findViewById<ImageButton?>(R.id.btnMenu)?.setOnClickListener { onMenuClick(it) }
         findViewById<ImageButton?>(R.id.btnBack)?.setOnClickListener { confirmThenExit() }
         btnLayoutToggle.setOnClickListener { showLayoutMenu(it) }
     }
-
-    // ── Layout switching ──────────────────────────────────────────
 
     private fun applyConvenientLayout() {
         isConvenientLayout = true
@@ -309,14 +377,65 @@ class MainActivity : AppCompatActivity() {
         popup.show()
     }
 
-    // ── Tool helpers ──────────────────────────────────────────────
-
     private fun setActiveTool(btn: ImageButton?, tool: Tool) { drawingView.currentTool = tool; setActiveToolbarBtn(btn) }
     private fun setActiveToolbarBtn(btn: ImageButton?) { activeToolbarButton?.isSelected = false; activeToolbarButton = btn; btn?.isSelected = true }
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
     private fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
 
-    // ── Menu actions ──────────────────────────────────────────────
+    private fun showEraserModePopup(anchor: View) {
+        val popup = PopupMenu(this, anchor)
+        popup.menu.add("Object Eraser")
+        popup.menu.add("Area Eraser")
+        popup.setOnMenuItemClickListener { item ->
+            drawingView.eraserMode = if (item.title == "Object Eraser") EraserMode.OBJECT else EraserMode.AREA
+            Toast.makeText(this, item.title, Toast.LENGTH_SHORT).show()
+            true
+        }
+        popup.show()
+    }
+
+    private fun showSelectModePopup(anchor: View) {
+        val popup = PopupMenu(this, anchor)
+        popup.menu.add("Select (default)")
+        popup.menu.add("AutoSelect: Rectangle - Whole")
+        popup.menu.add("AutoSelect: Rectangle - Divided")
+        popup.menu.add("AutoSelect: Freeform - Whole")
+        popup.menu.add("AutoSelect: Freeform - Divided")
+        popup.setOnMenuItemClickListener { item ->
+            when (item.title) {
+                "Select (default)" -> setActiveTool(null, Tool.SELECT)
+                "AutoSelect: Rectangle - Whole" -> { drawingView.autoSelectShape = AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide = AutoSelectDivide.WHOLE; setActiveTool(null, Tool.AUTOSELECT) }
+                "AutoSelect: Rectangle - Divided" -> { drawingView.autoSelectShape = AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide = AutoSelectDivide.DIVIDED; setActiveTool(null, Tool.AUTOSELECT) }
+                "AutoSelect: Freeform - Whole" -> { drawingView.autoSelectShape = AutoSelectShape.FREEFORM; drawingView.autoSelectDivide = AutoSelectDivide.WHOLE; setActiveTool(null, Tool.AUTOSELECT) }
+                "AutoSelect: Freeform - Divided" -> { drawingView.autoSelectShape = AutoSelectShape.FREEFORM; drawingView.autoSelectDivide = AutoSelectDivide.DIVIDED; setActiveTool(null, Tool.AUTOSELECT) }
+            }
+            true
+        }
+        popup.show()
+    }
+
+    private fun showFillModePopup(anchor: View) {
+        val popup = PopupMenu(this, anchor)
+        popup.menu.add("Pick Fill Color")
+        popup.menu.add(if (drawingView.fillShapes) "Auto-fill: On" else "Auto-fill: Off")
+        popup.setOnMenuItemClickListener { item ->
+            when {
+                item.title == "Pick Fill Color" -> showColorGridDialog { c -> drawingView.fillColor = c }
+                item.title.toString().startsWith("Auto-fill") -> { drawingView.fillShapes = !drawingView.fillShapes; Toast.makeText(this, if (drawingView.fillShapes) "Auto-fill: On" else "Auto-fill: Off", Toast.LENGTH_SHORT).show() }
+            }
+            true
+        }
+        popup.show()
+    }
+
+    private fun showAutoSelectModeDialog(anchor: ImageButton) {
+        val modes = arrayOf("Rectangle - Whole","Rectangle - Divided","Freeform - Whole","Freeform - Divided")
+        AlertDialog.Builder(this).setTitle("AutoSelect Mode").setItems(modes){ _,i ->
+            when(i){ 0->{ drawingView.autoSelectShape=AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide=AutoSelectDivide.WHOLE }; 1->{ drawingView.autoSelectShape=AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide=AutoSelectDivide.DIVIDED }; 2->{ drawingView.autoSelectShape=AutoSelectShape.FREEFORM; drawingView.autoSelectDivide=AutoSelectDivide.WHOLE }; else->{ drawingView.autoSelectShape=AutoSelectShape.FREEFORM; drawingView.autoSelectDivide=AutoSelectDivide.DIVIDED } }
+            setActiveTool(anchor, Tool.AUTOSELECT)
+            Toast.makeText(this,"Draw a region to select",Toast.LENGTH_SHORT).show()
+        }.show()
+    }
 
     fun onMenuClick(v: View) {
         closeInlineEditor(true)
@@ -368,7 +487,6 @@ class MainActivity : AppCompatActivity() {
             }.setNegativeButton("Cancel", null).show()
     }
 
-    // Generates "Note 1", "Note 2"... filling the lowest available gap in the sequence
     private fun nextAutoName(): String {
         val existing = getDrawingsFolder().listFiles()
             ?.mapNotNull { f ->
@@ -395,8 +513,32 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showShapesPicker(anchor: ImageButton) {
-        AlertDialog.Builder(this).setTitle("Shapes")
-            .setItems(shapeSymbols.toTypedArray()) { _, i -> shapeTools[i]?.let { setActiveTool(anchor, it) } }.show()
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#1A1A2E"))
+            setPadding(0, dp(6), 0, dp(6))
+        }
+        val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(6),0,dp(6),0); gravity = Gravity.CENTER_VERTICAL }
+        for ((symbol, tool) in shapeEntries) {
+            val b = TextView(this).apply {
+                text = symbol; textSize = 13f; setTextColor(Color.parseColor("#FFD700"))
+                gravity = Gravity.CENTER
+                val p = LinearLayout.LayoutParams(dp(44), dp(44)); p.setMargins(dp(2),0,dp(2),0)
+                layoutParams = p
+                setOnClickListener {
+                    setActiveTool(null, tool)
+                    shapesPickerOverlay?.let { canvasContainer.removeView(it) }; shapesPickerOverlay = null
+                }
+            }
+            row.addView(b)
+        }
+        scroll.addView(row)
+        container.addView(scroll)
+        shapesPickerOverlay?.let { canvasContainer.removeView(it) }
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(56), Gravity.BOTTOM)
+        canvasContainer.addView(container, lp)
+        shapesPickerOverlay = container
     }
 
     private fun showInsertMenu() {
@@ -412,24 +554,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }.show()
     }
-
-    private fun showToolsMenu() {
-        closeInlineEditor(true)
-        AlertDialog.Builder(this).setTitle("Tools")
-            .setItems(arrayOf("Eraser","Pen Color","Fill Shapes On/Off","Size")) { _, i ->
-                when(i) {
-                    0 -> if (drawingView.currentTool == Tool.ERASER) {
-                        drawingView.eraserMode = if (drawingView.eraserMode == EraserMode.OBJECT) EraserMode.AREA else EraserMode.OBJECT
-                        Toast.makeText(this, if (drawingView.eraserMode==EraserMode.OBJECT) "Object Eraser" else "Area Eraser", Toast.LENGTH_SHORT).show()
-                    } else setActiveTool(null, Tool.ERASER)
-                    1 -> showColorGridDialog { c -> drawingView.currentColor = c; if(drawingView.currentTool==Tool.ERASER) drawingView.currentTool=Tool.PEN }
-                    2 -> { drawingView.fillShapes = !drawingView.fillShapes; Toast.makeText(this, if(drawingView.fillShapes)"Fill: On" else "Fill: Off",Toast.LENGTH_SHORT).show() }
-                    3 -> showSizePicker()
-                }
-            }.show()
-    }
-
-    // ── Settings ──────────────────────────────────────────────────
 
     private fun showSettingsDialog() {
         val prefs = getPrefs()
@@ -460,7 +584,7 @@ class MainActivity : AppCompatActivity() {
         div(); hdr("PAGE SETUP")
         val modeLbl = TextView(this); val sizeLbl = TextView(this); val orientLbl = TextView(this)
         fun refPage(){
-            modeLbl.text = if(isConvenientLayout) "Layout: Convenient  (use toggle in top bar)" else "Layout: Print (A4)  (use toggle in top bar)"
+            modeLbl.text = if(isConvenientLayout) "Layout: Convenient  (use icon in top bar)" else "Layout: ${drawingView.canvasMode}  (use icon in top bar)"
             sizeLbl.text = "Size: ${drawingView.paperSize.name}  (tap)"
             orientLbl.text = "Orientation: ${if(drawingView.pageOrientation==Orientation.PORTRAIT)"Portrait" else "Landscape"}  (tap)"
             sizeLbl.visibility = if(!isConvenientLayout) View.VISIBLE else View.GONE
@@ -472,7 +596,7 @@ class MainActivity : AppCompatActivity() {
         orientLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Orientation").setItems(arrayOf("Portrait","Landscape")){ _,i-> drawingView.pageOrientation=if(i==0)Orientation.PORTRAIT else Orientation.LANDSCAPE; drawingView.invalidate(); refPage() }.show() }
 
         val scroll = ScrollView(this).apply{ addView(container) }
-        AlertDialog.Builder(this).setTitle("⚙ Settings").setView(scroll)
+        AlertDialog.Builder(this).setTitle("Settings").setView(scroll)
             .setPositiveButton("Done") { _,_ ->
                 prefs.edit()
                     .putBoolean("confirm_exit_clear",confirmCb.isChecked)
@@ -486,13 +610,19 @@ class MainActivity : AppCompatActivity() {
             }.show()
     }
 
-    // ── Audio recording ───────────────────────────────────────────
+    private fun checkAndRecordAudio() {
+        when {
+            checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED -> showAudioRecordDialog()
+            else -> requestMicPermission.launch(android.Manifest.permission.RECORD_AUDIO)
+        }
+    }
 
     private fun showAudioRecordDialog() {
         if (isRecording) { stopRecordingAndPlace(); return }
 
         val container = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(24),dp(16),dp(24),dp(16)); gravity=Gravity.CENTER }
-        val tvStatus = TextView(this).apply { text="🎙 Ready to record"; textSize=16f; gravity=Gravity.CENTER; setTextColor(Color.parseColor("#212121")) }
+        val tvStatus = TextView(this).apply { text="Ready to record"; textSize=16f; gravity=Gravity.CENTER; setTextColor(Color.parseColor("#212121")) }
         val tvTimer  = TextView(this).apply { text="00:00"; textSize=32f; typeface=Typeface.DEFAULT_BOLD; gravity=Gravity.CENTER; setTextColor(Color.parseColor("#8D6E63")) }
         val titleInput = EditText(this).apply { hint="Audio title (optional)"; textSize=14f; setText("Recording ${System.currentTimeMillis()/1000%10000}") }
         container.addView(tvStatus); container.addView(tvTimer); container.addView(titleInput)
@@ -501,7 +631,7 @@ class MainActivity : AppCompatActivity() {
         var startMs = 0L
 
         val dialog = AlertDialog.Builder(this).setTitle("Record Audio").setView(container)
-            .setPositiveButton("⏺ Start") { _, _ -> }
+            .setPositiveButton("Start") { _, _ -> }
             .setNegativeButton("Cancel") { _, _ ->
                 timerHandler?.removeCallbacksAndMessages(null)
                 if(isRecording) { AudioHelper.stopRecording(); isRecording = false }
@@ -515,8 +645,8 @@ class MainActivity : AppCompatActivity() {
                 val outFile = File(folder,"rec_${System.currentTimeMillis()}.m4a")
                 if (AudioHelper.startRecording(outFile)) {
                     isRecording = true; recordingFile = outFile; recordingStartMs = System.currentTimeMillis()
-                    tvStatus.text = "🔴 Recording…"; tvStatus.setTextColor(Color.RED)
-                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).text = "⏹ Stop & Place"
+                    tvStatus.text = "Recording..."; tvStatus.setTextColor(Color.RED)
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).text = "Stop & Place"
                     startMs = System.currentTimeMillis()
                     timerHandler = Handler(Looper.getMainLooper())
                     val tick = object : Runnable {
@@ -536,21 +666,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private val requestMicPermission = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) showAudioRecordDialog()
-        else Toast.makeText(this, "Microphone permission is required to record audio", Toast.LENGTH_LONG).show()
-    }
-
-    private fun checkAndRecordAudio() {
-        when {
-            checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
-                android.content.pm.PackageManager.PERMISSION_GRANTED -> showAudioRecordDialog()
-            else -> requestMicPermission.launch(android.Manifest.permission.RECORD_AUDIO)
-        }
-    }
-
     private fun stopRecordingAndPlace(title: String = "Audio") {
         AudioHelper.stopRecording(); isRecording = false
         val file = recordingFile ?: return
@@ -561,17 +676,15 @@ class MainActivity : AppCompatActivity() {
             mmr.release()
         } catch(e:Exception){}
         drawingView.addAudioItem(file.absolutePath, title, durationMs)
-        Toast.makeText(this,"Audio placed on canvas. Tap to play.",Toast.LENGTH_SHORT).show()
+        Toast.makeText(this,"Audio placed on canvas. Tap to select, tap again to play.",Toast.LENGTH_SHORT).show()
         recordingFile = null
     }
-
-    // ── Export helpers ────────────────────────────────────────────
 
     private fun showExportWindowDialog() {
         val bmp = exportWindowBitmap ?: return
         val name = (currentFileName ?: "EngiNote_${System.currentTimeMillis()}").replace(" ","_")
-        AlertDialog.Builder(this).setTitle("Export Selection as…")
-            .setItems(arrayOf("📄 PDF","🖼 JPG","🖼 PNG","🖼 BMP")) { _,i ->
+        AlertDialog.Builder(this).setTitle("Export Selection as...")
+            .setItems(arrayOf("PDF","JPG","PNG","BMP")) { _,i ->
                 pendingExportBitmap = bmp
                 when(i){ 0->savePdfLauncher.launch("${name}_window.pdf"); 1->{ pendingExportFormat="jpg"; saveImageLauncher.launch("${name}_window.jpg") }; 2->{ pendingExportFormat="png"; saveImageLauncher.launch("${name}_window.png") }; 3->{ pendingExportFormat="bmp"; saveImageLauncher.launch("${name}_window.bmp") } }
             }.setNegativeButton("Cancel"){ _,_ -> exportWindowBitmap=null }.show()
@@ -579,8 +692,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun showExportDialog() {
         val name = (currentFileName ?: "EngiNote_${System.currentTimeMillis()}").replace(" ","_")
-        AlertDialog.Builder(this).setTitle("Export as…")
-            .setItems(arrayOf("📄 PDF","🖼 JPG","🖼 PNG","🖼 BMP","📝 TXT","📝 DOCX")) { _,i ->
+        AlertDialog.Builder(this).setTitle("Export as...")
+            .setItems(arrayOf("PDF","JPG","PNG","BMP","TXT","DOCX")) { _,i ->
                 pendingExportBitmap = drawingView.exportBitmap()
                 when(i){ 0->savePdfLauncher.launch("$name.pdf"); 1->{ pendingExportFormat="jpg"; saveImageLauncher.launch("$name.jpg") }; 2->{ pendingExportFormat="png"; saveImageLauncher.launch("$name.png") }; 3->{ pendingExportFormat="bmp"; saveImageLauncher.launch("$name.bmp") }; 4->saveTxtLauncher.launch("$name.txt"); 5->saveDocxLauncher.launch("$name.docx") }
             }.show()
@@ -595,8 +708,6 @@ class MainActivity : AppCompatActivity() {
         val row=ByteArray(rowSize)
         for(y in h-1 downTo 0){ for(x in 0 until w){ val p=pixels[y*w+x]; row[x*3]=(p and 0xFF).toByte(); row[x*3+1]=((p shr 8) and 0xFF).toByte(); row[x*3+2]=((p shr 16) and 0xFF).toByte() }; fos.write(row) }
     }
-
-    // ── Color / size pickers ──────────────────────────────────────
 
     private fun showColorGridDialog(onPicked: (Int) -> Unit) {
         val grid = GridLayout(this).apply{ columnCount=10; setPadding(dp(10),dp(10),dp(10),dp(10)) }
@@ -618,17 +729,6 @@ class MainActivity : AppCompatActivity() {
         val seek=SeekBar(this).apply{ max=maxSize; progress=current.toInt().coerceIn(1,maxSize); setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(sb:SeekBar?,v:Int,f:Boolean){ val vv=v.coerceAtLeast(1); tv.text="$label: $vv"; when(tool){ Tool.ERASER->drawingView.eraserSize=vv.toFloat(); Tool.TEXT->drawingView.defaultTextSize=vv*PT_TO_PX; else->drawingView.currentStrokeWidth=vv.toFloat() } }; override fun onStartTrackingTouch(sb:SeekBar?){}; override fun onStopTrackingTouch(sb:SeekBar?){} }) }; container.addView(seek)
         AlertDialog.Builder(this).setTitle(label).setView(container).setPositiveButton("Done",null).show()
     }
-
-    private fun showAutoSelectModeDialog(anchor: ImageButton) {
-        val modes = arrayOf("Rectangle - Whole","Rectangle - Divided","Freeform - Whole","Freeform - Divided")
-        AlertDialog.Builder(this).setTitle("AutoSelect Mode").setItems(modes){ _,i ->
-            when(i){ 0->{ drawingView.autoSelectShape=AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide=AutoSelectDivide.WHOLE }; 1->{ drawingView.autoSelectShape=AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide=AutoSelectDivide.DIVIDED }; 2->{ drawingView.autoSelectShape=AutoSelectShape.FREEFORM; drawingView.autoSelectDivide=AutoSelectDivide.WHOLE }; else->{ drawingView.autoSelectShape=AutoSelectShape.FREEFORM; drawingView.autoSelectDivide=AutoSelectDivide.DIVIDED } }
-            setActiveTool(anchor, Tool.AUTOSELECT)
-            Toast.makeText(this,"Draw a region to select",Toast.LENGTH_SHORT).show()
-        }.show()
-    }
-
-    // ── Table ─────────────────────────────────────────────────────
 
     private fun showTableInsertDialog() {
         val container=LinearLayout(this).apply{ orientation=LinearLayout.VERTICAL; setPadding(dp(20),dp(20),dp(20),dp(10)) }
@@ -674,7 +774,7 @@ class MainActivity : AppCompatActivity() {
 
         val div2=View(this); div2.layoutParams=LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,dp(1)).also{it.setMargins(0,dp(12),0,dp(4))}; div2.setBackgroundColor(Color.LTGRAY); container.addView(div2)
 
-        val selDesc=if(selEnd!=null) "R${minR+1}C${minC+1}→R${maxR+1}C${maxC+1}" else "R${row+1}C${col+1}"
+        val selDesc=if(selEnd!=null) "R${minR+1}C${minC+1} to R${maxR+1}C${maxC+1}" else "R${row+1}C${col+1}"
         lbl("Cell Style ($selDesc)")
 
         lbl("Text Color"); val tcBtn=Button(this).apply{ text="Pick Text Color"; textSize=13f; setBackgroundColor(cell.textColor); setTextColor(Color.WHITE); setOnClickListener{ showColorGridDialog{ c->applyToSel{it.textColor=c}; setBackgroundColor(c) } } }; container.addView(tcBtn)
@@ -699,13 +799,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun dismissCellEditor() {
-        val et = activeCellEditText ?: return
-        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        imm.hideSoftInputFromWindow(et.windowToken, 0)
-        try { canvasContainer.removeView(activeCellToolbar) } catch(e:Exception){}
-        try { canvasContainer.removeView(tableToolbarOverlay) } catch(e:Exception){}
-        try { canvasContainer.removeView(et) } catch(e:Exception){}
-        activeCellEditText = null; activeCellToolbar = null; tableToolbarOverlay = null
+        val et=activeCellEditText?:return
+        try{ canvasContainer.removeView(activeCellToolbar) }catch(e:Exception){}
+        try{ canvasContainer.removeView(tableToolbarOverlay) }catch(e:Exception){}
+        try{ canvasContainer.removeView(et) }catch(e:Exception){}
+        activeCellEditText=null; activeCellToolbar=null; tableToolbarOverlay=null
+        val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(et.windowToken,0)
         drawingView.exitTableEditMode()
     }
 
@@ -734,7 +834,7 @@ class MainActivity : AppCompatActivity() {
         val et = EditText(this).apply {
             setText(cell.text)
             setTextColor(cell.textColor)
-            textSize = 16f
+            textSize = 18f
             setBackgroundColor(Color.parseColor("#FAF6EF"))
             setPadding(dp(10), dp(8), dp(10), dp(8))
             minLines = 3; maxLines = 8
@@ -749,7 +849,6 @@ class MainActivity : AppCompatActivity() {
         }
         container.addView(et)
 
-        // Compact action row: row/col add-remove, merge, style, chart
         val actionsScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val actionsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, 0) }
         fun actionBtn(label: String, action: () -> Unit) {
@@ -774,7 +873,8 @@ class MainActivity : AppCompatActivity() {
         actionBtn("Chart") { launchChartFromTable(table) }
         actionsScroll.addView(actionsRow)
         container.addView(actionsScroll)
-        activeCellEditText = et; activeCellToolbar = container; tableToolbarOverlay = container
+
+        activeCellEditText=et; activeCellToolbar=container; tableToolbarOverlay=container
 
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
         canvasContainer.addView(container, lp)
@@ -786,8 +886,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ── Text editing (inline) ─────────────────────────────────────
-
     private fun toggleStyleOnSelection(et:EditText,styleFlag:Int){ val s=et.selectionStart;val e=et.selectionEnd; if(s==e){Toast.makeText(this,"Select text first",Toast.LENGTH_SHORT).show();return}; val from=minOf(s,e);val to=maxOf(s,e); val ed=et.text; val ex=ed.getSpans(from,to,StyleSpan::class.java).filter{it.style==styleFlag&&ed.getSpanStart(it)<=from&&ed.getSpanEnd(it)>=to}; if(ex.isNotEmpty()) for(sp in ex) ed.removeSpan(sp) else ed.setSpan(StyleSpan(styleFlag),from,to,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
     private fun applyColorToSelection(et:EditText,color:Int){ val s=et.selectionStart;val e=et.selectionEnd; if(s==e){editColor=color;et.setTextColor(color);return}; et.text.setSpan(ForegroundColorSpan(color),minOf(s,e),maxOf(s,e),Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
     private fun toggleUnderlineOnSelection(et:EditText){ val s=et.selectionStart;val e=et.selectionEnd; val from=minOf(s,e);val to=maxOf(s,e); val ed=et.text; val ex=ed.getSpans(from,to,UnderlineSpan::class.java).filter{ed.getSpanStart(it)<=from&&ed.getSpanEnd(it)>=to}; if(ex.isNotEmpty()) for(sp in ex) ed.removeSpan(sp) else ed.setSpan(UnderlineSpan(),from,to,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
@@ -798,33 +896,36 @@ class MainActivity : AppCompatActivity() {
         if (activeEditText != null) { isSwitchingTextEditor=true; closeInlineEditor(true); isSwitchingTextEditor=false; drawingView.post{ showInlineTextEditor(item,screenX,screenY,worldX,worldY) }; return }
         pendingBold=false; pendingItalic=false; pendingUnderline=false; pendingHighlight=null
         editingItem=item; editWorldX=item?.x?:worldX; editWorldY=item?.y?:worldY; editRotation=item?.rotation?:0f; editColor=item?.color?:drawingView.currentColor; editSize=item?.size?:drawingView.defaultTextSize
+        pendingFontFamily = item?.fontFamily ?: "sans-serif"
         val density=resources.displayMetrics.density
         val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
         val screenSizePx=if(useActualSize) editSize else editSize*drawingView.getScaleFactor()
         val et=EditText(this)
         val spannable=SpannableStringBuilder(item?.text?:"")
         item?.spans?.forEach{ sp-> val s=sp.start.coerceIn(0,spannable.length);val e=sp.end.coerceIn(s,spannable.length); if(s<e) when(sp.type){ 'S'->spannable.setSpan(StyleSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'C'->spannable.setSpan(ForegroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'U'->spannable.setSpan(UnderlineSpan(),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'H'->spannable.setSpan(BackgroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } }
-        // Constrain editor width to the remaining page width from its X position so typed text wraps
-        // within the page boundary instead of overflowing the screen.
         val maxEditorWidthPx = (canvasContainer.width - screenX - dp(16)).toInt().coerceAtLeast(dp(120))
         et.setText(spannable,TextView.BufferType.SPANNABLE); et.setTextColor(editColor); et.textSize=(screenSizePx/density).coerceAtLeast(8f); et.setBackgroundColor(Color.parseColor("#11000000")); et.setPadding(dp(4),dp(4),dp(4),dp(4)); et.minWidth=dp(120); et.maxWidth=maxEditorWidthPx
+        try { et.typeface = Typeface.create(pendingFontFamily, Typeface.NORMAL) } catch (e: Exception) {}
         if(!useActualSize) et.rotation=editRotation
         et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } } }; override fun afterTextChanged(s:Editable?){} })
         val params=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT); params.leftMargin=screenX.toInt(); params.topMargin=(screenY-screenSizePx).toInt().coerceAtLeast(0); canvasContainer.addView(et,params)
-        val toolbar=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setBackgroundColor(Color.parseColor("#FFFFFFFF")); setPadding(dp(6),dp(6),dp(6),dp(6)) }
-        fun tbtn(label:String,action:(TextView)->Unit):TextView{ val b=TextView(this);b.text=label;b.textSize=15f;b.setTextColor(Color.parseColor("#4A4A4A"));b.gravity=Gravity.CENTER;val p=LinearLayout.LayoutParams(dp(34),dp(34));p.setMargins(dp(2),0,dp(2),0);b.layoutParams=p;b.setOnClickListener{action(b)};toolbar.addView(b);return b }
-        val aC=Color.parseColor("#8D6E63");val iC=Color.parseColor("#4A4A4A")
-        tbtn("B"){btn-> if(et.selectionStart!=et.selectionEnd) toggleStyleOnSelection(et,Typeface.BOLD) else{ pendingBold=!pendingBold;btn.setBackgroundColor(if(pendingBold)aC else iC) } }
-        tbtn("I"){btn-> if(et.selectionStart!=et.selectionEnd) toggleStyleOnSelection(et,Typeface.ITALIC) else{ pendingItalic=!pendingItalic;btn.setBackgroundColor(if(pendingItalic)aC else iC) } }
-        tbtn("U"){btn-> if(et.selectionStart!=et.selectionEnd) toggleUnderlineOnSelection(et) else{ pendingUnderline=!pendingUnderline;btn.setBackgroundColor(if(pendingUnderline)aC else iC) } }
-        tbtn("\uD83D\uDD8D"){btn-> showColorGridDialog{ color-> if(et.selectionStart!=et.selectionEnd) applyHighlightToSelection(et,color) else{ pendingHighlight=color;btn.setBackgroundColor(color) } } }
-        tbtn("\uD83C\uDFA8"){ showColorGridDialog{ color->applyColorToSelection(et,color) } }
+        val toolbar=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); setPadding(dp(6),dp(6),dp(6),dp(6)) }
+        fun tbtn(label:String,action:(TextView)->Unit):TextView{ val b=TextView(this);b.text=label;b.textSize=15f;b.setTextColor(Color.parseColor("#4A4A4A"));b.gravity=Gravity.CENTER;val p=LinearLayout.LayoutParams(dp(34),dp(34));p.setMargins(dp(2),0,dp(2),0);b.layoutParams=p;b.setBackgroundColor(Color.parseColor("#F0EBE0"));b.setOnClickListener{action(b)};toolbar.addView(b);return b }
+        val activeBg=Color.parseColor("#8D6E63"); val inactiveBg=Color.parseColor("#F0EBE0")
+        val activeFg=Color.WHITE; val inactiveFg=Color.parseColor("#4A4A4A")
+        fun setToggleState(btn: TextView, active: Boolean) { btn.setBackgroundColor(if(active) activeBg else inactiveBg); btn.setTextColor(if(active) activeFg else inactiveFg) }
+        tbtn("B"){btn-> if(et.selectionStart!=et.selectionEnd) toggleStyleOnSelection(et,Typeface.BOLD) else{ pendingBold=!pendingBold; setToggleState(btn,pendingBold) } }
+        tbtn("I"){btn-> if(et.selectionStart!=et.selectionEnd) toggleStyleOnSelection(et,Typeface.ITALIC) else{ pendingItalic=!pendingItalic; setToggleState(btn,pendingItalic) } }
+        tbtn("U"){btn-> if(et.selectionStart!=et.selectionEnd) toggleUnderlineOnSelection(et) else{ pendingUnderline=!pendingUnderline; setToggleState(btn,pendingUnderline) } }
+        tbtn("HL"){btn-> showColorGridDialog{ color-> if(et.selectionStart!=et.selectionEnd) applyHighlightToSelection(et,color) else{ pendingHighlight=color;btn.setBackgroundColor(color) } } }
+        tbtn("Color"){ showColorGridDialog{ color->applyColorToSelection(et,color) } }
         val ptSize=(editSize/PT_TO_PX).toInt().coerceIn(1,144)
         tbtn(ptSize.toString()){btn-> AlertDialog.Builder(this).setTitle("Font Size (pt)").setItems((1..144).map{it.toString()}.toTypedArray()){ _,idx-> val pt=idx+1;editSize=pt*PT_TO_PX; val nss=if(useActualSize) editSize else editSize*drawingView.getScaleFactor(); et.textSize=(nss/density).coerceAtLeast(8f); btn.text=pt.toString() }.show() }
-        tbtn("\u21ba"){ editRotation-=15f;if(!useActualSize) et.rotation=editRotation }
-        tbtn("\u21bb"){ editRotation+=15f;if(!useActualSize) et.rotation=editRotation }
-        tbtn("\u2713"){ closeInlineEditor(true) }
-        tbtn("\uD83D\uDDD1"){ closeInlineEditor(false,delete=true) }
+        tbtn("Font"){ showFontPickerDialog(et) }
+        tbtn("CCW"){ editRotation-=15f;if(!useActualSize) et.rotation=editRotation }
+        tbtn("CW"){ editRotation+=15f;if(!useActualSize) et.rotation=editRotation }
+        tbtn("Done"){ closeInlineEditor(true) }
+        tbtn("Del"){ closeInlineEditor(false,delete=true) }
         val tp=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT,Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL); canvasContainer.addView(toolbar,tp)
         fun updateET(){ val scale=drawingView.getScaleFactor();val nsp=editSize*scale; et.textSize=(nsp/density).coerceAtLeast(8f); val sx=drawingView.worldToScreenX(editWorldX);val sy=drawingView.worldToScreenY(editWorldY)-nsp; val lp=et.layoutParams as FrameLayout.LayoutParams; lp.leftMargin=sx.toInt(); lp.topMargin=sy.toInt(); et.layoutParams=lp }
         drawingView.onScaleChanged={ updateET() }; drawingView.onCanvasTransformed={ updateET() }
@@ -841,19 +942,30 @@ class MainActivity : AppCompatActivity() {
         val item=editingItem
         if(commit&&!delete&&text.isNotBlank()){
             drawingView.defaultTextSize=editSize
-            if(item!=null){ item.text=text;item.color=editColor;item.size=editSize;item.rotation=editRotation;item.spans=spans;item.isEditing=false; drawingView.clampTextItemToPage(item) }
-            else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans)
+            if(item!=null){ item.text=text;item.color=editColor;item.size=editSize;item.rotation=editRotation;item.spans=spans;item.isEditing=false;item.fontFamily=pendingFontFamily; drawingView.clampTextItemToPage(item) }
+            else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;editingItem=null
     }
 
-    // ── Image helpers ─────────────────────────────────────────────
-
     private fun launchCamera() {
-        val folder=File(filesDir,"images").also{it.mkdirs()}
-        val pf=File(folder,"camera_${System.currentTimeMillis()}.jpg"); cameraImageFile=pf
-        takePictureLauncher.launch(FileProvider.getUriForFile(this,"$packageName.fileprovider",pf))
+        if (checkSelfPermission(android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            launchCameraInternal()
+        } else {
+            requestCameraPermission.launch(android.Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun launchCameraInternal() {
+        try {
+            val folder=File(filesDir,"images").also{it.mkdirs()}
+            val pf=File(folder,"camera_${System.currentTimeMillis()}.jpg"); cameraImageFile=pf
+            val uri = FileProvider.getUriForFile(this,"$packageName.fileprovider",pf)
+            takePictureLauncher.launch(uri)
+        } catch(e: Exception) {
+            Toast.makeText(this, "Camera failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun addImageFromFile(file:File) {
@@ -877,8 +989,6 @@ class MainActivity : AppCompatActivity() {
             drawingView.addImage(out.absolutePath,drawingView.screenCenterWorldX(),drawingView.screenCenterWorldY(),w,(w/ratio).coerceAtMost(drawingView.height/drawingView.getScaleFactor()*0.85f))
         } catch(e:Exception){ e.printStackTrace(); Toast.makeText(this,"Image failed: ${e.message}",Toast.LENGTH_LONG).show() }
     }
-
-    // ── File ops ──────────────────────────────────────────────────
 
     private fun getDrawingsFolder(): File {
         val bookName=intent.getStringExtra("book_name")?:"General"
@@ -939,8 +1049,6 @@ class MainActivity : AppCompatActivity() {
                 .setPositiveButton("Clear"){ _,_ -> drawingView.clearAll() }.setNegativeButton("Cancel",null).show()
         } else drawingView.clearAll()
     }
-
-    // ── Lifecycle ─────────────────────────────────────────────────
 
     override fun onPause() {
         super.onPause()
