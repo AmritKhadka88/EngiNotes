@@ -48,23 +48,60 @@ class MainActivity : AppCompatActivity() {
     private val PT_TO_PX = 1.333f
     private var isConvenientLayout = true
 
-    private val shapeEntries: List<Pair<String, Tool>> = listOf(
-        "L" to Tool.LINE, "R" to Tool.RECTANGLE, "Rr" to Tool.ROUNDED_RECT, "O" to Tool.CIRCLE,
-        "E" to Tool.ELLIPSE, "Tr" to Tool.TRIANGLE, "Td" to Tool.TRIANGLE_DOWN, "Di" to Tool.DIAMOND,
-        "->" to Tool.ARROW, "<->" to Tool.DOUBLE_ARROW, "St" to Tool.STAR, "P5" to Tool.PENTAGON,
-        "H6" to Tool.HEXAGON, "H7" to Tool.HEPTAGON, "O8" to Tool.OCTAGON, "N9" to Tool.NONAGON,
-        "D10" to Tool.DECAGON, "~" to Tool.CURVE, "+" to Tool.CROSS, "Arc" to Tool.ARC,
-        "Tz" to Tool.TRAPEZOID, "Pg" to Tool.PARALLELOGRAM, "Rt" to Tool.RIGHT_TRIANGLE,
-        "Is" to Tool.ISOSCELES_TRIANGLE, "Sc" to Tool.SEMICIRCLE, "He" to Tool.HALF_ELLIPSE,
-        "Dr" to Tool.TEARDROP, "Ht" to Tool.HEART, "Pl" to Tool.PLUS_THICK,
-        "[" to Tool.BRACKET_L, "]" to Tool.BRACKET_R, "Cl" to Tool.CLOUD,
-        "Sb" to Tool.SPEECH_BUBBLE, "Lt" to Tool.LIGHTNING, "Mn" to Tool.MOON,
-        ">" to Tool.CHEVRON_RIGHT, "<" to Tool.CHEVRON_LEFT, "^" to Tool.CHEVRON_UP,
-        "v" to Tool.CHEVRON_DOWN, "Rh" to Tool.RHOMBUS_TALL, "Gr" to Tool.GEAR,
-        "Sh" to Tool.SHIELD, "Rg" to Tool.RING, "Ar" to Tool.BLOCK_ARROW_RIGHT,
-        "Al" to Tool.BLOCK_ARROW_LEFT, "Au" to Tool.BLOCK_ARROW_UP, "Ad" to Tool.BLOCK_ARROW_DOWN,
-        "Sq" to Tool.SQUARE_ROUNDED_SMALL, "Bu" to Tool.BURST, "Fb" to Tool.FIVE_POINT_BURST,
-        "Fr" to Tool.FRAME, "Pq" to Tool.PLAQUE, "St8" to Tool.OCTAGON_STOP
+    private val shapeEntries: List<Pair<Int, Tool>> = listOf(
+        R.drawable.ic_shape_line to Tool.LINE,
+        R.drawable.ic_shape_rectangle to Tool.RECTANGLE,
+        R.drawable.ic_shape_rounded_rect to Tool.ROUNDED_RECT,
+        R.drawable.ic_shape_circle to Tool.CIRCLE,
+        R.drawable.ic_shape_ellipse to Tool.ELLIPSE,
+        R.drawable.ic_shape_triangle to Tool.TRIANGLE,
+        R.drawable.ic_shape_triangle_down to Tool.TRIANGLE_DOWN,
+        R.drawable.ic_shape_diamond to Tool.DIAMOND,
+        R.drawable.ic_shape_arrow to Tool.ARROW,
+        R.drawable.ic_shape_double_arrow to Tool.DOUBLE_ARROW,
+        R.drawable.ic_shape_star to Tool.STAR,
+        R.drawable.ic_shape_pentagon to Tool.PENTAGON,
+        R.drawable.ic_shape_hexagon to Tool.HEXAGON,
+        R.drawable.ic_shape_heptagon to Tool.HEPTAGON,
+        R.drawable.ic_shape_octagon to Tool.OCTAGON,
+        R.drawable.ic_shape_nonagon to Tool.NONAGON,
+        R.drawable.ic_shape_decagon to Tool.DECAGON,
+        R.drawable.ic_shape_curve to Tool.CURVE,
+        R.drawable.ic_shape_cross to Tool.CROSS,
+        R.drawable.ic_arc to Tool.ARC,
+        R.drawable.ic_shape_trapezoid to Tool.TRAPEZOID,
+        R.drawable.ic_shape_parallelogram to Tool.PARALLELOGRAM,
+        R.drawable.ic_shape_right_triangle to Tool.RIGHT_TRIANGLE,
+        R.drawable.ic_shape_isosceles to Tool.ISOSCELES_TRIANGLE,
+        R.drawable.ic_shape_semicircle to Tool.SEMICIRCLE,
+        R.drawable.ic_shape_half_ellipse to Tool.HALF_ELLIPSE,
+        R.drawable.ic_shape_teardrop to Tool.TEARDROP,
+        R.drawable.ic_shape_heart to Tool.HEART,
+        R.drawable.ic_shape_plus_thick to Tool.PLUS_THICK,
+        R.drawable.ic_shape_bracket_l to Tool.BRACKET_L,
+        R.drawable.ic_shape_bracket_r to Tool.BRACKET_R,
+        R.drawable.ic_shape_cloud to Tool.CLOUD,
+        R.drawable.ic_shape_speech_bubble to Tool.SPEECH_BUBBLE,
+        R.drawable.ic_shape_lightning to Tool.LIGHTNING,
+        R.drawable.ic_shape_moon to Tool.MOON,
+        R.drawable.ic_shape_chevron_right to Tool.CHEVRON_RIGHT,
+        R.drawable.ic_shape_chevron_left to Tool.CHEVRON_LEFT,
+        R.drawable.ic_shape_chevron_up to Tool.CHEVRON_UP,
+        R.drawable.ic_shape_chevron_down to Tool.CHEVRON_DOWN,
+        R.drawable.ic_shape_rhombus_tall to Tool.RHOMBUS_TALL,
+        R.drawable.ic_shape_gear to Tool.GEAR,
+        R.drawable.ic_shape_shield to Tool.SHIELD,
+        R.drawable.ic_shape_ring to Tool.RING,
+        R.drawable.ic_shape_block_arrow_right to Tool.BLOCK_ARROW_RIGHT,
+        R.drawable.ic_shape_block_arrow_left to Tool.BLOCK_ARROW_LEFT,
+        R.drawable.ic_shape_block_arrow_up to Tool.BLOCK_ARROW_UP,
+        R.drawable.ic_shape_block_arrow_down to Tool.BLOCK_ARROW_DOWN,
+        R.drawable.ic_shape_square_small to Tool.SQUARE_ROUNDED_SMALL,
+        R.drawable.ic_shape_burst to Tool.BURST,
+        R.drawable.ic_shape_five_burst to Tool.FIVE_POINT_BURST,
+        R.drawable.ic_shape_frame to Tool.FRAME,
+        R.drawable.ic_shape_plaque to Tool.PLAQUE,
+        R.drawable.ic_shape_octagon_stop to Tool.OCTAGON_STOP
     )
 
     private var activeEditText: EditText? = null
@@ -515,16 +552,19 @@ class MainActivity : AppCompatActivity() {
     private fun showShapesPicker(anchor: ImageButton) {
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#1A1A2E"))
+            setBackgroundColor(Color.WHITE)
+            elevation = dp(6).toFloat()
             setPadding(0, dp(6), 0, dp(6))
         }
         val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(6),0,dp(6),0); gravity = Gravity.CENTER_VERTICAL }
-        for ((symbol, tool) in shapeEntries) {
-            val b = TextView(this).apply {
-                text = symbol; textSize = 13f; setTextColor(Color.parseColor("#FFD700"))
-                gravity = Gravity.CENTER
-                val p = LinearLayout.LayoutParams(dp(44), dp(44)); p.setMargins(dp(2),0,dp(2),0)
+        for ((iconRes, tool) in shapeEntries) {
+            val b = ImageView(this).apply {
+                setImageResource(iconRes)
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+                setPadding(dp(7), dp(7), dp(7), dp(7))
+                setBackgroundResource(R.drawable.btn_toolbar_selector)
+                val p = LinearLayout.LayoutParams(dp(40), dp(40)); p.setMargins(dp(2),0,dp(2),0)
                 layoutParams = p
                 setOnClickListener {
                     setActiveTool(null, tool)
@@ -536,7 +576,7 @@ class MainActivity : AppCompatActivity() {
         scroll.addView(row)
         container.addView(scroll)
         shapesPickerOverlay?.let { canvasContainer.removeView(it) }
-        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(56), Gravity.BOTTOM)
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(54), Gravity.BOTTOM)
         canvasContainer.addView(container, lp)
         shapesPickerOverlay = container
     }
