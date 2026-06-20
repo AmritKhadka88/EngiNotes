@@ -147,7 +147,21 @@ class PdfViewerActivity : AppCompatActivity() {
         try {
             val fd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
             pdfRenderer = PdfRenderer(fd)
-            totalPages = pdfRenderer!!.pageCount; currentPage = 0; loadPage()
+            totalPages = pdfRenderer!!.pageCount; currentPage = 0
+            if (pdfCanvas.width > 0) {
+                loadPage()
+            } else {
+                // View not laid out yet (width=0) - wait for first layout pass before rendering,
+                // otherwise the page bitmap is computed at 0 scale and appears blank.
+                pdfCanvas.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
+                    override fun onGlobalLayout() {
+                        if (pdfCanvas.width > 0) {
+                            pdfCanvas.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                            loadPage()
+                        }
+                    }
+                })
+            }
         } catch (e: Exception) {
             Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_LONG).show()
         }
