@@ -1606,4 +1606,250 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val newActions = mutableListOf<Any>()
             for (a in actions) {
                 when (a) {
-                    is StrokeItem -> { if (a.data.type == Tool.PEN || a.data.ty
+                    is StrokeItem -> { if (a.data.type == Tool.PEN || a.data.type == Tool.ERASER || a.data.type == Tool.ARC) newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r)) else if (!strokeHitTest(a.data, x, y, r)) newActions.add(a) }
+                    is TextItem -> { if (distance(x, y, a.x, a.y) > r + a.size) newActions.add(a) }
+                    is ImageItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) }
+                    is FillItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) }
+                    else -> newActions.add(a)
+                }
+            }
+            actions.clear(); actions.addAll(newActions)
+        }
+    }
+
+    private fun splitStrokeAroundEraser(data: StrokeData, ex: Float, ey: Float, r: Float): List<StrokeItem> {
+        val pts = data.points
+        if (pts.size < 4) { if (pts.size >= 2 && distance(ex, ey, pts[0], pts[1]) <= r) return emptyList(); return listOf(StrokeItem(data, data.buildPath(), data.toPaint())) }
+        val segs = mutableListOf<MutableList<Float>>(); var cur = mutableListOf<Float>(); var i = 0
+        while (i + 1 < pts.size) { if (distance(ex, ey, pts[i], pts[i + 1]) <= r) { if (cur.size >= 4) segs.add(cur); cur = mutableListOf() } else { cur.add(pts[i]); cur.add(pts[i + 1]) }; i += 2 }
+        if (cur.size >= 4) segs.add(cur)
+        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill); StrokeItem(d, d.buildPath(), d.toPaint()) }
+    }
+
+    private fun strokeHitTest(data: StrokeData, x: Float, y: Float, r: Float): Boolean {
+        if (data.type == Tool.PEN || data.type == Tool.ERASER || data.type == Tool.ARC) {
+            if (data.points.size == 2) return distance(x, y, data.points[0], data.points[1]) <= r
+            var i = 0; while (i + 3 < data.points.size) { if (distToSeg(x, y, data.points[i], data.points[i + 1], data.points[i + 2], data.points[i + 3]) <= r) return true; i += 2 }; return false
+        } else {
+            if (data.points.size >= 4) { val l = minOf(data.points[0], data.points[2]) - r; val ri = maxOf(data.points[0], data.points[2]) + r; val t = minOf(data.points[1], data.points[3]) - r; val b = maxOf(data.points[1], data.points[3]) + r; return x in l..ri && y in t..b }
+            return false
+        }
+    }
+
+    private fun distance(x1: Float, y1: Float, x2: Float, y2: Float): Float = kotlin.math.hypot((x2 - x1).toDouble(), (y2 - y1).toDouble()).toFloat()
+
+    private fun distToSeg(px: Float, py: Float, x1: Float, y1: Float, x2: Float, y2: Float): Float {
+        val dx = x2 - x1; val dy = y2 - y1
+        if (dx == 0f && dy == 0f) return distance(px, py, x1, y1)
+        val t = (((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)).coerceIn(0f, 1f)
+        return distance(px, py, x1 + t * dx, y1 + t * dy)
+    }
+
+    fun addText(text: String, x: Float, y: Float, size: Float, rotation: Float, color: Int, spans: MutableList<TextSpanData> = mutableListOf(), fontFamily: String = "sans-serif") {
+        if (text.isBlank()) return
+        val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPage(x, y) else Pair(x, y)
+        val item = TextItem(text, cx, cy, color, size, rotation); item.spans = spans; item.fontFamily = fontFamily
+        actions.add(item); redoStack.clear(); invalidate()
+    }
+
+    fun removeTextItem(item: TextItem) { actions.remove(item); invalidate() }
+
+    // Clamps an existing text item's position to the page boundary (used when committing edits)
+    fun clampTextItemToPage(item: TextItem) {
+        if (canvasMode == CanvasMode.INFINITE) return
+        val pw = pageWidthPx()
+        item.x = item.x.coerceIn(8f, pw - 40f)
+        if (item.maxWidth <= 0f || item.maxWidth > pw) item.maxWidth = (pw - item.x - 16f).coerceAtLeast(80f)
+    }
+
+    fun addImage(path: String, wx: Float, wy: Float, w: Float, h: Float) {
+        val item = ImageItem(path, wx - w / 2f, wy - h / 2f, w, h, 0f)
+        actions.add(item); redoStack.clear()
+        loadBitmapAsync(path) { bmp -> item.bitmap = bmp; item.loading = false; invalidate() }
+        invalidate()
+    }
+
+    fun addAudioItem(filePath: String, title: String, durationMs: Long) {
+        val item = AudioItem(filePath, title, screenCenterWorldX(), screenCenterWorldY(), durationMs)
+        actions.add(item); redoStack.clear(); invalidate()
+    }
+
+    fun addTable(rows: Int, cols: Int, wx: Float, wy: Float, screenWidth: Float) {
+        val table = TableItem(wx, wy); table.rows = rows; table.cols = cols
+        val cellW = (screenWidth / scaleFactor / 2f) / cols; val cellH = 60f
+        table.rowHeights.clear(); repeat(rows) { table.rowHeights.add(cellH) }
+        table.colWidths.clear(); repeat(cols) { table.colWidths.add(cellW) }
+        for (r in 0 until rows) for (c in 0 until cols) table.getCellPublic(r, c)
+        actions.add(table); redoStack.clear(); activeTableItem = table; invalidate()
+    }
+
+    fun migrateOldNotes(filesDir: File) {
+        val oldFolder = File(filesDir, "drawings"); if (!oldFolder.exists()) return
+        val newFolder = File(File(filesDir, "books"), "General"); if (!newFolder.exists()) newFolder.mkdirs()
+        oldFolder.listFiles()?.filter { it.extension == "eng" }?.forEach { file -> val dest = File(newFolder, file.name); if (!dest.exists()) file.copyTo(dest) }
+    }
+
+    fun exportWindow(left: Float, top: Float, right: Float, bottom: Float): Bitmap {
+        val tmpBmp = Bitmap.createBitmap(this.width, this.height, Bitmap.Config.ARGB_8888); draw(Canvas(tmpBmp))
+        val sx = worldToScreenX(left).toInt().coerceAtLeast(0); val sy = worldToScreenY(top).toInt().coerceAtLeast(0)
+        val ex = worldToScreenX(right).toInt().coerceAtMost(this.width); val ey = worldToScreenY(bottom).toInt().coerceAtMost(this.height)
+        val cw = (ex - sx).coerceAtLeast(1); val ch = (ey - sy).coerceAtLeast(1)
+        return Bitmap.createBitmap(tmpBmp, sx, sy, cw, ch)
+    }
+
+    fun undo() { if (actions.isNotEmpty()) { redoStack.add(actions.removeAt(actions.size - 1)); invalidate() } }
+    fun redo() { if (redoStack.isNotEmpty()) { actions.add(redoStack.removeAt(redoStack.size - 1)); invalidate() } }
+    fun clearAll() { actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null; invalidate() }
+    fun hasContent(): Boolean = actions.isNotEmpty()
+    fun exportBitmap(): Bitmap { val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888); draw(Canvas(bmp)); return bmp }
+
+    fun renderStrokesOnly(scale: Float): Bitmap {
+        val w = (width * scale).toInt().coerceAtLeast(1); val h = (height * scale).toInt().coerceAtLeast(1)
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); val canvas = Canvas(bmp)
+        canvas.save(); canvas.scale(scale, scale); canvas.translate(translateX, translateY); canvas.scale(scaleFactor, scaleFactor)
+        for (a in actions) drawActionItem(canvas, a, false); canvas.restore(); return bmp
+    }
+
+    fun zoomTo(wx: Float, wy: Float, scale: Float) {
+        scaleFactor = scale.coerceIn(0.2f, 6f); translateX = width / 2f - wx * scaleFactor; translateY = height / 2f - wy * scaleFactor; clampTranslation(); invalidate()
+    }
+
+    private fun clusterEdgePoints(points: List<Pair<Int, Int>>): List<Pair<Int, Int>> {
+        val clusters = mutableListOf<MutableList<Pair<Int, Int>>>()
+        for (p in points) {
+            var added = false
+            for (c in clusters) { val c0 = c[0]; if (kotlin.math.abs(c0.first - p.first) < 30 && kotlin.math.abs(c0.second - p.second) < 30) { c.add(p); added = true; break } }
+            if (!added) clusters.add(mutableListOf(p))
+        }
+        return clusters.map { Pair(it.map { it.first }.average().toInt(), it.map { it.second }.average().toInt()) }
+    }
+
+    fun performFill(screenX: Float, screenY: Float) {
+        val scale = 0.4f; val bmp = renderStrokesOnly(scale); val w = bmp.width; val h = bmp.height
+        val px = (screenX * scale).toInt().coerceIn(0, w - 1); val py = (screenY * scale).toInt().coerceIn(0, h - 1)
+        val pixels = IntArray(w * h); bmp.getPixels(pixels, 0, w, 0, 0, w, h)
+        fun isEmpty(x: Int, y: Int): Boolean = ((pixels[y * w + x] ushr 24) and 0xFF) < 10
+        if (!isEmpty(px, py)) { invalidate(); return }
+        val visited = BooleanArray(w * h); val queue = ArrayDeque<Int>()
+        val start = py * w + px; queue.add(start); visited[start] = true
+        var filled = 0; val edgeHits = mutableListOf<Pair<Int, Int>>(); val maxFill = (w * h * 0.7f).toInt(); var leaked = false
+        while (queue.isNotEmpty()) {
+            val idx = queue.removeFirst(); val x = idx % w; val y = idx / w; filled++
+            if (x == 0 || x == w - 1 || y == 0 || y == h - 1) edgeHits.add(Pair(x, y))
+            if (filled > maxFill) { leaked = true; break }
+            if (x > 0) { val n = idx - 1; if (!visited[n] && isEmpty(x - 1, y)) { visited[n] = true; queue.add(n) } }
+            if (x < w - 1) { val n = idx + 1; if (!visited[n] && isEmpty(x + 1, y)) { visited[n] = true; queue.add(n) } }
+            if (y > 0) { val n = idx - w; if (!visited[n] && isEmpty(x, y - 1)) { visited[n] = true; queue.add(n) } }
+            if (y < h - 1) { val n = idx + w; if (!visited[n] && isEmpty(x, y + 1)) { visited[n] = true; queue.add(n) } }
+        }
+        if (leaked) {
+            val clusters = clusterEdgePoints(edgeHits)
+            if (clusters.isNotEmpty()) { val (cx, cy) = clusters[0]; zoomTo(screenToWorldX(cx / scale), screenToWorldY(cy / scale), (scaleFactor * 2.5f).coerceAtMost(6f)) }
+            invalidate()
+        } else {
+            val fp = IntArray(w * h) { if (visited[it]) fillColor else Color.TRANSPARENT }
+            val fb = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); fb.setPixels(fp, 0, w, 0, 0, w, h)
+            val folder = File(ctx.filesDir, "images"); if (!folder.exists()) folder.mkdirs()
+            val outFile = File(folder, "fill_${System.currentTimeMillis()}.png")
+            try { FileOutputStream(outFile).use { fb.compress(Bitmap.CompressFormat.PNG, 100, it) } } catch (e: Exception) { invalidate(); return }
+            val wx0 = screenToWorldX(0f); val wy0 = screenToWorldY(0f); val wx1 = screenToWorldX(width.toFloat()); val wy1 = screenToWorldY(height.toFloat())
+            actions.add(0, FillItem(outFile.absolutePath, wx0, wy0, wx1 - wx0, wy1 - wy0)); redoStack.clear(); invalidate()
+        }
+    }
+
+    // ── Serialize / Deserialize ─────────────────────────────────────
+
+    fun serialize(): String {
+        val sb = StringBuilder()
+        sb.append("META\u0001${paperType.name}\u0001${canvasMode.name}\u0001${paperSize.name}\u0001${pageOrientation.name}\u0001$paperColor\n")
+        for (a in actions) when (a) {
+            is TableItem -> sb.append(a.serialize())
+            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}\n")
+            is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\n")
+            is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\n")
+            is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\n")
+            is AudioItem -> sb.append("AUDIO\u0001${a.filePath}\u0001${a.title.replace("\u0001","_")}\u0001${a.x}\u0001${a.y}\u0001${a.durationMs}\n")
+        }
+        return sb.toString()
+    }
+
+    fun loadFromString(content: String) {
+        actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null
+        val lines = content.lines(); var i = 0
+        while (i < lines.size) {
+            val line = lines[i]; if (line.isBlank()) { i++; continue }
+            try {
+                when {
+                    line.startsWith("META\u0001") -> {
+                        val p = line.split("\u0001")
+                        try { if (p.size > 1) paperType = PaperType.valueOf(p[1]) } catch (e: Exception) {}
+                        try { if (p.size > 2) canvasMode = CanvasMode.valueOf(p[2]) } catch (e: Exception) {}
+                        try { if (p.size > 3) paperSize = PaperSizeOption.valueOf(p[3]) } catch (e: Exception) {}
+                        try { if (p.size > 4) pageOrientation = Orientation.valueOf(p[4]) } catch (e: Exception) {}
+                        try { if (p.size > 5) paperColor = p[5].toInt() } catch (e: Exception) {}
+                        i++
+                    }
+                    line.startsWith("TABLE\u0001") -> {
+                        val tableLines = mutableListOf<String>(); var j = i
+                        while (j < lines.size && !lines[j].startsWith("TABLEEND")) { tableLines.add(lines[j]); j++ }
+                        val (tableItem, _) = TableItem.deserialize(tableLines, 0)
+                        if (tableItem != null) actions.add(tableItem); i = j + 1
+                    }
+                    line.startsWith("AUDIO\u0001") -> {
+                        val p = line.split("\u0001")
+                        if (p.size >= 6) actions.add(AudioItem(p[1], p[2], p[3].toFloat(), p[4].toFloat(), p[5].toLongOrNull() ?: 0L))
+                        i++
+                    }
+                    line.startsWith("TEXT\u0001") -> {
+                        val p = line.split("\u0001"); if (p.size >= 7) {
+                            val item = TextItem("", p[1].toFloat(), p[2].toFloat(), p[3].toInt(), p[4].toFloat(), p[5].toFloat())
+                            if (p.size >= 9) {
+                                val bold = p[6].toBoolean(); val italic = p[7].toBoolean()
+                                item.text = p[8].replace("\u0002", "\n")
+                                val style = if (bold && italic) Typeface.BOLD_ITALIC else if (bold) Typeface.BOLD else if (italic) Typeface.ITALIC else -1
+                                if (style >= 0) item.spans.add(TextSpanData(0, item.text.length, 'S', style))
+                            } else {
+                                if (p[6].isNotBlank()) for (t in p[6].split(";")) { val sp = t.split(","); if (sp.size == 4) item.spans.add(TextSpanData(sp[0].toInt(), sp[1].toInt(), sp[2][0], sp[3].toInt())) }
+                                item.text = if (p.size > 7) p[7].replace("\u0002", "\n") else ""
+                            }
+                            if (p.size >= 10) item.maxWidth = p[9].toFloatOrNull() ?: 0f
+                            if (p.size >= 11) item.fontFamily = p[10]
+                            actions.add(item)
+                        }
+                        i++
+                    }
+                    line.startsWith("IMAGE\u0001") -> {
+                        val p = line.split("\u0001")
+                        if (p.size >= 7) {
+                            val item = ImageItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat(), p[6].toFloat())
+                            actions.add(item); loadBitmapAsync(p[1]) { bmp -> item.bitmap = bmp; item.loading = false; invalidate() }
+                        }
+                        i++
+                    }
+                    line.startsWith("FILL\u0001") -> {
+                        val p = line.split("\u0001")
+                        if (p.size >= 6) actions.add(FillItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat()))
+                        i++
+                    }
+                    else -> {
+                        val p = line.split("|")
+                        if (p.size >= 5) {
+                            val type = Tool.valueOf(p[0]); val color = p[1].toInt(); val sw = p[2].toFloat(); val fill = p[3].toBoolean()
+                            if (p.size >= 6) {
+                                val rot = p[4].toFloat()
+                                val pts = if (p[5].isBlank()) mutableListOf() else p[5].split(",").map { it.toFloat() }.toMutableList()
+                                val fcv = if (p.size >= 7) p[6].toIntOrNull() ?: color else color
+                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
+                            } else {
+                                val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
+                                val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
+                            }
+                        }
+                        i++
+                    }
+                }
+            } catch (e: Exception) { i++ }
+        }
+        invalidate()
+    }
+}
