@@ -1637,7 +1637,7 @@ class MainActivity : AppCompatActivity() {
     // Recomputes and applies the selection box's width/height/position in place - cheap enough
     // to call on every ACTION_MOVE during a resize/move drag, unlike tearing down and rebuilding
     // the whole view hierarchy (which is what made resizing feel rough/jumpy before).
-    private fun updateTextSelectionBoxSize(box: FrameLayout, moveSurface: View, item: TextItem, screenX: Float, screenY: Float) {
+    private fun updateTextSelectionBoxSize(box: FrameLayout, moveSurface: View, item: TextItem) {
         val density = resources.displayMetrics.density
         val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
         val convenientBoost = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 1.6f else 1f
@@ -1666,7 +1666,18 @@ class MainActivity : AppCompatActivity() {
         val convenientBoost = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 1.6f else 1f
         val screenSizePx = (if (useActualSize) item.size else item.size * drawingView.getScaleFactor()) * convenientBoost
 
+        // Anchor the box on the TEXT ITEM'S OWN world position (item.x, item.y - its baseline
+        // origin, same convention used everywhere else for TextItem), converted to screen
+        // coordinates - NOT the raw tap point that was passed in. Using the tap point was the bug:
+        // tapping anywhere along a wide word (e.g. partway through "Amrit") anchored the box at
+        // that arbitrary touch location instead of the text's actual position, producing a box
+        // that floated off to one side with no relation to where the text actually is.
+        val anchorScreenX = drawingView.worldToScreenX(item.x)
+        val anchorScreenY = drawingView.worldToScreenY(item.y)
+
         val box = FrameLayout(this)
+        box.clipChildren = false
+        box.clipToPadding = false
         box.background = android.graphics.drawable.GradientDrawable().apply {
             setStroke(dp(2), Color.parseColor("#2196F3")); setColor(Color.parseColor("#08000000"))
         }
@@ -1741,7 +1752,7 @@ class MainActivity : AppCompatActivity() {
                         val dy = ev.rawY - startRawY
                         item.size = (startSize + dy * 0.6f).coerceIn(8f, 400f)
                         drawingView.invalidate()
-                        updateTextSelectionBoxSize(box, moveSurface, item, screenX, screenY)
+                        updateTextSelectionBoxSize(box, moveSurface, item)
                         true
                     }
                     else -> true
@@ -1768,7 +1779,7 @@ class MainActivity : AppCompatActivity() {
                         val compactFloor = (longestWord + 24f).coerceAtLeast(dp(60).toFloat())
                         item.maxWidth = (startWidth + dx * 2f).coerceAtLeast(compactFloor)
                         drawingView.invalidate()
-                        updateTextSelectionBoxSize(box, moveSurface, item, screenX, screenY)
+                        updateTextSelectionBoxSize(box, moveSurface, item)
                         true
                     }
                     else -> true
@@ -1814,7 +1825,7 @@ class MainActivity : AppCompatActivity() {
         box.addView(deleteHandle)
 
         val lp = FrameLayout.LayoutParams(boxW, boxH)
-        lp.leftMargin = (screenX - dp(6)).toInt().coerceAtLeast(0); lp.topMargin = (screenY - screenSizePx - dp(6)).toInt().coerceAtLeast(0)
+        lp.leftMargin = (anchorScreenX - dp(6)).toInt().coerceAtLeast(0); lp.topMargin = (anchorScreenY - screenSizePx - dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(box, lp)
         textSelectionBox = box; textSelectionItem = item
     }
@@ -1842,6 +1853,8 @@ class MainActivity : AppCompatActivity() {
 
         // Bordered editing box (matches the blue-bordered selection rectangle from the reference)
         val boxContainer = FrameLayout(this)
+        boxContainer.clipChildren = false
+        boxContainer.clipToPadding = false
         val et=EditText(this)
         val spannable=SpannableStringBuilder(item?.text?:"")
         item?.spans?.forEach{ sp-> val s=sp.start.coerceIn(0,spannable.length);val e=sp.end.coerceIn(s,spannable.length); if(s<e) when(sp.type){ 'S'->spannable.setSpan(StyleSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'C'->spannable.setSpan(ForegroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'U'->spannable.setSpan(UnderlineSpan(),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'H'->spannable.setSpan(BackgroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } }
