@@ -514,6 +514,10 @@ class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var
     var maxWidth: Float = 0f  // 0 = unbounded (legacy); >0 = wrap to this width
     var fontFamily: String = "sans-serif"  // Typeface family name
     var opacity: Int = 255
+    // Link target: when non-null, this text renders in blue and is tappable to navigate instead
+    // of being editable like normal text. Format: "bookName/noteFileName" - empty bookName means
+    // "General" book. Null = not a link (normal text behavior).
+    var linkTarget: String? = null
 }
 
 class ImageItem(var path: String, var x: Float, var y: Float, var w: Float, var h: Float, var rotation: Float) {
@@ -614,6 +618,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // ignored rather than treated as "finish editing" (and definitely shouldn't place an unwanted
     // dot - see the SHAPE_TOOLS tap-ignore handling in handleDrawing).
     var onEmptyAreaTap: (() -> Unit)? = null
+    // Fired when a tap lands on a text item that has a linkTarget set - the host activity uses
+    // this to navigate to the linked note/page instead of selecting or editing the text.
+    var onLinkTap: ((String) -> Unit)? = null
     var isTextEditorOpen: Boolean = false
     var onScaleChanged: ((Float) -> Unit)? = null
     var onCanvasTransformed: (() -> Unit)? = null
@@ -689,6 +696,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val hit = findTextItemAt(wx, wy)
                     val tableHit = if (hit == null) actions.reversed().filterIsInstance<TableItem>().firstOrNull { t -> val b = getBounds(t); b != null && wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3] } else null
                     when {
+                        hit != null && hit.linkTarget != null -> {
+                            // Links navigate on a single tap rather than entering select/edit mode.
+                            onLinkTap?.invoke(hit.linkTarget!!)
+                        }
                         hit != null -> {
                             // Single tap SELECTS the text box (shows resize/rotate/delete handles,
                             // no keyboard) without entering edit mode. Double tap (see onDoubleTap
@@ -989,16 +1000,23 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun drawTextItem(canvas: Canvas, item: TextItem) {
-        val tp = TextPaint(); tp.color = item.color; tp.alpha = item.opacity; tp.textSize = item.size; tp.isAntiAlias = true
+        val isLink = item.linkTarget != null
+        val tp = TextPaint(); tp.color = if (isLink) Color.parseColor("#1565C0") else item.color; tp.alpha = item.opacity; tp.textSize = item.size; tp.isAntiAlias = true
         try { tp.typeface = Typeface.create(item.fontFamily, Typeface.NORMAL) } catch (e: Exception) {}
         val spannable = SpannableString(item.text)
-        for (sp in item.spans) {
-            val s = sp.start.coerceIn(0, item.text.length); val e = sp.end.coerceIn(s, item.text.length)
-            if (s < e) when (sp.type) {
-                'S' -> spannable.setSpan(StyleSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                'C' -> spannable.setSpan(ForegroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                'U' -> spannable.setSpan(UnderlineSpan(), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                'H' -> spannable.setSpan(BackgroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        if (isLink) {
+            // Links always render blue + underlined, like a hyperlink, regardless of any manual
+            // formatting spans the user may have applied before turning the text into a link.
+            spannable.setSpan(UnderlineSpan(), 0, item.text.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        } else {
+            for (sp in item.spans) {
+                val s = sp.start.coerceIn(0, item.text.length); val e = sp.end.coerceIn(s, item.text.length)
+                if (s < e) when (sp.type) {
+                    'S' -> spannable.setSpan(StyleSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    'C' -> spannable.setSpan(ForegroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    'U' -> spannable.setSpan(UnderlineSpan(), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    'H' -> spannable.setSpan(BackgroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
             }
         }
         val w = textWrapWidth(item)
@@ -1990,6 +2008,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         actions.add(item); redoStack.clear(); invalidate()
     }
 
+    // Inserts a fully pre-built TextItem (used for link creation, where linkTarget is already
+    // set on the item before insertion) - clamps position to the page like addText does.
+    fun addLinkText(item: TextItem) {
+        if (item.text.isBlank()) return
+        val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPage(item.x, item.y) else Pair(item.x, item.y)
+        item.x = cx; item.y = cy
+        actions.add(item); redoStack.clear(); invalidate()
+    }
+
     fun removeTextItem(item: TextItem) { actions.remove(item); invalidate() }
 
     // Clamps an existing text item's position to the page boundary (used when committing edits)
@@ -2103,7 +2130,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
             is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}\n")
-            is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\n")
+            is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\n")
             is AudioItem -> sb.append("AUDIO\u0001${a.filePath}\u0001${a.title.replace("\u0001","_")}\u0001${a.x}\u0001${a.y}\u0001${a.durationMs}\u0001${a.radius}\n")
@@ -2156,6 +2183,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             if (p.size >= 10) item.maxWidth = p[9].toFloatOrNull() ?: 0f
                             if (p.size >= 11) item.fontFamily = p[10]
                             if (p.size >= 12) item.opacity = p[11].toIntOrNull() ?: 255
+                            if (p.size >= 13 && p[12].isNotBlank()) item.linkTarget = p[12]
                             actions.add(item)
                         }
                         i++

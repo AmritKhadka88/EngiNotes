@@ -423,6 +423,7 @@ class MainActivity : AppCompatActivity() {
             dismissTextSelectionBox()
             setBottomBarVisible(true)
         }
+        drawingView.onLinkTap               = { target -> navigateToLink(target) }
         drawingView.onTableCellEditRequest  = { table, row, col, sx, sy -> closeInlineEditor(true); dismissCellEditor(); showTableCellEditor(table,row,col,sx,sy) }
         drawingView.onExportWindowSelected  = { l,t,r,b -> exportWindowBitmap = drawingView.exportWindow(l,t,r,b); showExportWindowDialog() }
         drawingView.onAudioItemTap          = { item -> AudioHelper.togglePlay(item) { drawingView.invalidate() }; drawingView.invalidate() }
@@ -486,6 +487,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton?>(R.id.btnBrush)?.setOnLongClickListener { showBrushOptionsPanel(); true }
 
         findViewById<ImageButton?>(R.id.btnMenu)?.setOnClickListener { onMenuClick(it) }
+        findViewById<ImageButton?>(R.id.btnLink)?.setOnClickListener { closeInlineEditor(true); showLinkPickerDialog() }
         findViewById<ImageButton?>(R.id.btnBack)?.setOnClickListener { confirmThenExit() }
         btnLayoutToggle.setOnClickListener { showLayoutMenu(it) }
     }
@@ -660,6 +662,82 @@ class MainActivity : AppCompatActivity() {
                 lastSavedContent = drawingView.serialize()
                 Toast.makeText(this,"Added to $targetBook",Toast.LENGTH_SHORT).show()
             }.setNegativeButton("Cancel",null).show()
+    }
+
+    // ── Linking: pick a book, then a note within it, to create a tappable link ──────
+
+    private fun showLinkPickerDialog() {
+        val booksFolder = File(filesDir, "books")
+        val books = booksFolder.listFiles()?.filter { it.isDirectory }?.map { it.name }?.sorted() ?: emptyList()
+        if (books.isEmpty()) { Toast.makeText(this, "No other notes to link to yet", Toast.LENGTH_SHORT).show(); return }
+        AlertDialog.Builder(this).setTitle("Link to Book")
+            .setItems(books.toTypedArray()) { _, i -> showLinkNotePickerDialog(books[i]) }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun showLinkNotePickerDialog(bookName: String) {
+        val folder = File(File(filesDir, "books"), bookName)
+        val notes = folder.listFiles()?.filter { it.extension == "eng" }?.map { it.nameWithoutExtension }?.sorted() ?: emptyList()
+        if (notes.isEmpty()) { Toast.makeText(this, "No notes in $bookName yet", Toast.LENGTH_SHORT).show(); return }
+        AlertDialog.Builder(this).setTitle("Link to Note in $bookName")
+            .setItems(notes.toTypedArray()) { _, i ->
+                val noteName = notes[i]
+                val target = "$bookName/$noteName"
+                insertOrConvertToLink(target, noteName)
+            }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    // If a text item is currently selected, converts it into a link to the chosen target.
+    // Otherwise creates a new link text item at the center of the screen showing the note's name.
+    private fun insertOrConvertToLink(target: String, displayName: String) {
+        val sel = textSelectionItem
+        if (sel != null) {
+            sel.linkTarget = target
+            dismissTextSelectionBox()
+            drawingView.invalidate()
+            Toast.makeText(this, "Linked to $displayName", Toast.LENGTH_SHORT).show()
+        } else {
+            val item = TextItem(displayName, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), Color.parseColor("#1565C0"), drawingView.defaultTextSize, 0f)
+            item.linkTarget = target
+            drawingView.addLinkText(item)
+            Toast.makeText(this, "Link inserted", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Navigates to a linked note. The CURRENT note (book + filename, or "unsaved" if it hasn't
+    // been saved yet) is pushed onto a back-stack carried via Intent extras, so pressing the
+    // system back button on the linked note returns to exactly where the link was tapped from -
+    // not to the home/book-list screen. This chains correctly through multiple link hops too,
+    // since each new activity instance just appends itself to the stack it received.
+    private fun navigateToLink(target: String) {
+        val parts = target.split("/")
+        if (parts.size < 2) { Toast.makeText(this, "Broken link", Toast.LENGTH_SHORT).show(); return }
+        val targetBook = parts[0]; val targetNote = parts[1]
+        val targetFile = File(File(File(filesDir, "books"), targetBook), "$targetNote.eng")
+        if (!targetFile.exists()) { Toast.makeText(this, "Linked note no longer exists", Toast.LENGTH_SHORT).show(); return }
+
+        // Autosave the current note before leaving so nothing is lost, and so a future "back"
+        // navigation can find it.
+        if (drawingView.hasContent()) autoSave()
+
+        val currentBook = intent.getStringExtra("book_name") ?: "General"
+        val currentNote = currentFileName
+        val backStack = intent.getStringArrayListExtra("link_back_stack") ?: ArrayList()
+        if (currentNote != null) {
+            // Only push a real, saved note onto the stack - an unsaved/untitled note can't be
+            // navigated back to meaningfully.
+            backStack.add("$currentBook/$currentNote")
+        }
+
+        val newIntent = android.content.Intent(this, MainActivity::class.java)
+        newIntent.putExtra("book_name", targetBook)
+        newIntent.putExtra("filename", targetNote)
+        newIntent.putStringArrayListExtra("link_back_stack", backStack)
+        startActivity(newIntent)
+        // Don't finish() this activity - rely on the natural Android back-stack (this activity
+        // instance stays underneath) so "back" returns here automatically. This also means each
+        // hop in a multi-link chain naturally unwinds in reverse order.
     }
 
     private fun showShapesPicker(anchor: ImageButton) {
