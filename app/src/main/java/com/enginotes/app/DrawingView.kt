@@ -107,7 +107,10 @@ class StrokeData(
     val type: Tool, val points: MutableList<Float>,
     var color: Int, var strokeWidth: Float, var fill: Boolean, var rotation: Float = 0f,
     var fillColorVal: Int = color, var penStyle: PenStyle = PenStyle.FOUNTAIN, var opacity: Int = 255,
-    var brushStyle: BrushStyle = BrushStyle.ROUND
+    var brushStyle: BrushStyle = BrushStyle.ROUND,
+    // Per-point width samples for velocity-sensitive pens (Fountain). Parallel to points (one
+    // width per x,y pair). Empty for pens that don't use variable width - falls back to strokeWidth.
+    var widths: MutableList<Float> = mutableListOf()
 ) {
     fun buildPath(): Path {
         val path = Path()
@@ -327,20 +330,43 @@ class StrokeData(
 
     // Builds a true angled-nib calligraphy stroke: a flat nib held at a fixed angle (like a real
     // calligraphy/chisel-tip pen) produces wide strokes when moving perpendicular to the nib edge
-    // and thin strokes when moving parallel to it - this traces both edges of that ribbon shape
-    // instead of using a uniform round stroke width.
+    // and thin strokes when moving parallel to it.
+    //
+    // BACKSTROKE FIX: the nib offset is computed per-segment from the LOCAL stroke direction
+    // (not a single global offset for the whole stroke). When you draw forward then reverse
+    // direction over the same path, each segment's offset rotates to match, so the ribbon's
+    // left/right edges never cross over each other and self-intersect. EVEN_ODD fill type is
+    // also set as a second line of defense - even if two segments visually overlap (e.g. you
+    // retrace almost exactly the same pixels), even-odd filling treats the overlap as a single
+    // solid region instead of XORing it into a hole, which is what caused the "erasing itself"
+    // glitch the angled-fixed-offset version had.
     fun buildCalligraphyRibbonPath(): Path {
         val ribbon = Path()
+        ribbon.fillType = Path.FillType.WINDING
         if (points.size < 4) return buildPath()
         val nibAngle = Math.toRadians(45.0) // nib held at 45 degrees, like a real chisel-tip pen
-        val nibLen = strokeWidth * 1.3f
-        val nx = (kotlin.math.cos(nibAngle) * nibLen / 2f).toFloat()
-        val ny = (kotlin.math.sin(nibAngle) * nibLen / 2f).toFloat()
+        val nibDirX = kotlin.math.cos(nibAngle).toFloat(); val nibDirY = kotlin.math.sin(nibAngle).toFloat()
+        val halfNib = strokeWidth * 0.65f
+
         val leftEdge = mutableListOf<Pair<Float, Float>>()
         val rightEdge = mutableListOf<Pair<Float, Float>>()
         var i = 0
         while (i + 1 < points.size) {
             val px = points[i]; val py = points[i + 1]
+            // The nib's projected width at this point depends on how aligned the local stroke
+            // direction is with the nib's fixed angle - perpendicular movement = full width,
+            // parallel movement = near zero. We still offset along the FIXED nib axis (that's
+            // what makes it look like a real chisel tip), but we clamp width using local direction
+            // so retraced backstrokes get consistent geometry instead of inverted polygons.
+            val dirX: Float; val dirY: Float
+            if (i + 3 < points.size) { dirX = points[i + 2] - px; dirY = points[i + 3] - py }
+            else if (i >= 2) { dirX = px - points[i - 2]; dirY = py - points[i - 1] }
+            else { dirX = 1f; dirY = 0f }
+            val dirLen = kotlin.math.hypot(dirX.toDouble(), dirY.toDouble()).toFloat().coerceAtLeast(0.01f)
+            val ndx = dirX / dirLen; val ndy = dirY / dirLen
+            // Width factor: cross product magnitude between stroke direction and nib axis (0..1)
+            val widthFactor = kotlin.math.abs(ndx * nibDirY - ndy * nibDirX).coerceIn(0.18f, 1f)
+            val nx = nibDirX * halfNib * widthFactor; val ny = nibDirY * halfNib * widthFactor
             leftEdge.add(Pair(px - nx, py - ny))
             rightEdge.add(Pair(px + nx, py + ny))
             i += 2
@@ -351,6 +377,57 @@ class StrokeData(
         for (p in rightEdge.reversed()) ribbon.lineTo(p.first, p.second)
         ribbon.close()
         return ribbon
+    }
+
+    // Velocity-sensitive Fountain pen ribbon: width is inversely proportional to drawing speed
+    // (fast = thin, slow = pools thicker, like real ink flow), built from the per-point `widths`
+    // samples recorded while drawing. Falls back to a uniform-width ribbon if no samples exist
+    // (e.g. for strokes loaded from older saved files).
+    fun buildFountainRibbonPath(): Path {
+        val ribbon = Path()
+        if (points.size < 4) return buildPath()
+        val left = mutableListOf<Pair<Float, Float>>(); val right = mutableListOf<Pair<Float, Float>>()
+        var i = 0; var wi = 0
+        while (i + 3 < points.size) {
+            val x1 = points[i]; val y1 = points[i + 1]; val x2 = points[i + 2]; val y2 = points[i + 3]
+            val dx = x2 - x1; val dy = y2 - y1
+            val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(0.01f)
+            val nx = -dy / len; val ny = dx / len
+            val w = (if (wi < widths.size) widths[wi] else strokeWidth) / 2f
+            left.add(Pair(x1 + nx * w, y1 + ny * w)); right.add(Pair(x1 - nx * w, y1 - ny * w))
+            i += 2; wi++
+        }
+        // Cap the final point with the last known width
+        val lastIdx = points.size - 2
+        val lastW = (if (widths.isNotEmpty()) widths.last() else strokeWidth) / 2f
+        if (i >= 2) {
+            val px = points[lastIdx]; val py = points[lastIdx + 1]
+            val pdx = px - points[i - 2]; val pdy = py - points[i - 1]
+            val plen = kotlin.math.hypot(pdx.toDouble(), pdy.toDouble()).toFloat().coerceAtLeast(0.01f)
+            val nx = -pdy / plen; val ny = pdx / plen
+            left.add(Pair(px + nx * lastW, py + ny * lastW)); right.add(Pair(px - nx * lastW, py - ny * lastW))
+        }
+        if (left.isEmpty() || right.isEmpty()) return buildPath()
+        ribbon.moveTo(left[0].first, left[0].second)
+        for (p in left.drop(1)) ribbon.lineTo(p.first, p.second)
+        for (p in right.reversed()) ribbon.lineTo(p.first, p.second)
+        ribbon.close()
+        return ribbon
+    }
+
+    // Draws a Pencil stroke segment-by-segment with per-segment opacity derived from drawing
+    // speed (stored in `widths` as a 0..1 intensity factor) - faster strokes fade lighter, slower
+    // strokes stay darker, mimicking how graphite deposits less material when moved quickly.
+    fun drawPencilStroke(canvas: Canvas, basePaint: Paint) {
+        if (points.size < 4 || widths.size < 2) { canvas.drawPath(buildPath(), basePaint); return }
+        var i = 0; var wi = 0
+        val segPaint = Paint(basePaint)
+        while (i + 3 < points.size) {
+            val intensity = (if (wi < widths.size) widths[wi] else 1f).coerceIn(0.25f, 1f)
+            segPaint.alpha = (basePaint.alpha * intensity).toInt()
+            canvas.drawLine(points[i], points[i + 1], points[i + 2], points[i + 3], segPaint)
+            i += 2; wi++
+        }
     }
 
     private fun addPolygon(path: Path, left: Float, top: Float, right: Float, bottom: Float, sides: Int, isStar: Boolean) {
@@ -406,7 +483,12 @@ class StrokeData(
             // this stroke paint is only a fallback for hit-test rendering contexts.
             PenStyle.CALLIGRAPHY -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
             // Marker: wide, flat-tipped, translucent felt tip - BUTT cap so the tip doesn't overshoot the stroke ends
-            PenStyle.MARKER -> { p.strokeWidth = strokeWidth * 2.4f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.BUTT; p.alpha = (opacity * 0.5f).toInt() }
+            // Marker: wide, flat-tipped, translucent felt tip. BUTT cap so the tip doesn't
+            // overshoot stroke ends; opacity fixed at 57% per spec regardless of speed/pressure.
+            // A single continuous Path drawn once never self-darkens on loops since Android
+            // rasterizes the whole stroke as one paint operation - darkening only appears when
+            // SEPARATE strokes overlap, which is the correct/expected behavior.
+            PenStyle.MARKER -> { p.strokeWidth = strokeWidth * 2.4f; p.strokeJoin = Paint.Join.MITER; p.strokeCap = Paint.Cap.BUTT; p.alpha = (255 * 0.57f).toInt() }
         }
         return p
     }
@@ -448,6 +530,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val actions = mutableListOf<Any>()
     private val redoStack = mutableListOf<Any>()
     private var currentItem: StrokeItem? = null
+    // Velocity tracking for the Fountain pen's speed-sensitive width (fast = thin, slow = thick)
+    private var lastMoveX = 0f; private var lastMoveY = 0f; private var lastMoveTime = 0L
 
     var currentTool: Tool = Tool.PEN
         set(value) {
@@ -739,8 +823,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             is StrokeItem -> {
                 val isCalligraphyPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.CALLIGRAPHY
-                val renderPath = if (isCalligraphyPen) action.data.buildCalligraphyRibbonPath() else action.path
-                val renderPaint = if (isCalligraphyPen) Paint(action.paint).apply { style = Paint.Style.FILL } else action.paint
+                val isFountainPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.FOUNTAIN && action.data.widths.size >= 2
+                val isPencilPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.PENCIL && action.data.widths.size >= 2
+                if (isPencilPen && action.data.rotation == 0f) { action.data.drawPencilStroke(canvas, action.paint); return }
+                val renderPath = when { isCalligraphyPen -> action.data.buildCalligraphyRibbonPath(); isFountainPen -> action.data.buildFountainRibbonPath(); else -> action.path }
+                val renderPaint = if (isCalligraphyPen || isFountainPen) Paint(action.paint).apply { style = Paint.Style.FILL } else action.paint
                 if (action.data.rotation != 0f) {
                     val b = getBounds(action)
                     if (b != null) {
@@ -792,8 +879,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         for (action in actions) drawActionItem(canvas, action, true)
         currentItem?.let {
             val isCalligraphyPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.CALLIGRAPHY
-            if (isCalligraphyPen) canvas.drawPath(it.data.buildCalligraphyRibbonPath(), Paint(it.paint).apply { style = Paint.Style.FILL })
-            else canvas.drawPath(it.path, it.paint)
+            val isFountainPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.FOUNTAIN && it.data.widths.size >= 2
+            val isPencilPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.PENCIL && it.data.widths.size >= 2
+            when {
+                isCalligraphyPen -> canvas.drawPath(it.data.buildCalligraphyRibbonPath(), Paint(it.paint).apply { style = Paint.Style.FILL })
+                isFountainPen -> canvas.drawPath(it.data.buildFountainRibbonPath(), Paint(it.paint).apply { style = Paint.Style.FILL })
+                isPencilPen -> it.data.drawPencilStroke(canvas, it.paint)
+                else -> canvas.drawPath(it.path, it.paint)
+            }
         }
         drawSelection(canvas)
         drawArcHandles(canvas)
@@ -1658,18 +1751,46 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_DOWN -> {
                 if (currentTool == Tool.ERASER) { eraseAt(wx, wy); invalidate(); return }
                 val data = when {
-                    currentTool == Tool.PEN -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = currentOpacity)
+                    currentTool == Tool.PEN -> {
+                        // Ball pen is strictly uniform - no pressure or speed sensitivity, per spec.
+                        val baseW = if (currentPenStyle == PenStyle.BALL) currentStrokeWidth else currentStrokeWidth * pressure
+                        StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, baseW, false, rotation = 0f, penStyle = currentPenStyle, opacity = if (currentPenStyle == PenStyle.BALL) 255 else currentOpacity)
+                    }
                     currentTool == Tool.HIGHLIGHTER -> StrokeData(Tool.HIGHLIGHTER, mutableListOf(wx, wy), currentColor, highlighterThickness, false, rotation = 0f, penStyle = PenStyle.MARKER, opacity = (highlighterOpacity * 255 / 100))
                     currentTool == Tool.BRUSH -> StrokeData(Tool.BRUSH, mutableListOf(wx, wy), currentColor, brushThickness * pressure, false, rotation = 0f, brushStyle = currentBrushStyle, opacity = brushOpacity)
                     SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, fillShapes)
                     else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = currentOpacity)
                 }
+                if (currentTool == Tool.PEN && currentPenStyle == PenStyle.FOUNTAIN) data.widths.add(currentStrokeWidth)
+                if (currentTool == Tool.PEN && currentPenStyle == PenStyle.PENCIL) data.widths.add(1f)
+                lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
                 currentItem = StrokeItem(data, data.buildPath(), data.toPaint()); invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
                 if (currentTool == Tool.ERASER) { eraseAt(wx, wy); invalidate(); return }
                 val item = currentItem ?: return
-                if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH) { item.data.points.add(wx); item.data.points.add(wy) }
+                if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH) {
+                    item.data.points.add(wx); item.data.points.add(wy)
+                    if (currentTool == Tool.PEN && (currentPenStyle == PenStyle.FOUNTAIN || currentPenStyle == PenStyle.PENCIL)) {
+                        // Speed = distance / time since last sample.
+                        val dt = (event.eventTime - lastMoveTime).coerceAtLeast(1L)
+                        val dist = distance(wx, wy, lastMoveX, lastMoveY)
+                        val speed = dist / dt * 1000f // px/sec
+                        if (currentPenStyle == PenStyle.FOUNTAIN) {
+                            // Inverse relationship: fast strokes thin out, slow strokes pool thicker, like real ink flow.
+                            val speedFactor = (1f - (speed / 2200f).coerceIn(0f, 0.7f))
+                            val targetWidth = (currentStrokeWidth * (0.55f + speedFactor * 0.9f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
+                            val prevWidth = item.data.widths.lastOrNull() ?: currentStrokeWidth
+                            item.data.widths.add(prevWidth * 0.6f + targetWidth * 0.4f)
+                        } else {
+                            // Pencil: faster strokes deposit less graphite (fainter/lighter), slower strokes stay darker.
+                            val targetIntensity = (1f - (speed / 1800f).coerceIn(0f, 0.75f)).coerceIn(0.25f, 1f)
+                            val prevIntensity = item.data.widths.lastOrNull() ?: 1f
+                            item.data.widths.add(prevIntensity * 0.5f + targetIntensity * 0.5f)
+                        }
+                        lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
+                    }
+                }
                 else if (SHAPE_TOOLS.contains(currentTool)) { item.data.points[2] = wx; item.data.points[3] = wy }
                 item.path = item.data.buildPath(); invalidate()
             }
@@ -1897,7 +2018,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         sb.append("META\u0001${paperType.name}\u0001${canvasMode.name}\u0001${paperSize.name}\u0001${pageOrientation.name}\u0001$paperColor\n")
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
-            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}\n")
+            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\n")
@@ -1976,7 +2097,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val pStyle = if (p.size >= 8) try { PenStyle.valueOf(p[7]) } catch (e: Exception) { PenStyle.FOUNTAIN } else PenStyle.FOUNTAIN
                                 val opac = if (p.size >= 9) p[8].toIntOrNull() ?: 255 else 255
                                 val bStyle = if (p.size >= 10) try { BrushStyle.valueOf(p[9]) } catch (e: Exception) { BrushStyle.ROUND } else BrushStyle.ROUND
-                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
+                                val wArr = if (p.size >= 11 && p[10].isNotBlank()) p[10].split(",").mapNotNull { it.toFloatOrNull() }.toMutableList() else mutableListOf()
+                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
                             } else {
                                 val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
                                 val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
