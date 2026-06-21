@@ -105,11 +105,13 @@ class MainActivity : AppCompatActivity() {
     )
 
     private var activeEditText: EditText? = null
-    private var activeToolbar: LinearLayout? = null
+    private var activeToolbar: View? = null
+    private var activeEditBox: View? = null
     private var editingItem: TextItem? = null
     private var editWorldX = 0f; private var editWorldY = 0f
     private var editRotation = 0f; private var editColor = Color.BLACK
     private var editSize = 12f * 1.333f
+    private var editOpacity = 255
     private var pendingBold = false; private var pendingItalic = false
     private var pendingUnderline = false; private var pendingHighlight: Int? = null
     private var pendingFontFamily: String = "sans-serif"
@@ -309,7 +311,7 @@ class MainActivity : AppCompatActivity() {
         applyConvenientLayout()
 
         drawingView.onTextEditRequest       = { item, sx, sy, wx, wy -> showInlineTextEditor(item,sx,sy,wx,wy) }
-        drawingView.onTableCellEditRequest  = { table, row, col, sx, sy -> dismissCellEditor(); showTableCellEditor(table,row,col,sx,sy) }
+        drawingView.onTableCellEditRequest  = { table, row, col, sx, sy -> closeInlineEditor(true); dismissCellEditor(); showTableCellEditor(table,row,col,sx,sy) }
         drawingView.onExportWindowSelected  = { l,t,r,b -> exportWindowBitmap = drawingView.exportWindow(l,t,r,b); showExportWindowDialog() }
         drawingView.onAudioItemTap          = { item -> AudioHelper.togglePlay(item) { drawingView.invalidate() }; drawingView.invalidate() }
 
@@ -610,6 +612,9 @@ class MainActivity : AppCompatActivity() {
         closeInlineEditor(true)
         AlertDialog.Builder(this).setTitle("Insert")
             .setItems(arrayOf("Image from Gallery","Take Photo","Table","Record Audio","Snip from PDF")) { _, i ->
+                // Whatever tool was active before opening Insert (e.g. Eraser) must not remain
+                // active afterward - otherwise the next tap on the canvas silently erases content.
+                setActiveTool(null, Tool.SELECT)
                 when(i) {
                     0 -> pickImageLauncher.launch("image/*")
                     1 -> launchCamera()
@@ -1095,14 +1100,15 @@ class MainActivity : AppCompatActivity() {
         }
 
         sectionLabel("Brush Type")
+        val typeScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val typeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val brushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR)
+        val brushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH)
         val typeButtons = mutableListOf<TextView>()
         for ((label, style) in brushTypes) {
             val b = TextView(this).apply {
                 text = label; textSize = 11f; gravity = Gravity.CENTER
-                setPadding(dp(4), dp(10), dp(4), dp(10))
-                val p = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f); p.setMargins(dp(2), 0, dp(2), 0)
+                setPadding(dp(10), dp(10), dp(10), dp(10))
+                val p = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT); p.setMargins(dp(2), 0, dp(2), 0)
                 layoutParams = p
                 setOnClickListener {
                     drawingView.currentBrushStyle = style
@@ -1114,7 +1120,8 @@ class MainActivity : AppCompatActivity() {
             else { b.setBackgroundColor(Color.parseColor("#F0EBE0")); b.setTextColor(Color.parseColor("#4A4A4A")) }
             typeButtons.add(b); typeRow.addView(b)
         }
-        panel.addView(typeRow)
+        typeScroll.addView(typeRow)
+        panel.addView(typeScroll)
 
         sectionLabel("Thickness: ${drawingView.brushThickness.toInt()}")
         val thickLbl = panel.getChildAt(panel.childCount - 1) as TextView
@@ -1270,57 +1277,71 @@ class MainActivity : AppCompatActivity() {
         val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(et.windowToken,0)
         drawingView.exitTableEditMode()
+        drawingView.onCanvasTransformed = null
     }
 
+    // True in-place cell editor: the EditText is positioned and sized to sit exactly on top of
+    // the table cell on the canvas (not a separate bottom-sheet panel), so typing happens directly
+    // "inside" the cell the way Excel's in-cell editing works. A tiny actions strip floats just
+    // above the cell for row/col/merge/style/chart - Done is implicit (tap elsewhere / Done button).
     private fun showTableCellEditor(table:TableItem,row:Int,col:Int,screenX:Float,screenY:Float) {
         val cell=table.cells[row][col]
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
-            elevation = dp(8).toFloat()
-            setPadding(dp(8),dp(6),dp(8),dp(6))
+        val density = resources.displayMetrics.density
+
+        fun cellScreenRect(): RectF {
+            val rect = table.cellRect(row, col)
+            val sx0 = drawingView.worldToScreenX(rect.left); val sy0 = drawingView.worldToScreenY(rect.top)
+            val sx1 = drawingView.worldToScreenX(rect.right); val sy1 = drawingView.worldToScreenY(rect.bottom)
+            return RectF(sx0, sy0, sx1, sy1)
         }
-        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val headerLbl = TextView(this).apply {
-            text = "R${row+1} C${col+1}"; textSize = 12f
-            setTextColor(Color.parseColor("#9E9E9E"))
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        val doneBtn = TextView(this).apply {
-            text = "Done"; textSize = 13f
-            setTextColor(Color.parseColor("#8D6E63")); typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(10),dp(4),dp(10),dp(4))
-            setOnClickListener { dismissCellEditor() }
-        }
-        header.addView(headerLbl); header.addView(doneBtn); container.addView(header)
 
         val et = EditText(this).apply {
             setText(cell.text)
             setTextColor(cell.textColor)
-            textSize = 18f
-            setBackgroundColor(Color.parseColor("#FAF6EF"))
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            minLines = 3; maxLines = 8
+            setBackgroundColor(Color.parseColor("#FFF8E1")) // soft highlight so it's clear this cell is being edited
+            setPadding(dp(6), dp(4), dp(6), dp(4))
+            gravity = when (cell.alignment) { 1 -> Gravity.CENTER; 2 -> Gravity.END or Gravity.CENTER_VERTICAL; else -> Gravity.START or Gravity.CENTER_VERTICAL }
             isSingleLine = false
             imeOptions = EditorInfo.IME_FLAG_NO_ENTER_ACTION
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).also { it.topMargin = dp(4) }
             addTextChangedListener(object:TextWatcher{
                 override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
-                override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ cell.text=s?.toString()?:""; drawingView.invalidate() }
+                override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){
+                    cell.text=s?.toString()?:""
+                    // Auto-grow column width / row height live as the user types, unless the
+                    // column was manually resized or this is a merged cell.
+                    table.recalcCellSize(row, col)
+                    drawingView.invalidate()
+                    repositionToCell()
+                }
                 override fun afterTextChanged(s:Editable?){}
             })
         }
-        container.addView(et)
 
-        val actionsScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-        val actionsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, 0) }
+        fun repositionToCell() {
+            val r = cellScreenRect()
+            val scale = drawingView.getScaleFactor()
+            et.textSize = (cell.textSize * scale / density).coerceAtLeast(8f)
+            val lp = et.layoutParams as? FrameLayout.LayoutParams ?: FrameLayout.LayoutParams(0, 0)
+            lp.width = (r.width()).toInt().coerceAtLeast(dp(40)); lp.height = (r.height()).toInt().coerceAtLeast(dp(28))
+            lp.leftMargin = r.left.toInt(); lp.topMargin = r.top.toInt()
+            et.layoutParams = lp
+        }
+
+        val initialRect = cellScreenRect()
+        val initParams = FrameLayout.LayoutParams(initialRect.width().toInt().coerceAtLeast(dp(40)), initialRect.height().toInt().coerceAtLeast(dp(28)))
+        initParams.leftMargin = initialRect.left.toInt(); initParams.topMargin = initialRect.top.toInt()
+        et.textSize = (cell.textSize * drawingView.getScaleFactor() / density).coerceAtLeast(8f)
+        canvasContainer.addView(et, initParams)
+
+        // Compact floating actions strip, positioned just above the cell
+        val actionsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(6).toFloat(); setPadding(dp(4),dp(4),dp(4),dp(4)) }
         fun actionBtn(label: String, action: () -> Unit) {
             val b = TextView(this).apply {
-                text = label; textSize = 12f; setTextColor(Color.parseColor("#4A4A4A"))
+                text = label; textSize = 11f; setTextColor(Color.parseColor("#4A4A4A"))
                 setBackgroundColor(Color.parseColor("#F0EBE0"))
-                setPadding(dp(10), dp(6), dp(10), dp(6))
+                setPadding(dp(8), dp(5), dp(8), dp(5))
                 val p = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                p.setMargins(0, 0, dp(6), 0); layoutParams = p
+                p.setMargins(dp(2), 0, dp(2), 0); layoutParams = p
                 setOnClickListener { action(); dismissCellEditor() }
             }
             actionsRow.addView(b)
@@ -1334,13 +1355,26 @@ class MainActivity : AppCompatActivity() {
         if (table.mergeSpans.containsKey(Pair(row, col))) actionBtn("Unmerge") { drawingView.unmergeCellSelection() }
         actionBtn("Style") { showCellStyleDialog(table, row, col, selEnd) }
         actionBtn("Chart") { launchChartFromTable(table) }
-        actionsScroll.addView(actionsRow)
-        container.addView(actionsScroll)
+        actionBtn("Done") { dismissCellEditor() }
 
-        activeCellEditText=et; activeCellToolbar=container; tableToolbarOverlay=container
+        val actionsScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(actionsRow) }
+        val toolbarHeightEstimate = dp(40)
+        val actionsLp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        actionsLp.leftMargin = initialRect.left.toInt().coerceAtMost((canvasContainer.width - dp(240)).coerceAtLeast(0))
+        actionsLp.topMargin = (initialRect.top.toInt() - toolbarHeightEstimate).coerceAtLeast(0)
+        canvasContainer.addView(actionsScroll, actionsLp)
 
-        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
-        canvasContainer.addView(container, lp)
+        // Keep the editor and actions strip glued to the cell as the user pans/zooms the canvas
+        drawingView.onCanvasTransformed = {
+            repositionToCell()
+            val r = cellScreenRect()
+            val alp = actionsScroll.layoutParams as FrameLayout.LayoutParams
+            alp.leftMargin = r.left.toInt().coerceAtMost((canvasContainer.width - dp(240)).coerceAtLeast(0))
+            alp.topMargin = (r.top.toInt() - toolbarHeightEstimate).coerceAtLeast(0)
+            actionsScroll.layoutParams = alp
+        }
+
+        activeCellEditText=et; activeCellToolbar=actionsScroll; tableToolbarOverlay=actionsScroll
 
         et.requestFocus(); et.setSelection(et.text.length)
         et.post {
@@ -1357,59 +1391,137 @@ class MainActivity : AppCompatActivity() {
     private fun showInlineTextEditor(item: TextItem?, screenX: Float, screenY: Float, worldX: Float, worldY: Float) {
         if (activeEditText != null && editingItem === item) return
         if (activeEditText != null) { isSwitchingTextEditor=true; closeInlineEditor(true); isSwitchingTextEditor=false; drawingView.post{ showInlineTextEditor(item,screenX,screenY,worldX,worldY) }; return }
+        dismissCellEditor()
+        dismissAllFloatingPanels()
         pendingBold=false; pendingItalic=false; pendingUnderline=false; pendingHighlight=null
         editingItem=item; editWorldX=item?.x?:worldX; editWorldY=item?.y?:worldY; editRotation=item?.rotation?:0f; editColor=item?.color?:drawingView.currentColor; editSize=item?.size?:drawingView.defaultTextSize
+        editOpacity = item?.opacity ?: 255
         pendingFontFamily = item?.fontFamily ?: "sans-serif"
         val density=resources.displayMetrics.density
         val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
-        val screenSizePx=if(useActualSize) editSize else editSize*drawingView.getScaleFactor()
+        // Convenient layout gets a generous size boost so typing feels big and comfortable,
+        // matching the large-font feel from the reference screenshot. Print/Infinite stay true-to-scale.
+        val convenientBoost = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 1.6f else 1f
+        val screenSizePx=(if(useActualSize) editSize else editSize*drawingView.getScaleFactor()) * convenientBoost
+
+        // Bordered editing box (matches the blue-bordered selection rectangle from the reference)
+        val boxContainer = FrameLayout(this)
         val et=EditText(this)
         val spannable=SpannableStringBuilder(item?.text?:"")
         item?.spans?.forEach{ sp-> val s=sp.start.coerceIn(0,spannable.length);val e=sp.end.coerceIn(s,spannable.length); if(s<e) when(sp.type){ 'S'->spannable.setSpan(StyleSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'C'->spannable.setSpan(ForegroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'U'->spannable.setSpan(UnderlineSpan(),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'H'->spannable.setSpan(BackgroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } }
-        val maxEditorWidthPx = (canvasContainer.width - screenX - dp(16)).toInt().coerceAtLeast(dp(120))
-        et.setText(spannable,TextView.BufferType.SPANNABLE); et.setTextColor(editColor); et.textSize=(screenSizePx/density).coerceAtLeast(8f); et.setBackgroundColor(Color.parseColor("#11000000")); et.setPadding(dp(4),dp(4),dp(4),dp(4)); et.minWidth=dp(120); et.maxWidth=maxEditorWidthPx
+        val maxEditorWidthPx = (canvasContainer.width - screenX - dp(24)).toInt().coerceAtLeast(dp(140))
+        et.setText(spannable,TextView.BufferType.SPANNABLE)
+        et.setTextColor(editColor); et.alpha = editOpacity / 255f
+        et.textSize=(screenSizePx/density).coerceAtLeast(8f)
+        et.setBackgroundColor(Color.TRANSPARENT)
+        et.setPadding(dp(8),dp(8),dp(8),dp(8)); et.minWidth=dp(140); et.maxWidth=maxEditorWidthPx
         try { et.typeface = Typeface.create(pendingFontFamily, Typeface.NORMAL) } catch (e: Exception) {}
         if(!useActualSize) et.rotation=editRotation
         et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } } }; override fun afterTextChanged(s:Editable?){} })
-        val params=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT); params.leftMargin=screenX.toInt(); params.topMargin=(screenY-screenSizePx).toInt().coerceAtLeast(0); canvasContainer.addView(et,params)
-        val toolbar=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); setPadding(dp(6),dp(6),dp(6),dp(6)) }
-        fun tbtn(label:String,action:(TextView)->Unit):TextView{ val b=TextView(this);b.text=label;b.textSize=15f;b.setTextColor(Color.parseColor("#4A4A4A"));b.gravity=Gravity.CENTER;val p=LinearLayout.LayoutParams(dp(34),dp(34));p.setMargins(dp(2),0,dp(2),0);b.layoutParams=p;b.setBackgroundColor(Color.parseColor("#F0EBE0"));b.setOnClickListener{action(b)};toolbar.addView(b);return b }
+
+        // Visible border frame around the editable box, drawn via a GradientDrawable stroke
+        boxContainer.background = android.graphics.drawable.GradientDrawable().apply {
+            setStroke(dp(2), Color.parseColor("#2196F3"))
+            setColor(Color.parseColor("#08000000"))
+        }
+        boxContainer.addView(et, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+
+        // Resize handle on the right edge - drag to widen/narrow the box, which moves the wrap point
+        val resizeHandle = View(this).apply {
+            val sz = dp(16)
+            val hp = FrameLayout.LayoutParams(sz, sz); hp.gravity = Gravity.END or Gravity.CENTER_VERTICAL; hp.rightMargin = -sz/2
+            layoutParams = hp
+            background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor("#2196F3")) }
+        }
+        var resizeStartX = 0f; var resizeStartWidth = 0
+        resizeHandle.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> { resizeStartX = ev.rawX; resizeStartWidth = et.width.takeIf { it > 0 } ?: maxEditorWidthPx; true }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dx = (ev.rawX - resizeStartX).toInt()
+                    val newWidth = (resizeStartWidth + dx).coerceIn(dp(80), maxEditorWidthPx)
+                    et.maxWidth = newWidth; et.minWidth = newWidth
+                    et.requestLayout()
+                    true
+                }
+                else -> true
+            }
+        }
+        boxContainer.addView(resizeHandle)
+
+        val params=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
+        params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0); params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
+        canvasContainer.addView(boxContainer,params)
+
+        // Options toolbar positioned directly above the editing box (not pinned to screen bottom)
+        val toolbar=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(6).toFloat(); setPadding(dp(6),dp(6),dp(6),dp(6)) }
+        fun ibtn(iconRes:Int,action:(ImageView)->Unit):ImageView{
+            val b=ImageView(this); b.setImageResource(iconRes); b.scaleType=ImageView.ScaleType.CENTER_INSIDE
+            val p=LinearLayout.LayoutParams(dp(34),dp(34));p.setMargins(dp(2),0,dp(2),0);b.layoutParams=p
+            b.setPadding(dp(6),dp(6),dp(6),dp(6))
+            b.setBackgroundColor(Color.parseColor("#F0EBE0"));b.setOnClickListener{action(b)};toolbar.addView(b);return b
+        }
+        fun tbtnText(label:String,action:(TextView)->Unit):TextView{ val b=TextView(this);b.text=label;b.textSize=14f;b.setTextColor(Color.parseColor("#4A4A4A"));b.gravity=Gravity.CENTER;val p=LinearLayout.LayoutParams(dp(34),dp(34));p.setMargins(dp(2),0,dp(2),0);b.layoutParams=p;b.setBackgroundColor(Color.parseColor("#F0EBE0"));b.setOnClickListener{action(b)};toolbar.addView(b);return b }
         val activeBg=Color.parseColor("#8D6E63"); val inactiveBg=Color.parseColor("#F0EBE0")
-        val activeFg=Color.WHITE; val inactiveFg=Color.parseColor("#4A4A4A")
-        fun setToggleState(btn: TextView, active: Boolean) { btn.setBackgroundColor(if(active) activeBg else inactiveBg); btn.setTextColor(if(active) activeFg else inactiveFg) }
-        tbtn("B"){btn-> if(et.selectionStart!=et.selectionEnd) toggleStyleOnSelection(et,Typeface.BOLD) else{ pendingBold=!pendingBold; setToggleState(btn,pendingBold) } }
-        tbtn("I"){btn-> if(et.selectionStart!=et.selectionEnd) toggleStyleOnSelection(et,Typeface.ITALIC) else{ pendingItalic=!pendingItalic; setToggleState(btn,pendingItalic) } }
-        tbtn("U"){btn-> if(et.selectionStart!=et.selectionEnd) toggleUnderlineOnSelection(et) else{ pendingUnderline=!pendingUnderline; setToggleState(btn,pendingUnderline) } }
-        tbtn("HL"){btn-> showColorGridDialog{ color-> if(et.selectionStart!=et.selectionEnd) applyHighlightToSelection(et,color) else{ pendingHighlight=color;btn.setBackgroundColor(color) } } }
-        tbtn("Color"){ showColorGridDialog{ color->applyColorToSelection(et,color) } }
+        fun setToggleStateIcon(btn: ImageView, active: Boolean) { btn.setBackgroundColor(if(active) activeBg else inactiveBg); btn.setColorFilter(if(active) Color.WHITE else Color.parseColor("#4A4A4A")) }
+        ibtn(R.drawable.ic_text_bold){btn-> if(et.selectionStart!=et.selectionEnd) toggleStyleOnSelection(et,Typeface.BOLD) else{ pendingBold=!pendingBold; setToggleStateIcon(btn,pendingBold) } }
+        ibtn(R.drawable.ic_text_italic){btn-> if(et.selectionStart!=et.selectionEnd) toggleStyleOnSelection(et,Typeface.ITALIC) else{ pendingItalic=!pendingItalic; setToggleStateIcon(btn,pendingItalic) } }
+        ibtn(R.drawable.ic_text_underline){btn-> if(et.selectionStart!=et.selectionEnd) toggleUnderlineOnSelection(et) else{ pendingUnderline=!pendingUnderline; setToggleStateIcon(btn,pendingUnderline) } }
+        ibtn(R.drawable.ic_text_highlight){btn-> showColorGridDialog{ color-> if(et.selectionStart!=et.selectionEnd) applyHighlightToSelection(et,color) else{ pendingHighlight=color;btn.setColorFilter(color) } } }
+        ibtn(R.drawable.ic_text_color){btn-> showColorGridDialog{ color->applyColorToSelection(et,color); editColor=color; btn.setColorFilter(color) } }
         val ptSize=(editSize/PT_TO_PX).toInt().coerceIn(1,144)
-        tbtn(ptSize.toString()){btn-> AlertDialog.Builder(this).setTitle("Font Size (pt)").setItems((1..144).map{it.toString()}.toTypedArray()){ _,idx-> val pt=idx+1;editSize=pt*PT_TO_PX; val nss=if(useActualSize) editSize else editSize*drawingView.getScaleFactor(); et.textSize=(nss/density).coerceAtLeast(8f); btn.text=pt.toString() }.show() }
-        tbtn("Font"){ showFontPickerDialog(et) }
-        tbtn("CCW"){ editRotation-=15f;if(!useActualSize) et.rotation=editRotation }
-        tbtn("CW"){ editRotation+=15f;if(!useActualSize) et.rotation=editRotation }
-        tbtn("Done"){ closeInlineEditor(true) }
-        tbtn("Del"){ closeInlineEditor(false,delete=true) }
-        val tp=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT,Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL); canvasContainer.addView(toolbar,tp)
-        fun updateET(){ val scale=drawingView.getScaleFactor();val nsp=editSize*scale; et.textSize=(nsp/density).coerceAtLeast(8f); val sx=drawingView.worldToScreenX(editWorldX);val sy=drawingView.worldToScreenY(editWorldY)-nsp; val lp=et.layoutParams as FrameLayout.LayoutParams; lp.leftMargin=sx.toInt(); lp.topMargin=sy.toInt(); et.layoutParams=lp }
+        tbtnText(ptSize.toString()){btn-> AlertDialog.Builder(this).setTitle("Font Size (pt)").setItems((1..144).map{it.toString()}.toTypedArray()){ _,idx-> val pt=idx+1;editSize=pt*PT_TO_PX; val nss=(if(useActualSize) editSize else editSize*drawingView.getScaleFactor())*convenientBoost; et.textSize=(nss/density).coerceAtLeast(8f); btn.text=pt.toString() }.show() }
+        ibtn(R.drawable.ic_text_font){ showFontPickerDialog(et) }
+        ibtn(R.drawable.ic_text_opacity){
+            val seek = SeekBar(this).apply { max = 100; progress = editOpacity * 100 / 255 }
+            val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(10), dp(20), dp(0)); addView(seek) }
+            seek.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { val vv = v.coerceAtLeast(5); editOpacity = vv * 255 / 100; et.alpha = editOpacity / 255f }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+            AlertDialog.Builder(this).setTitle("Opacity").setView(wrap).setPositiveButton("Done", null).show()
+        }
+        ibtn(R.drawable.ic_text_rotate_ccw){ editRotation-=15f;if(!useActualSize) et.rotation=editRotation }
+        ibtn(R.drawable.ic_text_rotate_cw){ editRotation+=15f;if(!useActualSize) et.rotation=editRotation }
+        ibtn(R.drawable.ic_text_check){ closeInlineEditor(true) }
+        ibtn(R.drawable.ic_text_delete){ closeInlineEditor(false,delete=true) }
+
+        // Position the toolbar's horizontal scroll bar just above the box (falls back to top of screen if no room)
+        val toolbarScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(toolbar) }
+        val toolbarHeightEstimate = dp(46)
+        val tp=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
+        tp.leftMargin = params.leftMargin.coerceAtMost((canvasContainer.width - dp(260)).coerceAtLeast(0))
+        tp.topMargin = (params.topMargin - toolbarHeightEstimate).coerceAtLeast(0)
+        canvasContainer.addView(toolbarScroll,tp)
+
+        fun updateET(){
+            val scale=drawingView.getScaleFactor();val nsp=editSize*scale*convenientBoost
+            et.textSize=(nsp/density).coerceAtLeast(8f)
+            val sx=drawingView.worldToScreenX(editWorldX);val sy=drawingView.worldToScreenY(editWorldY)-nsp
+            val lp=boxContainer.layoutParams as FrameLayout.LayoutParams; lp.leftMargin=(sx-dp(6)).toInt().coerceAtLeast(0); lp.topMargin=(sy-dp(6)).toInt().coerceAtLeast(0); boxContainer.layoutParams=lp
+            val tlp=toolbarScroll.layoutParams as FrameLayout.LayoutParams; tlp.leftMargin=lp.leftMargin; tlp.topMargin=(lp.topMargin-toolbarHeightEstimate).coerceAtLeast(0); toolbarScroll.layoutParams=tlp
+        }
         drawingView.onScaleChanged={ updateET() }; drawingView.onCanvasTransformed={ updateET() }
-        activeEditText=et; activeToolbar=toolbar; et.requestFocus()
+        activeEditText=et; activeToolbar=toolbarScroll; activeEditBox=boxContainer; et.requestFocus()
         et.post{ val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager; imm.showSoftInput(et,InputMethodManager.SHOW_IMPLICIT) }
     }
 
     private fun closeInlineEditor(commit:Boolean, delete:Boolean=false) {
-        val et=activeEditText?:return; val tb=activeToolbar
+        val et=activeEditText?:return; val tb=activeToolbar; val box=activeEditBox
         val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager; imm.hideSoftInputFromWindow(et.windowToken,0)
         val text=et.text.toString(); val spans=mutableListOf<TextSpanData>(); val ed=et.text
         for(span in ed.getSpans(0,ed.length,Any::class.java)){ val s=ed.getSpanStart(span);val e=ed.getSpanEnd(span); if(s<0||e<0||s>=e) continue; when(span){ is StyleSpan->spans.add(TextSpanData(s,e,'S',span.style)); is ForegroundColorSpan->spans.add(TextSpanData(s,e,'C',span.foregroundColor)); is UnderlineSpan->spans.add(TextSpanData(s,e,'U',0)); is BackgroundColorSpan->spans.add(TextSpanData(s,e,'H',span.backgroundColor)) } }
-        canvasContainer.removeView(et); if(tb!=null) canvasContainer.removeView(tb)
+        if(box!=null) canvasContainer.removeView(box) else canvasContainer.removeView(et)
+        if(tb!=null) canvasContainer.removeView(tb)
         val item=editingItem
         if(commit&&!delete&&text.isNotBlank()){
             drawingView.defaultTextSize=editSize
-            if(item!=null){ item.text=text;item.color=editColor;item.size=editSize;item.rotation=editRotation;item.spans=spans;item.isEditing=false;item.fontFamily=pendingFontFamily; drawingView.clampTextItemToPage(item) }
-            else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily)
+            if(item!=null){ item.text=text;item.color=editColor;item.size=editSize;item.rotation=editRotation;item.spans=spans;item.isEditing=false;item.fontFamily=pendingFontFamily;item.opacity=editOpacity; drawingView.clampTextItemToPage(item) }
+            else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
-        drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;editingItem=null
+        drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
     }
 
     private fun launchCamera() {

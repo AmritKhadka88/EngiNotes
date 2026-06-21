@@ -31,7 +31,7 @@ import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 enum class PenStyle { FOUNTAIN, BALL, PENCIL, CALLIGRAPHY, MARKER }
-enum class BrushStyle { ROUND, FLAT, TEXTURE, INK, WATERCOLOR }
+enum class BrushStyle { ROUND, FLAT, TEXTURE, INK, WATERCOLOR, CRAYON, CHARCOAL, AIRBRUSH }
 enum class EraserShape { ROUND, SQUARE }
 
 enum class Tool {
@@ -325,6 +325,34 @@ class StrokeData(
         return path
     }
 
+    // Builds a true angled-nib calligraphy stroke: a flat nib held at a fixed angle (like a real
+    // calligraphy/chisel-tip pen) produces wide strokes when moving perpendicular to the nib edge
+    // and thin strokes when moving parallel to it - this traces both edges of that ribbon shape
+    // instead of using a uniform round stroke width.
+    fun buildCalligraphyRibbonPath(): Path {
+        val ribbon = Path()
+        if (points.size < 4) return buildPath()
+        val nibAngle = Math.toRadians(45.0) // nib held at 45 degrees, like a real chisel-tip pen
+        val nibLen = strokeWidth * 1.3f
+        val nx = (kotlin.math.cos(nibAngle) * nibLen / 2f).toFloat()
+        val ny = (kotlin.math.sin(nibAngle) * nibLen / 2f).toFloat()
+        val leftEdge = mutableListOf<Pair<Float, Float>>()
+        val rightEdge = mutableListOf<Pair<Float, Float>>()
+        var i = 0
+        while (i + 1 < points.size) {
+            val px = points[i]; val py = points[i + 1]
+            leftEdge.add(Pair(px - nx, py - ny))
+            rightEdge.add(Pair(px + nx, py + ny))
+            i += 2
+        }
+        if (leftEdge.isEmpty()) return buildPath()
+        ribbon.moveTo(leftEdge[0].first, leftEdge[0].second)
+        for (p in leftEdge.drop(1)) ribbon.lineTo(p.first, p.second)
+        for (p in rightEdge.reversed()) ribbon.lineTo(p.first, p.second)
+        ribbon.close()
+        return ribbon
+    }
+
     private fun addPolygon(path: Path, left: Float, top: Float, right: Float, bottom: Float, sides: Int, isStar: Boolean) {
         val cx = (left + right) / 2f; val cy = (top + bottom) / 2f
         val rx = (right - left) / 2f; val ry = (bottom - top) / 2f
@@ -357,15 +385,28 @@ class StrokeData(
                 BrushStyle.TEXTURE -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.7f).toInt() }
                 BrushStyle.INK -> { p.strokeWidth = strokeWidth * 1.6f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
                 BrushStyle.WATERCOLOR -> { p.strokeWidth = strokeWidth * 1.8f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.45f).toInt() }
+                BrushStyle.CRAYON -> { p.strokeWidth = strokeWidth * 1.2f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.85f).toInt(); p.pathEffect = android.graphics.DashPathEffect(floatArrayOf(3.5f, 1f), 0f) }
+                BrushStyle.CHARCOAL -> { p.strokeWidth = strokeWidth * 1.3f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.6f).toInt(); p.pathEffect = android.graphics.DashPathEffect(floatArrayOf(1.5f, 0.8f), 0f) }
+                BrushStyle.AIRBRUSH -> { p.strokeWidth = strokeWidth * 2.0f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.3f).toInt(); p.maskFilter = android.graphics.BlurMaskFilter(strokeWidth * 0.5f, android.graphics.BlurMaskFilter.Blur.NORMAL) }
             }
             return p
         }
         when (penStyle) {
+            // Fountain: smooth ink flow, rounded joins/caps, true to nib width
             PenStyle.FOUNTAIN -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
-            PenStyle.BALL -> { p.strokeWidth = strokeWidth * 0.8f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
-            PenStyle.PENCIL -> { p.strokeWidth = strokeWidth * 0.7f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.75f).toInt() }
-            PenStyle.CALLIGRAPHY -> { p.strokeWidth = strokeWidth * 1.3f; p.strokeJoin = Paint.Join.MITER; p.strokeCap = Paint.Cap.SQUARE }
-            PenStyle.MARKER -> { p.strokeWidth = strokeWidth * 2.2f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.SQUARE; p.alpha = (opacity * 0.55f).toInt() }
+            // Ballpoint: thinner and crisper than fountain, uniform line - no flow variation
+            PenStyle.BALL -> { p.strokeWidth = (strokeWidth * 0.65f).coerceAtLeast(1.5f); p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
+            // Pencil: thin, slightly grainy via a fine dash pattern that breaks up the line like graphite texture
+            PenStyle.PENCIL -> {
+                p.strokeWidth = (strokeWidth * 0.55f).coerceAtLeast(1f); p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND
+                p.alpha = (opacity * 0.8f).toInt()
+                p.pathEffect = android.graphics.DashPathEffect(floatArrayOf(2.2f, 0.6f), 0f)
+            }
+            // Calligraphy: handled separately via the ribbon path (see buildCalligraphyRibbonPath);
+            // this stroke paint is only a fallback for hit-test rendering contexts.
+            PenStyle.CALLIGRAPHY -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
+            // Marker: wide, flat-tipped, translucent felt tip - BUTT cap so the tip doesn't overshoot the stroke ends
+            PenStyle.MARKER -> { p.strokeWidth = strokeWidth * 2.4f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.BUTT; p.alpha = (opacity * 0.5f).toInt() }
         }
         return p
     }
@@ -388,6 +429,7 @@ class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var
     var isEditing: Boolean = false
     var maxWidth: Float = 0f  // 0 = unbounded (legacy); >0 = wrap to this width
     var fontFamily: String = "sans-serif"  // Typeface family name
+    var opacity: Int = 255
 }
 
 class ImageItem(var path: String, var x: Float, var y: Float, var w: Float, var h: Float, var rotation: Float) {
@@ -696,15 +738,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 canvas.drawBitmap(bmp, null, RectF(action.x, action.y, action.x + action.w, action.y + action.h), null)
             }
             is StrokeItem -> {
+                val isCalligraphyPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.CALLIGRAPHY
+                val renderPath = if (isCalligraphyPen) action.data.buildCalligraphyRibbonPath() else action.path
+                val renderPaint = if (isCalligraphyPen) Paint(action.paint).apply { style = Paint.Style.FILL } else action.paint
                 if (action.data.rotation != 0f) {
                     val b = getBounds(action)
                     if (b != null) {
                         val cx = (b[0] + b[2]) / 2f; val cy = (b[1] + b[3]) / 2f
                         canvas.save(); canvas.rotate(action.data.rotation, cx, cy)
                         action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }
-                        canvas.drawPath(action.path, action.paint); canvas.restore()
-                    } else { action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }; canvas.drawPath(action.path, action.paint) }
-                } else { action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }; canvas.drawPath(action.path, action.paint) }
+                        canvas.drawPath(renderPath, renderPaint); canvas.restore()
+                    } else { action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }; canvas.drawPath(renderPath, renderPaint) }
+                } else { action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }; canvas.drawPath(renderPath, renderPaint) }
             }
             is TextItem -> { if (!action.isEditing) drawTextItem(canvas, action) }
             is ImageItem -> {
@@ -745,7 +790,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         canvas.scale(scaleFactor, scaleFactor)
         drawBackground(canvas)
         for (action in actions) drawActionItem(canvas, action, true)
-        currentItem?.let { canvas.drawPath(it.path, it.paint) }
+        currentItem?.let {
+            val isCalligraphyPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.CALLIGRAPHY
+            if (isCalligraphyPen) canvas.drawPath(it.data.buildCalligraphyRibbonPath(), Paint(it.paint).apply { style = Paint.Style.FILL })
+            else canvas.drawPath(it.path, it.paint)
+        }
         drawSelection(canvas)
         drawArcHandles(canvas)
         drawAutoSelectOverlay(canvas)
@@ -817,7 +866,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun drawTextItem(canvas: Canvas, item: TextItem) {
-        val tp = TextPaint(); tp.color = item.color; tp.textSize = item.size; tp.isAntiAlias = true
+        val tp = TextPaint(); tp.color = item.color; tp.alpha = item.opacity; tp.textSize = item.size; tp.isAntiAlias = true
         try { tp.typeface = Typeface.create(item.fontFamily, Typeface.NORMAL) } catch (e: Exception) {}
         val spannable = SpannableString(item.text)
         for (sp in item.spans) {
@@ -1657,13 +1706,57 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
+    // Splits a freeform stroke around the eraser circle using segment-to-point distance (not just
+    // sample-point distance), so erasing is accurate to what's visually under the eraser circle
+    // regardless of how sparse the stroke's recorded points are.
     private fun splitStrokeAroundEraser(data: StrokeData, ex: Float, ey: Float, r: Float): List<StrokeItem> {
         val pts = data.points
         if (pts.size < 4) { if (pts.size >= 2 && distance(ex, ey, pts[0], pts[1]) <= r) return emptyList(); return listOf(StrokeItem(data, data.buildPath(), data.toPaint())) }
-        val segs = mutableListOf<MutableList<Float>>(); var cur = mutableListOf<Float>(); var i = 0
-        while (i + 1 < pts.size) { if (distance(ex, ey, pts[i], pts[i + 1]) <= r) { if (cur.size >= 4) segs.add(cur); cur = mutableListOf() } else { cur.add(pts[i]); cur.add(pts[i + 1]) }; i += 2 }
-        if (cur.size >= 4) segs.add(cur)
-        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill); StrokeItem(d, d.buildPath(), d.toPaint()) }
+
+        // Walk each segment; if the eraser circle intersects it, cut precisely at the circle
+        // boundary (inserting the intersection point) instead of dropping the whole segment.
+        val segs = mutableListOf<MutableList<Float>>(); var cur = mutableListOf<Float>()
+        fun flush() { if (cur.size >= 4) segs.add(cur); cur = mutableListOf() }
+
+        var i = 0
+        var prevIn = distance(ex, ey, pts[0], pts[1]) <= r
+        if (!prevIn) { cur.add(pts[0]); cur.add(pts[1]) }
+        while (i + 3 < pts.size) {
+            val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
+            val segDist = distToSeg(ex, ey, x1, y1, x2, y2)
+            val curIn = segDist <= r
+            if (curIn != prevIn) {
+                // Find the point along this segment where it crosses the eraser circle boundary
+                // and use that as the cut point so erasing follows the actual visual edge.
+                val cut = findCircleSegIntersection(ex, ey, r, x1, y1, x2, y2)
+                if (cut != null) {
+                    if (!prevIn) { cur.add(cut.first); cur.add(cut.second); flush() }
+                    else { cur.add(cut.first); cur.add(cut.second) }
+                } else flush()
+            }
+            if (!curIn) { cur.add(x2); cur.add(y2) }
+            prevIn = curIn
+            i += 2
+        }
+        flush()
+        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle); StrokeItem(d, d.buildPath(), d.toPaint()) }
+    }
+
+    // Finds where a line segment crosses a circle boundary (used to cut strokes precisely at the
+    // eraser's visual edge rather than at the nearest sample point).
+    private fun findCircleSegIntersection(cx: Float, cy: Float, r: Float, x1: Float, y1: Float, x2: Float, y2: Float): Pair<Float, Float>? {
+        val dx = x2 - x1; val dy = y2 - y1
+        val fx = x1 - cx; val fy = y1 - cy
+        val a = dx * dx + dy * dy
+        if (a < 0.0001f) return null
+        val b = 2f * (fx * dx + fy * dy)
+        val c = fx * fx + fy * fy - r * r
+        val disc = b * b - 4f * a * c
+        if (disc < 0f) return null
+        val sq = kotlin.math.sqrt(disc)
+        val t1 = (-b - sq) / (2f * a); val t2 = (-b + sq) / (2f * a)
+        val t = if (t1 in 0f..1f) t1 else if (t2 in 0f..1f) t2 else return null
+        return Pair(x1 + t * dx, y1 + t * dy)
     }
 
     private fun strokeHitTest(data: StrokeData, x: Float, y: Float, r: Float): Boolean {
@@ -1685,10 +1778,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return distance(px, py, x1 + t * dx, y1 + t * dy)
     }
 
-    fun addText(text: String, x: Float, y: Float, size: Float, rotation: Float, color: Int, spans: MutableList<TextSpanData> = mutableListOf(), fontFamily: String = "sans-serif") {
+    fun addText(text: String, x: Float, y: Float, size: Float, rotation: Float, color: Int, spans: MutableList<TextSpanData> = mutableListOf(), fontFamily: String = "sans-serif", opacity: Int = 255) {
         if (text.isBlank()) return
         val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPage(x, y) else Pair(x, y)
-        val item = TextItem(text, cx, cy, color, size, rotation); item.spans = spans; item.fontFamily = fontFamily
+        val item = TextItem(text, cx, cy, color, size, rotation); item.spans = spans; item.fontFamily = fontFamily; item.opacity = opacity
         actions.add(item); redoStack.clear(); invalidate()
     }
 
@@ -1805,7 +1898,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
             is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}\n")
-            is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\n")
+            is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\n")
             is AudioItem -> sb.append("AUDIO\u0001${a.filePath}\u0001${a.title.replace("\u0001","_")}\u0001${a.x}\u0001${a.y}\u0001${a.durationMs}\n")
@@ -1854,6 +1947,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             }
                             if (p.size >= 10) item.maxWidth = p[9].toFloatOrNull() ?: 0f
                             if (p.size >= 11) item.fontFamily = p[10]
+                            if (p.size >= 12) item.opacity = p[11].toIntOrNull() ?: 255
                             actions.add(item)
                         }
                         i++

@@ -4,6 +4,8 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.text.StaticLayout
+import android.text.TextPaint
 
 data class CellSpan(val row: Int, val col: Int, val rowSpan: Int, val colSpan: Int)
 
@@ -22,11 +24,21 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
     var rows: Int = 3
     var cols: Int = 3
 
+    // Column auto-grows up to this width as the user types; beyond it, text wraps to new lines
+    // instead of pushing the column wider. Merged cells are exempt (they can grow freely).
+    val MAX_AUTO_COL_WIDTH = 260f
+    val MIN_COL_WIDTH = 60f
+    val MIN_ROW_HEIGHT = 44f
+
     private val _cells: MutableList<MutableList<TableCell>> = MutableList(rows) { MutableList(cols) { TableCell() } }
 
     val rowHeights: MutableList<Float> = MutableList(rows) { 60f }
     val colWidths: MutableList<Float> = MutableList(cols) { 100f }
     val mergeSpans: MutableMap<Pair<Int, Int>, CellSpan> = mutableMapOf()
+
+    // Tracks whether a column's width has been manually adjusted by the user (drag-resize).
+    // Once true, auto-grow-on-type no longer changes that column - the user is in full control.
+    val colManuallyResized: MutableList<Boolean> = MutableList(cols) { false }
 
     val cells: Array<Array<TableCell>>
         get() = Array(rows) { r -> Array(cols) { c -> getCellSafe(r, c) } }
@@ -39,6 +51,8 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
 
     fun getCellPublic(r: Int, c: Int): TableCell = getCellSafe(r, c)
 
+    private fun ensureColFlagSize() { while (colManuallyResized.size < cols) colManuallyResized.add(false) }
+
     fun insertRow(at: Int) {
         val newRow = MutableList(cols) { TableCell() }
         if (at >= _cells.size) _cells.add(newRow) else _cells.add(at, newRow)
@@ -48,6 +62,7 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
         for (row in _cells) {
             if (at >= row.size) row.add(TableCell()) else row.add(at, TableCell())
         }
+        if (at >= colManuallyResized.size) colManuallyResized.add(false) else colManuallyResized.add(at, false)
     }
 
     fun deleteRow(at: Int) {
@@ -56,6 +71,7 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
 
     fun deleteCol(at: Int) {
         for (row in _cells) { if (at < row.size) row.removeAt(at) }
+        if (at < colManuallyResized.size) colManuallyResized.removeAt(at)
     }
 
     fun totalWidth(): Float = colWidths.sum()
@@ -94,6 +110,47 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
         return -1
     }
 
+    // Marks a column as manually resized (called when the user drags a column border directly)
+    fun markColManuallyResized(col: Int) { ensureColFlagSize(); if (col in colManuallyResized.indices) colManuallyResized[col] = true }
+
+    // Builds a StaticLayout for a cell's text wrapped to the given width - used both for drawing
+    // and for measuring how tall the cell needs to be once text wraps.
+    private fun buildCellLayout(cell: TableCell, wrapWidth: Int): StaticLayout {
+        val tp = TextPaint(); tp.color = cell.textColor; tp.textSize = cell.textSize; tp.isAntiAlias = true
+        val text = if (cell.text.isEmpty()) " " else cell.text
+        return StaticLayout.Builder.obtain(text, 0, text.length, tp, wrapWidth.coerceAtLeast(20)).setIncludePad(false).build()
+    }
+
+    // Recomputes column width (auto-grow up to MAX_AUTO_COL_WIDTH, unless manually resized or
+    // the cell belongs to a merged span) and row height (always grows to fit wrapped text) for
+    // a single cell after its text changes. Call this from the editor's text-change listener.
+    fun recalcCellSize(row: Int, col: Int) {
+        ensureColFlagSize()
+        val cell = getCellSafe(row, col)
+        if (cell.mergedInto != null) return
+        val span = mergeSpans[Pair(row, col)]
+        val isMergedMaster = span != null && (span.rowSpan > 1 || span.colSpan > 1)
+
+        val tp = TextPaint(); tp.textSize = cell.textSize; tp.isAntiAlias = true
+        val longestLineWidth = (cell.text.split("\n").maxOfOrNull { tp.measureText(it) } ?: 0f) + 16f
+
+        val curColWidth = colWidths.getOrElse(col) { 100f }
+        val manuallyResized = col < colManuallyResized.size && colManuallyResized[col]
+
+        val effectiveMax = if (isMergedMaster) Float.MAX_VALUE else MAX_AUTO_COL_WIDTH
+        if (!manuallyResized && !isMergedMaster) {
+            val newWidth = longestLineWidth.coerceIn(MIN_COL_WIDTH, effectiveMax)
+            if (newWidth > curColWidth) colWidths[col] = newWidth
+        }
+
+        // Row height grows to fit wrapped content at the (possibly just-updated) column width
+        val wrapWidth = (colWidths.getOrElse(col) { 100f } - 16f).toInt().coerceAtLeast(20)
+        val layout = buildCellLayout(cell, wrapWidth)
+        val neededHeight = layout.height + 16f
+        val curRowHeight = rowHeights.getOrElse(row) { 60f }
+        if (neededHeight > curRowHeight) rowHeights[row] = neededHeight.coerceAtLeast(MIN_ROW_HEIGHT)
+    }
+
     fun draw(canvas: Canvas, scaleFactor: Float) {
         canvas.save()
         canvas.translate(x, y); canvas.rotate(rotation); canvas.translate(-x, -y)
@@ -106,11 +163,11 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
         for (r in 0 until rows) for (c in 0 until cols) {
             val cell = getCellSafe(r, c); if (cell.mergedInto != null || cell.text.isBlank()) continue
             val rect = cellRect(r, c)
-            val tp = Paint(); tp.color = cell.textColor; tp.textSize = cell.textSize; tp.isAntiAlias = true
-            val textW = tp.measureText(cell.text)
-            val tx = when (cell.alignment) { 1 -> rect.centerX() - textW / 2f; 2 -> rect.right - textW - 4f; else -> rect.left + 4f }
-            val ty = rect.centerY() - (tp.descent() + tp.ascent()) / 2f
-            canvas.drawText(cell.text, tx, ty, tp)
+            val wrapWidth = (rect.width() - 8f).toInt().coerceAtLeast(20)
+            val layout = buildCellLayout(cell, wrapWidth)
+            val ty = rect.top + 4f + (rect.height() - 8f - layout.height).coerceAtLeast(0f) / 2f
+            val tx = when (cell.alignment) { 1 -> rect.left + (rect.width() - layout.width) / 2f; 2 -> rect.right - layout.width - 4f; else -> rect.left + 4f }
+            canvas.save(); canvas.translate(tx, ty); layout.draw(canvas); canvas.restore()
         }
         for (r in 0 until rows) for (c in 0 until cols) {
             val cell = getCellSafe(r, c); if (cell.mergedInto != null) continue
@@ -146,6 +203,7 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
         sb.append("TABLE\u0001$x\u0001$y\u0001$rotation\u0001$rows\u0001$cols\n")
         sb.append("ROWHEIGHTS\u0001${rowHeights.joinToString(",")}\n")
         sb.append("COLWIDTHS\u0001${colWidths.joinToString(",")}\n")
+        sb.append("COLRESIZED\u0001${colManuallyResized.joinToString(",")}\n")
         for (r in 0 until rows) for (c in 0 until cols) {
             val cell = getCellSafe(r, c); val mi = cell.mergedInto
             sb.append("CELL\u0001$r\u0001$c\u0001${cell.textColor}\u0001${cell.bgColor}\u0001${cell.textSize}\u0001${cell.borderColor}\u0001${cell.borderWidth}\u0001${cell.alignment}\u0001${mi?.first ?: -1}\u0001${mi?.second ?: -1}\u0001${cell.text.replace("\n", "\u0002")}\n")
@@ -168,6 +226,7 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
                 when {
                     line.startsWith("ROWHEIGHTS\u0001") -> { item.rowHeights.clear(); item.rowHeights.addAll(line.substringAfter("\u0001").split(",").mapNotNull { it.toFloatOrNull() }) }
                     line.startsWith("COLWIDTHS\u0001") -> { item.colWidths.clear(); item.colWidths.addAll(line.substringAfter("\u0001").split(",").mapNotNull { it.toFloatOrNull() }) }
+                    line.startsWith("COLRESIZED\u0001") -> { item.colManuallyResized.clear(); item.colManuallyResized.addAll(line.substringAfter("\u0001").split(",").map { it.trim() == "true" }) }
                     line.startsWith("CELL\u0001") -> {
                         val p = line.split("\u0001")
                         if (p.size >= 12) {
