@@ -1753,6 +1753,20 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // rotateHandle/deleteHandle are created further below (after the 8 perimeter handles),
+        // but layoutTopHandles() needs to be callable from wireCornerResize/wireMiddleReflow
+        // which are defined before those handles exist - so they're pre-declared here as
+        // lateinit and assigned later, same pattern Kotlin requires for any forward reference
+        // among local functions/properties (local declarations aren't hoisted).
+        lateinit var rotateHandle: FrameLayout
+        lateinit var deleteHandle: FrameLayout
+        fun layoutTopHandles() {
+            rotateHandle.x = boxW / 2f - dp(16)
+            rotateHandle.y = -dp(44).toFloat()
+            deleteHandle.x = boxW - dp(16).toFloat()
+            deleteHandle.y = -dp(44).toFloat()
+        }
+
         // 8 resize handles around the full perimeter (corners + edge midpoints), same as a shape.
         // Fractions are relative to the box: (0,0)=top-left ... (1,1)=bottom-right.
         val tl = handle("#2196F3", 0f, 0f)
@@ -1820,7 +1834,7 @@ class MainActivity : AppCompatActivity() {
 
         // Rotate handle, offset above the box like other shapes' rotate handle - positioned via
         // setX/setY (not margins) for the same reliability reason as the 8 resize handles above.
-        val rotateHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
+        rotateHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
         rotateHandle.addView(View(this).apply {
             layoutParams = FrameLayout.LayoutParams(dp(16), dp(16)).also { it.gravity = Gravity.CENTER }
             background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor("#4CAF50")) }
@@ -1836,7 +1850,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Delete (close) handle, top-right corner like other shapes' delete X
-        val deleteHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
+        deleteHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
         deleteHandle.addView(ImageView(this).apply {
             layoutParams = FrameLayout.LayoutParams(dp(20), dp(20)).also { it.gravity = Gravity.CENTER }
             setImageResource(R.drawable.ic_text_delete)
@@ -1846,14 +1860,6 @@ class MainActivity : AppCompatActivity() {
         deleteHandle.setOnClickListener { drawingView.removeTextItem(item); dismissTextSelectionBox(); drawingView.invalidate() }
         box.addView(deleteHandle)
 
-        // Position rotate (centered above box) and delete (top-right, above box) using absolute
-        // pixel coordinates, same reasoning as layoutHandles() above.
-        fun layoutTopHandles() {
-            rotateHandle.x = boxW / 2f - dp(16)
-            rotateHandle.y = -dp(44).toFloat()
-            deleteHandle.x = boxW - dp(16).toFloat()
-            deleteHandle.y = -dp(44).toFloat()
-        }
         val lp = FrameLayout.LayoutParams(boxW, boxH)
         lp.leftMargin = (anchorScreenX - dp(6)).toInt().coerceAtLeast(0); lp.topMargin = (anchorScreenY - screenSizePx - dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(box, lp)
