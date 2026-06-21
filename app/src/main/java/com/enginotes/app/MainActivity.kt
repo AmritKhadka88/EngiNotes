@@ -597,7 +597,7 @@ class MainActivity : AppCompatActivity() {
         listOf("Save","Save As","Export","Export Window","Clear Canvas").forEach { popup.menu.add(it) }
         if (currentFileName != null) popup.menu.add("Delete This Note")
         popup.menu.add("Add to Book")
-        listOf("Open PDF","Chart Builder","Handwriting to Text","Settings","Exit").forEach { popup.menu.add(it) }
+        listOf("Open PDF","Chart Builder","Handwriting to Text","Settings","About","Exit").forEach { popup.menu.add(it) }
         popup.setOnMenuItemClickListener { item ->
             when {
                 item.title.toString().startsWith("Note:") -> {}
@@ -618,6 +618,7 @@ class MainActivity : AppCompatActivity() {
                 item.title == "Chart Builder" -> chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java))
                 item.title == "Handwriting to Text" -> startActivity(android.content.Intent(this, HandwritingActivity::class.java))
                 item.title == "Settings" -> showSettingsDialog()
+                item.title == "About" -> showAboutDialog()
                 item.title == "Exit" -> confirmThenExit()
             }
             true
@@ -819,6 +820,39 @@ class MainActivity : AppCompatActivity() {
                     2 -> pickPdfForOcrLauncher.launch("application/pdf")
                 }
             }.show()
+    }
+
+    private fun showAboutDialog() {
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(16), dp(24), dp(8)); gravity = Gravity.CENTER_HORIZONTAL }
+        try {
+            val icon = ImageView(this).apply {
+                setImageResource(R.mipmap.ic_launcher)
+                layoutParams = LinearLayout.LayoutParams(dp(80), dp(80))
+            }
+            container.addView(icon)
+        } catch (e: Exception) {}
+        container.addView(TextView(this).apply {
+            text = "EngiNotes"; textSize = 22f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#2A2A2A")); gravity = Gravity.CENTER
+            setPadding(0, dp(12), 0, dp(4))
+        })
+        val versionName = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "" }
+        if (!versionName.isNullOrBlank()) {
+            container.addView(TextView(this).apply {
+                text = "Version $versionName"; textSize = 13f; setTextColor(Color.parseColor("#9E9E9E")); gravity = Gravity.CENTER
+                setPadding(0, 0, 0, dp(16))
+            })
+        }
+        container.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)); setBackgroundColor(Color.parseColor("#EEEEEE")) })
+        container.addView(TextView(this).apply {
+            text = "Developed by Amrit Khadka"; textSize = 15f; setTextColor(Color.parseColor("#2A2A2A")); gravity = Gravity.CENTER
+            setPadding(0, dp(16), 0, dp(4))
+        })
+        container.addView(TextView(this).apply {
+            text = "Contributor: Avinash Khadgi"; textSize = 14f; setTextColor(Color.parseColor("#5A5A5A")); gravity = Gravity.CENTER
+            setPadding(0, 0, 0, dp(8))
+        })
+        AlertDialog.Builder(this).setView(container).setPositiveButton("Close", null).show()
     }
 
     private fun showSettingsDialog() {
@@ -1600,6 +1634,27 @@ class MainActivity : AppCompatActivity() {
     // box (handled by DrawingView's gesture detector, which calls showInlineTextEditor directly)
     // is what actually opens it for typing. This satisfies "single tap = select + resize, double
     // tap = edit, drag inside = move."
+    // Recomputes and applies the selection box's width/height/position in place - cheap enough
+    // to call on every ACTION_MOVE during a resize/move drag, unlike tearing down and rebuilding
+    // the whole view hierarchy (which is what made resizing feel rough/jumpy before).
+    private fun updateTextSelectionBoxSize(box: FrameLayout, moveSurface: View, item: TextItem, screenX: Float, screenY: Float) {
+        val density = resources.displayMetrics.density
+        val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
+        val convenientBoost = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 1.6f else 1f
+        val screenSizePx = (if (useActualSize) item.size else item.size * drawingView.getScaleFactor()) * convenientBoost
+        val approxW = (item.text.split("\n").maxOfOrNull { it.length } ?: 1) * screenSizePx * 0.55f
+        val approxH = item.text.split("\n").size * screenSizePx * 1.2f
+        val boxW = approxW.toInt().coerceAtLeast(dp(60)); val boxH = approxH.toInt().coerceAtLeast(dp(36))
+
+        val lp = box.layoutParams as FrameLayout.LayoutParams
+        // Keep the box's top-left anchored where it currently is rather than re-deriving from
+        // screenX/screenY each time, so the box grows/shrinks from its current position smoothly
+        // instead of snapping back to its original spawn point.
+        lp.width = boxW; lp.height = boxH
+        box.layoutParams = lp
+        val mlp = moveSurface.layoutParams; mlp.width = boxW; mlp.height = boxH; moveSurface.layoutParams = mlp
+    }
+
     private fun showTextSelectionBox(item: TextItem, screenX: Float, screenY: Float) {
         if (textSelectionItem === item) return
         dismissTextSelectionBox()
@@ -1667,7 +1722,10 @@ class MainActivity : AppCompatActivity() {
                     val dy = ev.rawY - resizeStartRawY
                     item.size = (resizeStartSize + dy * 0.5f).coerceIn(8f, 400f)
                     drawingView.invalidate()
-                    dismissTextSelectionBox(); showTextSelectionBox(item, screenX, screenY)
+                    // Cheap in-place update instead of destroying and rebuilding the whole box
+                    // hierarchy on every pixel of drag (which was the cause of the janky/jumpy
+                    // resize feel) - just recompute and apply the box's own dimensions directly.
+                    updateTextSelectionBoxSize(box, moveSurface, item, screenX, screenY)
                     true
                 }
                 else -> true

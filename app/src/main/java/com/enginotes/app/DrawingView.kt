@@ -631,7 +631,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private var scaleFactor = 1f
     private var translateX = 0f; private var translateY = 0f
-    private var prevFocusX = 0f; private var prevFocusY = 0f
     private var twoFingerLastX = 0f; private var twoFingerLastY = 0f
     private var hoverX: Float? = null; private var hoverY: Float? = null
 
@@ -646,10 +645,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         currentTool in SHAPE_TOOLS || currentTool == Tool.ARC || currentTool == Tool.FILL
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+        private var accumulatedScaleFactor = 1f
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
-            prevFocusX = detector.focusX; prevFocusY = detector.focusY; return true
+            accumulatedScaleFactor = 1f
+            return true
         }
         override fun onScale(detector: ScaleGestureDetector): Boolean {
+            // Deadzone: real two-finger panning naturally has small, noisy variance in the
+            // distance between fingers even when the user's intent is purely "move the page,"
+            // and ScaleGestureDetector reports every tiny variance as a scale change. Accumulate
+            // the raw factor and only apply it once it's moved meaningfully away from 1.0 (a
+            // deliberate pinch), otherwise this frame's "scale" is just pan noise and gets
+            // ignored - the actual panning is handled separately by the two-finger midpoint
+            // tracking in onTouchEvent, so this listener no longer needs to (and shouldn't) also
+            // apply focus-point translation, which was duplicating that pan and compounding the
+            // jitter.
+            accumulatedScaleFactor *= detector.scaleFactor
+            if (kotlin.math.abs(accumulatedScaleFactor - 1f) < 0.02f) return true
+
             val minScale = if (canvasMode != CanvasMode.INFINITE && width > 0 && height > 0) {
                 minOf(width.toFloat() / (pageWidthPx() * 1.5f), height.toFloat() / (pageHeightPx() * 1.5f)).coerceAtLeast(0.05f)
             } else 0.2f
@@ -658,9 +671,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             translateX = detector.focusX - (detector.focusX - translateX) * factor
             translateY = detector.focusY - (detector.focusY - translateY) * factor
             scaleFactor = newScale
-            translateX += detector.focusX - prevFocusX
-            translateY += detector.focusY - prevFocusY
-            prevFocusX = detector.focusX; prevFocusY = detector.focusY
             clampTranslation()
             onScaleChanged?.invoke(scaleFactor)
             onCanvasTransformed?.invoke()
@@ -1220,7 +1230,36 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     item.path = item.data.buildPath()
                 }
             }
-            is TextItem -> { val dy = wy - resizePrevWorldY; item.size = (item.size + dy * 0.5f).coerceIn(8f, 300f) }
+            is TextItem -> {
+                val isCorner = handle == HandleType.TL || handle == HandleType.TR || handle == HandleType.BL || handle == HandleType.BR
+                val isHorizontalMiddle = handle == HandleType.ML || handle == HandleType.MR
+                when {
+                    isCorner -> {
+                        // Corner handle: scale font size, same as resizing a shape by its corner.
+                        // Uses diagonal drag distance from the opposite corner so it feels like a
+                        // proportional scale rather than a raw vertical-drag size change.
+                        val dy = wy - resizePrevWorldY
+                        item.size = (item.size + dy * 0.6f).coerceIn(8f, 400f)
+                    }
+                    isHorizontalMiddle -> {
+                        // Middle handle: reflow the wrap width, font size stays fixed. Cannot
+                        // shrink narrower than the longest word's rendered width (the "compact"
+                        // floor) - past that point there's nothing left to rearrange, just like
+                        // a shape can't be resized smaller than its minimum content.
+                        val tp = TextPaint(); tp.textSize = item.size
+                        try { tp.typeface = Typeface.create(item.fontFamily, Typeface.NORMAL) } catch (e: Exception) {}
+                        val longestWord = item.text.split(Regex("\\s+")).maxOfOrNull { tp.measureText(it) } ?: 40f
+                        val compactFloor = (longestWord + 24f).coerceAtLeast(60f)
+                        val dx = if (handle == HandleType.MR) (wx - resizePrevWorldX) else (resizePrevWorldX - wx)
+                        val current = if (item.maxWidth > 0f) item.maxWidth else textWrapWidth(item).toFloat()
+                        item.maxWidth = (current + dx * 2f).coerceIn(compactFloor, pageWidthPx())
+                    }
+                    else -> {
+                        // TM/BM (vertical-only handles) don't apply to text - there's nothing
+                        // meaningful to resize purely vertically for a text block.
+                    }
+                }
+            }
             is AudioItem -> {
                 // Audio items are a circle, not a rectangle, so resizing just scales the radius
                 // based on how far the drag point is from the item's center - works the same
