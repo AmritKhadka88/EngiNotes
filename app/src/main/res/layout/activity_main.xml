@@ -95,12 +95,6 @@
             android:paddingEnd="8dp"
             android:gravity="center_vertical">
 
-            <ImageButton android:id="@+id/btnAutoSelect"
-                android:layout_width="38dp" android:layout_height="38dp"
-                android:layout_marginEnd="2dp"
-                android:src="@drawable/ic_autoselect" android:scaleType="centerInside" android:padding="8dp"
-                android:background="@drawable/btn_toolbar_selector" />
-
             <ImageButton android:id="@+id/btnQuickColor"
                 android:layout_width="38dp" android:layout_height="38dp"
                 android:layout_marginEnd="2dp"
@@ -135,6 +129,7 @@
 
     <!-- Primary toolbar: small icons, cream/white, at BOTTOM -->
     <HorizontalScrollView
+        android:id="@+id/primaryToolbarScroll"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="#FFFFFF"
