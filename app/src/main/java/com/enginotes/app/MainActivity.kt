@@ -139,38 +139,56 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Only Android system typefaces that are genuinely visually distinct are listed here -
+    // earlier versions included several names (Notosans, Source Sans, Comic, Serif Light,
+    // Elegant Script) that all silently resolved to the same underlying font as something else
+    // already in the list, so picking them looked identical. Each entry below maps to a real,
+    // different system typeface.
     private val availableFonts = listOf(
         "Default (Sans)" to "sans-serif",
         "Serif" to "serif",
-        "Monospace" to "monospace",
+        "Monospace (LaTeX-style)" to "monospace",
         "Sans Condensed" to "sans-serif-condensed",
         "Sans Light" to "sans-serif-light",
         "Sans Thin" to "sans-serif-thin",
         "Sans Medium" to "sans-serif-medium",
-        "Sans Black" to "sans-serif-black",
+        "Sans Black (Bold)" to "sans-serif-black",
         "Serif Monospace" to "serif-monospace",
-        "Casual" to "casual",
-        "Cursive" to "cursive",
-        "Sans-serif Smallcaps" to "sans-serif-smallcaps",
-        "Notosans" to "sans-serif",
-        "Roboto Condensed Light" to "sans-serif-condensed-light",
+        "Casual / Handwriting" to "casual",
+        "Cursive / Script" to "cursive",
+        "Small Caps" to "sans-serif-smallcaps",
+        "Sans Condensed Light" to "sans-serif-condensed-light",
         "Sans Condensed Medium" to "sans-serif-condensed-medium",
-        "Source Sans" to "sans-serif",
-        "Sans Narrow" to "sans-serif-condensed",
-        "Serif Light" to "serif",
-        "Comic" to "casual",
-        "Elegant Script" to "cursive"
+        "Sans Narrow" to "sans-serif-condensed"
     )
 
     private fun showFontPickerDialog(et: EditText) {
-        val names = availableFonts.map { it.first }.toTypedArray()
-        AlertDialog.Builder(this).setTitle("Font").setItems(names) { _, i ->
-            val family = availableFonts[i].second
-            val item = editingItem
-            pendingFontFamily = family
-            if (item != null) item.fontFamily = family
-            try { et.typeface = Typeface.create(family, Typeface.NORMAL) } catch (e: Exception) {}
-        }.show()
+        // Render each font name IN its own typeface so the list is a genuine live preview,
+        // not just text labels - per request, you should be able to see the actual writing
+        // style of each font, not just its name in the default font.
+        val scroll = ScrollView(this)
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(4), dp(8), dp(4), dp(8)) }
+        lateinit var dialog: AlertDialog
+        for ((label, family) in availableFonts) {
+            val row = TextView(this).apply {
+                text = label
+                textSize = 18f
+                setTextColor(Color.parseColor("#212121"))
+                setPadding(dp(20), dp(14), dp(20), dp(14))
+                try { typeface = Typeface.create(family, Typeface.NORMAL) } catch (e: Exception) {}
+                setOnClickListener {
+                    pendingFontFamily = family
+                    editingItem?.let { it.fontFamily = family }
+                    try { et.typeface = Typeface.create(family, Typeface.NORMAL) } catch (e: Exception) {}
+                    dialog.dismiss()
+                }
+            }
+            container.addView(row)
+            container.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)); setBackgroundColor(Color.parseColor("#EEEEEE")) })
+        }
+        scroll.addView(container)
+        dialog = AlertDialog.Builder(this).setTitle("Font").setView(scroll).setNegativeButton("Cancel", null).create()
+        dialog.show()
     }
 
     private val chartLauncher = registerForActivityResult(
@@ -1395,7 +1413,10 @@ class MainActivity : AppCompatActivity() {
         dismissCellEditor()
         dismissAllFloatingPanels()
         pendingBold=false; pendingItalic=false; pendingUnderline=false; pendingHighlight=null
-        editingItem=item; editWorldX=item?.x?:worldX; editWorldY=item?.y?:worldY; editRotation=item?.rotation?:0f; editColor=item?.color?:drawingView.currentColor; editSize=item?.size?:drawingView.defaultTextSize
+        // Default font size: 50pt in Convenient layout (large, comfortable writing feel),
+        // 12pt in Print/Infinite layouts (true-to-scale, matches standard document text).
+        val layoutDefaultSize = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 50f * PT_TO_PX else 12f * PT_TO_PX
+        editingItem=item; editWorldX=item?.x?:worldX; editWorldY=item?.y?:worldY; editRotation=item?.rotation?:0f; editColor=item?.color?:drawingView.currentColor; editSize=item?.size?:layoutDefaultSize
         editOpacity = item?.opacity ?: 255
         pendingFontFamily = item?.fontFamily ?: "sans-serif"
         val density=resources.displayMetrics.density
@@ -1420,16 +1441,54 @@ class MainActivity : AppCompatActivity() {
         if(!useActualSize) et.rotation=editRotation
         et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } } }; override fun afterTextChanged(s:Editable?){} })
 
-        // Visible border frame around the editable box, drawn via a GradientDrawable stroke
+        // Visible border frame around the editable box, drawn via a GradientDrawable stroke.
+        // Bigger padding and a thicker, more visible border than before per request.
         boxContainer.background = android.graphics.drawable.GradientDrawable().apply {
             setStroke(dp(2), Color.parseColor("#2196F3"))
             setColor(Color.parseColor("#08000000"))
         }
         boxContainer.addView(et, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
 
+        val params=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
+        params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0); params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
+        canvasContainer.addView(boxContainer,params)
+
+        // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
+        // the whole box (and the underlying text item's world position) without needing to leave
+        // the editor or tap elsewhere - works both while actively typing and after.
+        val moveHandle = View(this).apply {
+            val sz = dp(18)
+            val hp = FrameLayout.LayoutParams(sz, sz); hp.gravity = Gravity.TOP or Gravity.START; hp.leftMargin = -sz/2; hp.topMargin = -sz/2
+            layoutParams = hp
+            background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.parseColor("#2196F3")); setStroke(dp(2), Color.WHITE) }
+        }
+        var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
+        moveHandle.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    moveStartRawX = ev.rawX; moveStartRawY = ev.rawY
+                    val lp = boxContainer.layoutParams as FrameLayout.LayoutParams
+                    moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
+                    true
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dx = (ev.rawX - moveStartRawX).toInt(); val dy = (ev.rawY - moveStartRawY).toInt()
+                    val lp = boxContainer.layoutParams as FrameLayout.LayoutParams
+                    lp.leftMargin = (moveStartLeft + dx).coerceAtLeast(0); lp.topMargin = (moveStartTop + dy).coerceAtLeast(0)
+                    boxContainer.layoutParams = lp
+                    // Keep world position in sync so committing the edit places the text correctly
+                    val newScreenX = lp.leftMargin + dp(6); val newScreenY = lp.topMargin + dp(6) + screenSizePx
+                    editWorldX = drawingView.screenToWorldX(newScreenX.toFloat()); editWorldY = drawingView.screenToWorldY(newScreenY)
+                    true
+                }
+                else -> true
+            }
+        }
+        boxContainer.addView(moveHandle)
+
         // Resize handle on the right edge - drag to widen/narrow the box, which moves the wrap point
         val resizeHandle = View(this).apply {
-            val sz = dp(16)
+            val sz = dp(18)
             val hp = FrameLayout.LayoutParams(sz, sz); hp.gravity = Gravity.END or Gravity.CENTER_VERTICAL; hp.rightMargin = -sz/2
             layoutParams = hp
             background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor("#2196F3")) }
@@ -1450,9 +1509,40 @@ class MainActivity : AppCompatActivity() {
         }
         boxContainer.addView(resizeHandle)
 
-        val params=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
-        params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0); params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
-        canvasContainer.addView(boxContainer,params)
+        // Rotate handle on the bottom-right corner
+        val rotateHandle = View(this).apply {
+            val sz = dp(18)
+            val hp = FrameLayout.LayoutParams(sz, sz); hp.gravity = Gravity.BOTTOM or Gravity.END; hp.rightMargin = -sz/2; hp.bottomMargin = -sz/2
+            layoutParams = hp
+            background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.parseColor("#4CAF50")); setStroke(dp(2), Color.WHITE) }
+        }
+        var rotateStartRawX = 0f; var rotateStartRawY = 0f; var rotateStartRotation = 0f
+        rotateHandle.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> { rotateStartRawX = ev.rawX; rotateStartRawY = ev.rawY; rotateStartRotation = editRotation; true }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dx = ev.rawX - rotateStartRawX
+                    // Simple horizontal-drag-to-rotate: dragging right rotates clockwise
+                    editRotation = rotateStartRotation + dx * 0.5f
+                    if (!useActualSize) { boxContainer.rotation = editRotation }
+                    true
+                }
+                else -> true
+            }
+        }
+        boxContainer.addView(rotateHandle)
+
+        // Delete handle, top-right corner
+        val deleteHandle = ImageView(this).apply {
+            val sz = dp(20)
+            val hp = FrameLayout.LayoutParams(sz, sz); hp.gravity = Gravity.TOP or Gravity.END; hp.rightMargin = -sz/2; hp.topMargin = -sz/2
+            layoutParams = hp
+            setImageResource(R.drawable.ic_text_delete)
+            background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor("#D32F2F")) }
+            setPadding(dp(3), dp(3), dp(3), dp(3))
+            setOnClickListener { closeInlineEditor(false, delete = true) }
+        }
+        boxContainer.addView(deleteHandle)
 
         // Options toolbar positioned directly above the editing box (not pinned to screen bottom)
         val toolbar=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(6).toFloat(); setPadding(dp(6),dp(6),dp(6),dp(6)) }

@@ -328,53 +328,57 @@ class StrokeData(
         return path
     }
 
-    // Builds a true angled-nib calligraphy stroke: a flat nib held at a fixed angle (like a real
-    // calligraphy/chisel-tip pen) produces wide strokes when moving perpendicular to the nib edge
-    // and thin strokes when moving parallel to it.
-    //
-    // BACKSTROKE FIX: the nib offset is computed per-segment from the LOCAL stroke direction
-    // (not a single global offset for the whole stroke). When you draw forward then reverse
-    // direction over the same path, each segment's offset rotates to match, so the ribbon's
-    // left/right edges never cross over each other and self-intersect. EVEN_ODD fill type is
-    // also set as a second line of defense - even if two segments visually overlap (e.g. you
-    // retrace almost exactly the same pixels), even-odd filling treats the overlap as a single
-    // solid region instead of XORing it into a hole, which is what caused the "erasing itself"
-    // glitch the angled-fixed-offset version had.
-    fun buildCalligraphyRibbonPath(): Path {
-        val ribbon = Path()
-        ribbon.fillType = Path.FillType.WINDING
-        if (points.size < 4) return buildPath()
+    // Builds the calligraphy nib as a LIST of small per-segment quads instead of one giant
+    // polygon for the whole stroke. This is the robust fix for the self-erasure bug: a single
+    // closed polygon traced as "all left edge points then all right edge points reversed" will
+    // self-intersect at any sharp reversal (loops in cursive letters, backstrokes, crossing
+    // strokes), and Android's winding-rule fill turns those self-intersections into holes -
+    // which is exactly the black-blob/erasure artifact seen when writing cursive signatures.
+    // Drawing each segment as its own small filled quad sidesteps the problem entirely: each
+    // quad is independently solid, overlapping quads just alpha-composite normally (like real
+    // ink laid down stroke by stroke), and there is no shared winding state across the stroke
+    // for a reversal to corrupt.
+    fun buildCalligraphySegmentQuads(): List<Path> {
+        val quads = mutableListOf<Path>()
+        if (points.size < 4) return quads
         val nibAngle = Math.toRadians(45.0) // nib held at 45 degrees, like a real chisel-tip pen
         val nibDirX = kotlin.math.cos(nibAngle).toFloat(); val nibDirY = kotlin.math.sin(nibAngle).toFloat()
         val halfNib = strokeWidth * 0.65f
-
-        val leftEdge = mutableListOf<Pair<Float, Float>>()
-        val rightEdge = mutableListOf<Pair<Float, Float>>()
         var i = 0
-        while (i + 1 < points.size) {
-            val px = points[i]; val py = points[i + 1]
-            // The nib's projected width at this point depends on how aligned the local stroke
-            // direction is with the nib's fixed angle - perpendicular movement = full width,
-            // parallel movement = near zero. We still offset along the FIXED nib axis (that's
-            // what makes it look like a real chisel tip), but we clamp width using local direction
-            // so retraced backstrokes get consistent geometry instead of inverted polygons.
-            val dirX: Float; val dirY: Float
-            if (i + 3 < points.size) { dirX = points[i + 2] - px; dirY = points[i + 3] - py }
-            else if (i >= 2) { dirX = px - points[i - 2]; dirY = py - points[i - 1] }
-            else { dirX = 1f; dirY = 0f }
-            val dirLen = kotlin.math.hypot(dirX.toDouble(), dirY.toDouble()).toFloat().coerceAtLeast(0.01f)
-            val ndx = dirX / dirLen; val ndy = dirY / dirLen
-            // Width factor: cross product magnitude between stroke direction and nib axis (0..1)
+        while (i + 3 < points.size) {
+            val x1 = points[i]; val y1 = points[i + 1]; val x2 = points[i + 2]; val y2 = points[i + 3]
+            val dx = x2 - x1; val dy = y2 - y1
+            val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(0.01f)
+            val ndx = dx / len; val ndy = dy / len
+            // Width at this segment: how perpendicular the stroke direction is to the nib's fixed
+            // axis. Horizontal motion (perpendicular to a 45-degree nib) reads thick; motion along
+            // the nib axis reads thin - the classic chisel-tip behavior.
             val widthFactor = kotlin.math.abs(ndx * nibDirY - ndy * nibDirX).coerceIn(0.18f, 1f)
             val nx = nibDirX * halfNib * widthFactor; val ny = nibDirY * halfNib * widthFactor
-            leftEdge.add(Pair(px - nx, py - ny))
-            rightEdge.add(Pair(px + nx, py + ny))
+            val quad = Path()
+            quad.moveTo(x1 - nx, y1 - ny)
+            quad.lineTo(x2 - nx, y2 - ny)
+            quad.lineTo(x2 + nx, y2 + ny)
+            quad.lineTo(x1 + nx, y1 + ny)
+            quad.close()
+            quads.add(quad)
             i += 2
         }
-        if (leftEdge.isEmpty()) return buildPath()
-        ribbon.moveTo(leftEdge[0].first, leftEdge[0].second)
-        for (p in leftEdge.drop(1)) ribbon.lineTo(p.first, p.second)
-        for (p in rightEdge.reversed()) ribbon.lineTo(p.first, p.second)
+        return quads
+    }
+
+    // Legacy single-polygon path - kept only as a fallback for very short strokes (under 2
+    // segments) where quad-splitting has nothing to split; never used for real handwriting.
+    fun buildCalligraphyRibbonPath(): Path {
+        val ribbon = Path()
+        if (points.size < 4) return buildPath()
+        val nibAngle = Math.toRadians(45.0)
+        val nibDirX = kotlin.math.cos(nibAngle).toFloat(); val nibDirY = kotlin.math.sin(nibAngle).toFloat()
+        val halfNib = strokeWidth * 0.65f
+        val px = points[0]; val py = points[1]
+        val nx = nibDirX * halfNib; val ny = nibDirY * halfNib
+        ribbon.moveTo(px - nx, py - ny); ribbon.lineTo(points[2] - nx, points[3] - ny)
+        ribbon.lineTo(points[2] + nx, points[3] + ny); ribbon.lineTo(px + nx, py + ny)
         ribbon.close()
         return ribbon
     }
@@ -560,7 +564,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var arcDivisions: Int = 3
     var paperType: PaperType = PaperType.GRID
     var paperColor: Int = Color.parseColor("#FFFDE7")
-    var defaultTextSize: Float = 16f * 1.333f
+    var defaultTextSize: Float = 50f * 1.333f
 
     var autoSelectShape: AutoSelectShape = AutoSelectShape.RECTANGLE
     var autoSelectDivide: AutoSelectDivide = AutoSelectDivide.WHOLE
@@ -678,7 +682,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 Tool.SELECT -> {
                     val hit = findTextItemAt(wx, wy)
-                    if (hit != null && selectedItem === hit) {
+                    if (hit != null) {
+                        // Text items skip the dashed canvas-selection state entirely - a single
+                        // tap (first or repeated) always opens the editing box directly, since the
+                        // box itself now carries move/resize/rotate/delete controls. This avoids
+                        // showing two different selection UIs in sequence for the same item.
+                        selectedItem = null
                         hit.isEditing = true; invalidate()
                         onTextEditRequest?.invoke(hit, e.x, e.y, wx, wy)
                     }
@@ -826,6 +835,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val isFountainPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.FOUNTAIN && action.data.widths.size >= 2
                 val isPencilPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.PENCIL && action.data.widths.size >= 2
                 if (isPencilPen && action.data.rotation == 0f) { action.data.drawPencilStroke(canvas, action.paint); return }
+                if (isCalligraphyPen && action.data.rotation == 0f) {
+                    val quadPaint = Paint(action.paint).apply { style = Paint.Style.FILL }
+                    for (quad in action.data.buildCalligraphySegmentQuads()) canvas.drawPath(quad, quadPaint)
+                    return
+                }
                 val renderPath = when { isCalligraphyPen -> action.data.buildCalligraphyRibbonPath(); isFountainPen -> action.data.buildFountainRibbonPath(); else -> action.path }
                 val renderPaint = if (isCalligraphyPen || isFountainPen) Paint(action.paint).apply { style = Paint.Style.FILL } else action.paint
                 if (action.data.rotation != 0f) {
@@ -882,7 +896,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val isFountainPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.FOUNTAIN && it.data.widths.size >= 2
             val isPencilPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.PENCIL && it.data.widths.size >= 2
             when {
-                isCalligraphyPen -> canvas.drawPath(it.data.buildCalligraphyRibbonPath(), Paint(it.paint).apply { style = Paint.Style.FILL })
+                isCalligraphyPen -> { val qp = Paint(it.paint).apply { style = Paint.Style.FILL }; for (quad in it.data.buildCalligraphySegmentQuads()) canvas.drawPath(quad, qp) }
                 isFountainPen -> canvas.drawPath(it.data.buildFountainRibbonPath(), Paint(it.paint).apply { style = Paint.Style.FILL })
                 isPencilPen -> it.data.drawPencilStroke(canvas, it.paint)
                 else -> canvas.drawPath(it.path, it.paint)
@@ -1181,6 +1195,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val pad = 20f / scaleFactor
         for (a in actions.reversed()) {
             if (a is FillItem) continue
+            // TextItem is excluded here deliberately: text uses its own single-tap-to-edit path
+            // (see Tool.SELECT handling in onSingleTapConfirmed) so it never enters the generic
+            // drag/resize selection state, which used to cause two different selection UIs to
+            // flash in sequence for the same tap.
+            if (a is TextItem) continue
             if (a is AudioItem) { if (distance(x, y, a.x, a.y) <= 60f / scaleFactor) return a; continue }
             if (a is TableItem) {
                 val b = getBounds(a) ?: continue
@@ -1348,11 +1367,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                 }
                 if (!handled) { activeHandle = HandleType.NONE; selectedItem = findItemAt(wx, wy) }
-                val sel = selectedItem
-                if (sel is TextItem) {
-                    val r = Runnable { sel.isEditing = true; invalidate(); onTextEditRequest?.invoke(sel, event.x, event.y, wx, wy) }
-                    longPressRunnable = r; longPressHandler.postDelayed(r, 500)
-                }
                 invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
