@@ -36,7 +36,7 @@ enum class EraserShape { ROUND, SQUARE }
 
 enum class Tool {
     SELECT, FILL, PEN, BRUSH, ERASER, HIGHLIGHTER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
-    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT, AUTOSELECT, EXPORT_WINDOW,
+    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT, AUTOSELECT, LASSO, EXPORT_WINDOW,
     HEPTAGON, OCTAGON, NONAGON, DECAGON, TRAPEZOID, PARALLELOGRAM, RIGHT_TRIANGLE, ISOSCELES_TRIANGLE,
     SEMICIRCLE, HALF_ELLIPSE, TEARDROP, HEART, PLUS_THICK, DOUBLE_ARROW, BRACKET_L, BRACKET_R,
     CLOUD, SPEECH_BUBBLE, LIGHTNING, MOON, CHEVRON_RIGHT, CHEVRON_LEFT, CHEVRON_UP, CHEVRON_DOWN,
@@ -543,7 +543,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         set(value) {
             if (field == Tool.SELECT && value != Tool.SELECT) selectedItem = null
             if (field == Tool.ARC && value != Tool.ARC) activeArcItem = null
-            if (field == Tool.AUTOSELECT && value != Tool.AUTOSELECT) {
+            if ((field == Tool.AUTOSELECT || field == Tool.LASSO) && value != Tool.AUTOSELECT && value != Tool.LASSO) {
                 selectedGroup = null; regionPath = null; regionStart = null
             }
             field = value; invalidate()
@@ -1618,6 +1618,62 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
+    // Lasso: freeform selection by tracing an irregular loop with your finger, instead of a
+    // straight-edged rectangle. Selects any item whose bounds overlap the traced region - same
+    // "touch it, select it" feel as a crossing-select, just with an arbitrary shape rather than a
+    // box. This is the third selection mode (Select / Box Select / Lasso).
+    private fun handleLasso(event: MotionEvent) {
+        val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
+        val hr = 16f / scaleFactor; val hit = 70f / scaleFactor
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val group = selectedGroup
+                if (group != null && group.isNotEmpty()) {
+                    val gb = groupBounds(group)
+                    if (gb != null) {
+                        val delX = gb[2] + hr * 5f; val delY = gb[1] - hr * 5f
+                        if (distance(wx, wy, delX, delY) <= hit) { for (it in group) actions.remove(it); selectedGroup = null; invalidate(); return }
+                        val gcx = (gb[0] + gb[2]) / 2f
+                        val gHandles = listOf(gb[0] to gb[1], gcx to gb[1], gb[2] to gb[1], gb[0] to (gb[1]+gb[3])/2f, gb[2] to (gb[1]+gb[3])/2f, gb[0] to gb[3], gcx to gb[3], gb[2] to gb[3])
+                        var found = -1
+                        for ((hi, hpos) in gHandles.withIndex()) { if (distance(wx, wy, hpos.first, hpos.second) <= hit) { found = hi; break } }
+                        if (found >= 0) { groupResizeHandle = found; groupResizeOrigBounds = gb.copyOf(); groupResizeItemSnapshots = group.map { getBounds(it)?.copyOf() }; invalidate(); return }
+                        if (wx in gb[0]..gb[2] && wy in gb[1]..gb[3]) { groupMoveStartX = wx; groupMoveStartY = wy; groupResizeHandle = -1; invalidate(); return }
+                    }
+                    selectedGroup = null
+                }
+                regionStart = Pair(wx, wy); regionPath = Path().apply { moveTo(wx, wy) }; invalidate()
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val group = selectedGroup
+                if (group != null && group.isNotEmpty()) {
+                    if (groupResizeHandle >= 0) {
+                        val origW = (groupResizeOrigBounds[2] - groupResizeOrigBounds[0]).coerceAtLeast(1f); val origH = (groupResizeOrigBounds[3] - groupResizeOrigBounds[1]).coerceAtLeast(1f)
+                        var nl = groupResizeOrigBounds[0]; var nt = groupResizeOrigBounds[1]; var nr = groupResizeOrigBounds[2]; var nb = groupResizeOrigBounds[3]
+                        when (groupResizeHandle) { 0 -> { nl = wx; nt = wy }; 1 -> nt = wy; 2 -> { nr = wx; nt = wy }; 3 -> nl = wx; 4 -> nr = wx; 5 -> { nl = wx; nb = wy }; 6 -> nb = wy; 7 -> { nr = wx; nb = wy } }
+                        val sx = (nr - nl).coerceAtLeast(10f) / origW; val sy = (nb - nt).coerceAtLeast(10f) / origH
+                        for (it in group) scaleItemInGroup(it, groupResizeOrigBounds[0], groupResizeOrigBounds[1], sx, sy)
+                    } else { val dx = wx - groupMoveStartX; val dy = wy - groupMoveStartY; for (it in group) moveItem(it, dx, dy); groupMoveStartX = wx; groupMoveStartY = wy }
+                    invalidate(); return
+                }
+                // Freeform: just keep adding points to trace whatever shape the finger draws,
+                // unlike box-select's rectangle reconstruction.
+                regionPath?.lineTo(wx, wy)
+                invalidate()
+            }
+            MotionEvent.ACTION_UP -> {
+                groupResizeHandle = -1; val group = selectedGroup; if (group != null && group.isNotEmpty()) return
+                val rp = regionPath
+                if (rp != null) {
+                    rp.close()
+                    val rf = RectF(); rp.computeBounds(rf, true)
+                    selectItemsInRegion(buildRegion(rp), floatArrayOf(rf.left, rf.top, rf.right, rf.bottom), false)
+                }
+                regionPath = null; regionStart = null; invalidate()
+            }
+        }
+    }
+
     private fun drawExportWindowOverlay(canvas: Canvas) {
         val s = exportWindowStart ?: return; val e = exportWindowEnd ?: return
         val left = minOf(s.first, e.first); val top = minOf(s.second, e.second)
@@ -1640,12 +1696,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun drawAutoSelectOverlay(canvas: Canvas) {
         regionPath?.let { rp ->
             // AutoCAD convention: window select (left-to-right) = solid blue; crossing select
-            // (right-to-left) = dashed green. Gives a clear visual hint of which mode is active
-            // while still dragging.
-            val color = if (isWindowSelect) "#2196F3" else "#4CAF50"
-            val fp = Paint(); fp.color = Color.parseColor(if (isWindowSelect) "#332196F3" else "#334CAF50"); fp.style = Paint.Style.FILL
+            // (right-to-left) = dashed green. Lasso (freeform) gets its own purple so it reads as
+            // a clearly different, third selection mode rather than a degenerate rectangle.
+            val color = if (currentTool == Tool.LASSO) "#9C27B0" else if (isWindowSelect) "#2196F3" else "#4CAF50"
+            val fillColorHex = if (currentTool == Tool.LASSO) "#339C27B0" else if (isWindowSelect) "#332196F3" else "#334CAF50"
+            val fp = Paint(); fp.color = Color.parseColor(fillColorHex); fp.style = Paint.Style.FILL
             val sp = Paint(); sp.color = Color.parseColor(color); sp.style = Paint.Style.STROKE; sp.strokeWidth = 2f / scaleFactor
-            if (!isWindowSelect) sp.pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f / scaleFactor, 6f / scaleFactor), 0f)
+            if (currentTool == Tool.LASSO || !isWindowSelect) sp.pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f / scaleFactor, 6f / scaleFactor), 0f)
             canvas.drawPath(rp, fp); canvas.drawPath(rp, sp)
         }
         val group = selectedGroup
@@ -1820,6 +1877,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (currentTool == Tool.SELECT) { gestureDetector.onTouchEvent(event); handleSelect(event); return true }
         if (currentTool == Tool.ARC) { handleArc(event); return true }
         if (currentTool == Tool.AUTOSELECT) { gestureDetector.onTouchEvent(event); handleAutoSelect(event); return true }
+        if (currentTool == Tool.LASSO) { handleLasso(event); return true }
         if (currentTool == Tool.EXPORT_WINDOW) { handleExportWindow(event); return true }
         if (canvasMode == CanvasMode.INFINITE && currentItem == null && event.actionMasked == MotionEvent.ACTION_MOVE && isFinger) gestureDetector.onTouchEvent(event)
         handleDrawing(event); return true
