@@ -335,11 +335,13 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnUndo).setOnClickListener { closeInlineEditor(true); drawingView.undo() }
         findViewById<ImageButton>(R.id.btnRedo).setOnClickListener { closeInlineEditor(true); drawingView.redo() }
         findViewById<ImageButton>(R.id.btnDraw).setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.PEN) }
+        findViewById<ImageButton>(R.id.btnDraw).setOnLongClickListener { showPenOptionsPanel(); true }
         findViewById<ImageButton>(R.id.btnQuickEraser).setOnClickListener { btn ->
             closeInlineEditor(true)
             if (drawingView.currentTool == Tool.ERASER) showEraserModePopup(btn)
             else setActiveTool(btn as ImageButton, Tool.ERASER)
         }
+        findViewById<ImageButton>(R.id.btnQuickEraser).setOnLongClickListener { showEraserOptionsPanel(); true }
         findViewById<ImageButton?>(R.id.btnSelect)?.setOnClickListener { btn ->
             closeInlineEditor(true)
             if (drawingView.currentTool == Tool.SELECT) showSelectModePopup(btn)
@@ -358,7 +360,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         findViewById<ImageButton?>(R.id.btnAutoSelect)?.setOnClickListener { showAutoSelectModeDialog(it as ImageButton) }
-        findViewById<ImageButton?>(R.id.btnShapes)?.setOnClickListener { showShapesPicker(it as ImageButton) }
         findViewById<ImageButton?>(R.id.btnQuickColor)?.setOnClickListener { showColorGridDialog { c -> drawingView.currentColor = c } }
         findViewById<ImageButton?>(R.id.btnQuickSize)?.setOnClickListener { showSizePicker() }
         findViewById<ImageButton?>(R.id.btnQuickFill)?.setOnClickListener { btn ->
@@ -366,6 +367,10 @@ class MainActivity : AppCompatActivity() {
             if (drawingView.currentTool == Tool.FILL) showFillModePopup(btn)
             else { setActiveTool(btn as ImageButton, Tool.FILL) }
         }
+        findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.HIGHLIGHTER) }
+        findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnLongClickListener { showHighlighterOptionsPanel(); true }
+        findViewById<ImageButton?>(R.id.btnBrush)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.BRUSH) }
+        findViewById<ImageButton?>(R.id.btnBrush)?.setOnLongClickListener { showBrushOptionsPanel(); true }
 
         findViewById<ImageButton?>(R.id.btnMenu)?.setOnClickListener { onMenuClick(it) }
         findViewById<ImageButton?>(R.id.btnBack)?.setOnClickListener { confirmThenExit() }
@@ -414,7 +419,7 @@ class MainActivity : AppCompatActivity() {
         popup.show()
     }
 
-    private fun setActiveTool(btn: ImageButton?, tool: Tool) { drawingView.currentTool = tool; setActiveToolbarBtn(btn) }
+    private fun setActiveTool(btn: ImageButton?, tool: Tool) { drawingView.currentTool = tool; setActiveToolbarBtn(btn); dismissPenOptionsPanel(); dismissEraserOptionsPanel(); dismissHighlighterOptionsPanel(); dismissBrushOptionsPanel(); dismissShapesPicker() }
     private fun setActiveToolbarBtn(btn: ImageButton?) { activeToolbarButton?.isSelected = false; activeToolbarButton = btn; btn?.isSelected = true }
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
     private fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
@@ -550,6 +555,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showShapesPicker(anchor: ImageButton) {
+        // Toggle: if already showing, just close it
+        if (shapesPickerOverlay != null) {
+            dismissShapesPicker()
+            return
+        }
+        dismissAllFloatingPanels()
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.WHITE)
@@ -568,17 +579,31 @@ class MainActivity : AppCompatActivity() {
                 layoutParams = p
                 setOnClickListener {
                     setActiveTool(null, tool)
-                    shapesPickerOverlay?.let { canvasContainer.removeView(it) }; shapesPickerOverlay = null
+                    dismissShapesPicker()
                 }
             }
             row.addView(b)
         }
         scroll.addView(row)
         container.addView(scroll)
-        shapesPickerOverlay?.let { canvasContainer.removeView(it) }
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(54), Gravity.BOTTOM)
         canvasContainer.addView(container, lp)
         shapesPickerOverlay = container
+    }
+
+    private fun dismissShapesPicker() {
+        shapesPickerOverlay?.let { canvasContainer.removeView(it) }
+        shapesPickerOverlay = null
+    }
+
+    // Closes any open floating panel (shapes picker, pen options, eraser options) -
+    // called whenever the user picks a different tool so panels never get stuck open.
+    private fun dismissAllFloatingPanels() {
+        dismissShapesPicker()
+        dismissPenOptionsPanel()
+        dismissEraserOptionsPanel()
+        dismissHighlighterOptionsPanel()
+        dismissBrushOptionsPanel()
     }
 
     private fun showInsertMenu() {
@@ -749,6 +774,400 @@ class MainActivity : AppCompatActivity() {
         for(y in h-1 downTo 0){ for(x in 0 until w){ val p=pixels[y*w+x]; row[x*3]=(p and 0xFF).toByte(); row[x*3+1]=((p shr 8) and 0xFF).toByte(); row[x*3+2]=((p shr 16) and 0xFF).toByte() }; fos.write(row) }
     }
 
+    // ── Pen / Eraser options panels (Notewise-style long-press panels) ──
+
+    private var penOptionsPanel: View? = null
+    private var eraserOptionsPanel: LinearLayout? = null
+
+    private fun dismissPenOptionsPanel() { penOptionsPanel?.let { canvasContainer.removeView(it) }; penOptionsPanel = null }
+    private fun dismissEraserOptionsPanel() { eraserOptionsPanel?.let { canvasContainer.removeView(it) }; eraserOptionsPanel = null }
+
+    private fun showPenOptionsPanel() {
+        if (penOptionsPanel != null) { dismissPenOptionsPanel(); return }
+        dismissAllFloatingPanels()
+        setActiveTool(findViewById(R.id.btnDraw), Tool.PEN)
+
+        val scroll = ScrollView(this)
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.WHITE)
+            elevation = dp(10).toFloat()
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
+
+        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        header.addView(TextView(this).apply {
+            text = "Pen"; textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#2A2A2A"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        header.addView(TextView(this).apply {
+            text = "\u2715"; textSize = 18f; setTextColor(Color.parseColor("#888888")); setPadding(dp(10), dp(6), dp(10), dp(6))
+            setOnClickListener { dismissPenOptionsPanel() }
+        })
+        panel.addView(header)
+
+        // Pen type row: Fountain / Ball / Pencil / Calligraphy / Marker
+        fun sectionLabel(text: String) {
+            panel.addView(TextView(this).apply { this.text = text; textSize = 13f; setTextColor(Color.parseColor("#8D6E63")); setPadding(0, dp(14), 0, dp(6)) })
+        }
+        sectionLabel("Pen Type")
+        val typeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val penTypes = listOf("Fountain" to PenStyle.FOUNTAIN, "Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
+        val typeButtons = mutableListOf<TextView>()
+        for ((label, style) in penTypes) {
+            val b = TextView(this).apply {
+                text = label; textSize = 12f; gravity = Gravity.CENTER
+                setPadding(dp(6), dp(10), dp(6), dp(10))
+                val p = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f); p.setMargins(dp(2), 0, dp(2), 0)
+                layoutParams = p
+                setOnClickListener {
+                    drawingView.currentPenStyle = style
+                    typeButtons.forEach { tb -> tb.setBackgroundColor(Color.parseColor("#F0EBE0")); tb.setTextColor(Color.parseColor("#4A4A4A")) }
+                    setBackgroundColor(Color.parseColor("#8D6E63")); setTextColor(Color.WHITE)
+                }
+            }
+            if (style == drawingView.currentPenStyle) { b.setBackgroundColor(Color.parseColor("#8D6E63")); b.setTextColor(Color.WHITE) }
+            else { b.setBackgroundColor(Color.parseColor("#F0EBE0")); b.setTextColor(Color.parseColor("#4A4A4A")) }
+            typeButtons.add(b); typeRow.addView(b)
+        }
+        panel.addView(typeRow)
+
+        // Thickness slider
+        sectionLabel("Thickness: ${drawingView.currentStrokeWidth.toInt()}")
+        val thickLbl = panel.getChildAt(panel.childCount - 1) as TextView
+        val thickSeek = SeekBar(this).apply {
+            max = 60; progress = drawingView.currentStrokeWidth.toInt().coerceIn(1, 60)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { val vv = v.coerceAtLeast(1); drawingView.currentStrokeWidth = vv.toFloat(); thickLbl.text = "Thickness: $vv" }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        panel.addView(thickSeek)
+
+        // Opacity slider
+        sectionLabel("Opacity: ${(drawingView.currentOpacity * 100 / 255)}%")
+        val opLbl = panel.getChildAt(panel.childCount - 1) as TextView
+        val opSeek = SeekBar(this).apply {
+            max = 100; progress = drawingView.currentOpacity * 100 / 255
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { val vv = v.coerceAtLeast(5); drawingView.currentOpacity = (vv * 255 / 100); opLbl.text = "Opacity: $vv%" }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        panel.addView(opSeek)
+
+        // Color row
+        sectionLabel("Color")
+        val colorScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        val colorRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val quickColors = listOf(Color.BLACK, Color.RED, Color.parseColor("#03A9F4"), Color.parseColor("#4CAF50"), Color.parseColor("#FFC107"), Color.parseColor("#FF9800"), Color.parseColor("#9C27B0"), Color.parseColor("#1A237E"))
+        for (c in quickColors) {
+            val sw = View(this).apply {
+                val p = LinearLayout.LayoutParams(dp(34), dp(34)); p.setMargins(dp(4), 0, dp(4), 0); layoutParams = p
+                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(c); setStroke(if (c == drawingView.currentColor) dp(3) else 0, Color.parseColor("#8D6E63")) }
+                setOnClickListener { drawingView.currentColor = c; dismissPenOptionsPanel(); showPenOptionsPanel() }
+            }
+            colorRow.addView(sw)
+        }
+        val morePicker = TextView(this).apply {
+            text = "+"; textSize = 18f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#4A4A4A"))
+            val p = LinearLayout.LayoutParams(dp(34), dp(34)); p.setMargins(dp(4), 0, dp(4), 0); layoutParams = p
+            setBackgroundColor(Color.parseColor("#F0EBE0"))
+            setOnClickListener { showColorGridDialog { c -> drawingView.currentColor = c; dismissPenOptionsPanel(); showPenOptionsPanel() } }
+        }
+        colorRow.addView(morePicker)
+        colorScroll.addView(colorRow)
+        panel.addView(colorScroll)
+
+        scroll.addView(panel)
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        canvasContainer.addView(scroll, lp)
+        penOptionsPanel = scroll
+    }
+
+    private fun showEraserOptionsPanel() {
+        if (eraserOptionsPanel != null) { dismissEraserOptionsPanel(); return }
+        dismissAllFloatingPanels()
+        setActiveTool(findViewById(R.id.btnQuickEraser), Tool.ERASER)
+
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.WHITE)
+            elevation = dp(10).toFloat()
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
+
+        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        header.addView(TextView(this).apply {
+            text = "Eraser"; textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#2A2A2A"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        header.addView(TextView(this).apply {
+            text = "\u2715"; textSize = 18f; setTextColor(Color.parseColor("#888888")); setPadding(dp(10), dp(6), dp(10), dp(6))
+            setOnClickListener { dismissEraserOptionsPanel() }
+        })
+        panel.addView(header)
+
+        fun sectionLabel(text: String) {
+            panel.addView(TextView(this).apply { this.text = text; textSize = 13f; setTextColor(Color.parseColor("#8D6E63")); setPadding(0, dp(14), 0, dp(6)) })
+        }
+
+        sectionLabel("Mode")
+        val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val modeButtons = mutableListOf<TextView>()
+        for ((label, mode) in listOf("Object" to EraserMode.OBJECT, "Area" to EraserMode.AREA)) {
+            val b = TextView(this).apply {
+                text = label; textSize = 13f; gravity = Gravity.CENTER
+                setPadding(dp(8), dp(10), dp(8), dp(10))
+                val p = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f); p.setMargins(dp(2), 0, dp(2), 0)
+                layoutParams = p
+                setOnClickListener {
+                    drawingView.eraserMode = mode
+                    modeButtons.forEach { tb -> tb.setBackgroundColor(Color.parseColor("#F0EBE0")); tb.setTextColor(Color.parseColor("#4A4A4A")) }
+                    setBackgroundColor(Color.parseColor("#8D6E63")); setTextColor(Color.WHITE)
+                }
+            }
+            if (mode == drawingView.eraserMode) { b.setBackgroundColor(Color.parseColor("#8D6E63")); b.setTextColor(Color.WHITE) }
+            else { b.setBackgroundColor(Color.parseColor("#F0EBE0")); b.setTextColor(Color.parseColor("#4A4A4A")) }
+            modeButtons.add(b); modeRow.addView(b)
+        }
+        panel.addView(modeRow)
+
+        sectionLabel("Shape")
+        val shapeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val shapeButtons = mutableListOf<TextView>()
+        for ((label, shp) in listOf("Round" to EraserShape.ROUND, "Square" to EraserShape.SQUARE)) {
+            val b = TextView(this).apply {
+                text = label; textSize = 13f; gravity = Gravity.CENTER
+                setPadding(dp(8), dp(10), dp(8), dp(10))
+                val p = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f); p.setMargins(dp(2), 0, dp(2), 0)
+                layoutParams = p
+                setOnClickListener {
+                    drawingView.eraserShape = shp
+                    shapeButtons.forEach { tb -> tb.setBackgroundColor(Color.parseColor("#F0EBE0")); tb.setTextColor(Color.parseColor("#4A4A4A")) }
+                    setBackgroundColor(Color.parseColor("#8D6E63")); setTextColor(Color.WHITE)
+                }
+            }
+            if (shp == drawingView.eraserShape) { b.setBackgroundColor(Color.parseColor("#8D6E63")); b.setTextColor(Color.WHITE) }
+            else { b.setBackgroundColor(Color.parseColor("#F0EBE0")); b.setTextColor(Color.parseColor("#4A4A4A")) }
+            shapeButtons.add(b); shapeRow.addView(b)
+        }
+        panel.addView(shapeRow)
+
+        sectionLabel("Size: ${drawingView.eraserSize.toInt()}")
+        val sizeLbl = panel.getChildAt(panel.childCount - 1) as TextView
+        val sizeSeek = SeekBar(this).apply {
+            max = 200; progress = drawingView.eraserSize.toInt().coerceIn(1, 200)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { val vv = v.coerceAtLeast(1); drawingView.eraserSize = vv.toFloat(); sizeLbl.text = "Size: $vv" }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        panel.addView(sizeSeek)
+
+        val clearBtn = TextView(this).apply {
+            text = "Clear current page"; textSize = 14f; setTextColor(Color.parseColor("#D32F2F"))
+            setPadding(0, dp(16), 0, dp(6))
+            setOnClickListener { dismissEraserOptionsPanel(); confirmThenClear() }
+        }
+        panel.addView(clearBtn)
+
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        canvasContainer.addView(panel, lp)
+        eraserOptionsPanel = panel
+    }
+
+    private var highlighterOptionsPanel: View? = null
+    private fun dismissHighlighterOptionsPanel() { highlighterOptionsPanel?.let { canvasContainer.removeView(it) }; highlighterOptionsPanel = null }
+
+    private fun showHighlighterOptionsPanel() {
+        if (highlighterOptionsPanel != null) { dismissHighlighterOptionsPanel(); return }
+        dismissAllFloatingPanels()
+        setActiveTool(findViewById(R.id.btnHighlighter), Tool.HIGHLIGHTER)
+
+        val scroll = ScrollView(this)
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.WHITE)
+            elevation = dp(10).toFloat()
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
+
+        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        header.addView(TextView(this).apply {
+            text = "Highlighter"; textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#2A2A2A"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        header.addView(TextView(this).apply {
+            text = "\u2715"; textSize = 18f; setTextColor(Color.parseColor("#888888")); setPadding(dp(10), dp(6), dp(10), dp(6))
+            setOnClickListener { dismissHighlighterOptionsPanel() }
+        })
+        panel.addView(header)
+
+        fun sectionLabel(text: String) {
+            panel.addView(TextView(this).apply { this.text = text; textSize = 13f; setTextColor(Color.parseColor("#8D6E63")); setPadding(0, dp(14), 0, dp(6)) })
+        }
+
+        sectionLabel("Thickness: ${drawingView.highlighterThickness.toInt()}")
+        val thickLbl = panel.getChildAt(panel.childCount - 1) as TextView
+        val thickSeek = SeekBar(this).apply {
+            max = 60; progress = drawingView.highlighterThickness.toInt().coerceIn(4, 60)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { val vv = v.coerceAtLeast(4); drawingView.highlighterThickness = vv.toFloat(); thickLbl.text = "Thickness: $vv" }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        panel.addView(thickSeek)
+
+        sectionLabel("Opacity: ${drawingView.highlighterOpacity}%")
+        val opLbl = panel.getChildAt(panel.childCount - 1) as TextView
+        val opSeek = SeekBar(this).apply {
+            max = 100; progress = drawingView.highlighterOpacity.coerceIn(5, 100)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { val vv = v.coerceAtLeast(5); drawingView.highlighterOpacity = vv; opLbl.text = "Opacity: $vv%" }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        panel.addView(opSeek)
+
+        sectionLabel("Color")
+        val colorScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        val colorRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val quickColors = listOf(Color.parseColor("#FFEB3B"), Color.parseColor("#FF9800"), Color.parseColor("#4CAF50"), Color.parseColor("#03A9F4"), Color.parseColor("#E91E63"), Color.parseColor("#9C27B0"), Color.BLACK, Color.RED)
+        for (c in quickColors) {
+            val sw = View(this).apply {
+                val p = LinearLayout.LayoutParams(dp(34), dp(34)); p.setMargins(dp(4), 0, dp(4), 0); layoutParams = p
+                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(c); setStroke(if (c == drawingView.currentColor) dp(3) else 0, Color.parseColor("#8D6E63")) }
+                setOnClickListener { drawingView.currentColor = c; dismissHighlighterOptionsPanel(); showHighlighterOptionsPanel() }
+            }
+            colorRow.addView(sw)
+        }
+        val morePicker = TextView(this).apply {
+            text = "+"; textSize = 18f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#4A4A4A"))
+            val p = LinearLayout.LayoutParams(dp(34), dp(34)); p.setMargins(dp(4), 0, dp(4), 0); layoutParams = p
+            setBackgroundColor(Color.parseColor("#F0EBE0"))
+            setOnClickListener { showColorGridDialog { c -> drawingView.currentColor = c; dismissHighlighterOptionsPanel(); showHighlighterOptionsPanel() } }
+        }
+        colorRow.addView(morePicker)
+        colorScroll.addView(colorRow)
+        panel.addView(colorScroll)
+
+        scroll.addView(panel)
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        canvasContainer.addView(scroll, lp)
+        highlighterOptionsPanel = scroll
+    }
+
+    private var brushOptionsPanel: View? = null
+    private fun dismissBrushOptionsPanel() { brushOptionsPanel?.let { canvasContainer.removeView(it) }; brushOptionsPanel = null }
+
+    private fun showBrushOptionsPanel() {
+        if (brushOptionsPanel != null) { dismissBrushOptionsPanel(); return }
+        dismissAllFloatingPanels()
+        setActiveTool(findViewById(R.id.btnBrush), Tool.BRUSH)
+
+        val scroll = ScrollView(this)
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.WHITE)
+            elevation = dp(10).toFloat()
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
+
+        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        header.addView(TextView(this).apply {
+            text = "Brush"; textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#2A2A2A"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        header.addView(TextView(this).apply {
+            text = "\u2715"; textSize = 18f; setTextColor(Color.parseColor("#888888")); setPadding(dp(10), dp(6), dp(10), dp(6))
+            setOnClickListener { dismissBrushOptionsPanel() }
+        })
+        panel.addView(header)
+
+        fun sectionLabel(text: String) {
+            panel.addView(TextView(this).apply { this.text = text; textSize = 13f; setTextColor(Color.parseColor("#8D6E63")); setPadding(0, dp(14), 0, dp(6)) })
+        }
+
+        sectionLabel("Brush Type")
+        val typeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val brushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR)
+        val typeButtons = mutableListOf<TextView>()
+        for ((label, style) in brushTypes) {
+            val b = TextView(this).apply {
+                text = label; textSize = 11f; gravity = Gravity.CENTER
+                setPadding(dp(4), dp(10), dp(4), dp(10))
+                val p = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f); p.setMargins(dp(2), 0, dp(2), 0)
+                layoutParams = p
+                setOnClickListener {
+                    drawingView.currentBrushStyle = style
+                    typeButtons.forEach { tb -> tb.setBackgroundColor(Color.parseColor("#F0EBE0")); tb.setTextColor(Color.parseColor("#4A4A4A")) }
+                    setBackgroundColor(Color.parseColor("#8D6E63")); setTextColor(Color.WHITE)
+                }
+            }
+            if (style == drawingView.currentBrushStyle) { b.setBackgroundColor(Color.parseColor("#8D6E63")); b.setTextColor(Color.WHITE) }
+            else { b.setBackgroundColor(Color.parseColor("#F0EBE0")); b.setTextColor(Color.parseColor("#4A4A4A")) }
+            typeButtons.add(b); typeRow.addView(b)
+        }
+        panel.addView(typeRow)
+
+        sectionLabel("Thickness: ${drawingView.brushThickness.toInt()}")
+        val thickLbl = panel.getChildAt(panel.childCount - 1) as TextView
+        val thickSeek = SeekBar(this).apply {
+            max = 60; progress = drawingView.brushThickness.toInt().coerceIn(1, 60)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { val vv = v.coerceAtLeast(1); drawingView.brushThickness = vv.toFloat(); thickLbl.text = "Thickness: $vv" }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        panel.addView(thickSeek)
+
+        sectionLabel("Opacity: ${(drawingView.brushOpacity * 100 / 255)}%")
+        val opLbl = panel.getChildAt(panel.childCount - 1) as TextView
+        val opSeek = SeekBar(this).apply {
+            max = 100; progress = drawingView.brushOpacity * 100 / 255
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { val vv = v.coerceAtLeast(5); drawingView.brushOpacity = (vv * 255 / 100); opLbl.text = "Opacity: $vv%" }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        panel.addView(opSeek)
+
+        sectionLabel("Color")
+        val colorScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        val colorRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val quickColors = listOf(Color.BLACK, Color.RED, Color.parseColor("#03A9F4"), Color.parseColor("#4CAF50"), Color.parseColor("#FFC107"), Color.parseColor("#FF9800"), Color.parseColor("#9C27B0"), Color.parseColor("#1A237E"))
+        for (c in quickColors) {
+            val sw = View(this).apply {
+                val p = LinearLayout.LayoutParams(dp(34), dp(34)); p.setMargins(dp(4), 0, dp(4), 0); layoutParams = p
+                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(c); setStroke(if (c == drawingView.currentColor) dp(3) else 0, Color.parseColor("#8D6E63")) }
+                setOnClickListener { drawingView.currentColor = c; dismissBrushOptionsPanel(); showBrushOptionsPanel() }
+            }
+            colorRow.addView(sw)
+        }
+        val morePicker = TextView(this).apply {
+            text = "+"; textSize = 18f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#4A4A4A"))
+            val p = LinearLayout.LayoutParams(dp(34), dp(34)); p.setMargins(dp(4), 0, dp(4), 0); layoutParams = p
+            setBackgroundColor(Color.parseColor("#F0EBE0"))
+            setOnClickListener { showColorGridDialog { c -> drawingView.currentColor = c; dismissBrushOptionsPanel(); showBrushOptionsPanel() } }
+        }
+        colorRow.addView(morePicker)
+        colorScroll.addView(colorRow)
+        panel.addView(colorScroll)
+
+        scroll.addView(panel)
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        canvasContainer.addView(scroll, lp)
+        brushOptionsPanel = scroll
+    }
+
     private fun showColorGridDialog(onPicked: (Int) -> Unit) {
         val grid = GridLayout(this).apply{ columnCount=10; setPadding(dp(10),dp(10),dp(10),dp(10)) }
         lateinit var dialog: AlertDialog; var popup: android.widget.PopupWindow? = null
@@ -782,9 +1201,13 @@ class MainActivity : AppCompatActivity() {
                 val cols=(colInput.text.toString().toIntOrNull()?:3).coerceIn(1,20)
                 val wx=drawingView.screenCenterWorldX()-(drawingView.width/drawingView.getScaleFactor()/4f)
                 val wy=drawingView.screenCenterWorldY()-90f
+                // Force SELECT tool so the freshly-inserted table is safe to tap/move and isn't
+                // immediately erased or drawn over by whatever tool was active beforehand.
+                setActiveTool(null, Tool.SELECT)
                 drawingView.addTable(rows,cols,wx,wy,drawingView.width.toFloat())
             }.setNegativeButton("Cancel",null).show()
     }
+
 
     private fun launchChartFromTable(table: TableItem) {
         val rows = table.rows; val cols = table.cols

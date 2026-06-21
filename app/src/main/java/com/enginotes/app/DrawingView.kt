@@ -30,8 +30,12 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
+enum class PenStyle { FOUNTAIN, BALL, PENCIL, CALLIGRAPHY, MARKER }
+enum class BrushStyle { ROUND, FLAT, TEXTURE, INK, WATERCOLOR }
+enum class EraserShape { ROUND, SQUARE }
+
 enum class Tool {
-    SELECT, FILL, PEN, ERASER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
+    SELECT, FILL, PEN, BRUSH, ERASER, HIGHLIGHTER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
     TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT, AUTOSELECT, EXPORT_WINDOW,
     HEPTAGON, OCTAGON, NONAGON, DECAGON, TRAPEZOID, PARALLELOGRAM, RIGHT_TRIANGLE, ISOSCELES_TRIANGLE,
     SEMICIRCLE, HALF_ELLIPSE, TEARDROP, HEART, PLUS_THICK, DOUBLE_ARROW, BRACKET_L, BRACKET_R,
@@ -102,11 +106,12 @@ private val bitmapCache = object : LinkedHashMap<String, Bitmap>(16, 0.75f, true
 class StrokeData(
     val type: Tool, val points: MutableList<Float>,
     var color: Int, var strokeWidth: Float, var fill: Boolean, var rotation: Float = 0f,
-    var fillColorVal: Int = color
+    var fillColorVal: Int = color, var penStyle: PenStyle = PenStyle.FOUNTAIN, var opacity: Int = 255,
+    var brushStyle: BrushStyle = BrushStyle.ROUND
 ) {
     fun buildPath(): Path {
         val path = Path()
-        if (type == Tool.PEN || type == Tool.ERASER) {
+        if (type == Tool.PEN || type == Tool.ERASER || type == Tool.HIGHLIGHTER || type == Tool.BRUSH) {
             if (points.size >= 2) {
                 path.moveTo(points[0], points[1])
                 var i = 2
@@ -338,9 +343,30 @@ class StrokeData(
     fun toPaint(): Paint {
         val p = Paint()
         p.color = color
+        p.alpha = opacity
         p.style = Paint.Style.STROKE
-        p.strokeWidth = strokeWidth; p.isAntiAlias = true
-        p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND
+        p.isAntiAlias = true
+        if (type == Tool.HIGHLIGHTER) {
+            p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.SQUARE
+            return p
+        }
+        if (type == Tool.BRUSH) {
+            when (brushStyle) {
+                BrushStyle.ROUND -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
+                BrushStyle.FLAT -> { p.strokeWidth = strokeWidth * 1.4f; p.strokeJoin = Paint.Join.MITER; p.strokeCap = Paint.Cap.SQUARE }
+                BrushStyle.TEXTURE -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.7f).toInt() }
+                BrushStyle.INK -> { p.strokeWidth = strokeWidth * 1.6f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
+                BrushStyle.WATERCOLOR -> { p.strokeWidth = strokeWidth * 1.8f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.45f).toInt() }
+            }
+            return p
+        }
+        when (penStyle) {
+            PenStyle.FOUNTAIN -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
+            PenStyle.BALL -> { p.strokeWidth = strokeWidth * 0.8f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
+            PenStyle.PENCIL -> { p.strokeWidth = strokeWidth * 0.7f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.75f).toInt() }
+            PenStyle.CALLIGRAPHY -> { p.strokeWidth = strokeWidth * 1.3f; p.strokeJoin = Paint.Join.MITER; p.strokeCap = Paint.Cap.SQUARE }
+            PenStyle.MARKER -> { p.strokeWidth = strokeWidth * 2.2f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.SQUARE; p.alpha = (opacity * 0.55f).toInt() }
+        }
         return p
     }
 
@@ -393,8 +419,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     var currentColor: Int = Color.BLACK
     var currentStrokeWidth: Float = 6f
+    var currentPenStyle: PenStyle = PenStyle.FOUNTAIN
+    var currentOpacity: Int = 255
+    var highlighterThickness: Float = 24f
+    var highlighterOpacity: Int = 80
+    var currentBrushStyle: BrushStyle = BrushStyle.ROUND
+    var brushThickness: Float = 10f
+    var brushOpacity: Int = 255
     var eraserSize: Float = 40f
     var eraserMode: EraserMode = EraserMode.OBJECT
+    var eraserShape: EraserShape = EraserShape.ROUND
     var fillShapes: Boolean = false
     var fillColor: Int = Color.RED
     var arcDivisions: Int = 3
@@ -466,7 +500,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var convenientPageW = 0f
     private var convenientPageH = 0f
 
-    private fun isDrawingTool() = currentTool == Tool.PEN || currentTool == Tool.ERASER ||
+    private fun isDrawingTool() = currentTool == Tool.PEN || currentTool == Tool.ERASER || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH ||
         currentTool in SHAPE_TOOLS || currentTool == Tool.ARC || currentTool == Tool.FILL
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -1275,7 +1309,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val group = mutableListOf<Any>(); val newActions = mutableListOf<Any>()
         for (action in actions) {
             if (action is FillItem) { newActions.add(action); continue }
-            if (action is StrokeItem && (action.data.type == Tool.PEN || action.data.type == Tool.ERASER || action.data.type == Tool.ARC) && autoSelectDivide == AutoSelectDivide.DIVIDED) {
+            if (action is StrokeItem && (action.data.type == Tool.PEN || action.data.type == Tool.ERASER || action.data.type == Tool.ARC || action.data.type == Tool.HIGHLIGHTER || action.data.type == Tool.BRUSH) && autoSelectDivide == AutoSelectDivide.DIVIDED) {
                 val (inside, outside) = splitStrokeByRegion(action.data, region); newActions.addAll(outside); group.addAll(inside); continue
             }
             val b = getBounds(action); if (b == null) { newActions.add(action); continue }
@@ -1567,20 +1601,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun handleDrawing(event: MotionEvent) {
         hoverX = event.x; hoverY = event.y
         var wx = screenToWorldX(event.x); var wy = screenToWorldY(event.y)
-        if (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool)) {
+        if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH || SHAPE_TOOLS.contains(currentTool)) {
             val (cx, cy) = clampToPage(wx, wy); wx = cx; wy = cy
         }
         val pressure = event.pressure.coerceIn(0.3f, 1.5f)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 if (currentTool == Tool.ERASER) { eraseAt(wx, wy); invalidate(); return }
-                val data = when { currentTool == Tool.PEN -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false); SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, fillShapes); else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false) }
+                val data = when {
+                    currentTool == Tool.PEN -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = currentOpacity)
+                    currentTool == Tool.HIGHLIGHTER -> StrokeData(Tool.HIGHLIGHTER, mutableListOf(wx, wy), currentColor, highlighterThickness, false, rotation = 0f, penStyle = PenStyle.MARKER, opacity = (highlighterOpacity * 255 / 100))
+                    currentTool == Tool.BRUSH -> StrokeData(Tool.BRUSH, mutableListOf(wx, wy), currentColor, brushThickness * pressure, false, rotation = 0f, brushStyle = currentBrushStyle, opacity = brushOpacity)
+                    SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, fillShapes)
+                    else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = currentOpacity)
+                }
                 currentItem = StrokeItem(data, data.buildPath(), data.toPaint()); invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
                 if (currentTool == Tool.ERASER) { eraseAt(wx, wy); invalidate(); return }
                 val item = currentItem ?: return
-                if (currentTool == Tool.PEN) { item.data.points.add(wx); item.data.points.add(wy) }
+                if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH) { item.data.points.add(wx); item.data.points.add(wy) }
                 else if (SHAPE_TOOLS.contains(currentTool)) { item.data.points[2] = wx; item.data.points[3] = wy }
                 item.path = item.data.buildPath(); invalidate()
             }
@@ -1606,7 +1646,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val newActions = mutableListOf<Any>()
             for (a in actions) {
                 when (a) {
-                    is StrokeItem -> { if (a.data.type == Tool.PEN || a.data.type == Tool.ERASER || a.data.type == Tool.ARC) newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r)) else if (!strokeHitTest(a.data, x, y, r)) newActions.add(a) }
+                    is StrokeItem -> { if (a.data.type == Tool.PEN || a.data.type == Tool.ERASER || a.data.type == Tool.ARC || a.data.type == Tool.HIGHLIGHTER || a.data.type == Tool.BRUSH) newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r)) else if (!strokeHitTest(a.data, x, y, r)) newActions.add(a) }
                     is TextItem -> { if (distance(x, y, a.x, a.y) > r + a.size) newActions.add(a) }
                     is ImageItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) }
                     is FillItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) }
@@ -1627,7 +1667,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun strokeHitTest(data: StrokeData, x: Float, y: Float, r: Float): Boolean {
-        if (data.type == Tool.PEN || data.type == Tool.ERASER || data.type == Tool.ARC) {
+        if (data.type == Tool.PEN || data.type == Tool.ERASER || data.type == Tool.ARC || data.type == Tool.HIGHLIGHTER || data.type == Tool.BRUSH) {
             if (data.points.size == 2) return distance(x, y, data.points[0], data.points[1]) <= r
             var i = 0; while (i + 3 < data.points.size) { if (distToSeg(x, y, data.points[i], data.points[i + 1], data.points[i + 2], data.points[i + 3]) <= r) return true; i += 2 }; return false
         } else {
@@ -1764,7 +1804,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         sb.append("META\u0001${paperType.name}\u0001${canvasMode.name}\u0001${paperSize.name}\u0001${pageOrientation.name}\u0001$paperColor\n")
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
-            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}\n")
+            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\n")
@@ -1839,7 +1879,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val rot = p[4].toFloat()
                                 val pts = if (p[5].isBlank()) mutableListOf() else p[5].split(",").map { it.toFloat() }.toMutableList()
                                 val fcv = if (p.size >= 7) p[6].toIntOrNull() ?: color else color
-                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
+                                val pStyle = if (p.size >= 8) try { PenStyle.valueOf(p[7]) } catch (e: Exception) { PenStyle.FOUNTAIN } else PenStyle.FOUNTAIN
+                                val opac = if (p.size >= 9) p[8].toIntOrNull() ?: 255 else 255
+                                val bStyle = if (p.size >= 10) try { BrushStyle.valueOf(p[9]) } catch (e: Exception) { BrushStyle.ROUND } else BrushStyle.ROUND
+                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
                             } else {
                                 val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
                                 val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
