@@ -45,6 +45,7 @@ dependencies {
     
     implementation("org.apache.poi:poi-ooxml:5.2.3")
     implementation("com.google.mlkit:digital-ink-recognition:18.1.0")
+    implementation("com.google.mlkit:text-recognition:16.0.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
