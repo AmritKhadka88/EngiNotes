@@ -1748,13 +1748,17 @@ class MainActivity : AppCompatActivity() {
         val handleViews = mutableListOf<Pair<View, Pair<Float, Float>>>() // view to (fractionX, fractionY) of box, e.g. (0,0)=top-left (1,1)=bottom-right
         fun handle(colorHex: String, fx: Float, fy: Float): View {
             val visibleSz = dp(16); val touchSz = dp(32)
-            val h = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(touchSz, touchSz) }
+            val h = FrameLayout(this).apply {
+                layoutParams = FrameLayout.LayoutParams(touchSz, touchSz); elevation = dp(4).toFloat()
+                isClickable = true; isFocusable = true
+            }
             val dot = View(this).apply {
                 layoutParams = FrameLayout.LayoutParams(visibleSz, visibleSz).also { it.gravity = Gravity.CENTER }
                 background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor(colorHex)) }
             }
             h.addView(dot)
             box.addView(h)
+            h.bringToFront()
             handleViews.add(h to (fx to fy))
             return h
         }
@@ -1851,12 +1855,13 @@ class MainActivity : AppCompatActivity() {
 
         // Rotate handle, offset above the box like other shapes' rotate handle - positioned via
         // setX/setY (not margins) for the same reliability reason as the 8 resize handles above.
-        rotateHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
+        rotateHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)); elevation = dp(4).toFloat(); isClickable = true; isFocusable = true }
         rotateHandle.addView(View(this).apply {
             layoutParams = FrameLayout.LayoutParams(dp(16), dp(16)).also { it.gravity = Gravity.CENTER }
             background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor("#4CAF50")) }
         })
         box.addView(rotateHandle)
+        rotateHandle.bringToFront()
         var rotStartRawX = 0f; var rotStartRotation = 0f
         rotateHandle.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
@@ -1867,7 +1872,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Delete (close) handle, top-right corner like other shapes' delete X
-        deleteHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
+        deleteHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)); elevation = dp(4).toFloat(); isClickable = true; isFocusable = true }
         deleteHandle.addView(ImageView(this).apply {
             layoutParams = FrameLayout.LayoutParams(dp(20), dp(20)).also { it.gravity = Gravity.CENTER }
             setImageResource(R.drawable.ic_text_delete)
@@ -1876,6 +1881,7 @@ class MainActivity : AppCompatActivity() {
         })
         deleteHandle.setOnClickListener { drawingView.removeTextItem(item); dismissTextSelectionBox(); drawingView.invalidate() }
         box.addView(deleteHandle)
+        deleteHandle.bringToFront()
 
         val lp = FrameLayout.LayoutParams(boxW, boxH)
         lp.leftMargin = (anchorScreenX - dp(6)).toInt().coerceAtLeast(0); lp.topMargin = (anchorScreenY - screenSizePx - dp(6)).toInt().coerceAtLeast(0)
@@ -1886,17 +1892,24 @@ class MainActivity : AppCompatActivity() {
         box.post { layoutHandles(); layoutTopHandles() }
 
         // Keep the box glued to the text item as the user pans/zooms the canvas - without this,
-        // the box stayed frozen at its original screen position while the actual text (rendered
-        // by DrawingView, which DOES transform correctly) moved underneath it, causing the box to
-        // visibly drift away from the text it's supposed to represent.
+        // the box stayed frozen at its original screen position AND SIZE while the actual text
+        // (rendered by DrawingView, which DOES transform correctly) moved and resized underneath
+        // it. Repositioning alone wasn't enough: zooming in makes the on-screen text bigger, so
+        // the box's width/height need to grow to match too, or the box ends up too small and
+        // anchored over the wrong part of the (now larger) text.
         fun followCanvasTransform() {
             val newAnchorX = drawingView.worldToScreenX(item.x)
             val newAnchorY = drawingView.worldToScreenY(item.y)
             val newScreenSizePx = (if (useActualSize) item.size else item.size * drawingView.getScaleFactor()) * convenientBoost
+            val (newBoxW, newBoxH) = measureTextBoxSize(item, newScreenSizePx)
+            boxW = newBoxW; boxH = newBoxH
             val newLp = box.layoutParams as FrameLayout.LayoutParams
+            newLp.width = newBoxW; newLp.height = newBoxH
             newLp.leftMargin = (newAnchorX - dp(6)).toInt().coerceAtLeast(0)
             newLp.topMargin = (newAnchorY - newScreenSizePx - dp(6)).toInt().coerceAtLeast(0)
             box.layoutParams = newLp
+            val mlp = moveSurface.layoutParams; mlp.width = newBoxW; mlp.height = newBoxH; moveSurface.layoutParams = mlp
+            layoutHandles(); layoutTopHandles()
         }
         drawingView.onCanvasTransformed = { followCanvasTransform() }
     }
@@ -1958,7 +1971,7 @@ class MainActivity : AppCompatActivity() {
         // box's real WRAP_CONTENT size is known via an OnLayoutChangeListener) rather than
         // negative margins + gravity, which proved unreliable for views meant to sit outside
         // their parent's own bounds.
-        val moveHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
+        val moveHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)); elevation = dp(4).toFloat(); isClickable = true; isFocusable = true }
         moveHandle.addView(View(this).apply {
             layoutParams = FrameLayout.LayoutParams(dp(16), dp(16)).also { it.gravity = Gravity.CENTER }
             background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.parseColor("#2196F3")); setStroke(dp(2), Color.WHITE) }
@@ -1986,9 +1999,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
         boxContainer.addView(moveHandle)
+        moveHandle.bringToFront()
 
         // Resize handle on the right edge - drag to widen/narrow the box, which moves the wrap point
-        val resizeHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
+        val resizeHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)); elevation = dp(4).toFloat(); isClickable = true; isFocusable = true }
         resizeHandle.addView(View(this).apply {
             layoutParams = FrameLayout.LayoutParams(dp(16), dp(16)).also { it.gravity = Gravity.CENTER }
             background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor("#2196F3")) }
@@ -2008,9 +2022,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
         boxContainer.addView(resizeHandle)
+        resizeHandle.bringToFront()
 
         // Rotate handle on the bottom-right corner
-        val rotateHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
+        val rotateHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)); elevation = dp(4).toFloat(); isClickable = true; isFocusable = true }
         rotateHandle.addView(View(this).apply {
             layoutParams = FrameLayout.LayoutParams(dp(16), dp(16)).also { it.gravity = Gravity.CENTER }
             background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.parseColor("#4CAF50")); setStroke(dp(2), Color.WHITE) }
@@ -2030,9 +2045,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
         boxContainer.addView(rotateHandle)
+        rotateHandle.bringToFront()
 
         // Delete handle, top-right corner
-        val deleteHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
+        val deleteHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)); elevation = dp(4).toFloat(); isClickable = true; isFocusable = true }
         deleteHandle.addView(ImageView(this).apply {
             layoutParams = FrameLayout.LayoutParams(dp(20), dp(20)).also { it.gravity = Gravity.CENTER }
             setImageResource(R.drawable.ic_text_delete)
@@ -2041,6 +2057,7 @@ class MainActivity : AppCompatActivity() {
         })
         deleteHandle.setOnClickListener { closeInlineEditor(false, delete = true) }
         boxContainer.addView(deleteHandle)
+        deleteHandle.bringToFront()
 
         // Position all 4 handles using the box's ACTUAL measured size (only known once layout
         // completes, since boxContainer is WRAP_CONTENT) - absolute pixel positioning via setX/
