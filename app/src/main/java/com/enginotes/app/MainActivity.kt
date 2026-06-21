@@ -1716,24 +1716,47 @@ class MainActivity : AppCompatActivity() {
         moveSurface.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
+                    // CRITICAL: must return true here. Returning false on ACTION_DOWN tells
+                    // Android "this view doesn't want this touch sequence," which means it will
+                    // NEVER receive the ACTION_MOVE/ACTION_UP that follow - permanently breaking
+                    // drag-to-move regardless of what the ACTION_MOVE branch below tries to do.
+                    // This was the actual root cause of "can't move it" (and the same mistake
+                    // existed nowhere else, but is worth calling out clearly since it's an easy
+                    // trap: returning false on DOWN seems like it should just "skip this event,"
+                    // but it actually opts the view out of the whole gesture).
                     moveStartRawX = ev.rawX; moveStartRawY = ev.rawY
                     val lp = box.layoutParams as FrameLayout.LayoutParams
                     moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
-                    false // allow the click/double-tap to still pass through to DrawingView underneath
+                    true
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
                     val dx = (ev.rawX - moveStartRawX); val dy = (ev.rawY - moveStartRawY)
-                    if (kotlin.math.abs(dx) > 6 || kotlin.math.abs(dy) > 6) {
-                        val lp = box.layoutParams as FrameLayout.LayoutParams
-                        lp.leftMargin = (moveStartLeft + dx).toInt().coerceAtLeast(0); lp.topMargin = (moveStartTop + dy).toInt().coerceAtLeast(0)
-                        box.layoutParams = lp
-                        item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat() + dp(6))
-                        item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + dp(6) + screenSizePx)
-                        drawingView.invalidate()
-                        true
-                    } else false
+                    val lp = box.layoutParams as FrameLayout.LayoutParams
+                    lp.leftMargin = (moveStartLeft + dx).toInt().coerceAtLeast(0); lp.topMargin = (moveStartTop + dy).toInt().coerceAtLeast(0)
+                    box.layoutParams = lp
+                    item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat() + dp(6))
+                    item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + dp(6) + screenSizePx)
+                    drawingView.invalidate()
+                    true
                 }
-                else -> false
+                android.view.MotionEvent.ACTION_UP -> {
+                    // If the finger barely moved, treat this as a tap rather than a drag, and
+                    // forward it to DrawingView underneath so double-tap-to-edit still works
+                    // (since this view consuming ACTION_DOWN would otherwise swallow taps too).
+                    val dx = ev.rawX - moveStartRawX; val dy = ev.rawY - moveStartRawY
+                    if (kotlin.math.abs(dx) < 8 && kotlin.math.abs(dy) < 8) {
+                        val loc = IntArray(2); drawingView.getLocationOnScreen(loc)
+                        val localX = ev.rawX - loc[0]; val localY = ev.rawY - loc[1]
+                        val downTime = ev.downTime; val eventTime = ev.eventTime
+                        val tapDown = android.view.MotionEvent.obtain(downTime, eventTime, android.view.MotionEvent.ACTION_DOWN, localX, localY, 0)
+                        val tapUp = android.view.MotionEvent.obtain(downTime, eventTime, android.view.MotionEvent.ACTION_UP, localX, localY, 0)
+                        drawingView.dispatchTouchEvent(tapDown)
+                        drawingView.dispatchTouchEvent(tapUp)
+                        tapDown.recycle(); tapUp.recycle()
+                    }
+                    true
+                }
+                else -> true
             }
         }
         box.addView(moveSurface)
