@@ -576,6 +576,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var regionPath: Path? = null
     private var regionStart: Pair<Float, Float>? = null
     private var isWindowSelect: Boolean = true
+    private val lassoPoints = mutableListOf<Pair<Float, Float>>()
     private var groupMoveStartX = 0f; private var groupMoveStartY = 0f
     private var groupResizeHandle = -1
     private var groupResizeOrigBounds = FloatArray(4)
@@ -1642,6 +1643,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                     selectedGroup = null
                 }
+                lassoPoints.clear(); lassoPoints.add(Pair(wx, wy))
                 regionStart = Pair(wx, wy); regionPath = Path().apply { moveTo(wx, wy) }; invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
@@ -1658,6 +1660,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 // Freeform: just keep adding points to trace whatever shape the finger draws,
                 // unlike box-select's rectangle reconstruction.
+                lassoPoints.add(Pair(wx, wy))
                 regionPath?.lineTo(wx, wy)
                 invalidate()
             }
@@ -1667,11 +1670,32 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (rp != null) {
                     rp.close()
                     val rf = RectF(); rp.computeBounds(rf, true)
-                    selectItemsInRegion(buildRegion(rp), floatArrayOf(rf.left, rf.top, rf.right, rf.bottom), false)
+                    // Direction-sensitive, like the box-select tool: tracing CLOCKWISE acts like
+                    // a "window" select (only items fully enclosed by the loop); tracing
+                    // COUNTERCLOCKWISE acts like a "crossing" select (anything the loop touches).
+                    // Determined via the shoelace formula (signed polygon area) on the traced
+                    // points - positive signed area = clockwise in standard screen coordinates
+                    // (Y increases downward), negative = counterclockwise.
+                    val isClockwise = signedPolygonArea(lassoPoints) > 0f
+                    selectItemsInRegion(buildRegion(rp), floatArrayOf(rf.left, rf.top, rf.right, rf.bottom), isClockwise)
                 }
-                regionPath = null; regionStart = null; invalidate()
+                regionPath = null; regionStart = null; lassoPoints.clear(); invalidate()
             }
         }
+    }
+
+    // Shoelace formula: sum of (x_i * y_{i+1} - x_{i+1} * y_i) over all edges, halved. Sign
+    // indicates winding direction. Works on the raw traced points without needing them to form a
+    // perfectly closed/simple polygon - good enough for direction detection on a hand-drawn loop.
+    private fun signedPolygonArea(points: List<Pair<Float, Float>>): Float {
+        if (points.size < 3) return 0f
+        var sum = 0f
+        for (i in points.indices) {
+            val (x1, y1) = points[i]
+            val (x2, y2) = points[(i + 1) % points.size]
+            sum += (x1 * y2 - x2 * y1)
+        }
+        return sum / 2f
     }
 
     private fun drawExportWindowOverlay(canvas: Canvas) {
@@ -1695,14 +1719,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawAutoSelectOverlay(canvas: Canvas) {
         regionPath?.let { rp ->
-            // AutoCAD convention: window select (left-to-right) = solid blue; crossing select
-            // (right-to-left) = dashed green. Lasso (freeform) gets its own purple so it reads as
-            // a clearly different, third selection mode rather than a degenerate rectangle.
+            // AutoCAD convention: window select (left-to-right, or clockwise for lasso) = solid;
+            // crossing select (right-to-left, or counterclockwise for lasso) = dashed. Lasso gets
+            // its own purple family so it reads as a clearly different, third selection mode.
+            val lassoClockwise = currentTool == Tool.LASSO && lassoPoints.size >= 3 && signedPolygonArea(lassoPoints) > 0f
+            val solid = if (currentTool == Tool.LASSO) lassoClockwise else isWindowSelect
             val color = if (currentTool == Tool.LASSO) "#9C27B0" else if (isWindowSelect) "#2196F3" else "#4CAF50"
             val fillColorHex = if (currentTool == Tool.LASSO) "#339C27B0" else if (isWindowSelect) "#332196F3" else "#334CAF50"
             val fp = Paint(); fp.color = Color.parseColor(fillColorHex); fp.style = Paint.Style.FILL
             val sp = Paint(); sp.color = Color.parseColor(color); sp.style = Paint.Style.STROKE; sp.strokeWidth = 2f / scaleFactor
-            if (currentTool == Tool.LASSO || !isWindowSelect) sp.pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f / scaleFactor, 6f / scaleFactor), 0f)
+            if (!solid) sp.pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f / scaleFactor, 6f / scaleFactor), 0f)
             canvas.drawPath(rp, fp); canvas.drawPath(rp, sp)
         }
         val group = selectedGroup
@@ -1982,6 +2008,59 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
+    // Area-erases part of a closed/open SHAPE (triangle, rectangle, star, etc.) instead of
+    // deleting the whole thing. Shapes are defined parametrically (just a couple of corner
+    // points), not as a dense point list like a pen stroke, so this first samples the shape's
+    // actual rendered outline via PathMeasure into a dense point list, then reuses the same
+    // segment-splitting logic as splitStrokeAroundEraser. Each surviving fragment becomes a new
+    // open freeform (PEN-type) stroke with the shape's original color/width/opacity, since a
+    // "triangle with a bite taken out" isn't a triangle anymore - it's an open polyline.
+    private fun splitShapeAroundEraser(data: StrokeData, ex: Float, ey: Float, r: Float): List<StrokeItem> {
+        val path = data.buildPath()
+        val measure = android.graphics.PathMeasure(path, false)
+        val allPts = mutableListOf<Float>()
+        val pos = FloatArray(2)
+        do {
+            val len = measure.length
+            if (len <= 0f) continue
+            var dist = 0f
+            val step = (len / 48f).coerceAtLeast(1.5f)
+            while (dist <= len) {
+                measure.getPosTan(dist, pos, null)
+                allPts.add(pos[0]); allPts.add(pos[1])
+                dist += step
+            }
+        } while (measure.nextContour())
+        if (allPts.size < 4) return emptyList()
+
+        val segs = mutableListOf<MutableList<Float>>(); var cur = mutableListOf<Float>()
+        fun flush() { if (cur.size >= 4) segs.add(cur); cur = mutableListOf() }
+        var i = 0
+        var prevIn = distance(ex, ey, allPts[0], allPts[1]) <= r
+        if (!prevIn) { cur.add(allPts[0]); cur.add(allPts[1]) }
+        while (i + 3 < allPts.size) {
+            val x1 = allPts[i]; val y1 = allPts[i + 1]; val x2 = allPts[i + 2]; val y2 = allPts[i + 3]
+            val segDist = distToSeg(ex, ey, x1, y1, x2, y2)
+            val curIn = segDist <= r
+            if (curIn != prevIn) {
+                val cut = findCircleSegIntersection(ex, ey, r, x1, y1, x2, y2)
+                if (cut != null) {
+                    if (!prevIn) { cur.add(cut.first); cur.add(cut.second); flush() }
+                    else { cur.add(cut.first); cur.add(cut.second) }
+                } else flush()
+            }
+            if (!curIn) { cur.add(x2); cur.add(y2) }
+            prevIn = curIn
+            i += 2
+        }
+        flush()
+        return segs.map { sp ->
+            // Fragments render as plain freeform pen strokes (no fill, original stroke color/width)
+            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.FOUNTAIN, opacity = data.opacity)
+            StrokeItem(d, d.buildPath(), d.toPaint())
+        }
+    }
+
     private fun eraseAt(x: Float, y: Float) {
         val r = eraserSize / 2f
         if (eraserMode == EraserMode.OBJECT) {
@@ -2000,7 +2079,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val newActions = mutableListOf<Any>()
             for (a in actions) {
                 when (a) {
-                    is StrokeItem -> { if (a.data.type == Tool.PEN || a.data.type == Tool.ERASER || a.data.type == Tool.ARC || a.data.type == Tool.HIGHLIGHTER || a.data.type == Tool.BRUSH) newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r)) else if (!strokeHitTest(a.data, x, y, r)) newActions.add(a) }
+                    is StrokeItem -> {
+                        if (a.data.type == Tool.PEN || a.data.type == Tool.ERASER || a.data.type == Tool.ARC || a.data.type == Tool.HIGHLIGHTER || a.data.type == Tool.BRUSH) {
+                            newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r))
+                        } else {
+                            // Shapes: only touch them if the eraser circle actually overlaps the
+                            // outline (checked first as a cheap early-out), then partially erase
+                            // just the touched portion instead of deleting the whole shape.
+                            if (strokeHitTest(a.data, x, y, r)) newActions.addAll(splitShapeAroundEraser(a.data, x, y, r))
+                            else newActions.add(a)
+                        }
+                    }
                     is TextItem -> { if (distance(x, y, a.x, a.y) > r + a.size) newActions.add(a) }
                     is ImageItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) }
                     is FillItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) }

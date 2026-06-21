@@ -1633,6 +1633,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun dismissTextSelectionBox() {
         textSelectionBox?.let { canvasContainer.removeView(it) }
+        if (textSelectionBox != null) drawingView.onCanvasTransformed = null
         textSelectionBox = null; textSelectionItem = null
     }
 
@@ -1644,14 +1645,31 @@ class MainActivity : AppCompatActivity() {
     // Recomputes and applies the selection box's width/height/position in place - cheap enough
     // to call on every ACTION_MOVE during a resize/move drag, unlike tearing down and rebuilding
     // the whole view hierarchy (which is what made resizing feel rough/jumpy before).
+    // Measures the text item's ACTUAL rendered width/height using StaticLayout, the same way
+    // DrawingView itself renders it - replaces the old character-count * fixed-width heuristic,
+    // which badly overestimated width for normal text (e.g. "Amrit Khadka" was computing a box
+    // hundreds of pixels wider than the real text), pushing the right-side corner/edge handles
+    // off-screen and making them untappable.
+    private fun measureTextBoxSize(item: TextItem, screenSizePx: Float): Pair<Int, Int> {
+        val tp = android.text.TextPaint(); tp.textSize = screenSizePx; tp.isAntiAlias = true
+        try { tp.typeface = Typeface.create(item.fontFamily, Typeface.NORMAL) } catch (e: Exception) {}
+        val wrapWidth = if (item.maxWidth > 0f) {
+            // maxWidth is stored in world units - convert to current screen pixels
+            (item.maxWidth * (screenSizePx / item.size.coerceAtLeast(1f))).toInt().coerceAtLeast(dp(60))
+        } else 4000
+        val layout = android.text.StaticLayout.Builder.obtain(item.text, 0, item.text.length, tp, wrapWidth).setIncludePad(true).build()
+        val measuredW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) } ?: (screenSizePx * 2f)
+        val w = (measuredW + dp(16)).toInt().coerceAtLeast(dp(60))
+        val h = (layout.height + dp(8)).coerceAtLeast(dp(36))
+        return Pair(w, h)
+    }
+
     private fun updateTextSelectionBoxSize(box: FrameLayout, moveSurface: View, item: TextItem): Pair<Int, Int> {
         val density = resources.displayMetrics.density
         val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
         val convenientBoost = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 1.6f else 1f
         val screenSizePx = (if (useActualSize) item.size else item.size * drawingView.getScaleFactor()) * convenientBoost
-        val approxW = (item.text.split("\n").maxOfOrNull { it.length } ?: 1) * screenSizePx * 0.55f
-        val approxH = item.text.split("\n").size * screenSizePx * 1.2f
-        val boxW = approxW.toInt().coerceAtLeast(dp(60)); val boxH = approxH.toInt().coerceAtLeast(dp(36))
+        val (boxW, boxH) = measureTextBoxSize(item, screenSizePx)
 
         val lp = box.layoutParams as FrameLayout.LayoutParams
         // Keep the box's top-left anchored where it currently is rather than re-deriving from
@@ -1689,9 +1707,8 @@ class MainActivity : AppCompatActivity() {
         box.background = android.graphics.drawable.GradientDrawable().apply {
             setStroke(dp(2), Color.parseColor("#2196F3")); setColor(Color.parseColor("#08000000"))
         }
-        val approxW = (item.text.split("\n").maxOfOrNull { it.length } ?: 1) * screenSizePx * 0.55f
-        val approxH = item.text.split("\n").size * screenSizePx * 1.2f
-        var boxW = approxW.toInt().coerceAtLeast(dp(60)); var boxH = approxH.toInt().coerceAtLeast(dp(36))
+        val (measW, measH) = measureTextBoxSize(item, screenSizePx)
+        var boxW = measW; var boxH = measH
 
         // A transparent touch-target filling the box: dragging it moves the text item.
         val moveSurface = View(this).apply { layoutParams = FrameLayout.LayoutParams(boxW, boxH) }
@@ -1867,6 +1884,21 @@ class MainActivity : AppCompatActivity() {
         layoutHandles()
         layoutTopHandles()
         box.post { layoutHandles(); layoutTopHandles() }
+
+        // Keep the box glued to the text item as the user pans/zooms the canvas - without this,
+        // the box stayed frozen at its original screen position while the actual text (rendered
+        // by DrawingView, which DOES transform correctly) moved underneath it, causing the box to
+        // visibly drift away from the text it's supposed to represent.
+        fun followCanvasTransform() {
+            val newAnchorX = drawingView.worldToScreenX(item.x)
+            val newAnchorY = drawingView.worldToScreenY(item.y)
+            val newScreenSizePx = (if (useActualSize) item.size else item.size * drawingView.getScaleFactor()) * convenientBoost
+            val newLp = box.layoutParams as FrameLayout.LayoutParams
+            newLp.leftMargin = (newAnchorX - dp(6)).toInt().coerceAtLeast(0)
+            newLp.topMargin = (newAnchorY - newScreenSizePx - dp(6)).toInt().coerceAtLeast(0)
+            box.layoutParams = newLp
+        }
+        drawingView.onCanvasTransformed = { followCanvasTransform() }
     }
 
     private fun showInlineTextEditor(item: TextItem?, screenX: Float, screenY: Float, worldX: Float, worldY: Float) {
