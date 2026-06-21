@@ -670,7 +670,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // Tapping an unselected one (in SELECT tool) selects it first so it can be moved/resized.
             for (a in actions.reversed()) {
                 if (a is AudioItem) {
-                    val r = 60f / scaleFactor
+                    val r = (a.radius + 12f) / scaleFactor
                     if (distance(wx, wy, a.x, a.y) <= r) {
                         if (currentTool == Tool.SELECT && selectedItem !== a) {
                             selectedItem = a; invalidate(); return true
@@ -881,7 +881,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun drawAudioItem(canvas: Canvas, item: AudioItem) {
-        val r = 48f
+        val r = item.radius
         val bgP = Paint(Paint.ANTI_ALIAS_FLAG)
         bgP.color = if (item.isPlaying) Color.parseColor("#4CAF50") else Color.parseColor("#5C6BC0")
         bgP.style = Paint.Style.FILL
@@ -890,7 +890,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         iconP.color = Color.WHITE; iconP.textSize = r * 1.0f; iconP.textAlign = Paint.Align.CENTER
         canvas.drawText(if (item.isPlaying) "\u25A0" else "\u25B6", item.x, item.y + r * 0.35f, iconP)
         val titleP = Paint(Paint.ANTI_ALIAS_FLAG)
-        titleP.color = Color.parseColor("#212121"); titleP.textSize = 28f; titleP.textAlign = Paint.Align.CENTER
+        titleP.color = Color.parseColor("#212121"); titleP.textSize = (r * 0.58f).coerceIn(14f, 40f); titleP.textAlign = Paint.Align.CENTER
         canvas.drawText(item.title.take(20), item.x, item.y + r + 32f, titleP)
         if (item.isPlaying) {
             val ringP = Paint(Paint.ANTI_ALIAS_FLAG); ringP.color = Color.parseColor("#4CAF50")
@@ -1070,7 +1070,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is TableItem -> floatArrayOf(item.x, item.y, item.x + item.totalWidth(), item.y + item.totalHeight())
             is ImageItem -> floatArrayOf(item.x, item.y, item.x + item.w, item.y + item.h)
             is FillItem -> floatArrayOf(item.x, item.y, item.x + item.w, item.y + item.h)
-            is AudioItem -> { val r = 48f; floatArrayOf(item.x - r, item.y - r, item.x + r, item.y + r + 40f) }
+            is AudioItem -> { val r = item.radius; floatArrayOf(item.x - r, item.y - r, item.x + r, item.y + r + 40f) }
             is TextItem -> {
                 val tp = TextPaint(); tp.textSize = item.size; tp.isAntiAlias = true
                 try { tp.typeface = Typeface.create(item.fontFamily, Typeface.NORMAL) } catch (e: Exception) {}
@@ -1203,6 +1203,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
             }
             is TextItem -> { val dy = wy - resizePrevWorldY; item.size = (item.size + dy * 0.5f).coerceIn(8f, 300f) }
+            is AudioItem -> {
+                // Audio items are a circle, not a rectangle, so resizing just scales the radius
+                // based on how far the drag point is from the item's center - works the same
+                // regardless of which corner handle was grabbed.
+                val d = distance(wx, wy, item.x, item.y)
+                item.radius = d.coerceIn(24f, 220f)
+            }
         }
         resizePrevWorldX = wx; resizePrevWorldY = wy
     }
@@ -1211,7 +1218,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val pad = 20f / scaleFactor
         for (a in actions.reversed()) {
             if (a is FillItem) continue
-            if (a is AudioItem) { if (distance(x, y, a.x, a.y) <= 60f / scaleFactor) return a; continue }
+            if (a is AudioItem) { if (distance(x, y, a.x, a.y) <= (a.radius + 12f) / scaleFactor) return a; continue }
             if (a is TableItem) {
                 val b = getBounds(a) ?: continue
                 if (x in (b[0] - pad)..(b[2] + pad) && y in (b[1] - pad)..(b[3] + pad)) return a; continue
@@ -1442,7 +1449,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is TextItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.size = (item.size * ((sx + sy) / 2f)).coerceIn(6f, 500f) }
             is ImageItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.w *= sx; item.h *= sy }
             is FillItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.w *= sx; item.h *= sy }
-            is AudioItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy }
+            is AudioItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.radius = (item.radius * ((sx + sy) / 2f)).coerceIn(24f, 220f) }
         }
     }
 
@@ -1854,7 +1861,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     is StrokeItem -> strokeHitTest(a.data, x, y, r); is TextItem -> distance(x, y, a.x, a.y) <= r + a.size
                     is ImageItem -> distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) <= r + maxOf(a.w, a.h) / 2f
                     is FillItem -> distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) <= r + maxOf(a.w, a.h) / 2f
-                    is AudioItem -> distance(x, y, a.x, a.y) <= r + 48f; else -> false
+                    is AudioItem -> distance(x, y, a.x, a.y) <= r + a.radius; else -> false
                 }
                 if (hit) it.remove()
             }
@@ -2099,7 +2106,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\n")
-            is AudioItem -> sb.append("AUDIO\u0001${a.filePath}\u0001${a.title.replace("\u0001","_")}\u0001${a.x}\u0001${a.y}\u0001${a.durationMs}\n")
+            is AudioItem -> sb.append("AUDIO\u0001${a.filePath}\u0001${a.title.replace("\u0001","_")}\u0001${a.x}\u0001${a.y}\u0001${a.durationMs}\u0001${a.radius}\n")
         }
         return sb.toString()
     }
@@ -2128,7 +2135,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                     line.startsWith("AUDIO\u0001") -> {
                         val p = line.split("\u0001")
-                        if (p.size >= 6) actions.add(AudioItem(p[1], p[2], p[3].toFloat(), p[4].toFloat(), p[5].toLongOrNull() ?: 0L))
+                        if (p.size >= 6) {
+                            val rad = if (p.size >= 7) p[6].toFloatOrNull() ?: 48f else 48f
+                            actions.add(AudioItem(p[1], p[2], p[3].toFloat(), p[4].toFloat(), p[5].toLongOrNull() ?: 0L, rad))
+                        }
                         i++
                     }
                     line.startsWith("TEXT\u0001") -> {
