@@ -329,6 +329,17 @@ class MainActivity : AppCompatActivity() {
         applyConvenientLayout()
 
         drawingView.onTextEditRequest       = { item, sx, sy, wx, wy -> showInlineTextEditor(item,sx,sy,wx,wy) }
+        drawingView.onTextSelectRequest     = { item, sx, sy -> showTextSelectionBox(item, sx, sy) }
+        drawingView.onTextDeselectRequest   = { dismissTextSelectionBox() }
+        drawingView.onEmptyAreaTap          = {
+            // Tapping genuinely empty canvas is the "I'm done" signal: commit and close whatever
+            // editor is open (text or table cell), and bring the bottom toolbar back if a table
+            // editor had hidden it.
+            if (activeEditText != null) closeInlineEditor(true)
+            if (activeCellEditText != null) dismissCellEditor()
+            dismissTextSelectionBox()
+            setBottomBarVisible(true)
+        }
         drawingView.onTableCellEditRequest  = { table, row, col, sx, sy -> closeInlineEditor(true); dismissCellEditor(); showTableCellEditor(table,row,col,sx,sy) }
         drawingView.onExportWindowSelected  = { l,t,r,b -> exportWindowBitmap = drawingView.exportWindow(l,t,r,b); showExportWindowDialog() }
         drawingView.onAudioItemTap          = { item -> AudioHelper.togglePlay(item) { drawingView.invalidate() }; drawingView.invalidate() }
@@ -379,7 +390,6 @@ class MainActivity : AppCompatActivity() {
             btnExpand.rotation = if (show) 180f else 0f
         }
 
-        findViewById<ImageButton?>(R.id.btnAutoSelect)?.setOnClickListener { showAutoSelectModeDialog(it as ImageButton) }
         findViewById<ImageButton?>(R.id.btnQuickColor)?.setOnClickListener { showColorGridDialog { c -> drawingView.currentColor = c } }
         findViewById<ImageButton?>(R.id.btnQuickSize)?.setOnClickListener { showSizePicker() }
         findViewById<ImageButton?>(R.id.btnQuickFill)?.setOnClickListener { btn ->
@@ -442,6 +452,13 @@ class MainActivity : AppCompatActivity() {
     private fun setActiveTool(btn: ImageButton?, tool: Tool) { drawingView.currentTool = tool; setActiveToolbarBtn(btn); dismissPenOptionsPanel(); dismissEraserOptionsPanel(); dismissHighlighterOptionsPanel(); dismissBrushOptionsPanel(); dismissShapesPicker() }
     private fun setActiveToolbarBtn(btn: ImageButton?) { activeToolbarButton?.isSelected = false; activeToolbarButton = btn; btn?.isSelected = true }
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    // Hides the primary bottom toolbar while typing in a table cell (so the keyboard has more
+    // room and the toolbar doesn't visually compete with it), and brings it back when the user
+    // taps outside to dismiss the keyboard.
+    private fun setBottomBarVisible(visible: Boolean) {
+        findViewById<View?>(R.id.primaryToolbarScroll)?.visibility = if (visible) View.VISIBLE else View.GONE
+    }
     private fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
 
     private fun showEraserModePopup(anchor: View) {
@@ -459,17 +476,14 @@ class MainActivity : AppCompatActivity() {
     private fun showSelectModePopup(anchor: View) {
         val popup = PopupMenu(this, anchor)
         popup.menu.add("Select (default)")
-        popup.menu.add("AutoSelect: Rectangle - Whole")
-        popup.menu.add("AutoSelect: Rectangle - Divided")
-        popup.menu.add("AutoSelect: Freeform - Whole")
-        popup.menu.add("AutoSelect: Freeform - Divided")
+        popup.menu.add("Box Select (drag a rectangle)")
         popup.setOnMenuItemClickListener { item ->
             when (item.title) {
                 "Select (default)" -> setActiveTool(null, Tool.SELECT)
-                "AutoSelect: Rectangle - Whole" -> { drawingView.autoSelectShape = AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide = AutoSelectDivide.WHOLE; setActiveTool(null, Tool.AUTOSELECT) }
-                "AutoSelect: Rectangle - Divided" -> { drawingView.autoSelectShape = AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide = AutoSelectDivide.DIVIDED; setActiveTool(null, Tool.AUTOSELECT) }
-                "AutoSelect: Freeform - Whole" -> { drawingView.autoSelectShape = AutoSelectShape.FREEFORM; drawingView.autoSelectDivide = AutoSelectDivide.WHOLE; setActiveTool(null, Tool.AUTOSELECT) }
-                "AutoSelect: Freeform - Divided" -> { drawingView.autoSelectShape = AutoSelectShape.FREEFORM; drawingView.autoSelectDivide = AutoSelectDivide.DIVIDED; setActiveTool(null, Tool.AUTOSELECT) }
+                "Box Select (drag a rectangle)" -> {
+                    setActiveTool(null, Tool.AUTOSELECT)
+                    Toast.makeText(this, "Drag left-to-right to select fully enclosed items, right-to-left to select anything touched", Toast.LENGTH_LONG).show()
+                }
             }
             true
         }
@@ -488,15 +502,6 @@ class MainActivity : AppCompatActivity() {
             true
         }
         popup.show()
-    }
-
-    private fun showAutoSelectModeDialog(anchor: ImageButton) {
-        val modes = arrayOf("Rectangle - Whole","Rectangle - Divided","Freeform - Whole","Freeform - Divided")
-        AlertDialog.Builder(this).setTitle("AutoSelect Mode").setItems(modes){ _,i ->
-            when(i){ 0->{ drawingView.autoSelectShape=AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide=AutoSelectDivide.WHOLE }; 1->{ drawingView.autoSelectShape=AutoSelectShape.RECTANGLE; drawingView.autoSelectDivide=AutoSelectDivide.DIVIDED }; 2->{ drawingView.autoSelectShape=AutoSelectShape.FREEFORM; drawingView.autoSelectDivide=AutoSelectDivide.WHOLE }; else->{ drawingView.autoSelectShape=AutoSelectShape.FREEFORM; drawingView.autoSelectDivide=AutoSelectDivide.DIVIDED } }
-            setActiveTool(anchor, Tool.AUTOSELECT)
-            Toast.makeText(this,"Draw a region to select",Toast.LENGTH_SHORT).show()
-        }.show()
     }
 
     fun onMenuClick(v: View) {
@@ -1296,6 +1301,7 @@ class MainActivity : AppCompatActivity() {
         imm.hideSoftInputFromWindow(et.windowToken,0)
         drawingView.exitTableEditMode()
         drawingView.onCanvasTransformed = null
+        setBottomBarVisible(true)
     }
 
     // True in-place cell editor: the EditText is positioned and sized to sit exactly on top of
@@ -1303,6 +1309,7 @@ class MainActivity : AppCompatActivity() {
     // "inside" the cell the way Excel's in-cell editing works. A tiny actions strip floats just
     // above the cell for row/col/merge/style/chart - Done is implicit (tap elsewhere / Done button).
     private fun showTableCellEditor(table:TableItem,row:Int,col:Int,screenX:Float,screenY:Float) {
+        setBottomBarVisible(false)
         val cell=table.cells[row][col]
         val density = resources.displayMetrics.density
 
@@ -1407,7 +1414,120 @@ class MainActivity : AppCompatActivity() {
     private fun toggleUnderlineOnSelection(et:EditText){ val s=et.selectionStart;val e=et.selectionEnd; val from=minOf(s,e);val to=maxOf(s,e); val ed=et.text; val ex=ed.getSpans(from,to,UnderlineSpan::class.java).filter{ed.getSpanStart(it)<=from&&ed.getSpanEnd(it)>=to}; if(ex.isNotEmpty()) for(sp in ex) ed.removeSpan(sp) else ed.setSpan(UnderlineSpan(),from,to,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
     private fun applyHighlightToSelection(et:EditText,color:Int){ et.text.setSpan(BackgroundColorSpan(color),minOf(et.selectionStart,et.selectionEnd),maxOf(et.selectionStart,et.selectionEnd),Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
 
+    private var textSelectionBox: View? = null
+    private var textSelectionItem: TextItem? = null
+
+    private fun dismissTextSelectionBox() {
+        textSelectionBox?.let { canvasContainer.removeView(it) }
+        textSelectionBox = null; textSelectionItem = null
+    }
+
+    // Lightweight selection box for a single tap on text: shows the same border + move/resize/
+    // rotate/delete handles as the full editor, but with NO EditText/keyboard. Double-tapping the
+    // box (handled by DrawingView's gesture detector, which calls showInlineTextEditor directly)
+    // is what actually opens it for typing. This satisfies "single tap = select + resize, double
+    // tap = edit, drag inside = move."
+    private fun showTextSelectionBox(item: TextItem, screenX: Float, screenY: Float) {
+        if (textSelectionItem === item) return
+        dismissTextSelectionBox()
+        closeInlineEditor(true)
+        dismissCellEditor()
+
+        val density = resources.displayMetrics.density
+        val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
+        val convenientBoost = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 1.6f else 1f
+        val screenSizePx = (if (useActualSize) item.size else item.size * drawingView.getScaleFactor()) * convenientBoost
+
+        val box = FrameLayout(this)
+        box.background = android.graphics.drawable.GradientDrawable().apply {
+            setStroke(dp(2), Color.parseColor("#2196F3")); setColor(Color.parseColor("#08000000"))
+        }
+        // Approximate the text's rendered size for the box dimensions (a true measurement would
+        // require a StaticLayout pass; this is close enough for a selection indicator)
+        val approxW = (item.text.split("\n").maxOfOrNull { it.length } ?: 1) * screenSizePx * 0.55f
+        val approxH = item.text.split("\n").size * screenSizePx * 1.2f
+        val boxW = approxW.toInt().coerceAtLeast(dp(60)); val boxH = approxH.toInt().coerceAtLeast(dp(36))
+
+        // A transparent touch-target filling the box: dragging it moves the text item.
+        val moveSurface = View(this).apply { layoutParams = FrameLayout.LayoutParams(boxW, boxH) }
+        var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
+        moveSurface.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    moveStartRawX = ev.rawX; moveStartRawY = ev.rawY
+                    val lp = box.layoutParams as FrameLayout.LayoutParams
+                    moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
+                    false // allow the click/double-tap to still pass through to DrawingView underneath
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dx = (ev.rawX - moveStartRawX); val dy = (ev.rawY - moveStartRawY)
+                    if (kotlin.math.abs(dx) > 6 || kotlin.math.abs(dy) > 6) {
+                        val lp = box.layoutParams as FrameLayout.LayoutParams
+                        lp.leftMargin = (moveStartLeft + dx).toInt().coerceAtLeast(0); lp.topMargin = (moveStartTop + dy).toInt().coerceAtLeast(0)
+                        box.layoutParams = lp
+                        item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat() + dp(6))
+                        item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + dp(6) + screenSizePx)
+                        drawingView.invalidate()
+                        true
+                    } else false
+                }
+                else -> false
+            }
+        }
+        box.addView(moveSurface)
+
+        fun handle(colorHex: String, gravityVal: Int, mx: Int, my: Int, sz: Int = dp(18)): View {
+            val h = View(this).apply {
+                val hp = FrameLayout.LayoutParams(sz, sz); hp.gravity = gravityVal; hp.leftMargin = mx; hp.topMargin = my; hp.rightMargin = mx; hp.bottomMargin = my
+                layoutParams = hp
+                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor(colorHex)) }
+            }
+            box.addView(h); return h
+        }
+        // Resize handle (bottom-right): drag to scale text size
+        val resizeHandle = handle("#2196F3", Gravity.BOTTOM or Gravity.END, -dp(9), -dp(9))
+        var resizeStartRawY = 0f; var resizeStartSize = 0f
+        resizeHandle.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> { resizeStartRawY = ev.rawY; resizeStartSize = item.size; true }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dy = ev.rawY - resizeStartRawY
+                    item.size = (resizeStartSize + dy * 0.5f).coerceIn(8f, 400f)
+                    drawingView.invalidate()
+                    dismissTextSelectionBox(); showTextSelectionBox(item, screenX, screenY)
+                    true
+                }
+                else -> true
+            }
+        }
+        // Rotate handle (top-right)
+        val rotateHandle = handle("#4CAF50", Gravity.TOP or Gravity.END, -dp(9), -dp(9))
+        var rotStartRawX = 0f; var rotStartRotation = 0f
+        rotateHandle.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> { rotStartRawX = ev.rawX; rotStartRotation = item.rotation; true }
+                android.view.MotionEvent.ACTION_MOVE -> { item.rotation = rotStartRotation + (ev.rawX - rotStartRawX) * 0.5f; if (!useActualSize) box.rotation = item.rotation; drawingView.invalidate(); true }
+                else -> true
+            }
+        }
+        // Delete handle (top-left)
+        val deleteHandle = ImageView(this).apply {
+            val sz = dp(20); val hp = FrameLayout.LayoutParams(sz, sz); hp.gravity = Gravity.TOP or Gravity.START; hp.leftMargin = -sz/2; hp.topMargin = -sz/2
+            layoutParams = hp; setImageResource(R.drawable.ic_text_delete)
+            background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor("#D32F2F")) }
+            setPadding(dp(3), dp(3), dp(3), dp(3))
+            setOnClickListener { drawingView.removeTextItem(item); dismissTextSelectionBox(); drawingView.invalidate() }
+        }
+        box.addView(deleteHandle)
+
+        val lp = FrameLayout.LayoutParams(boxW, boxH)
+        lp.leftMargin = (screenX - dp(6)).toInt().coerceAtLeast(0); lp.topMargin = (screenY - screenSizePx - dp(6)).toInt().coerceAtLeast(0)
+        canvasContainer.addView(box, lp)
+        textSelectionBox = box; textSelectionItem = item
+    }
+
     private fun showInlineTextEditor(item: TextItem?, screenX: Float, screenY: Float, worldX: Float, worldY: Float) {
+        dismissTextSelectionBox()
         if (activeEditText != null && editingItem === item) return
         if (activeEditText != null) { isSwitchingTextEditor=true; closeInlineEditor(true); isSwitchingTextEditor=false; drawingView.post{ showInlineTextEditor(item,screenX,screenY,worldX,worldY) }; return }
         dismissCellEditor()

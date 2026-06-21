@@ -133,14 +133,36 @@ class PdfViewerActivity : AppCompatActivity() {
     }
 
     private fun copyAndOpenPdf(uri: Uri) {
-        try {
-            val folder = File(filesDir, "pdfs").also { it.mkdirs() }
-            val out = File(folder, "pdf_${System.currentTimeMillis()}.pdf")
-            contentResolver.openInputStream(uri)?.use { ins -> FileOutputStream(out).use { ins.copyTo(it) } }
-            pdfFile = out; openPdf(out)
-        } catch (e: Exception) {
-            Toast.makeText(this, "Failed to open PDF: ${e.message}", Toast.LENGTH_LONG).show()
+        // Large PDFs (thousands of pages / hundreds of MB) take real time to copy. Doing this on
+        // the main thread would freeze the UI and risk an ANR crash, and with no progress shown
+        // it would look like the app had simply failed. This runs the copy on a background thread
+        // with a progress dialog, and PdfRenderer itself only ever decodes ONE page bitmap at a
+        // time regardless of page count, so total page count was never actually the bottleneck -
+        // the blocking synchronous file copy was.
+        val progressDialog = android.app.ProgressDialog(this).apply {
+            setMessage("Loading PDF..."); setCancelable(false); show()
         }
+        Thread {
+            try {
+                val folder = File(filesDir, "pdfs").also { it.mkdirs() }
+                val out = File(folder, "pdf_${System.currentTimeMillis()}.pdf")
+                contentResolver.openInputStream(uri)?.use { ins ->
+                    FileOutputStream(out).use { fos ->
+                        val buffer = ByteArray(1 shl 20) // 1MB buffer for fast large-file copying
+                        var read: Int
+                        while (ins.read(buffer).also { read = it } != -1) fos.write(buffer, 0, read)
+                    }
+                }
+                runOnUiThread {
+                    progressDialog.dismiss()
+                    pdfFile = out; openPdf(out)
+                }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread { progressDialog.dismiss(); Toast.makeText(this, "PDF is too large for available memory", Toast.LENGTH_LONG).show() }
+            } catch (e: Exception) {
+                runOnUiThread { progressDialog.dismiss(); Toast.makeText(this, "Failed to open PDF: ${e.message}", Toast.LENGTH_LONG).show() }
+            }
+        }.start()
     }
 
     private fun openPdf(file: File) {
@@ -169,18 +191,39 @@ class PdfViewerActivity : AppCompatActivity() {
 
     private fun loadPage() {
         val renderer = pdfRenderer ?: return
-        val page = renderer.openPage(currentPage)
-        // Render at 2x display resolution for crisp snips regardless of zoom
-        val renderScale = (pdfCanvas.width.toFloat() / page.width) * 2f
-        val bmpW = (page.width * renderScale).toInt().coerceAtLeast(1)
-        val bmpH = (page.height * renderScale).toInt().coerceAtLeast(1)
-        val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
-        Canvas(bmp).drawColor(Color.WHITE)
-        page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-        page.close()
-        pdfCanvas.setPageBitmap(bmp)
-        annotationFiles[currentPage]?.let { pdfCanvas.loadAnnotations(it) } ?: pdfCanvas.clearAnnotations()
-        tvPageInfo.text = "${currentPage + 1} / $totalPages"
+        val pageToLoad = currentPage
+        val canvasWidth = pdfCanvas.width
+        Thread {
+            try {
+                // PdfRenderer is not thread-safe for concurrent page opens, but since each page
+                // turn waits for the previous render to fully finish before starting the next
+                // (page.close() happens before this thread exits), sequential background renders
+                // are safe and keep the UI thread free during the (potentially slow, for large or
+                // image-heavy pages) decode + draw work.
+                val page = renderer.openPage(pageToLoad)
+                val renderScale = (canvasWidth.toFloat() / page.width) * 2f
+                val bmpW = (page.width * renderScale).toInt().coerceAtLeast(1)
+                val bmpH = (page.height * renderScale).toInt().coerceAtLeast(1)
+                val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+                Canvas(bmp).drawColor(Color.WHITE)
+                page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                page.close()
+                runOnUiThread {
+                    if (pageToLoad == currentPage) {
+                        pdfCanvas.setPageBitmap(bmp)
+                        annotationFiles[currentPage]?.let { pdfCanvas.loadAnnotations(it) } ?: pdfCanvas.clearAnnotations()
+                        tvPageInfo.text = "${currentPage + 1} / $totalPages"
+                    } else {
+                        // User already navigated away before this render finished - discard it.
+                        bmp.recycle()
+                    }
+                }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread { Toast.makeText(this, "Page too large to render", Toast.LENGTH_SHORT).show() }
+            } catch (e: Exception) {
+                runOnUiThread { Toast.makeText(this, "Failed to render page: ${e.message}", Toast.LENGTH_SHORT).show() }
+            }
+        }.start()
     }
 
     private fun saveCurrentAnnotations() {
@@ -346,7 +389,15 @@ class PdfAnnotationView(context: Context) : View(context) {
         }
     })
 
-    fun setPageBitmap(bmp: Bitmap) { pageBitmap = bmp; scaleFactor = 1f; translateX = 0f; translateY = 0f; invalidate() }
+    fun setPageBitmap(bmp: Bitmap) {
+        // Recycle the previous page's bitmap before dropping the reference - without this,
+        // paging through a very large PDF (thousands of pages) over a long session accumulates
+        // un-recycled bitmaps faster than garbage collection can keep up, eventually causing an
+        // OutOfMemoryError.
+        val old = pageBitmap
+        pageBitmap = bmp; scaleFactor = 1f; translateX = 0f; translateY = 0f; invalidate()
+        if (old != null && old !== bmp && !old.isRecycled) old.recycle()
+    }
     fun clearAnnotations() { strokes.clear(); invalidate() }
     fun getPageBitmap(): Bitmap? = pageBitmap
 

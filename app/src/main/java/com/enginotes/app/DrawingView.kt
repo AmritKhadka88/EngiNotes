@@ -45,8 +45,6 @@ enum class Tool {
 }
 enum class PaperType { BLANK, BLANK_COLORED, LINED, GRID, DOTS, ENGINEERING }
 enum class EraserMode { OBJECT, AREA }
-enum class AutoSelectShape { RECTANGLE, FREEFORM }
-enum class AutoSelectDivide { WHOLE, DIVIDED }
 enum class CanvasMode { INFINITE, FIXED, PAGINATED, CONVENIENT }
 enum class Orientation { PORTRAIT, LANDSCAPE }
 
@@ -566,8 +564,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var paperColor: Int = Color.parseColor("#FFFDE7")
     var defaultTextSize: Float = 50f * 1.333f
 
-    var autoSelectShape: AutoSelectShape = AutoSelectShape.RECTANGLE
-    var autoSelectDivide: AutoSelectDivide = AutoSelectDivide.WHOLE
     var canvasMode: CanvasMode = CanvasMode.CONVENIENT
     var paperSize: PaperSizeOption = PaperSizeOption.A4
     var pageOrientation: Orientation = Orientation.PORTRAIT
@@ -575,6 +571,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var selectedGroup: MutableList<Any>? = null
     private var regionPath: Path? = null
     private var regionStart: Pair<Float, Float>? = null
+    private var isWindowSelect: Boolean = true
     private var groupMoveStartX = 0f; private var groupMoveStartY = 0f
     private var groupResizeHandle = -1
     private var groupResizeOrigBounds = FloatArray(4)
@@ -607,8 +604,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val TABLE_DOUBLE_TAP_MS = 300L
 
     var onTextEditRequest: ((TextItem?, Float, Float, Float, Float) -> Unit)? = null
+    var onTextSelectRequest: ((TextItem, Float, Float) -> Unit)? = null
+    var onTextDeselectRequest: (() -> Unit)? = null
     var onTableCellEditRequest: ((TableItem, Int, Int, Float, Float) -> Unit)? = null
     var onAudioItemTap: ((AudioItem) -> Unit)? = null
+    // Fired when a tap lands on empty canvas (no item, no handle) while using SELECT or TEXT
+    // tool - the host activity uses this to commit-and-close any open text/table editor. This is
+    // deliberately NOT fired for drawing/shape/line tools, where a stray tap should just be
+    // ignored rather than treated as "finish editing" (and definitely shouldn't place an unwanted
+    // dot - see the SHAPE_TOOLS tap-ignore handling in handleDrawing).
+    var onEmptyAreaTap: (() -> Unit)? = null
     var isTextEditorOpen: Boolean = false
     var onScaleChanged: ((Float) -> Unit)? = null
     var onCanvasTransformed: (() -> Unit)? = null
@@ -682,14 +687,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 Tool.SELECT -> {
                     val hit = findTextItemAt(wx, wy)
-                    if (hit != null) {
-                        // Text items skip the dashed canvas-selection state entirely - a single
-                        // tap (first or repeated) always opens the editing box directly, since the
-                        // box itself now carries move/resize/rotate/delete controls. This avoids
-                        // showing two different selection UIs in sequence for the same item.
-                        selectedItem = null
-                        hit.isEditing = true; invalidate()
-                        onTextEditRequest?.invoke(hit, e.x, e.y, wx, wy)
+                    val tableHit = if (hit == null) actions.reversed().filterIsInstance<TableItem>().firstOrNull { t -> val b = getBounds(t); b != null && wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3] } else null
+                    when {
+                        hit != null -> {
+                            // Single tap SELECTS the text box (shows resize/rotate/delete handles,
+                            // no keyboard) without entering edit mode. Double tap (see onDoubleTap
+                            // below) is what opens the keyboard for actual typing.
+                            selectedItem = hit
+                            onTextSelectRequest?.invoke(hit, e.x, e.y)
+                            invalidate()
+                        }
+                        tableHit != null -> { /* let handleTable manage this; not an empty-area tap */ }
+                        else -> {
+                            if (selectedItem is TextItem) { selectedItem = null; onTextDeselectRequest?.invoke() }
+                            // Tapped genuinely empty canvas with no item under the finger - this
+                            // is the "I'm done" signal for any open text/table editor.
+                            onEmptyAreaTap?.invoke()
+                            invalidate()
+                        }
                     }
                 }
                 Tool.FILL -> {
@@ -708,6 +723,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
             val hit = findTextItemAt(wx, wy)
             if (hit != null) {
+                selectedItem = null
                 hit.isEditing = true; invalidate()
                 onTextEditRequest?.invoke(hit, e.x, e.y, wx, wy)
                 return true
@@ -1195,11 +1211,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val pad = 20f / scaleFactor
         for (a in actions.reversed()) {
             if (a is FillItem) continue
-            // TextItem is excluded here deliberately: text uses its own single-tap-to-edit path
-            // (see Tool.SELECT handling in onSingleTapConfirmed) so it never enters the generic
-            // drag/resize selection state, which used to cause two different selection UIs to
-            // flash in sequence for the same tap.
-            if (a is TextItem) continue
             if (a is AudioItem) { if (distance(x, y, a.x, a.y) <= 60f / scaleFactor) return a; continue }
             if (a is TableItem) {
                 val b = getBounds(a) ?: continue
@@ -1299,6 +1310,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawTableOverlay(canvas: Canvas) {
         val table = activeTableItem ?: return
+        // Defensive check: if the table was deleted from `actions` through any path (eraser,
+        // undo, select-and-delete) but `activeTableItem` still points to it, this overlay would
+        // otherwise keep drawing a rectangle for an object that no longer exists - an
+        // unselectable, uneraseable "ghost" rectangle. Clear the stale reference instead.
+        if (!actions.contains(table)) { activeTableItem = null; tableIsActive = false; return }
         val selColor = if (tableIsActive) "#2196F3" else "#9E9E9E"
         val op = Paint(); op.color = Color.parseColor(selColor); op.style = Paint.Style.STROKE
         op.strokeWidth = (if (tableIsActive) 2f else 1.5f) / scaleFactor
@@ -1345,7 +1361,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val (lx, ly) = rotatePoint(wx, wy, px, py, -rot)
                         val hr = 16f / scaleFactor; val hit = 70f / scaleFactor
                         val delX = b[2] + hr * 5f; val delY = b[1] - hr * 5f
-                        if (distance(lx, ly, delX, delY) <= hit * 1.2f) { actions.remove(item); selectedItem = null; handled = true; invalidate(); return }
+                        if (distance(lx, ly, delX, delY) <= hit * 1.2f) { actions.remove(item); if (item === activeTableItem) { activeTableItem = null; tableIsActive = false }; selectedItem = null; handled = true; invalidate(); return }
                         val canRot = item is ImageItem || item is TextItem || item is AudioItem || (item is StrokeItem && item.data.type != Tool.PEN && item.data.type != Tool.ARC)
                         if (!handled && canRot) {
                             val cx = (b[0] + b[2]) / 2f; val ry = b[1] - 60f / scaleFactor
@@ -1445,32 +1461,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val region = Region(); region.setPath(path, Region(clip)); return region
     }
 
-    private fun splitStrokeByRegion(data: StrokeData, region: Region): Pair<List<StrokeItem>, List<StrokeItem>> {
-        val pts = data.points
-        if (pts.size < 4) return Pair(emptyList(), listOf(StrokeItem(data, data.buildPath(), data.toPaint())))
-        val inSegs = mutableListOf<MutableList<Float>>(); val outSegs = mutableListOf<MutableList<Float>>()
-        var curIn = mutableListOf<Float>(); var curOut = mutableListOf<Float>(); var last: Boolean? = null; var i = 0
-        while (i + 1 < pts.size) {
-            val x = pts[i]; val y = pts[i + 1]; val isIn = region.contains(x.toInt(), y.toInt())
-            if (last != null && last != isIn) { if (last) { if (curIn.size >= 4) inSegs.add(curIn); curIn = mutableListOf() } else { if (curOut.size >= 4) outSegs.add(curOut); curOut = mutableListOf() } }
-            if (isIn) { curIn.add(x); curIn.add(y) } else { curOut.add(x); curOut.add(y) }
-            last = isIn; i += 2
-        }
-        if (curIn.size >= 4) inSegs.add(curIn); if (curOut.size >= 4) outSegs.add(curOut)
-        fun makeItems(segs: List<MutableList<Float>>): List<StrokeItem> = segs.map { val d = StrokeData(data.type, it, data.color, data.strokeWidth, data.fill); StrokeItem(d, d.buildPath(), d.toPaint()) }
-        return Pair(makeItems(inSegs), makeItems(outSegs))
-    }
-
-    private fun selectItemsInRegion(region: Region) {
+    // AutoCAD-style box select: dragging LEFT-TO-RIGHT is a "window" select (only items fully
+    // enclosed by the box are selected); dragging RIGHT-TO-LEFT is a "crossing" select (any item
+    // the box even touches is selected). This replaces the old 4-mode picker (rectangle/freeform
+    // x whole/divided) with a single intuitive gesture, matching how AutoCAD and most CAD/drawing
+    // tools already work.
+    private fun selectItemsInRegion(region: Region, regionBounds: FloatArray, windowMode: Boolean) {
         val group = mutableListOf<Any>(); val newActions = mutableListOf<Any>()
         for (action in actions) {
             if (action is FillItem) { newActions.add(action); continue }
-            if (action is StrokeItem && (action.data.type == Tool.PEN || action.data.type == Tool.ERASER || action.data.type == Tool.ARC || action.data.type == Tool.HIGHLIGHTER || action.data.type == Tool.BRUSH) && autoSelectDivide == AutoSelectDivide.DIVIDED) {
-                val (inside, outside) = splitStrokeByRegion(action.data, region); newActions.addAll(outside); group.addAll(inside); continue
-            }
             val b = getBounds(action); if (b == null) { newActions.add(action); continue }
-            val cx = (b[0] + b[2]) / 2f; val cy = (b[1] + b[3]) / 2f
-            if (region.contains(cx.toInt(), cy.toInt())) group.add(action) else newActions.add(action)
+            val matches = if (windowMode) {
+                // Window select: item's full bounding box must be inside the drag rectangle
+                b[0] >= regionBounds[0] && b[1] >= regionBounds[1] && b[2] <= regionBounds[2] && b[3] <= regionBounds[3]
+            } else {
+                // Crossing select: any overlap between item bounds and the drag rectangle counts
+                b[0] <= regionBounds[2] && b[2] >= regionBounds[0] && b[1] <= regionBounds[3] && b[3] >= regionBounds[1]
+            }
+            if (matches) group.add(action) else newActions.add(action)
         }
         newActions.addAll(group); actions.clear(); actions.addAll(newActions); redoStack.clear()
         selectedGroup = if (group.isNotEmpty()) group else null
@@ -1510,15 +1518,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     } else { val dx = wx - groupMoveStartX; val dy = wy - groupMoveStartY; for (it in group) moveItem(it, dx, dy); groupMoveStartX = wx; groupMoveStartY = wy }
                     invalidate(); return
                 }
-                if (autoSelectShape == AutoSelectShape.RECTANGLE) {
-                    val s = regionStart ?: return
-                    regionPath = Path().apply { addRect(minOf(s.first, wx), minOf(s.second, wy), maxOf(s.first, wx), maxOf(s.second, wy), Path.Direction.CW) }
-                } else regionPath?.lineTo(wx, wy)
+                val s = regionStart ?: return
+                // Window select (left-to-right drag) vs crossing select (right-to-left drag),
+                // same convention as AutoCAD. Track this live so the box outline can hint which
+                // mode is active while dragging.
+                isWindowSelect = wx >= s.first
+                regionPath = Path().apply { addRect(minOf(s.first, wx), minOf(s.second, wy), maxOf(s.first, wx), maxOf(s.second, wy), Path.Direction.CW) }
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
                 groupResizeHandle = -1; val group = selectedGroup; if (group != null && group.isNotEmpty()) return
-                val rp = regionPath; if (rp != null) { if (autoSelectShape == AutoSelectShape.FREEFORM) rp.close(); selectItemsInRegion(buildRegion(rp)) }
+                val rp = regionPath; val s = regionStart
+                if (rp != null && s != null) {
+                    val bounds = floatArrayOf(minOf(s.first, wx), minOf(s.second, wy), maxOf(s.first, wx), maxOf(s.second, wy))
+                    selectItemsInRegion(buildRegion(rp), bounds, isWindowSelect)
+                }
                 regionPath = null; regionStart = null; invalidate()
             }
         }
@@ -1545,9 +1559,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawAutoSelectOverlay(canvas: Canvas) {
         regionPath?.let { rp ->
-            val fp = Paint(); fp.color = Color.parseColor("#332196F3"); fp.style = Paint.Style.FILL
-            val sp = Paint(); sp.color = Color.parseColor("#2196F3"); sp.style = Paint.Style.STROKE; sp.strokeWidth = 2f / scaleFactor
-            sp.pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f / scaleFactor, 6f / scaleFactor), 0f)
+            // AutoCAD convention: window select (left-to-right) = solid blue; crossing select
+            // (right-to-left) = dashed green. Gives a clear visual hint of which mode is active
+            // while still dragging.
+            val color = if (isWindowSelect) "#2196F3" else "#4CAF50"
+            val fp = Paint(); fp.color = Color.parseColor(if (isWindowSelect) "#332196F3" else "#334CAF50"); fp.style = Paint.Style.FILL
+            val sp = Paint(); sp.color = Color.parseColor(color); sp.style = Paint.Style.STROKE; sp.strokeWidth = 2f / scaleFactor
+            if (!isWindowSelect) sp.pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f / scaleFactor, 6f / scaleFactor), 0f)
             canvas.drawPath(rp, fp); canvas.drawPath(rp, sp)
         }
         val group = selectedGroup
@@ -1808,7 +1826,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 else if (SHAPE_TOOLS.contains(currentTool)) { item.data.points[2] = wx; item.data.points[3] = wy }
                 item.path = item.data.buildPath(); invalidate()
             }
-            MotionEvent.ACTION_UP -> { currentItem?.let { actions.add(it); redoStack.clear() }; currentItem = null; invalidate() }
+            MotionEvent.ACTION_UP -> {
+                currentItem?.let { item ->
+                    // For shape/line tools, a tap with no meaningful drag is almost certainly an
+                    // accidental touch (e.g. brushing the screen while reaching for a toolbar
+                    // button) - committing it would silently leave an invisible degenerate
+                    // zero-size shape on the canvas that's confusing to find and remove later.
+                    // Pen/highlighter/brush strokes are NOT affected by this check (a single dot
+                    // tap with the pen is a deliberate, visible mark the user can see and want).
+                    val isShapeTool = SHAPE_TOOLS.contains(currentTool)
+                    val tooShort = isShapeTool && item.data.points.size >= 4 &&
+                        distance(item.data.points[0], item.data.points[1], item.data.points[2], item.data.points[3]) < (8f / scaleFactor)
+                    if (!tooShort) { actions.add(item); redoStack.clear() }
+                }
+                currentItem = null; invalidate()
+            }
         }
     }
 
@@ -1894,13 +1926,44 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return Pair(x1 + t * dx, y1 + t * dy)
     }
 
+    // True distance from a point to a closed/open shape's outline (not its inflated bounding box).
+    // Used by area-mode erasing so touching empty space near a shape's bbox corner doesn't delete
+    // the whole shape - only actually touching its drawn line does.
+    private fun distanceToShapeOutline(data: StrokeData, x: Float, y: Float): Float {
+        val path = data.buildPath()
+        val measure = android.graphics.PathMeasure(path, false)
+        var minDist = Float.MAX_VALUE
+        val pos = FloatArray(2)
+        do {
+            val len = measure.length
+            if (len <= 0f) continue
+            var dist = 0f
+            val step = (len / 24f).coerceAtLeast(2f)
+            while (dist <= len) {
+                measure.getPosTan(dist, pos, null)
+                val d = distance(x, y, pos[0], pos[1])
+                if (d < minDist) minDist = d
+                dist += step
+            }
+        } while (measure.nextContour())
+        return minDist
+    }
+
     private fun strokeHitTest(data: StrokeData, x: Float, y: Float, r: Float): Boolean {
         if (data.type == Tool.PEN || data.type == Tool.ERASER || data.type == Tool.ARC || data.type == Tool.HIGHLIGHTER || data.type == Tool.BRUSH) {
-            if (data.points.size == 2) return distance(x, y, data.points[0], data.points[1]) <= r
-            var i = 0; while (i + 3 < data.points.size) { if (distToSeg(x, y, data.points[i], data.points[i + 1], data.points[i + 2], data.points[i + 3]) <= r) return true; i += 2 }; return false
+            // Account for the stroke's own width so the eraser circle has to actually overlap the
+            // VISIBLE ink (not just the invisible centerline) - matters for thick marker/brush/
+            // highlighter strokes where the painted area extends well past the recorded points.
+            val effectiveR = r + (data.strokeWidth / 2f).coerceAtMost(r * 2f)
+            if (data.points.size == 2) return distance(x, y, data.points[0], data.points[1]) <= effectiveR
+            var i = 0; while (i + 3 < data.points.size) { if (distToSeg(x, y, data.points[i], data.points[i + 1], data.points[i + 2], data.points[i + 3]) <= effectiveR) return true; i += 2 }; return false
         } else {
-            if (data.points.size >= 4) { val l = minOf(data.points[0], data.points[2]) - r; val ri = maxOf(data.points[0], data.points[2]) + r; val t = minOf(data.points[1], data.points[3]) - r; val b = maxOf(data.points[1], data.points[3]) + r; return x in l..ri && y in t..b }
-            return false
+            // Shapes: test against the actual outline, not an inflated bounding box, so the
+            // eraser only triggers when it genuinely touches the drawn line - this is what makes
+            // area-mode erasing on shapes behave like area erasing instead of object erasing.
+            if (data.points.size < 4) return false
+            val effectiveR = r + (data.strokeWidth / 2f)
+            return distanceToShapeOutline(data, x, y) <= effectiveR
         }
     }
 
