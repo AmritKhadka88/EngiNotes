@@ -124,8 +124,8 @@ class MainActivity : AppCompatActivity() {
     private var shapesPickerOverlay: LinearLayout? = null
 
     private var activeCellEditText: EditText? = null
-    private var activeCellToolbar: LinearLayout? = null
-    private var tableToolbarOverlay: LinearLayout? = null
+    private var activeCellToolbar: View? = null
+    private var tableToolbarOverlay: View? = null
 
     private var isRecording = false
     private var recordingFile: File? = null
@@ -1295,29 +1295,7 @@ class MainActivity : AppCompatActivity() {
             return RectF(sx0, sy0, sx1, sy1)
         }
 
-        val et = EditText(this).apply {
-            setText(cell.text)
-            setTextColor(cell.textColor)
-            setBackgroundColor(Color.parseColor("#FFF8E1")) // soft highlight so it's clear this cell is being edited
-            setPadding(dp(6), dp(4), dp(6), dp(4))
-            gravity = when (cell.alignment) { 1 -> Gravity.CENTER; 2 -> Gravity.END or Gravity.CENTER_VERTICAL; else -> Gravity.START or Gravity.CENTER_VERTICAL }
-            isSingleLine = false
-            imeOptions = EditorInfo.IME_FLAG_NO_ENTER_ACTION
-            addTextChangedListener(object:TextWatcher{
-                override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
-                override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){
-                    cell.text=s?.toString()?:""
-                    // Auto-grow column width / row height live as the user types, unless the
-                    // column was manually resized or this is a merged cell.
-                    table.recalcCellSize(row, col)
-                    drawingView.invalidate()
-                    repositionToCell()
-                }
-                override fun afterTextChanged(s:Editable?){}
-            })
-        }
-
-        fun repositionToCell() {
+        fun repositionToCellFn(et: EditText) {
             val r = cellScreenRect()
             val scale = drawingView.getScaleFactor()
             et.textSize = (cell.textSize * scale / density).coerceAtLeast(8f)
@@ -1326,6 +1304,29 @@ class MainActivity : AppCompatActivity() {
             lp.leftMargin = r.left.toInt(); lp.topMargin = r.top.toInt()
             et.layoutParams = lp
         }
+
+        val et = EditText(this).apply {
+            setText(cell.text)
+            setTextColor(cell.textColor)
+            setBackgroundColor(Color.parseColor("#FFF8E1")) // soft highlight so it's clear this cell is being edited
+            setPadding(dp(6), dp(4), dp(6), dp(4))
+            gravity = when (cell.alignment) { 1 -> Gravity.CENTER; 2 -> Gravity.END or Gravity.CENTER_VERTICAL; else -> Gravity.START or Gravity.CENTER_VERTICAL }
+            isSingleLine = false
+            imeOptions = EditorInfo.IME_FLAG_NO_ENTER_ACTION
+        }
+        et.addTextChangedListener(object:TextWatcher{
+            override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
+            override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){
+                cell.text=s?.toString()?:""
+                // Auto-grow column width / row height live as the user types, unless the
+                // column was manually resized or this is a merged cell.
+                table.recalcCellSize(row, col)
+                drawingView.invalidate()
+                repositionToCellFn(et)
+            }
+            override fun afterTextChanged(s:Editable?){}
+        })
+        fun repositionToCell() { repositionToCellFn(et) }
 
         val initialRect = cellScreenRect()
         val initParams = FrameLayout.LayoutParams(initialRect.width().toInt().coerceAtLeast(dp(40)), initialRect.height().toInt().coerceAtLeast(dp(28)))
