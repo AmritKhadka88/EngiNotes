@@ -700,7 +700,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 Tool.TEXT -> {
                     val hit = findTextItemAt(wx, wy)
                     if (hit != null) { selectedItem = hit; currentTool = Tool.SELECT; invalidate() }
-                    else { selectedItem = null; onTextEditRequest?.invoke(null, e.x, e.y, wx, wy) }
+                    else if (isTextEditorOpen) {
+                        // An editor is already open and the user tapped empty space - this means
+                        // "I'm done typing," not "start a new text box here." Close/commit the
+                        // current one instead of opening another.
+                        onEmptyAreaTap?.invoke()
+                    } else {
+                        selectedItem = null; onTextEditRequest?.invoke(null, e.x, e.y, wx, wy)
+                    }
                 }
                 Tool.SELECT -> {
                     val hit = findTextItemAt(wx, wy)
@@ -1047,6 +1054,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawSelection(canvas: Canvas) {
         val item = selectedItem ?: return
+        // Text items are handled entirely by MainActivity's overlay boxes (showTextSelectionBox /
+        // showInlineTextEditor) now - drawing this canvas-based dashed selection on top of those
+        // produced two visibly different, overlapping selection UIs for the same text item.
+        if (item is TextItem) return
         val bounds = getBounds(item) ?: return
         val rotation = getRotation(item); val (pivotX, pivotY) = getPivot(item, bounds)
         canvas.save(); canvas.rotate(rotation, pivotX, pivotY)
@@ -1418,6 +1429,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_DOWN -> {
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it) }; longPressRunnable = null
                 val item = selectedItem; var handled = false
+                // Text items are fully owned by MainActivity's overlay box (its own handles
+                // intercept touches directly before they'd reach here) - running this generic
+                // drag/resize/rotate hit-test for text too was redundant and could fight with the
+                // overlay box's own touch handling.
+                if (item is TextItem) { if (!handled) { activeHandle = HandleType.NONE; selectedItem = findItemAt(wx, wy) }; invalidate(); return }
                 if (item != null) {
                     val b = getBounds(item)
                     if (b != null) {
