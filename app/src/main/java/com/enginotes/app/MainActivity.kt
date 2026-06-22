@@ -1717,13 +1717,14 @@ class MainActivity : AppCompatActivity() {
         // A transparent touch-target filling the box: dragging it moves the text item.
         val moveSurface = View(this).apply { layoutParams = FrameLayout.LayoutParams(boxW, boxH) }
         var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
+        var onMoveSurfaceDrag: (() -> Unit)? = null
         moveSurface.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
                     moveStartRawX = ev.rawX; moveStartRawY = ev.rawY
                     val lp = box.layoutParams as FrameLayout.LayoutParams
                     moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
-                    false // allow the click/double-tap to still pass through to DrawingView underneath
+                    false
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
                     val dx = (ev.rawX - moveStartRawX); val dy = (ev.rawY - moveStartRawY)
@@ -1734,7 +1735,7 @@ class MainActivity : AppCompatActivity() {
                         item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat() + dp(6))
                         item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + dp(6) + screenSizePx)
                         drawingView.invalidate()
-                        layoutHandles(); layoutTopHandles()
+                        onMoveSurfaceDrag?.invoke()
                         true
                     } else false
                 }
@@ -1795,6 +1796,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 8 resize handles around the full perimeter (corners + edge midpoints)
+        onMoveSurfaceDrag = { layoutHandles(); layoutTopHandles() }
         val tl = handle("#2196F3", 0f, 0f)
         val tm = handle("#2196F3", 0.5f, 0f)
         val tr = handle("#2196F3", 1f, 0f)
