@@ -1785,11 +1785,11 @@ class MainActivity : AppCompatActivity() {
             val bx = boxLeft(); val by = boxTop()
             val rlp = rotateHandle.layoutParams as FrameLayout.LayoutParams
             rlp.leftMargin = (bx + boxW / 2f - dp(16)).toInt()
-            rlp.topMargin = (by - dp(44)).coerceAtLeast(0)
+            rlp.topMargin = (by - dp(44)).coerceAtLeast(0f).toInt()
             rotateHandle.layoutParams = rlp
             val dlp = deleteHandle.layoutParams as FrameLayout.LayoutParams
             dlp.leftMargin = (bx + boxW - dp(16)).toInt()
-            dlp.topMargin = (by - dp(44)).coerceAtLeast(0)
+            dlp.topMargin = (by - dp(44)).coerceAtLeast(0f).toInt()
             deleteHandle.layoutParams = dlp
         }
 
