@@ -491,7 +491,7 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<ImageButton?>(R.id.btnMenu)?.setOnClickListener { onMenuClick(it) }
         findViewById<ImageButton?>(R.id.btnLink)?.setOnClickListener { closeInlineEditor(true); showLinkPickerDialog() }
-        findViewById<ImageButton?>(R.id.btnBack)?.setOnClickListener { confirmThenExit() }
+        findViewById<ImageButton?>(R.id.btnBack)?.also { it.rotation = 180f; it.setOnClickListener { confirmThenExit() } }
         btnLayoutToggle.setOnClickListener { showLayoutMenu(it) }
     }
 
@@ -1734,6 +1734,7 @@ class MainActivity : AppCompatActivity() {
                         item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat() + dp(6))
                         item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + dp(6) + screenSizePx)
                         drawingView.invalidate()
+                        layoutHandles(); layoutTopHandles()
                         true
                     } else false
                 }
@@ -1860,7 +1861,7 @@ class MainActivity : AppCompatActivity() {
         rotateHandle.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> { rotStartRawX = ev.rawX; rotStartRotation = item.rotation; true }
-                android.view.MotionEvent.ACTION_MOVE -> { item.rotation = rotStartRotation + (ev.rawX - rotStartRawX) * 0.5f; if (!useActualSize) box.rotation = item.rotation; drawingView.invalidate(); true }
+                android.view.MotionEvent.ACTION_MOVE -> { item.rotation = rotStartRotation + (ev.rawX - rotStartRawX) * 0.5f; if (!useActualSize) box.rotation = item.rotation; drawingView.invalidate(); layoutHandles(); layoutTopHandles(); true }
                 else -> true
             }
         }
@@ -1891,10 +1892,14 @@ class MainActivity : AppCompatActivity() {
             val newAnchorX = drawingView.worldToScreenX(item.x)
             val newAnchorY = drawingView.worldToScreenY(item.y)
             val newScreenSizePx = (if (useActualSize) item.size else item.size * drawingView.getScaleFactor()) * convenientBoost
+            val newDims = updateTextSelectionBoxSize(box, moveSurface, item)
+            boxW = newDims.first; boxH = newDims.second
             val newLp = box.layoutParams as FrameLayout.LayoutParams
             newLp.leftMargin = (newAnchorX - dp(6)).toInt().coerceAtLeast(0)
             newLp.topMargin = (newAnchorY - newScreenSizePx - dp(6)).toInt().coerceAtLeast(0)
+            newLp.width = boxW; newLp.height = boxH
             box.layoutParams = newLp
+            if (!useActualSize) box.rotation = item.rotation
             layoutHandles(); layoutTopHandles()
         }
         drawingView.onCanvasTransformed = { followCanvasTransform() }
