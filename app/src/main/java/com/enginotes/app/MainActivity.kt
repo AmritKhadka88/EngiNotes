@@ -1761,18 +1761,21 @@ class MainActivity : AppCompatActivity() {
         }
         box.addView(moveSurface)
 
-        // Bigger touch targets than before. Positioned via setX/setY AFTER layout completes,
-        // rather than via negative margins + gravity - negative margins combined with gravity
-        // resolution is a known fragile combination in Android's layout system (especially with
-        // both left AND right margins set simultaneously on a fixed-width view, which is what
-        // corner/edge handles need to be centered on the box border), and was the actual cause of
-        // handles not appearing/being mispositioned. Absolute pixel positioning via setX/setY
-        // sidesteps all of that.
+        // Positioned via leftMargin/topMargin (real LayoutParams, processed through Android's
+        // normal layout pass) rather than setX/setY. setX/setY only set a translation layered on
+        // top of whatever left/top the view's LayoutParams produced - and since these handle
+        // views were never going through a real measure/layout cycle relative to a properly
+        // gravity-resolved position, their actual left/top/right/bottom (which is what touch
+        // hit-testing fundamentally relies on) could end up stuck at stale/zero values even
+        // though they visually appeared in the right place via the translation. Margins go
+        // through requestLayout() and get real bounds assigned, which is what makes touch
+        // dispatch reliable.
         val handleViews = mutableListOf<Pair<View, Pair<Float, Float>>>() // view to (fractionX, fractionY) of box, e.g. (0,0)=top-left (1,1)=bottom-right
         fun handle(colorHex: String, fx: Float, fy: Float): View {
             val visibleSz = dp(16); val touchSz = dp(32)
             val h = FrameLayout(this).apply {
-                layoutParams = FrameLayout.LayoutParams(touchSz, touchSz); elevation = dp(4).toFloat()
+                layoutParams = FrameLayout.LayoutParams(touchSz, touchSz)
+                elevation = dp(4).toFloat()
                 isClickable = true; isFocusable = true
             }
             val dot = View(this).apply {
@@ -1788,13 +1791,17 @@ class MainActivity : AppCompatActivity() {
 
         // Repositions every handle to sit exactly on the box's current edge/corner, based on the
         // box's CURRENT width/height - called once after layout, and again any time the box is
-        // resized.
+        // resized. Uses leftMargin/topMargin + requestLayout() instead of setX/setY for reliable
+        // touch hit-testing (see comment above).
         fun layoutHandles() {
-            val w = boxW.toFloat(); val hgt = boxH.toFloat(); val half = dp(16).toFloat()
+            val w = boxW; val hgt = boxH; val halfPx = dp(16)
             for ((view, frac) in handleViews) {
-                view.x = frac.first * w - half
-                view.y = frac.second * hgt - half
+                val vlp = view.layoutParams as FrameLayout.LayoutParams
+                vlp.leftMargin = (frac.first * w).toInt() - halfPx
+                vlp.topMargin = (frac.second * hgt).toInt() - halfPx
+                view.layoutParams = vlp
             }
+            box.requestLayout()
         }
 
         // rotateHandle/deleteHandle are created further below (after the 8 perimeter handles),
@@ -1805,10 +1812,13 @@ class MainActivity : AppCompatActivity() {
         lateinit var rotateHandle: FrameLayout
         lateinit var deleteHandle: FrameLayout
         fun layoutTopHandles() {
-            rotateHandle.x = boxW / 2f - dp(16)
-            rotateHandle.y = -dp(44).toFloat()
-            deleteHandle.x = boxW - dp(16).toFloat()
-            deleteHandle.y = -dp(44).toFloat()
+            val rlp = rotateHandle.layoutParams as FrameLayout.LayoutParams
+            rlp.leftMargin = boxW / 2 - dp(16); rlp.topMargin = -dp(44)
+            rotateHandle.layoutParams = rlp
+            val dlp = deleteHandle.layoutParams as FrameLayout.LayoutParams
+            dlp.leftMargin = boxW - dp(16); dlp.topMargin = -dp(44)
+            deleteHandle.layoutParams = dlp
+            box.requestLayout()
         }
 
         // 8 resize handles around the full perimeter (corners + edge midpoints), same as a shape.
@@ -2086,12 +2096,18 @@ class MainActivity : AppCompatActivity() {
         // completes, since boxContainer is WRAP_CONTENT) - absolute pixel positioning via setX/
         // setY, same robust approach used for the selection box's handles.
         fun layoutEditorHandles() {
-            val w = boxContainer.width.toFloat(); val h = boxContainer.height.toFloat()
-            val half = dp(16).toFloat()
-            moveHandle.x = -half; moveHandle.y = -half
-            resizeHandle.x = w - half; resizeHandle.y = h / 2f - half
-            rotateHandle.x = w - half; rotateHandle.y = h - half
-            deleteHandle.x = w - half; deleteHandle.y = -half
+            val w = boxContainer.width; val h = boxContainer.height
+            val half = dp(16)
+            fun place(handle: View, left: Int, top: Int) {
+                val lp = handle.layoutParams as FrameLayout.LayoutParams
+                lp.leftMargin = left; lp.topMargin = top
+                handle.layoutParams = lp
+            }
+            place(moveHandle, -half, -half)
+            place(resizeHandle, w - half, h / 2 - half)
+            place(rotateHandle, w - half, h - half)
+            place(deleteHandle, w - half, -half)
+            boxContainer.requestLayout()
         }
         boxContainer.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, or_, ob ->
             if (r - l != or_ - ol || b - t != ob - ot) layoutEditorHandles()
