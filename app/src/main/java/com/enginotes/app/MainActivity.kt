@@ -1733,7 +1733,7 @@ class MainActivity : AppCompatActivity() {
                         lp.leftMargin = (moveStartLeft + dx).toInt().coerceAtLeast(0); lp.topMargin = (moveStartTop + dy).toInt().coerceAtLeast(0)
                         box.layoutParams = lp
                         item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat() + dp(6))
-                        item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + dp(6) + screenSizePx)
+                        item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + boxH + dp(6))
                         drawingView.invalidate()
                         onMoveSurfaceDrag?.invoke()
                         true
@@ -1764,34 +1764,52 @@ class MainActivity : AppCompatActivity() {
             return h
         }
 
-        // Compute box's current top-left screen position from its layoutParams
-        fun boxLeft() = (box.layoutParams as FrameLayout.LayoutParams).leftMargin.toFloat()
-        fun boxTop() = (box.layoutParams as FrameLayout.LayoutParams).topMargin.toFloat()
+        // Pivot = bottom-left of box = (anchorScreenX, anchorScreenY) in screen coords
+        // Matches canvas.rotate(item.rotation, 0, layoutHeight) with translate(item.x, item.y-h)
+        fun pivotScreenX() = (box.layoutParams as FrameLayout.LayoutParams).leftMargin + dp(6).toFloat()
+        fun pivotScreenY() = (box.layoutParams as FrameLayout.LayoutParams).topMargin + boxH + dp(6).toFloat()
 
-        // Repositions all 8 edge/corner handles to sit on the box's perimeter, in canvasContainer coords
+        fun rotatePoint(px: Float, py: Float, cx: Float, cy: Float, angleDeg: Float): Pair<Float, Float> {
+            if (angleDeg == 0f) return Pair(px, py)
+            val rad = Math.toRadians(angleDeg.toDouble())
+            val cos = kotlin.math.cos(rad).toFloat(); val sin = kotlin.math.sin(rad).toFloat()
+            val dx = px - cx; val dy = py - cy
+            return Pair(cx + dx * cos - dy * sin, cy + dx * sin + dy * cos)
+        }
+
         fun layoutHandles() {
-            val bx = boxLeft(); val by = boxTop()
+            val px = pivotScreenX(); val py = pivotScreenY()
             val w = boxW.toFloat(); val hgt = boxH.toFloat(); val half = dp(16).toFloat()
+            val rot = item.rotation
+            // Unrotated handle positions relative to pivot (bottom-left)
+            // pivot is at (box.left + dp6, box.top + boxH + dp6) in canvasContainer coords
+            val boxLeft = px - dp(6); val boxTop = py - hgt - dp(6)
             for ((view, frac) in handleViews) {
+                val rawX = boxLeft + frac.first * w
+                val rawY = boxTop + frac.second * hgt
+                val (rx, ry) = rotatePoint(rawX, rawY, px, py, rot)
                 val lp = view.layoutParams as FrameLayout.LayoutParams
-                lp.leftMargin = (bx + frac.first * w - half).toInt()
-                lp.topMargin = (by + frac.second * hgt - half).toInt()
+                lp.leftMargin = (rx - half).toInt(); lp.topMargin = (ry - half).toInt()
                 view.layoutParams = lp
             }
         }
 
         lateinit var rotateHandle: FrameLayout
         lateinit var deleteHandle: FrameLayout
-        // Rotate handle above box centre, delete handle top-right - both in canvasContainer coords
         fun layoutTopHandles() {
-            val bx = boxLeft(); val by = boxTop()
+            val px = pivotScreenX(); val py = pivotScreenY()
+            val w = boxW.toFloat(); val hgt = boxH.toFloat()
+            val rot = item.rotation
+            val boxLeft = px - dp(6); val boxTop = py - hgt - dp(6)
+            // Rotate handle: centre-top, offset above box
+            val (rRx, rRy) = rotatePoint(boxLeft + w / 2f, boxTop - dp(28), px, py, rot)
             val rlp = rotateHandle.layoutParams as FrameLayout.LayoutParams
-            rlp.leftMargin = (bx + boxW / 2f - dp(16)).toInt()
-            rlp.topMargin = (by - dp(44)).coerceAtLeast(0f).toInt()
+            rlp.leftMargin = (rRx - dp(16)).toInt(); rlp.topMargin = (rRy - dp(16)).coerceAtLeast(0f).toInt()
             rotateHandle.layoutParams = rlp
+            // Delete handle: top-right corner, offset above
+            val (dRx, dRy) = rotatePoint(boxLeft + w, boxTop - dp(28), px, py, rot)
             val dlp = deleteHandle.layoutParams as FrameLayout.LayoutParams
-            dlp.leftMargin = (bx + boxW - dp(16)).toInt()
-            dlp.topMargin = (by - dp(44)).coerceAtLeast(0f).toInt()
+            dlp.leftMargin = (dRx - dp(16)).toInt(); dlp.topMargin = (dRy - dp(16)).coerceAtLeast(0f).toInt()
             deleteHandle.layoutParams = dlp
         }
 
@@ -1879,7 +1897,17 @@ class MainActivity : AppCompatActivity() {
         canvasContainer.addView(deleteHandle)
 
         val lp = FrameLayout.LayoutParams(boxW, boxH)
-        lp.leftMargin = (anchorScreenX - dp(6)).toInt().coerceAtLeast(0); lp.topMargin = (anchorScreenY - screenSizePx - dp(6)).toInt().coerceAtLeast(0)
+        // The text is drawn with canvas.translate(item.x, item.y - layoutHeight) then
+        // canvas.rotate(item.rotation, 0, layoutHeight) — so the rotation pivot is (item.x, item.y)
+        // in world space, which is the BOTTOM-LEFT of the text block.
+        // We position the box top-left at (anchorScreenX, anchorScreenY - boxH), then set
+        // pivotX=0, pivotY=boxH so View.rotation also rotates around the bottom-left corner,
+        // exactly matching the canvas transform.
+        lp.leftMargin = (anchorScreenX - dp(6)).toInt().coerceAtLeast(0)
+        lp.topMargin = (anchorScreenY - boxH - dp(6)).toInt().coerceAtLeast(0)
+        box.pivotX = dp(6).toFloat()
+        box.pivotY = (boxH + dp(6)).toFloat()
+        box.rotation = item.rotation
         canvasContainer.addView(box, lp)
         textSelectionBox = box; textSelectionItem = item
         // Register all handles (perimeter + rotate + delete) so dismissTextSelectionBox() can
@@ -1893,15 +1921,16 @@ class MainActivity : AppCompatActivity() {
         fun followCanvasTransform() {
             val newAnchorX = drawingView.worldToScreenX(item.x)
             val newAnchorY = drawingView.worldToScreenY(item.y)
-            val newScreenSizePx = (if (useActualSize) item.size else item.size * drawingView.getScaleFactor()) * convenientBoost
             val newDims = updateTextSelectionBoxSize(box, moveSurface, item)
             boxW = newDims.first; boxH = newDims.second
             val newLp = box.layoutParams as FrameLayout.LayoutParams
             newLp.leftMargin = (newAnchorX - dp(6)).toInt().coerceAtLeast(0)
-            newLp.topMargin = (newAnchorY - newScreenSizePx - dp(6)).toInt().coerceAtLeast(0)
+            newLp.topMargin = (newAnchorY - boxH - dp(6)).toInt().coerceAtLeast(0)
             newLp.width = boxW; newLp.height = boxH
             box.layoutParams = newLp
-            if (!useActualSize) box.rotation = item.rotation
+            box.pivotX = dp(6).toFloat()
+            box.pivotY = (boxH + dp(6)).toFloat()
+            box.rotation = item.rotation
             layoutHandles(); layoutTopHandles()
         }
         drawingView.onCanvasTransformed = { followCanvasTransform() }
