@@ -107,6 +107,7 @@ class MainActivity : AppCompatActivity() {
     private var activeEditText: EditText? = null
     private var activeToolbar: View? = null
     private var activeEditBox: View? = null
+    private var activeEditorHandles: List<View> = emptyList()
     private var editingItem: TextItem? = null
     private var editWorldX = 0f; private var editWorldY = 0f
     private var editRotation = 0f; private var editColor = Color.BLACK
@@ -1630,9 +1631,12 @@ class MainActivity : AppCompatActivity() {
 
     private var textSelectionBox: View? = null
     private var textSelectionItem: TextItem? = null
+    private var textSelectionHandles: List<View> = emptyList()
 
     private fun dismissTextSelectionBox() {
         textSelectionBox?.let { canvasContainer.removeView(it) }
+        textSelectionHandles.forEach { canvasContainer.removeView(it) }
+        textSelectionHandles = emptyList()
         if (textSelectionBox != null) drawingView.onCanvasTransformed = null
         textSelectionBox = null; textSelectionItem = null
     }
@@ -1716,113 +1720,80 @@ class MainActivity : AppCompatActivity() {
         moveSurface.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
-                    // CRITICAL: must return true here. Returning false on ACTION_DOWN tells
-                    // Android "this view doesn't want this touch sequence," which means it will
-                    // NEVER receive the ACTION_MOVE/ACTION_UP that follow - permanently breaking
-                    // drag-to-move regardless of what the ACTION_MOVE branch below tries to do.
-                    // This was the actual root cause of "can't move it" (and the same mistake
-                    // existed nowhere else, but is worth calling out clearly since it's an easy
-                    // trap: returning false on DOWN seems like it should just "skip this event,"
-                    // but it actually opts the view out of the whole gesture).
                     moveStartRawX = ev.rawX; moveStartRawY = ev.rawY
                     val lp = box.layoutParams as FrameLayout.LayoutParams
                     moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
-                    true
+                    false // allow the click/double-tap to still pass through to DrawingView underneath
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
                     val dx = (ev.rawX - moveStartRawX); val dy = (ev.rawY - moveStartRawY)
-                    val lp = box.layoutParams as FrameLayout.LayoutParams
-                    lp.leftMargin = (moveStartLeft + dx).toInt().coerceAtLeast(0); lp.topMargin = (moveStartTop + dy).toInt().coerceAtLeast(0)
-                    box.layoutParams = lp
-                    item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat() + dp(6))
-                    item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + dp(6) + screenSizePx)
-                    drawingView.invalidate()
-                    true
+                    if (kotlin.math.abs(dx) > 6 || kotlin.math.abs(dy) > 6) {
+                        val lp = box.layoutParams as FrameLayout.LayoutParams
+                        lp.leftMargin = (moveStartLeft + dx).toInt().coerceAtLeast(0); lp.topMargin = (moveStartTop + dy).toInt().coerceAtLeast(0)
+                        box.layoutParams = lp
+                        item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat() + dp(6))
+                        item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + dp(6) + screenSizePx)
+                        drawingView.invalidate()
+                        true
+                    } else false
                 }
-                android.view.MotionEvent.ACTION_UP -> {
-                    // If the finger barely moved, treat this as a tap rather than a drag, and
-                    // forward it to DrawingView underneath so double-tap-to-edit still works
-                    // (since this view consuming ACTION_DOWN would otherwise swallow taps too).
-                    val dx = ev.rawX - moveStartRawX; val dy = ev.rawY - moveStartRawY
-                    if (kotlin.math.abs(dx) < 8 && kotlin.math.abs(dy) < 8) {
-                        val loc = IntArray(2); drawingView.getLocationOnScreen(loc)
-                        val localX = ev.rawX - loc[0]; val localY = ev.rawY - loc[1]
-                        val downTime = ev.downTime; val eventTime = ev.eventTime
-                        val tapDown = android.view.MotionEvent.obtain(downTime, eventTime, android.view.MotionEvent.ACTION_DOWN, localX, localY, 0)
-                        val tapUp = android.view.MotionEvent.obtain(downTime, eventTime, android.view.MotionEvent.ACTION_UP, localX, localY, 0)
-                        drawingView.dispatchTouchEvent(tapDown)
-                        drawingView.dispatchTouchEvent(tapUp)
-                        tapDown.recycle(); tapUp.recycle()
-                    }
-                    true
-                }
-                else -> true
+                else -> false
             }
         }
         box.addView(moveSurface)
 
-        // Positioned via leftMargin/topMargin (real LayoutParams, processed through Android's
-        // normal layout pass) rather than setX/setY. setX/setY only set a translation layered on
-        // top of whatever left/top the view's LayoutParams produced - and since these handle
-        // views were never going through a real measure/layout cycle relative to a properly
-        // gravity-resolved position, their actual left/top/right/bottom (which is what touch
-        // hit-testing fundamentally relies on) could end up stuck at stale/zero values even
-        // though they visually appeared in the right place via the translation. Margins go
-        // through requestLayout() and get real bounds assigned, which is what makes touch
-        // dispatch reliable.
-        val handleViews = mutableListOf<Pair<View, Pair<Float, Float>>>() // view to (fractionX, fractionY) of box, e.g. (0,0)=top-left (1,1)=bottom-right
+        // All handles are direct children of canvasContainer (NOT of box) so they're never
+        // clipped by box's bounds. Touch hit-testing in Android only works reliably when the
+        // touch target view is fully within its parent's bounds - children outside parent bounds
+        // are clipped from touch dispatch even with clipChildren=false. By making handles siblings
+        // of box in canvasContainer, we guarantee their layoutParams.leftMargin/topMargin always
+        // map to real screen positions that Android's hit-testing will find correctly.
+        val handleViews = mutableListOf<Pair<View, Pair<Float, Float>>>() // view → (fracX, fracY) of box
         fun handle(colorHex: String, fx: Float, fy: Float): View {
             val visibleSz = dp(16); val touchSz = dp(32)
-            val h = FrameLayout(this).apply {
-                layoutParams = FrameLayout.LayoutParams(touchSz, touchSz)
-                elevation = dp(4).toFloat()
-                isClickable = true; isFocusable = true
-            }
+            val h = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(touchSz, touchSz) }
             val dot = View(this).apply {
                 layoutParams = FrameLayout.LayoutParams(visibleSz, visibleSz).also { it.gravity = Gravity.CENTER }
                 background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor(colorHex)) }
             }
             h.addView(dot)
-            box.addView(h)
-            h.bringToFront()
+            canvasContainer.addView(h)
             handleViews.add(h to (fx to fy))
             return h
         }
 
-        // Repositions every handle to sit exactly on the box's current edge/corner, based on the
-        // box's CURRENT width/height - called once after layout, and again any time the box is
-        // resized. Uses leftMargin/topMargin + requestLayout() instead of setX/setY for reliable
-        // touch hit-testing (see comment above).
+        // Compute box's current top-left screen position from its layoutParams
+        fun boxLeft() = (box.layoutParams as FrameLayout.LayoutParams).leftMargin.toFloat()
+        fun boxTop() = (box.layoutParams as FrameLayout.LayoutParams).topMargin.toFloat()
+
+        // Repositions all 8 edge/corner handles to sit on the box's perimeter, in canvasContainer coords
         fun layoutHandles() {
-            val w = boxW; val hgt = boxH; val halfPx = dp(16)
+            val bx = boxLeft(); val by = boxTop()
+            val w = boxW.toFloat(); val hgt = boxH.toFloat(); val half = dp(16).toFloat()
             for ((view, frac) in handleViews) {
-                val vlp = view.layoutParams as FrameLayout.LayoutParams
-                vlp.leftMargin = (frac.first * w).toInt() - halfPx
-                vlp.topMargin = (frac.second * hgt).toInt() - halfPx
-                view.layoutParams = vlp
+                val lp = view.layoutParams as FrameLayout.LayoutParams
+                lp.leftMargin = (bx + frac.first * w - half).toInt()
+                lp.topMargin = (by + frac.second * hgt - half).toInt()
+                view.layoutParams = lp
             }
-            box.requestLayout()
         }
 
-        // rotateHandle/deleteHandle are created further below (after the 8 perimeter handles),
-        // but layoutTopHandles() needs to be callable from wireCornerResize/wireMiddleReflow
-        // which are defined before those handles exist - so they're pre-declared here as
-        // lateinit and assigned later, same pattern Kotlin requires for any forward reference
-        // among local functions/properties (local declarations aren't hoisted).
         lateinit var rotateHandle: FrameLayout
         lateinit var deleteHandle: FrameLayout
+        // Rotate handle above box centre, delete handle top-right - both in canvasContainer coords
         fun layoutTopHandles() {
+            val bx = boxLeft(); val by = boxTop()
             val rlp = rotateHandle.layoutParams as FrameLayout.LayoutParams
-            rlp.leftMargin = boxW / 2 - dp(16); rlp.topMargin = -dp(44)
+            rlp.leftMargin = (bx + boxW / 2f - dp(16)).toInt()
+            rlp.topMargin = (by - dp(44)).coerceAtLeast(0)
             rotateHandle.layoutParams = rlp
             val dlp = deleteHandle.layoutParams as FrameLayout.LayoutParams
-            dlp.leftMargin = boxW - dp(16); dlp.topMargin = -dp(44)
+            dlp.leftMargin = (bx + boxW - dp(16)).toInt()
+            dlp.topMargin = (by - dp(44)).coerceAtLeast(0)
             deleteHandle.layoutParams = dlp
-            box.requestLayout()
         }
 
-        // 8 resize handles around the full perimeter (corners + edge midpoints), same as a shape.
-        // Fractions are relative to the box: (0,0)=top-left ... (1,1)=bottom-right.
+        // 8 resize handles around the full perimeter (corners + edge midpoints)
         val tl = handle("#2196F3", 0f, 0f)
         val tm = handle("#2196F3", 0.5f, 0f)
         val tr = handle("#2196F3", 1f, 0f)
@@ -1832,8 +1803,6 @@ class MainActivity : AppCompatActivity() {
         val bm = handle("#2196F3", 0.5f, 1f)
         val br = handle("#2196F3", 1f, 1f)
 
-        // Corner handles scale font size (like resizing a shape by its corner); the box visually
-        // grows/shrinks to match via updateTextSelectionBoxSize.
         fun wireCornerResize(h: View) {
             var startRawY = 0f; var startSize = 0f
             h.setOnTouchListener { _, ev ->
@@ -1852,9 +1821,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        // Middle handles reflow wrap width only (font size unchanged), with a compact floor so it
-        // can't shrink past what the text actually needs - mirrors the corner-vs-middle behavior
-        // implemented in DrawingView's shape resize logic.
         fun wireMiddleReflow(h: View, isRight: Boolean) {
             var startRawX = 0f; var startWidth = 0f
             h.setOnTouchListener { _, ev ->
@@ -1883,18 +1849,13 @@ class MainActivity : AppCompatActivity() {
         }
         wireCornerResize(tl); wireCornerResize(tr); wireCornerResize(bl); wireCornerResize(br)
         wireMiddleReflow(ml, false); wireMiddleReflow(mr, true)
-        // Top/bottom-middle handles don't have a meaningful vertical-only resize for text - leave
-        // them present (for visual consistency with shapes) but inert.
 
-        // Rotate handle, offset above the box like other shapes' rotate handle - positioned via
-        // setX/setY (not margins) for the same reliability reason as the 8 resize handles above.
-        rotateHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)); elevation = dp(4).toFloat(); isClickable = true; isFocusable = true }
+        rotateHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
         rotateHandle.addView(View(this).apply {
             layoutParams = FrameLayout.LayoutParams(dp(16), dp(16)).also { it.gravity = Gravity.CENTER }
             background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor("#4CAF50")) }
         })
-        box.addView(rotateHandle)
-        rotateHandle.bringToFront()
+        canvasContainer.addView(rotateHandle)
         var rotStartRawX = 0f; var rotStartRotation = 0f
         rotateHandle.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
@@ -1904,8 +1865,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Delete (close) handle, top-right corner like other shapes' delete X
-        deleteHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)); elevation = dp(4).toFloat(); isClickable = true; isFocusable = true }
+        deleteHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
         deleteHandle.addView(ImageView(this).apply {
             layoutParams = FrameLayout.LayoutParams(dp(20), dp(20)).also { it.gravity = Gravity.CENTER }
             setImageResource(R.drawable.ic_text_delete)
@@ -1913,35 +1873,28 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(3), dp(3), dp(3), dp(3))
         })
         deleteHandle.setOnClickListener { drawingView.removeTextItem(item); dismissTextSelectionBox(); drawingView.invalidate() }
-        box.addView(deleteHandle)
-        deleteHandle.bringToFront()
+        canvasContainer.addView(deleteHandle)
 
         val lp = FrameLayout.LayoutParams(boxW, boxH)
         lp.leftMargin = (anchorScreenX - dp(6)).toInt().coerceAtLeast(0); lp.topMargin = (anchorScreenY - screenSizePx - dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(box, lp)
         textSelectionBox = box; textSelectionItem = item
-        layoutHandles()
-        layoutTopHandles()
+        // Register all handles (perimeter + rotate + delete) so dismissTextSelectionBox() can
+        // remove them from canvasContainer - they're siblings of box now, not children, so box
+        // removal alone won't clean them up.
+        textSelectionHandles = handleViews.map { it.first } + listOf(rotateHandle, deleteHandle)
+        layoutHandles(); layoutTopHandles()
         box.post { layoutHandles(); layoutTopHandles() }
 
-        // Keep the box glued to the text item as the user pans/zooms the canvas - without this,
-        // the box stayed frozen at its original screen position AND SIZE while the actual text
-        // (rendered by DrawingView, which DOES transform correctly) moved and resized underneath
-        // it. Repositioning alone wasn't enough: zooming in makes the on-screen text bigger, so
-        // the box's width/height need to grow to match too, or the box ends up too small and
-        // anchored over the wrong part of the (now larger) text.
+        // Keep box and all handles glued to the text item as the user pans/zooms
         fun followCanvasTransform() {
             val newAnchorX = drawingView.worldToScreenX(item.x)
             val newAnchorY = drawingView.worldToScreenY(item.y)
             val newScreenSizePx = (if (useActualSize) item.size else item.size * drawingView.getScaleFactor()) * convenientBoost
-            val (newBoxW, newBoxH) = measureTextBoxSize(item, newScreenSizePx)
-            boxW = newBoxW; boxH = newBoxH
             val newLp = box.layoutParams as FrameLayout.LayoutParams
-            newLp.width = newBoxW; newLp.height = newBoxH
             newLp.leftMargin = (newAnchorX - dp(6)).toInt().coerceAtLeast(0)
             newLp.topMargin = (newAnchorY - newScreenSizePx - dp(6)).toInt().coerceAtLeast(0)
             box.layoutParams = newLp
-            val mlp = moveSurface.layoutParams; mlp.width = newBoxW; mlp.height = newBoxH; moveSurface.layoutParams = mlp
             layoutHandles(); layoutTopHandles()
         }
         drawingView.onCanvasTransformed = { followCanvasTransform() }
@@ -2004,12 +1957,14 @@ class MainActivity : AppCompatActivity() {
         // box's real WRAP_CONTENT size is known via an OnLayoutChangeListener) rather than
         // negative margins + gravity, which proved unreliable for views meant to sit outside
         // their parent's own bounds.
-        val moveHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)); elevation = dp(4).toFloat(); isClickable = true; isFocusable = true }
+        val moveHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
         moveHandle.addView(View(this).apply {
             layoutParams = FrameLayout.LayoutParams(dp(16), dp(16)).also { it.gravity = Gravity.CENTER }
             background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.parseColor("#2196F3")); setStroke(dp(2), Color.WHITE) }
         })
         var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
+        // Forward reference: layoutEditorHandles is defined below but called from here
+        var onBoxMoved: (() -> Unit)? = null
         moveHandle.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
@@ -2023,19 +1978,20 @@ class MainActivity : AppCompatActivity() {
                     val lp = boxContainer.layoutParams as FrameLayout.LayoutParams
                     lp.leftMargin = (moveStartLeft + dx).coerceAtLeast(0); lp.topMargin = (moveStartTop + dy).coerceAtLeast(0)
                     boxContainer.layoutParams = lp
-                    // Keep world position in sync so committing the edit places the text correctly
                     val newScreenX = lp.leftMargin + dp(6); val newScreenY = lp.topMargin + dp(6) + screenSizePx
                     editWorldX = drawingView.screenToWorldX(newScreenX.toFloat()); editWorldY = drawingView.screenToWorldY(newScreenY)
+                    onBoxMoved?.invoke()
                     true
                 }
                 else -> true
             }
         }
-        boxContainer.addView(moveHandle)
-        moveHandle.bringToFront()
+        // All 4 editor handles are direct children of canvasContainer (not boxContainer) so they
+        // are never clipped by boxContainer's bounds - same fix applied to the selection box handles.
+        fun containerLeft() = (boxContainer.layoutParams as FrameLayout.LayoutParams).leftMargin.toFloat()
+        fun containerTop() = (boxContainer.layoutParams as FrameLayout.LayoutParams).topMargin.toFloat()
 
-        // Resize handle on the right edge - drag to widen/narrow the box, which moves the wrap point
-        val resizeHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)); elevation = dp(4).toFloat(); isClickable = true; isFocusable = true }
+        val resizeHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
         resizeHandle.addView(View(this).apply {
             layoutParams = FrameLayout.LayoutParams(dp(16), dp(16)).also { it.gravity = Gravity.CENTER }
             background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor("#2196F3")) }
@@ -2054,11 +2010,8 @@ class MainActivity : AppCompatActivity() {
                 else -> true
             }
         }
-        boxContainer.addView(resizeHandle)
-        resizeHandle.bringToFront()
 
-        // Rotate handle on the bottom-right corner
-        val rotateHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)); elevation = dp(4).toFloat(); isClickable = true; isFocusable = true }
+        val rotateHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
         rotateHandle.addView(View(this).apply {
             layoutParams = FrameLayout.LayoutParams(dp(16), dp(16)).also { it.gravity = Gravity.CENTER }
             background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.parseColor("#4CAF50")); setStroke(dp(2), Color.WHITE) }
@@ -2069,7 +2022,6 @@ class MainActivity : AppCompatActivity() {
                 android.view.MotionEvent.ACTION_DOWN -> { rotateStartRawX = ev.rawX; rotateStartRawY = ev.rawY; rotateStartRotation = editRotation; true }
                 android.view.MotionEvent.ACTION_MOVE -> {
                     val dx = ev.rawX - rotateStartRawX
-                    // Simple horizontal-drag-to-rotate: dragging right rotates clockwise
                     editRotation = rotateStartRotation + dx * 0.5f
                     if (!useActualSize) { boxContainer.rotation = editRotation }
                     true
@@ -2077,11 +2029,8 @@ class MainActivity : AppCompatActivity() {
                 else -> true
             }
         }
-        boxContainer.addView(rotateHandle)
-        rotateHandle.bringToFront()
 
-        // Delete handle, top-right corner
-        val deleteHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)); elevation = dp(4).toFloat(); isClickable = true; isFocusable = true }
+        val deleteHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
         deleteHandle.addView(ImageView(this).apply {
             layoutParams = FrameLayout.LayoutParams(dp(20), dp(20)).also { it.gravity = Gravity.CENTER }
             setImageResource(R.drawable.ic_text_delete)
@@ -2089,30 +2038,34 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(3), dp(3), dp(3), dp(3))
         })
         deleteHandle.setOnClickListener { closeInlineEditor(false, delete = true) }
-        boxContainer.addView(deleteHandle)
-        deleteHandle.bringToFront()
 
-        // Position all 4 handles using the box's ACTUAL measured size (only known once layout
-        // completes, since boxContainer is WRAP_CONTENT) - absolute pixel positioning via setX/
-        // setY, same robust approach used for the selection box's handles.
+        canvasContainer.addView(moveHandle)
+        canvasContainer.addView(resizeHandle)
+        canvasContainer.addView(rotateHandle)
+        canvasContainer.addView(deleteHandle)
+
         fun layoutEditorHandles() {
-            val w = boxContainer.width; val h = boxContainer.height
+            val bx = containerLeft(); val by = containerTop()
+            val w = boxContainer.width.toFloat(); val h = boxContainer.height.toFloat()
             val half = dp(16)
-            fun place(handle: View, left: Int, top: Int) {
-                val lp = handle.layoutParams as FrameLayout.LayoutParams
-                lp.leftMargin = left; lp.topMargin = top
-                handle.layoutParams = lp
-            }
-            place(moveHandle, -half, -half)
-            place(resizeHandle, w - half, h / 2 - half)
-            place(rotateHandle, w - half, h - half)
-            place(deleteHandle, w - half, -half)
-            boxContainer.requestLayout()
+            val mlp = moveHandle.layoutParams as FrameLayout.LayoutParams
+            mlp.leftMargin = (bx - half).toInt().coerceAtLeast(0); mlp.topMargin = (by - half).toInt().coerceAtLeast(0)
+            moveHandle.layoutParams = mlp
+            val rlp = resizeHandle.layoutParams as FrameLayout.LayoutParams
+            rlp.leftMargin = (bx + w - half).toInt(); rlp.topMargin = (by + h / 2f - half).toInt()
+            resizeHandle.layoutParams = rlp
+            val rolp = rotateHandle.layoutParams as FrameLayout.LayoutParams
+            rolp.leftMargin = (bx + w - half).toInt(); rolp.topMargin = (by + h - half).toInt()
+            rotateHandle.layoutParams = rolp
+            val dlp = deleteHandle.layoutParams as FrameLayout.LayoutParams
+            dlp.leftMargin = (bx + w - half).toInt(); dlp.topMargin = (by - half).toInt().coerceAtLeast(0)
+            deleteHandle.layoutParams = dlp
         }
         boxContainer.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, or_, ob ->
             if (r - l != or_ - ol || b - t != ob - ot) layoutEditorHandles()
         }
         boxContainer.post { layoutEditorHandles() }
+        onBoxMoved = { layoutEditorHandles() }
 
         // Options toolbar positioned directly above the editing box (not pinned to screen bottom)
         val toolbar=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(6).toFloat(); setPadding(dp(6),dp(6),dp(6),dp(6)) }
@@ -2162,9 +2115,12 @@ class MainActivity : AppCompatActivity() {
             val sx=drawingView.worldToScreenX(editWorldX);val sy=drawingView.worldToScreenY(editWorldY)-nsp
             val lp=boxContainer.layoutParams as FrameLayout.LayoutParams; lp.leftMargin=(sx-dp(6)).toInt().coerceAtLeast(0); lp.topMargin=(sy-dp(6)).toInt().coerceAtLeast(0); boxContainer.layoutParams=lp
             val tlp=toolbarScroll.layoutParams as FrameLayout.LayoutParams; tlp.leftMargin=lp.leftMargin; tlp.topMargin=(lp.topMargin-toolbarHeightEstimate).coerceAtLeast(0); toolbarScroll.layoutParams=tlp
+            layoutEditorHandles()
         }
         drawingView.onScaleChanged={ updateET() }; drawingView.onCanvasTransformed={ updateET() }
-        activeEditText=et; activeToolbar=toolbarScroll; activeEditBox=boxContainer; et.requestFocus()
+        activeEditText=et; activeToolbar=toolbarScroll; activeEditBox=boxContainer
+        activeEditorHandles = listOf(moveHandle, resizeHandle, rotateHandle, deleteHandle)
+        et.requestFocus()
         et.post{ val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager; imm.showSoftInput(et,InputMethodManager.SHOW_IMPLICIT) }
     }
 
@@ -2175,6 +2131,7 @@ class MainActivity : AppCompatActivity() {
         for(span in ed.getSpans(0,ed.length,Any::class.java)){ val s=ed.getSpanStart(span);val e=ed.getSpanEnd(span); if(s<0||e<0||s>=e) continue; when(span){ is StyleSpan->spans.add(TextSpanData(s,e,'S',span.style)); is ForegroundColorSpan->spans.add(TextSpanData(s,e,'C',span.foregroundColor)); is UnderlineSpan->spans.add(TextSpanData(s,e,'U',0)); is BackgroundColorSpan->spans.add(TextSpanData(s,e,'H',span.backgroundColor)) } }
         if(box!=null) canvasContainer.removeView(box) else canvasContainer.removeView(et)
         if(tb!=null) canvasContainer.removeView(tb)
+        activeEditorHandles.forEach { canvasContainer.removeView(it) }; activeEditorHandles = emptyList()
         val item=editingItem
         if(commit&&!delete&&text.isNotBlank()){
             drawingView.defaultTextSize=editSize
