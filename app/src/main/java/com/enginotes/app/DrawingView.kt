@@ -461,7 +461,14 @@ class StrokeData(
             when (brushStyle) {
                 BrushStyle.ROUND -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
                 BrushStyle.FLAT -> { p.strokeWidth = strokeWidth * 1.4f; p.strokeJoin = Paint.Join.MITER; p.strokeCap = Paint.Cap.SQUARE }
-                BrushStyle.TEXTURE -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.7f).toInt() }
+                BrushStyle.TEXTURE -> {
+                    p.strokeWidth = strokeWidth * 0.7f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.85f).toInt()
+                    // Crosshatch texture: two dash effects composed together give a woven look
+                    val spacing = (strokeWidth * 1.2f).coerceAtLeast(4f)
+                    val dash = android.graphics.DashPathEffect(floatArrayOf(strokeWidth * 0.4f, spacing), 0f)
+                    val dash2 = android.graphics.DashPathEffect(floatArrayOf(strokeWidth * 0.2f, spacing * 1.5f), spacing * 0.6f)
+                    p.pathEffect = android.graphics.ComposePathEffect(dash, dash2)
+                }
                 BrushStyle.INK -> { p.strokeWidth = strokeWidth * 1.6f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
                 BrushStyle.WATERCOLOR -> { p.strokeWidth = strokeWidth * 1.8f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.45f).toInt() }
                 BrushStyle.CRAYON -> { p.strokeWidth = strokeWidth * 1.2f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.85f).toInt(); p.pathEffect = android.graphics.DashPathEffect(floatArrayOf(3.5f, 1f), 0f) }
@@ -530,6 +537,9 @@ class FillItem(var path: String, var x: Float, var y: Float, var w: Float, var h
     @Volatile var loading: Boolean = false
 }
 
+// Represents an undoable fill-toggle on a shape. Undo/redo flip fill back and rebuild the paint.
+class FillToggleAction(val item: StrokeItem, val wasFilled: Boolean, val wasColor: Int, val newColor: Int)
+
 class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
 
     private val ctx = context
@@ -554,7 +564,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var currentPenStyle: PenStyle = PenStyle.FOUNTAIN
     var currentOpacity: Int = 255
     var highlighterThickness: Float = 24f
-    var highlighterOpacity: Int = 80
+    var highlighterOpacity: Int = 20
     var currentBrushStyle: BrushStyle = BrushStyle.ROUND
     var brushThickness: Float = 10f
     var brushOpacity: Int = 255
@@ -715,8 +725,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val tableHit = if (hit == null) actions.reversed().filterIsInstance<TableItem>().firstOrNull { t -> val b = getBounds(t); b != null && wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3] } else null
                     when {
                         hit != null && hit.linkTarget != null -> {
-                            // Links navigate on a single tap rather than entering select/edit mode.
-                            onLinkTap?.invoke(hit.linkTarget!!)
+                            // Single tap SELECTS link text (shows handles so user can move it).
+                            // Long press (see onLongPress below) navigates to the linked note.
+                            selectedItem = hit
+                            onTextSelectRequest?.invoke(hit, e.x, e.y)
+                            invalidate()
                         }
                         hit != null -> {
                             // Single tap SELECTS the text box (shows resize/rotate/delete handles,
@@ -739,8 +752,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 Tool.FILL -> {
                     val item = findItemAt(wx, wy)
                     if (item is StrokeItem && CLOSED_SHAPES.contains(item.data.type)) {
+                        val wasFilled = item.data.fill; val wasColor = item.data.fillColorVal
                         item.data.fill = !item.data.fill; item.data.fillColorVal = fillColor
-                        item.paint = item.data.toPaint(); invalidate()
+                        item.paint = item.data.toPaint()
+                        actions.add(FillToggleAction(item, wasFilled, wasColor, fillColor))
+                        redoStack.clear(); invalidate()
                     } else performFill(e.x, e.y)
                 }
                 else -> {}
@@ -786,6 +802,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 invalidate(); return true
             }
             return false
+        }
+
+        override fun onLongPress(e: MotionEvent) {
+            if (currentTool != Tool.SELECT) return
+            val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
+            val hit = findTextItemAt(wx, wy)
+            if (hit != null && hit.linkTarget != null) {
+                onLinkTap?.invoke(hit.linkTarget!!)
+            }
         }
     })
 
@@ -868,6 +893,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawActionItem(canvas: Canvas, action: Any, includeFills: Boolean) {
         when (action) {
+            is FillToggleAction -> return // no visual - just an undo record
             is TableItem -> action.draw(canvas, scaleFactor)
             is AudioItem -> drawAudioItem(canvas, action)
             is FillItem -> {
@@ -2264,8 +2290,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return Bitmap.createBitmap(tmpBmp, sx, sy, cw, ch)
     }
 
-    fun undo() { if (actions.isNotEmpty()) { redoStack.add(actions.removeAt(actions.size - 1)); invalidate() } }
-    fun redo() { if (redoStack.isNotEmpty()) { actions.add(redoStack.removeAt(redoStack.size - 1)); invalidate() } }
+    fun undo() {
+        if (actions.isEmpty()) return
+        val last = actions.removeAt(actions.size - 1)
+        if (last is FillToggleAction) {
+            last.item.data.fill = last.wasFilled; last.item.data.fillColorVal = last.wasColor; last.item.paint = last.item.data.toPaint()
+        }
+        redoStack.add(last); invalidate()
+    }
+    fun redo() {
+        if (redoStack.isEmpty()) return
+        val next = redoStack.removeAt(redoStack.size - 1)
+        if (next is FillToggleAction) {
+            next.item.data.fill = !next.wasFilled; next.item.data.fillColorVal = next.newColor; next.item.paint = next.item.data.toPaint()
+        }
+        actions.add(next); invalidate()
+    }
     fun clearAll() { actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null; invalidate() }
     fun hasContent(): Boolean = actions.isNotEmpty()
     fun exportBitmap(): Bitmap { val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888); draw(Canvas(bmp)); return bmp }
@@ -2292,35 +2332,59 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     fun performFill(screenX: Float, screenY: Float) {
-        val scale = 0.4f; val bmp = renderStrokesOnly(scale); val w = bmp.width; val h = bmp.height
+        // Render at higher scale so thin strokes and intersections form solid boundaries.
+        // Also render with strokes thickened by 1px so gaps between near-touching lines close up.
+        val scale = 1.0f
+        val w = (width * scale).toInt().coerceAtLeast(1); val h = (height * scale).toInt().coerceAtLeast(1)
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); val canvas = Canvas(bmp)
+        canvas.save(); canvas.scale(scale, scale); canvas.translate(translateX, translateY); canvas.scale(scaleFactor, scaleFactor)
+        for (a in actions) {
+            if (a is StrokeItem) {
+                val thickPaint = Paint(a.paint).apply {
+                    strokeWidth = strokeWidth.coerceAtLeast(2f / scaleFactor)
+                    style = Paint.Style.STROKE; alpha = 255
+                }
+                canvas.drawPath(a.path, thickPaint)
+            }
+        }
+        canvas.restore()
+
         val px = (screenX * scale).toInt().coerceIn(0, w - 1); val py = (screenY * scale).toInt().coerceIn(0, h - 1)
         val pixels = IntArray(w * h); bmp.getPixels(pixels, 0, w, 0, 0, w, h)
-        fun isEmpty(x: Int, y: Int): Boolean = ((pixels[y * w + x] ushr 24) and 0xFF) < 10
+        fun isEmpty(x: Int, y: Int): Boolean = ((pixels[y * w + x] ushr 24) and 0xFF) < 20
         if (!isEmpty(px, py)) { invalidate(); return }
-        val visited = BooleanArray(w * h); val queue = ArrayDeque<Int>()
-        val start = py * w + px; queue.add(start); visited[start] = true
-        var filled = 0; val edgeHits = mutableListOf<Pair<Int, Int>>(); val maxFill = (w * h * 0.7f).toInt(); var leaked = false
-        while (queue.isNotEmpty()) {
-            val idx = queue.removeFirst(); val x = idx % w; val y = idx / w; filled++
-            if (x == 0 || x == w - 1 || y == 0 || y == h - 1) edgeHits.add(Pair(x, y))
-            if (filled > maxFill) { leaked = true; break }
-            if (x > 0) { val n = idx - 1; if (!visited[n] && isEmpty(x - 1, y)) { visited[n] = true; queue.add(n) } }
-            if (x < w - 1) { val n = idx + 1; if (!visited[n] && isEmpty(x + 1, y)) { visited[n] = true; queue.add(n) } }
-            if (y > 0) { val n = idx - w; if (!visited[n] && isEmpty(x, y - 1)) { visited[n] = true; queue.add(n) } }
-            if (y < h - 1) { val n = idx + w; if (!visited[n] && isEmpty(x, y + 1)) { visited[n] = true; queue.add(n) } }
-        }
-        if (leaked) {
-            val clusters = clusterEdgePoints(edgeHits)
-            if (clusters.isNotEmpty()) { val (cx, cy) = clusters[0]; zoomTo(screenToWorldX(cx / scale), screenToWorldY(cy / scale), (scaleFactor * 2.5f).coerceAtMost(6f)) }
-            invalidate()
-        } else {
-            val fp = IntArray(w * h) { if (visited[it]) fillColor else Color.TRANSPARENT }
-            val fb = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); fb.setPixels(fp, 0, w, 0, 0, w, h)
-            val folder = File(ctx.filesDir, "images"); if (!folder.exists()) folder.mkdirs()
-            val outFile = File(folder, "fill_${System.currentTimeMillis()}.png")
-            try { FileOutputStream(outFile).use { fb.compress(Bitmap.CompressFormat.PNG, 100, it) } } catch (e: Exception) { invalidate(); return }
-            val wx0 = screenToWorldX(0f); val wy0 = screenToWorldY(0f); val wx1 = screenToWorldX(width.toFloat()); val wy1 = screenToWorldY(height.toFloat())
-            actions.add(0, FillItem(outFile.absolutePath, wx0, wy0, wx1 - wx0, wy1 - wy0)); redoStack.clear(); invalidate()
+
+        // Run flood fill on background thread - at full screen resolution this can be slow on main thread
+        imageLoadExecutor.execute {
+            val visited = BooleanArray(w * h); val queue = ArrayDeque<Int>()
+            val start = py * w + px; queue.add(start); visited[start] = true
+            var filled = 0; val edgeHits = mutableListOf<Pair<Int, Int>>()
+            val maxFill = (w * h * 0.85f).toInt(); var leaked = false
+            while (queue.isNotEmpty()) {
+                val idx = queue.removeFirst(); val x = idx % w; val y = idx / w; filled++
+                if (x == 0 || x == w - 1 || y == 0 || y == h - 1) edgeHits.add(Pair(x, y))
+                if (filled > maxFill) { leaked = true; break }
+                if (x > 0)     { val n = idx - 1; if (!visited[n] && isEmpty(x - 1, y)) { visited[n] = true; queue.add(n) } }
+                if (x < w - 1) { val n = idx + 1; if (!visited[n] && isEmpty(x + 1, y)) { visited[n] = true; queue.add(n) } }
+                if (y > 0)     { val n = idx - w; if (!visited[n] && isEmpty(x, y - 1)) { visited[n] = true; queue.add(n) } }
+                if (y < h - 1) { val n = idx + w; if (!visited[n] && isEmpty(x, y + 1)) { visited[n] = true; queue.add(n) } }
+            }
+            if (leaked) {
+                val clusters = clusterEdgePoints(edgeHits)
+                post {
+                    if (clusters.isNotEmpty()) { val (cx, cy) = clusters[0]; zoomTo(screenToWorldX(cx / scale), screenToWorldY(cy / scale), (scaleFactor * 2.5f).coerceAtMost(6f)) }
+                    invalidate()
+                }
+            } else {
+                val fp = IntArray(w * h) { if (visited[it]) fillColor else Color.TRANSPARENT }
+                val fb = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); fb.setPixels(fp, 0, w, 0, 0, w, h)
+                val folder = File(ctx.filesDir, "images"); if (!folder.exists()) folder.mkdirs()
+                val outFile = File(folder, "fill_${System.currentTimeMillis()}.png")
+                try { FileOutputStream(outFile).use { fb.compress(Bitmap.CompressFormat.PNG, 100, it) } } catch (e: Exception) { post { invalidate() }; return@execute }
+                val wx0 = screenToWorldX(0f); val wy0 = screenToWorldY(0f)
+                val wx1 = screenToWorldX(width.toFloat()); val wy1 = screenToWorldY(height.toFloat())
+                post { actions.add(0, FillItem(outFile.absolutePath, wx0, wy0, wx1 - wx0, wy1 - wy0)); redoStack.clear(); invalidate() }
+            }
         }
     }
 
