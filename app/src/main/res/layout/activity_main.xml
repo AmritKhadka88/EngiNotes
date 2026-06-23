@@ -1,83 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="#FAF6EF">
+    android:background="#F0EDE8">
 
-    <!-- Top bar: minimal, no filename shown -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:background="#FFFFFF"
-        android:paddingTop="10dp"
-        android:paddingBottom="10dp"
-        android:paddingStart="6dp"
-        android:paddingEnd="6dp"
-        android:gravity="center_vertical"
-        android:elevation="2dp">
-
-        <ImageButton
-            android:id="@+id/btnBack"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:src="@drawable/ic_select"
-            android:rotation="135"
-            android:scaleType="centerInside"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Back" />
-
-        <TextView
-            android:id="@+id/tvTitle"
-            android:layout_width="0dp"
-            android:layout_height="0dp"
-            android:visibility="gone"
-            android:text="New Note" />
-
-        <View
-            android:layout_width="0dp"
-            android:layout_height="1dp"
-            android:layout_weight="1" />
-
-        <ImageButton
-            android:id="@+id/btnLayoutToggle"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:src="@drawable/ic_size"
-            android:scaleType="centerInside"
-            android:padding="9dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Layout" />
-
-        <ImageButton
-            android:id="@+id/btnLink"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:src="@drawable/ic_link"
-            android:scaleType="centerInside"
-            android:padding="9dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Insert Link" />
-
-        <ImageButton
-            android:id="@+id/btnMenu"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:src="@drawable/ic_tools"
-            android:scaleType="centerInside"
-            android:padding="10dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Menu" />
-
-    </LinearLayout>
-
-    <!-- Canvas -->
+    <!-- Canvas fills entire screen -->
     <FrameLayout
         android:id="@+id/canvasContainer"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
+        android:layout_height="match_parent">
 
         <com.enginotes.app.DrawingView
             android:id="@+id/drawingView"
@@ -86,16 +17,120 @@
 
     </FrameLayout>
 
-    <!-- Secondary toolbar row: collapsible, sits ABOVE primary row when expanded -->
+    <!-- Top bar: floating pill, top-left back, top-right actions -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:orientation="horizontal"
+        android:layout_gravity="top"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="8dp"
+        android:gravity="center_vertical">
+
+        <!-- Back pill -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:orientation="horizontal"
+            android:background="@drawable/pill_white"
+            android:elevation="4dp"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:gravity="center_vertical">
+
+            <ImageButton
+                android:id="@+id/btnBack"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:src="@drawable/ic_select"
+                android:rotation="135"
+                android:scaleType="centerInside"
+                android:padding="8dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Back" />
+
+            <TextView
+                android:id="@+id/tvTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="New Note"
+                android:textSize="14sp"
+                android:textColor="#2C2C2C"
+                android:fontFamily="sans-serif-medium"
+                android:maxWidth="140dp"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:paddingStart="2dp"
+                android:paddingEnd="8dp" />
+
+        </LinearLayout>
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <!-- Right actions pill -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:orientation="horizontal"
+            android:background="@drawable/pill_white"
+            android:elevation="4dp"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:gravity="center_vertical">
+
+            <ImageButton
+                android:id="@+id/btnLayoutToggle"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:src="@drawable/ic_size"
+                android:scaleType="centerInside"
+                android:padding="8dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Layout" />
+
+            <ImageButton
+                android:id="@+id/btnLink"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:src="@drawable/ic_link"
+                android:scaleType="centerInside"
+                android:padding="8dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Link" />
+
+            <ImageButton
+                android:id="@+id/btnMenu"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:src="@drawable/ic_tools"
+                android:scaleType="centerInside"
+                android:padding="9dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Menu" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+    <!-- Secondary toolbar: floating card, above primary bar, collapsible -->
     <HorizontalScrollView
         android:id="@+id/toolbarScroll"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#FFFFFF"
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="68dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:background="@drawable/card_white"
+        android:elevation="6dp"
         android:scrollbars="none"
         android:visibility="gone"
-        android:paddingTop="4dp"
-        android:paddingBottom="4dp">
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp">
 
         <LinearLayout
             android:layout_width="wrap_content"
@@ -106,110 +141,108 @@
             android:gravity="center_vertical">
 
             <ImageButton android:id="@+id/btnQuickColor"
-                android:layout_width="38dp" android:layout_height="38dp"
+                android:layout_width="44dp" android:layout_height="44dp"
                 android:layout_marginEnd="2dp"
-                android:src="@drawable/ic_color" android:scaleType="centerInside" android:padding="7dp"
+                android:src="@drawable/ic_color" android:scaleType="centerInside" android:padding="9dp"
                 android:background="@drawable/btn_toolbar_selector" />
 
             <ImageButton android:id="@+id/btnQuickSize"
-                android:layout_width="38dp" android:layout_height="38dp"
+                android:layout_width="44dp" android:layout_height="44dp"
                 android:layout_marginEnd="2dp"
-                android:src="@drawable/ic_size" android:scaleType="centerInside" android:padding="8dp"
+                android:src="@drawable/ic_size" android:scaleType="centerInside" android:padding="9dp"
                 android:background="@drawable/btn_toolbar_selector" />
 
             <ImageButton android:id="@+id/btnQuickFill"
-                android:layout_width="38dp" android:layout_height="38dp"
+                android:layout_width="44dp" android:layout_height="44dp"
                 android:layout_marginEnd="2dp"
-                android:src="@drawable/ic_fill" android:scaleType="centerInside" android:padding="7dp"
+                android:src="@drawable/ic_fill" android:scaleType="centerInside" android:padding="9dp"
                 android:background="@drawable/btn_toolbar_selector" />
 
             <ImageButton android:id="@+id/btnHighlighter"
-                android:layout_width="38dp" android:layout_height="38dp"
+                android:layout_width="44dp" android:layout_height="44dp"
                 android:layout_marginEnd="2dp"
-                android:src="@drawable/ic_highlighter" android:scaleType="centerInside" android:padding="8dp"
+                android:src="@drawable/ic_highlighter" android:scaleType="centerInside" android:padding="9dp"
                 android:background="@drawable/btn_toolbar_selector" />
 
             <ImageButton android:id="@+id/btnBrush"
-                android:layout_width="38dp" android:layout_height="38dp"
-                android:src="@drawable/ic_brush" android:scaleType="centerInside" android:padding="8dp"
+                android:layout_width="44dp" android:layout_height="44dp"
+                android:src="@drawable/ic_brush" android:scaleType="centerInside" android:padding="9dp"
                 android:background="@drawable/btn_toolbar_selector" />
 
         </LinearLayout>
     </HorizontalScrollView>
 
-    <!-- Primary toolbar: small icons, cream/white, at BOTTOM -->
-    <HorizontalScrollView
+    <!-- Primary toolbar: floating pill at very bottom, Notewise-style -->
+    <LinearLayout
         android:id="@+id/primaryToolbarScroll"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="#FFFFFF"
-        android:scrollbars="none"
-        android:paddingTop="5dp"
-        android:paddingBottom="5dp"
-        android:elevation="4dp">
+        android:layout_height="58dp"
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="8dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:background="@drawable/card_white"
+        android:elevation="8dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="6dp"
+        android:paddingEnd="6dp">
 
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:paddingStart="8dp"
-            android:paddingEnd="8dp"
-            android:gravity="center_vertical">
+        <!-- Left group: select + text + draw + eraser -->
+        <ImageButton android:id="@+id/btnSelect"
+            android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1"
+            android:src="@drawable/ic_select" android:scaleType="centerInside" android:padding="9dp"
+            android:background="@drawable/btn_toolbar_selector" />
 
-            <ImageButton android:id="@+id/btnSelect"
-                android:layout_width="40dp" android:layout_height="40dp"
-                android:layout_marginEnd="2dp"
-                android:src="@drawable/ic_select" android:scaleType="centerInside" android:padding="8dp"
-                android:background="@drawable/btn_toolbar_selector" />
+        <ImageButton android:id="@+id/btnText"
+            android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1"
+            android:src="@drawable/ic_text" android:scaleType="centerInside" android:padding="9dp"
+            android:background="@drawable/btn_toolbar_selector" />
 
-            <ImageButton android:id="@+id/btnText"
-                android:layout_width="40dp" android:layout_height="40dp"
-                android:layout_marginEnd="2dp"
-                android:src="@drawable/ic_text" android:scaleType="centerInside" android:padding="8dp"
-                android:background="@drawable/btn_toolbar_selector" />
+        <ImageButton android:id="@+id/btnDraw"
+            android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1"
+            android:src="@drawable/ic_pen" android:scaleType="centerInside" android:padding="9dp"
+            android:background="@drawable/btn_toolbar_selector" />
 
-            <ImageButton android:id="@+id/btnDraw"
-                android:layout_width="40dp" android:layout_height="40dp"
-                android:layout_marginEnd="2dp"
-                android:src="@drawable/ic_pen" android:scaleType="centerInside" android:padding="8dp"
-                android:background="@drawable/btn_toolbar_selector" />
+        <ImageButton android:id="@+id/btnQuickEraser"
+            android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1"
+            android:src="@drawable/ic_eraser" android:scaleType="centerInside" android:padding="9dp"
+            android:background="@drawable/btn_toolbar_selector" />
 
-            <ImageButton android:id="@+id/btnQuickEraser"
-                android:layout_width="40dp" android:layout_height="40dp"
-                android:layout_marginEnd="2dp"
-                android:src="@drawable/ic_eraser" android:scaleType="centerInside" android:padding="8dp"
-                android:background="@drawable/btn_toolbar_selector" />
+        <!-- Divider -->
+        <View android:layout_width="1dp" android:layout_height="28dp"
+            android:background="#E0DDD8" android:layout_marginStart="2dp" android:layout_marginEnd="2dp"/>
 
-            <ImageButton android:id="@+id/btnInsert"
-                android:layout_width="40dp" android:layout_height="40dp"
-                android:layout_marginEnd="2dp"
-                android:src="@drawable/ic_insert" android:scaleType="centerInside" android:padding="9dp"
-                android:background="@drawable/btn_toolbar_selector" />
+        <ImageButton android:id="@+id/btnInsert"
+            android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1"
+            android:src="@drawable/ic_insert" android:scaleType="centerInside" android:padding="10dp"
+            android:background="@drawable/btn_toolbar_selector" />
 
-            <ImageButton android:id="@+id/btnTools"
-                android:layout_width="40dp" android:layout_height="40dp"
-                android:layout_marginEnd="2dp"
-                android:src="@drawable/ic_shapes" android:scaleType="centerInside" android:padding="8dp"
-                android:background="@drawable/btn_toolbar_selector" />
+        <ImageButton android:id="@+id/btnTools"
+            android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1"
+            android:src="@drawable/ic_shapes" android:scaleType="centerInside" android:padding="9dp"
+            android:background="@drawable/btn_toolbar_selector" />
 
-            <ImageButton android:id="@+id/btnUndo"
-                android:layout_width="40dp" android:layout_height="40dp"
-                android:layout_marginEnd="2dp"
-                android:src="@drawable/ic_undo" android:scaleType="centerInside" android:padding="9dp"
-                android:background="@drawable/btn_toolbar_selector" />
+        <!-- Divider -->
+        <View android:layout_width="1dp" android:layout_height="28dp"
+            android:background="#E0DDD8" android:layout_marginStart="2dp" android:layout_marginEnd="2dp"/>
 
-            <ImageButton android:id="@+id/btnRedo"
-                android:layout_width="40dp" android:layout_height="40dp"
-                android:layout_marginEnd="2dp"
-                android:src="@drawable/ic_redo" android:scaleType="centerInside" android:padding="9dp"
-                android:background="@drawable/btn_toolbar_selector" />
+        <!-- Fixed right: undo, redo, expand -->
+        <ImageButton android:id="@+id/btnUndo"
+            android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1"
+            android:src="@drawable/ic_undo" android:scaleType="centerInside" android:padding="10dp"
+            android:background="@drawable/btn_toolbar_selector" />
 
-            <ImageButton android:id="@+id/btnExpand"
-                android:layout_width="40dp" android:layout_height="40dp"
-                android:src="@drawable/ic_expand" android:scaleType="centerInside" android:padding="9dp"
-                android:background="@drawable/btn_toolbar_selector" />
+        <ImageButton android:id="@+id/btnRedo"
+            android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1"
+            android:src="@drawable/ic_redo" android:scaleType="centerInside" android:padding="10dp"
+            android:background="@drawable/btn_toolbar_selector" />
 
-        </LinearLayout>
-    </HorizontalScrollView>
+        <ImageButton android:id="@+id/btnExpand"
+            android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1"
+            android:src="@drawable/ic_expand" android:scaleType="centerInside" android:padding="10dp"
+            android:background="@drawable/btn_toolbar_selector" />
 
-</LinearLayout>
+    </LinearLayout>
+
+</FrameLayout>
