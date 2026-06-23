@@ -599,6 +599,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var groupResizeItemSnapshots: List<FloatArray?> = emptyList()
 
     var selectedItem: Any? = null
+        set(value) { field = value; onItemSelected?.invoke(value) }
+    var onItemSelected: ((Any?) -> Unit)? = null
 
     private enum class HandleType { NONE, MOVE, ROTATE, TL, TM, TR, ML, MR, BL, BM, BR }
 
@@ -1096,8 +1098,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val w = textWrapWidth(item)
         val layout = StaticLayout.Builder.obtain(spannable, 0, spannable.length, tp, w).setIncludePad(true).build()
         canvas.save(); canvas.translate(item.x, item.y - layout.height)
-        val w2 = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.div(2f) ?: 0f
-        canvas.rotate(item.rotation, w2, layout.height / 2f); layout.draw(canvas); canvas.restore()
+        canvas.rotate(item.rotation, 0f, 0f); layout.draw(canvas); canvas.restore()
     }
 
     private fun bboxHandlePositions(bounds: FloatArray): List<Pair<HandleType, Pair<Float, Float>>> {
@@ -1363,7 +1364,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val w = lines.maxOf { tp.measureText(it) }.coerceAtLeast(10f)
                 val h = a.size * 1.4f * lines.size
                 val pad = 24f / scaleFactor
-                if (x >= a.x - pad && x <= a.x + w + pad && y >= a.y - h - pad && y <= a.y + pad) return a
+                // Inverse-rotate touch point around pivot (a.x, a.y - h) to check in local (unrotated) space
+                val pivX = a.x; val pivY = a.y - h
+                val lx: Float; val ly: Float
+                if (a.rotation != 0f) {
+                    val rad = Math.toRadians(-a.rotation.toDouble())
+                    val cos = kotlin.math.cos(rad).toFloat(); val sin = kotlin.math.sin(rad).toFloat()
+                    val dx = x - pivX; val dy = y - pivY
+                    lx = pivX + dx * cos - dy * sin; ly = pivY + dx * sin + dy * cos
+                } else { lx = x; ly = y }
+                if (lx >= a.x - pad && lx <= a.x + w + pad && ly >= a.y - h - pad && ly <= a.y + pad) return a
             }
         }
         return null
@@ -2289,6 +2299,37 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     fun removeTextItem(item: TextItem) { actions.remove(item); invalidate() }
 
+    fun bringToFront(item: Any) {
+        if (actions.remove(item)) { actions.add(item); redoStack.clear(); invalidate() }
+    }
+
+    /** Renders only pen strokes currently visible on screen — used for inline handwriting OCR */
+    fun renderVisibleStrokesOnly(): Bitmap? {
+        if (width == 0 || height == 0) return null
+        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val cv = Canvas(bmp); cv.drawColor(Color.WHITE)
+        cv.save(); cv.translate(translateX, translateY); cv.scale(scaleFactor, scaleFactor)
+        for (a in actions) {
+            if (a is StrokeItem && a.data.type == Tool.PEN) cv.drawPath(a.path, a.paint)
+        }
+        cv.restore()
+        return bmp
+    }
+
+    /** Removes all pen strokes from actions — called after handwriting OCR converts them to text */
+    fun clearRecentPenStrokes() {
+        actions.removeAll { it is StrokeItem && it.data.type == Tool.PEN }
+        redoStack.clear(); invalidate()
+    }    fun sendToBack(item: Any) {
+        if (actions.remove(item)) { actions.add(0, item); redoStack.clear(); invalidate() }
+    }
+    fun bringForward(item: Any) {
+        val i = actions.indexOf(item); if (i >= 0 && i < actions.size - 1) { actions.removeAt(i); actions.add(i + 1, item); redoStack.clear(); invalidate() }
+    }
+    fun sendBackward(item: Any) {
+        val i = actions.indexOf(item); if (i > 0) { actions.removeAt(i); actions.add(i - 1, item); redoStack.clear(); invalidate() }
+    }
+
     // Clamps an existing text item's position to the page boundary (used when committing edits)
     fun clampTextItemToPage(item: TextItem) {
         if (canvasMode == CanvasMode.INFINITE) return
@@ -2374,58 +2415,66 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     fun performFill(screenX: Float, screenY: Float) {
-        // Render at higher scale so thin strokes and intersections form solid boundaries.
-        // Also render with strokes thickened by 1px so gaps between near-touching lines close up.
         val scale = 1.0f
         val w = (width * scale).toInt().coerceAtLeast(1); val h = (height * scale).toInt().coerceAtLeast(1)
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); val canvas = Canvas(bmp)
-        canvas.save(); canvas.scale(scale, scale); canvas.translate(translateX, translateY); canvas.scale(scaleFactor, scaleFactor)
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); val cv = Canvas(bmp)
+        cv.save(); cv.scale(scale, scale); cv.translate(translateX, translateY); cv.scale(scaleFactor, scaleFactor)
+        // Draw with minimum 3px stroke so anti-aliased edges form solid closed boundaries
         for (a in actions) {
             if (a is StrokeItem) {
                 val thickPaint = Paint(a.paint).apply {
-                    strokeWidth = strokeWidth.coerceAtLeast(2f / scaleFactor)
-                    style = Paint.Style.STROKE; alpha = 255
+                    strokeWidth = strokeWidth.coerceAtLeast(3f / scaleFactor)
+                    style = Paint.Style.STROKE; alpha = 255; isAntiAlias = false // hard edges = no leaks
                 }
-                canvas.drawPath(a.path, thickPaint)
+                cv.drawPath(a.path, thickPaint)
             }
         }
-        canvas.restore()
+        cv.restore()
 
         val px = (screenX * scale).toInt().coerceIn(0, w - 1); val py = (screenY * scale).toInt().coerceIn(0, h - 1)
         val pixels = IntArray(w * h); bmp.getPixels(pixels, 0, w, 0, 0, w, h)
-        fun isEmpty(x: Int, y: Int): Boolean = ((pixels[y * w + x] ushr 24) and 0xFF) < 20
-        if (!isEmpty(px, py)) { invalidate(); return }
+        // Higher threshold — anti-aliased stroke edges can be semi-transparent; treat anything >10% opaque as a wall
+        fun isWall(x: Int, y: Int): Boolean = ((pixels[y * w + x] ushr 24) and 0xFF) > 25
+        if (isWall(px, py)) { invalidate(); return }
 
-        // Run flood fill on background thread - at full screen resolution this can be slow on main thread
         imageLoadExecutor.execute {
             val visited = BooleanArray(w * h); val queue = ArrayDeque<Int>()
             val start = py * w + px; queue.add(start); visited[start] = true
+            var minX = px; var maxX = px; var minY = py; var maxY = py
             var filled = 0; val edgeHits = mutableListOf<Pair<Int, Int>>()
             val maxFill = (w * h * 0.85f).toInt(); var leaked = false
             while (queue.isNotEmpty()) {
                 val idx = queue.removeFirst(); val x = idx % w; val y = idx / w; filled++
+                if (x < minX) minX = x; if (x > maxX) maxX = x
+                if (y < minY) minY = y; if (y > maxY) maxY = y
                 if (x == 0 || x == w - 1 || y == 0 || y == h - 1) edgeHits.add(Pair(x, y))
                 if (filled > maxFill) { leaked = true; break }
-                if (x > 0)     { val n = idx - 1; if (!visited[n] && isEmpty(x - 1, y)) { visited[n] = true; queue.add(n) } }
-                if (x < w - 1) { val n = idx + 1; if (!visited[n] && isEmpty(x + 1, y)) { visited[n] = true; queue.add(n) } }
-                if (y > 0)     { val n = idx - w; if (!visited[n] && isEmpty(x, y - 1)) { visited[n] = true; queue.add(n) } }
-                if (y < h - 1) { val n = idx + w; if (!visited[n] && isEmpty(x, y + 1)) { visited[n] = true; queue.add(n) } }
+                if (x > 0)     { val n = idx - 1; if (!visited[n] && !isWall(x-1,y)) { visited[n]=true; queue.add(n) } }
+                if (x < w - 1) { val n = idx + 1; if (!visited[n] && !isWall(x+1,y)) { visited[n]=true; queue.add(n) } }
+                if (y > 0)     { val n = idx - w; if (!visited[n] && !isWall(x,y-1)) { visited[n]=true; queue.add(n) } }
+                if (y < h - 1) { val n = idx + w; if (!visited[n] && !isWall(x,y+1)) { visited[n]=true; queue.add(n) } }
             }
             if (leaked) {
                 val clusters = clusterEdgePoints(edgeHits)
                 post {
-                    if (clusters.isNotEmpty()) { val (cx, cy) = clusters[0]; zoomTo(screenToWorldX(cx / scale), screenToWorldY(cy / scale), (scaleFactor * 2.5f).coerceAtMost(6f)) }
+                    if (clusters.isNotEmpty()) { val (cx, cy) = clusters[0]; zoomTo(screenToWorldX(cx/scale), screenToWorldY(cy/scale), (scaleFactor*2.5f).coerceAtMost(6f)) }
                     invalidate()
                 }
             } else {
-                val fp = IntArray(w * h) { if (visited[it]) fillColor else Color.TRANSPARENT }
-                val fb = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); fb.setPixels(fp, 0, w, 0, 0, w, h)
+                // Crop bitmap tightly to just the filled region — saves memory and draws correctly
+                val cw = maxX - minX + 1; val ch = maxY - minY + 1
+                val fp = IntArray(cw * ch) { i ->
+                    val gx = minX + i % cw; val gy = minY + i / cw
+                    if (visited[gy * w + gx]) fillColor else Color.TRANSPARENT
+                }
+                val fb = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888); fb.setPixels(fp, 0, cw, 0, 0, cw, ch)
                 val folder = File(ctx.filesDir, "images"); if (!folder.exists()) folder.mkdirs()
                 val outFile = File(folder, "fill_${System.currentTimeMillis()}.png")
                 try { FileOutputStream(outFile).use { fb.compress(Bitmap.CompressFormat.PNG, 100, it) } } catch (e: Exception) { post { invalidate() }; return@execute }
-                val wx0 = screenToWorldX(0f); val wy0 = screenToWorldY(0f)
-                val wx1 = screenToWorldX(width.toFloat()); val wy1 = screenToWorldY(height.toFloat())
-                post { actions.add(0, FillItem(outFile.absolutePath, wx0, wy0, wx1 - wx0, wy1 - wy0)); redoStack.clear(); invalidate() }
+                // Convert cropped screen rect to world coords
+                val wx0 = screenToWorldX(minX / scale); val wy0 = screenToWorldY(minY / scale)
+                val wx1 = screenToWorldX((minX + cw) / scale); val wy1 = screenToWorldY((minY + ch) / scale)
+                post { actions.add(FillItem(outFile.absolutePath, wx0, wy0, wx1 - wx0, wy1 - wy0)); redoStack.clear(); invalidate() }
             }
         }
     }

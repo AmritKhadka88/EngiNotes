@@ -429,6 +429,28 @@ class MainActivity : AppCompatActivity() {
         }
         drawingView.onLinkTap               = { target -> navigateToLink(target) }
         drawingView.onPageSwipe             = { dir -> drawingView.scrollPage(dir) }
+        drawingView.onItemSelected          = { item ->
+            layerToolbar?.let { canvasContainer.removeView(it) }; layerToolbar = null
+            if (item != null && item !is TextItem) {
+                val tb = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat(); setStroke(dp(1), Color.parseColor("#DDDDDD")) }
+                    elevation = dp(4).toFloat()
+                    layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).also { it.gravity = Gravity.TOP or Gravity.END; it.topMargin = dp(56); it.rightMargin = dp(8) }
+                }
+                fun lBtn(label: String, action: () -> Unit) = TextView(this).apply {
+                    text = label; textSize = 13f; gravity = Gravity.CENTER
+                    val pad = dp(8); setPadding(pad, dp(6), pad, dp(6))
+                    setOnClickListener { action() }; tb.addView(this)
+                }
+                lBtn("⬆⬆") { drawingView.bringToFront(item) }
+                lBtn("⬆") { drawingView.bringForward(item) }
+                lBtn("⬇") { drawingView.sendBackward(item) }
+                lBtn("⬇⬇") { drawingView.sendToBack(item) }
+                canvasContainer.addView(tb)
+                layerToolbar = tb
+            }
+        }
         drawingView.onTableCellEditRequest  = { table, row, col, sx, sy -> closeInlineEditor(true); dismissCellEditor(); showTableCellEditor(table,row,col,sx,sy) }
         drawingView.onExportWindowSelected  = { l,t,r,b -> exportWindowBitmap = drawingView.exportWindow(l,t,r,b); showExportWindowDialog() }
         drawingView.onAudioItemTap          = { item -> AudioHelper.togglePlay(item) { drawingView.invalidate() }; drawingView.invalidate() }
@@ -624,7 +646,7 @@ class MainActivity : AppCompatActivity() {
                 item.title == "Add to Book" -> showAddToBookDialog()
                 item.title == "Open PDF" -> pickPdfLauncher.launch("application/pdf")
                 item.title == "Chart Builder" -> chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java))
-                item.title == "Handwriting to Text" -> startActivity(android.content.Intent(this, HandwritingActivity::class.java))
+                item.title == "Handwriting to Text" -> convertHandwritingInPlace()
                 item.title == "Settings" -> showSettingsDialog()
                 item.title == "About" -> showAboutDialog()
                 item.title == "Exit" -> confirmThenExit()
@@ -632,6 +654,26 @@ class MainActivity : AppCompatActivity() {
             true
         }
         popup.show()
+    }
+
+    private fun convertHandwritingInPlace() {
+        // Render only the pen strokes visible on screen to a bitmap, run ML Kit OCR,
+        // then place the recognised text as a TextItem at the strokes' centroid and remove the strokes.
+        val bmp = drawingView.renderVisibleStrokesOnly()
+        if (bmp == null) { Toast.makeText(this, "No strokes visible", Toast.LENGTH_SHORT).show(); return }
+        val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bmp, 0)
+        val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
+        recognizer.process(image)
+            .addOnSuccessListener { result ->
+                val text = result.text.trim()
+                if (text.isEmpty()) { Toast.makeText(this, "No text recognised", Toast.LENGTH_SHORT).show(); return@addOnSuccessListener }
+                // Place text at centre of screen in world coords
+                val wx = drawingView.screenCenterWorldX(); val wy = drawingView.screenCenterWorldY()
+                drawingView.addText(text, wx, wy, drawingView.defaultTextSize, 0f, Color.BLACK)
+                drawingView.clearRecentPenStrokes()
+                Toast.makeText(this, "Converted!", Toast.LENGTH_SHORT).show()
+            }
+            .addOnFailureListener { Toast.makeText(this, "OCR failed: ${it.message}", Toast.LENGTH_SHORT).show() }
     }
 
     private fun showRenameDialog() {
@@ -1632,6 +1674,7 @@ class MainActivity : AppCompatActivity() {
     private var textSelectionBox: View? = null
     private var textSelectionItem: TextItem? = null
     private var textSelectionHandles: List<View> = emptyList()
+    private var layerToolbar: View? = null
 
     private fun dismissTextSelectionBox() {
         textSelectionBox?.let { canvasContainer.removeView(it) }
@@ -1765,7 +1808,7 @@ class MainActivity : AppCompatActivity() {
             item.size = (item.size - 2f).coerceAtLeast(8f); drawingView.invalidate()
             val newDims = updateTextSelectionBoxSize(box, moveSurface, item)
             boxW = newDims.first; boxH = newDims.second
-            box.pivotX = (boxW - dp(12)) / 2f; box.pivotY = boxH / 2f
+            box.pivotX = 0f; box.pivotY = 0f
             onAfterMove?.invoke()
         }
         // Font larger
@@ -1774,7 +1817,7 @@ class MainActivity : AppCompatActivity() {
             item.size = (item.size + 2f).coerceAtMost(400f); drawingView.invalidate()
             val newDims = updateTextSelectionBoxSize(box, moveSurface, item)
             boxW = newDims.first; boxH = newDims.second
-            box.pivotX = (boxW - dp(12)) / 2f; box.pivotY = boxH / 2f
+            box.pivotX = 0f; box.pivotY = 0f
             onAfterMove?.invoke()
         }
         // Rotate — drag this left/right to rotate
@@ -1798,7 +1841,14 @@ class MainActivity : AppCompatActivity() {
         btnDone.setOnClickListener { dismissTextSelectionBox() }
 
         toolbar.addView(btnDel); toolbar.addView(btnFontMinus); toolbar.addView(btnFontPlus)
-        toolbar.addView(btnRotate); toolbar.addView(btnDone)
+        toolbar.addView(btnRotate)
+        // Layer buttons
+        val btnFront = tbBtn("⬆", Color.parseColor("#1976D2"))
+        btnFront.setOnClickListener { drawingView.bringToFront(item) }
+        val btnBack = tbBtn("⬇", Color.parseColor("#1976D2"))
+        btnBack.setOnClickListener { drawingView.sendToBack(item) }
+        toolbar.addView(btnFront); toolbar.addView(btnBack)
+        toolbar.addView(btnDone)
 
         // Place toolbar above box
         fun positionToolbar() {
@@ -1811,10 +1861,11 @@ class MainActivity : AppCompatActivity() {
         onAfterMove = { positionToolbar() }
 
         val lp = FrameLayout.LayoutParams(boxW, boxH)
+        // Canvas: translate(item.x, item.y-h) then rotate(rotation, 0, 0) → pivot is top-left
+        // Box pivot must match: pivotX=0, pivotY=0 rotates around top-left corner
         lp.leftMargin = anchorScreenX.toInt().coerceAtLeast(0)
         lp.topMargin = (anchorScreenY - boxH).toInt().coerceAtLeast(0)
-        box.pivotX = (boxW - dp(12)) / 2f
-        box.pivotY = boxH / 2f
+        box.pivotX = 0f; box.pivotY = 0f
         box.rotation = item.rotation
         canvasContainer.addView(box, lp)
         canvasContainer.addView(toolbar)
@@ -1833,7 +1884,7 @@ class MainActivity : AppCompatActivity() {
             newLp.topMargin = (newAnchorY - boxH).toInt().coerceAtLeast(0)
             newLp.width = boxW; newLp.height = boxH
             box.layoutParams = newLp
-            box.pivotX = (boxW - dp(12)) / 2f; box.pivotY = boxH / 2f
+            box.pivotX = 0f; box.pivotY = 0f
             box.rotation = item.rotation
             positionToolbar()
         }
