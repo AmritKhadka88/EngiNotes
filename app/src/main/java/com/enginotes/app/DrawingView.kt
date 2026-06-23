@@ -1119,9 +1119,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             canvas.save()
             canvas.translate(item.x, item.y - contentH)
             canvas.rotate(item.rotation, contentW / 2f, contentH / 2f)
+            // Selection border
             val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE
             selP.strokeWidth = 2f / scaleFactor; selP.isAntiAlias = true
             canvas.drawRect(0f, 0f, contentW, contentH, selP)
+            // Rotate handle — green circle above top-centre
+            val hr = 12f / scaleFactor
+            val hx = contentW / 2f; val hy = -28f / scaleFactor
+            // Stem line from box top to handle
+            canvas.drawLine(contentW / 2f, 0f, hx, hy + hr, selP)
+            val hFill = Paint(); hFill.color = Color.parseColor("#4CAF50"); hFill.style = Paint.Style.FILL; hFill.isAntiAlias = true
+            val hStroke = Paint(); hStroke.color = Color.WHITE; hStroke.style = Paint.Style.STROKE; hStroke.strokeWidth = 2f / scaleFactor; hStroke.isAntiAlias = true
+            canvas.drawCircle(hx, hy, hr, hFill)
+            canvas.drawCircle(hx, hy, hr, hStroke)
             canvas.restore()
             return
         }
@@ -2180,7 +2190,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                     is TextItem -> { if (distance(x, y, a.x, a.y) > r + a.size) newActions.add(a) }
                     is ImageItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) }
-                    is FillItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) }
+                    is FillItem -> {
+                        if (eraserMode == EraserMode.AREA) {
+                            // Erase only the pixels the eraser circle touches in the fill bitmap
+                            val erased = eraseFillItemRegion(a, x, y, r)
+                            if (erased != null) newActions.add(erased) // null = fully erased
+                        } else {
+                            newActions.add(a)
+                        }
+                    }
                     else -> newActions.add(a)
                 }
             }
@@ -2188,7 +2206,25 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
-    // Splits a freeform stroke around the eraser circle using segment-to-point distance (not just
+    private fun eraseFillItemRegion(item: FillItem, ex: Float, ey: Float, r: Float): FillItem? {
+        val bmp = getOrLoadFillBitmap(item)?.copy(Bitmap.Config.ARGB_8888, true) ?: return item
+        val bw = bmp.width; val bh = bmp.height
+        // Convert world eraser circle to bitmap pixel coords
+        val scaleX = bw / item.w; val scaleY = bh / item.h
+        val bex = ((ex - item.x) * scaleX).toInt(); val bey = ((ey - item.y) * scaleY).toInt()
+        val brx = (r * scaleX).toInt().coerceAtLeast(1); val bry = (r * scaleY).toInt().coerceAtLeast(1)
+        val cv = Canvas(bmp)
+        val p = Paint(); p.color = Color.TRANSPARENT; p.style = Paint.Style.FILL
+        p.xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR)
+        cv.drawOval(RectF((bex - brx).toFloat(), (bey - bry).toFloat(), (bex + brx).toFloat(), (bey + bry).toFloat()), p)
+        // Check if anything remains
+        val pixels = IntArray(bw * bh); bmp.getPixels(pixels, 0, bw, 0, 0, bw, bh)
+        if (pixels.all { (it ushr 24) == 0 }) return null // fully transparent - remove item
+        // Save updated bitmap back to file
+        try { FileOutputStream(item.path).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) } } catch (e: Exception) { return item }
+        synchronized(bitmapCache) { bitmapCache.remove(item.path) } // invalidate so it reloads
+        return item
+    }
     // sample-point distance), so erasing is accurate to what's visually under the eraser circle
     // regardless of how sparse the stroke's recorded points are.
     private fun splitStrokeAroundEraser(data: StrokeData, ex: Float, ey: Float, r: Float): List<StrokeItem> {

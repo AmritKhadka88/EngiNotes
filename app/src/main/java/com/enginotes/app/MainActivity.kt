@@ -1771,19 +1771,9 @@ class MainActivity : AppCompatActivity() {
         btnFontMinus.setOnClickListener { item.size = (item.size - 2f).coerceAtLeast(8f); drawingView.invalidate() }
         val btnFontPlus = tbBtn("A+")
         btnFontPlus.setOnClickListener { item.size = (item.size + 2f).coerceAtMost(400f); drawingView.invalidate() }
-        val btnRotate = tbBtn("\u27F3", Color.parseColor("#1976D2"))
-        var rotStartRawX = 0f; var rotStartRotation = 0f
-        btnRotate.setOnTouchListener { _, ev ->
-            when (ev.actionMasked) {
-                android.view.MotionEvent.ACTION_DOWN -> { rotStartRawX = ev.rawX; rotStartRotation = item.rotation; true }
-                android.view.MotionEvent.ACTION_MOVE -> { item.rotation = rotStartRotation - (ev.rawX - rotStartRawX) * 0.5f; drawingView.invalidate(); true }
-                else -> true
-            }
-        }
         val btnDone = tbBtn("\u2713", Color.parseColor("#388E3C"))
         btnDone.setOnClickListener { dismissTextSelectionBox() }
-        toolbar.addView(btnDel); toolbar.addView(btnFontMinus); toolbar.addView(btnFontPlus)
-        toolbar.addView(btnRotate); toolbar.addView(btnDone)
+        toolbar.addView(btnDel); toolbar.addView(btnFontMinus); toolbar.addView(btnFontPlus); toolbar.addView(btnDone)
 
         canvasContainer.addView(toolbar)
         textSelectionBox = touchSurface; textSelectionItem = item
@@ -1799,24 +1789,45 @@ class MainActivity : AppCompatActivity() {
         }
         updateToolbarPos()
         // Patch the touch surface to call updateToolbarPos on move
+        var isDraggingRotate = false
+        var rotStartRawX2 = 0f; var rotStartRotation2 = 0f
         touchSurface.setOnTouchListener { _, ev ->
             val wx = drawingView.screenToWorldX(ev.x); val wy = drawingView.screenToWorldY(ev.y)
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
-                    val hit = drawingView.findTextItemAtPublic(wx, wy)
-                    if (hit === item) { moveStartRawX = ev.rawX; moveStartRawY = ev.rawY; lastMoveRawX = ev.rawX; lastMoveRawY = ev.rawY; true }
-                    else { dismissTextSelectionBox(); false }
+                    // Check if tapping the rotate handle (green circle above box top-centre)
+                    // Handle is at world pos: rotate (item.x + contentW/2, item.y - contentH - 28/scale) around item centre
+                    val rotHandleWx = drawingView.worldToScreenX(item.x) // rough check - use screen distance
+                    val rotHandleSx = drawingView.worldToScreenX(item.x)
+                    val rotHandleSy = drawingView.worldToScreenY(item.y) - dp(60)
+                    val distToHandle = kotlin.math.hypot((ev.x - rotHandleSx).toDouble(), (ev.y - rotHandleSy).toDouble()).toFloat()
+                    if (distToHandle < dp(36)) {
+                        isDraggingRotate = true; rotStartRawX2 = ev.rawX; rotStartRotation2 = item.rotation; true
+                    } else {
+                        isDraggingRotate = false
+                        val hit = drawingView.findTextItemAtPublic(wx, wy)
+                        if (hit === item) { moveStartRawX = ev.rawX; moveStartRawY = ev.rawY; lastMoveRawX = ev.rawX; lastMoveRawY = ev.rawY; true }
+                        else { dismissTextSelectionBox(); false }
+                    }
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
-                    if (moveStartRawX == 0f) return@setOnTouchListener false
-                    val dx = ev.rawX - lastMoveRawX; val dy = ev.rawY - lastMoveRawY
-                    if (kotlin.math.abs(ev.rawX - moveStartRawX) > 4 || kotlin.math.abs(ev.rawY - moveStartRawY) > 4) {
-                        item.x += dx / drawingView.getScaleFactor()
-                        item.y += dy / drawingView.getScaleFactor()
-                        lastMoveRawX = ev.rawX; lastMoveRawY = ev.rawY
-                        drawingView.invalidate(); updateToolbarPos()
+                    if (isDraggingRotate) {
+                        item.rotation = rotStartRotation2 - (ev.rawX - rotStartRawX2) * 0.5f
+                        drawingView.invalidate(); true
+                    } else {
+                        if (moveStartRawX == 0f) return@setOnTouchListener false
+                        val dx = ev.rawX - lastMoveRawX; val dy = ev.rawY - lastMoveRawY
+                        if (kotlin.math.abs(ev.rawX - moveStartRawX) > 4 || kotlin.math.abs(ev.rawY - moveStartRawY) > 4) {
+                            item.x += dx / drawingView.getScaleFactor()
+                            item.y += dy / drawingView.getScaleFactor()
+                            lastMoveRawX = ev.rawX; lastMoveRawY = ev.rawY
+                            drawingView.invalidate(); updateToolbarPos()
+                        }
+                        true
                     }
-                    true
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    isDraggingRotate = false; moveStartRawX = 0f; false
                 }
                 else -> false
             }
