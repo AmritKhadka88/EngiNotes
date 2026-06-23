@@ -1798,7 +1798,7 @@ class MainActivity : AppCompatActivity() {
             val sy = drawingView.worldToScreenY(item.y)
             val lp = toolbar.layoutParams as FrameLayout.LayoutParams
             lp.leftMargin = sx.toInt().coerceIn(dp(4), canvasContainer.width - dp(200))
-            lp.topMargin = (sy - dp(100)).coerceAtLeast(dp(4)).toInt()
+            lp.topMargin = (sy - dp(100).toFloat()).coerceAtLeast(dp(4).toFloat()).toInt()
             toolbar.layoutParams = lp
         }
         updateToolbarPos()
