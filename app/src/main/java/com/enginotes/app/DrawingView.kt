@@ -650,6 +650,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var scaleFactor = 1f
     private var translateX = 0f; private var translateY = 0f
     private var twoFingerLastX = 0f; private var twoFingerLastY = 0f
+    private var twoFingerActive = false // true from first 2-finger contact until all fingers lift
     private var hoverX: Float? = null; private var hoverY: Float? = null
 
     private var isStylusDown = false
@@ -1930,27 +1931,34 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (event.pointerCount >= 2) {
+            twoFingerActive = true
+            // Cancel any in-progress stroke immediately when second finger touches
             if (currentItem != null) { currentItem = null; invalidate() }
             isStylusDown = false; drawingPointerId = -1
             activeHandle = HandleType.NONE
             longPressRunnable?.let { longPressHandler.removeCallbacks(it) }; longPressRunnable = null
             scaleDetector.onTouchEvent(event)
-            if (canvasMode != CanvasMode.INFINITE) {
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_MOVE -> {
-                        val fx = (event.getX(0) + event.getX(1)) / 2f; val fy = (event.getY(0) + event.getY(1)) / 2f
-                        if (twoFingerLastX != 0f || twoFingerLastY != 0f) {
-                            translateX += fx - twoFingerLastX; translateY += fy - twoFingerLastY
-                            clampTranslation(); onScaleChanged?.invoke(scaleFactor); onCanvasTransformed?.invoke(); invalidate()
-                        }
-                        twoFingerLastX = fx; twoFingerLastY = fy
+            when (event.actionMasked) {
+                MotionEvent.ACTION_MOVE -> {
+                    val fx = (event.getX(0) + event.getX(1)) / 2f; val fy = (event.getY(0) + event.getY(1)) / 2f
+                    if (twoFingerLastX != 0f || twoFingerLastY != 0f) {
+                        translateX += fx - twoFingerLastX; translateY += fy - twoFingerLastY
+                        clampTranslation(); onScaleChanged?.invoke(scaleFactor); onCanvasTransformed?.invoke(); invalidate()
                     }
-                    MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { twoFingerLastX = 0f; twoFingerLastY = 0f }
+                    twoFingerLastX = fx; twoFingerLastY = fy
+                }
+                MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    twoFingerLastX = 0f; twoFingerLastY = 0f
                 }
             }
             return true
         }
-        twoFingerLastX = 0f; twoFingerLastY = 0f
+        // Reset twoFingerActive only when ALL fingers are off the screen
+        if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+            twoFingerLastX = 0f; twoFingerLastY = 0f; twoFingerActive = false
+        }
+        // Block all drawing/gestures until fingers fully lifted after a two-finger gesture
+        if (twoFingerActive) return true
         val toolType = event.getToolType(0)
         val isStylus = toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER
         val isFinger = toolType == MotionEvent.TOOL_TYPE_FINGER || toolType == MotionEvent.TOOL_TYPE_UNKNOWN

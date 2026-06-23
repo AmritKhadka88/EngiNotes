@@ -1718,11 +1718,12 @@ class MainActivity : AppCompatActivity() {
                 android.view.MotionEvent.ACTION_DOWN -> {
                     moveStartRawX = ev.rawX; moveStartRawY = ev.rawY
                     val lp = box.layoutParams as FrameLayout.LayoutParams
-                    moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin; false
+                    moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
+                    true // must return true to receive MOVE events
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
                     val dx = ev.rawX - moveStartRawX; val dy = ev.rawY - moveStartRawY
-                    if (kotlin.math.abs(dx) > 6 || kotlin.math.abs(dy) > 6) {
+                    if (kotlin.math.abs(dx) > 4 || kotlin.math.abs(dy) > 4) {
                         val lp = box.layoutParams as FrameLayout.LayoutParams
                         lp.leftMargin = (moveStartLeft + dx).toInt().coerceAtLeast(0)
                         lp.topMargin = (moveStartTop + dy).toInt().coerceAtLeast(0)
@@ -1731,8 +1732,8 @@ class MainActivity : AppCompatActivity() {
                         item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + boxH)
                         drawingView.invalidate()
                         onAfterMove?.invoke()
-                        true
-                    } else false
+                    }
+                    true
                 }
                 else -> false
             }
