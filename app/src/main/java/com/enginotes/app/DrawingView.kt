@@ -1098,7 +1098,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val w = textWrapWidth(item)
         val layout = StaticLayout.Builder.obtain(spannable, 0, spannable.length, tp, w).setIncludePad(true).build()
         canvas.save(); canvas.translate(item.x, item.y - layout.height)
-        canvas.rotate(item.rotation, 0f, 0f); layout.draw(canvas); canvas.restore()
+        val pw = layout.width / 2f; val ph = layout.height / 2f
+        canvas.rotate(item.rotation, pw, ph); layout.draw(canvas); canvas.restore()
     }
 
     private fun bboxHandlePositions(bounds: FloatArray): List<Pair<HandleType, Pair<Float, Float>>> {
@@ -1114,15 +1115,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun drawSelection(canvas: Canvas) {
         val item = selectedItem ?: return
         if (item is TextItem) {
-            // Draw selection border directly on canvas - the transform is already correct here.
-            // No View overlay needed; this eliminates all pivot/rotation mismatch problems.
             val tp = android.text.TextPaint(); tp.textSize = item.size
             val lines = item.text.split("\n")
             val w = lines.maxOf { tp.measureText(it) }.coerceAtLeast(10f)
             val h = item.size * 1.4f * lines.size
             canvas.save()
             canvas.translate(item.x, item.y - h)
-            canvas.rotate(item.rotation, 0f, 0f)
+            canvas.rotate(item.rotation, w / 2f, h / 2f)
             val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE
             selP.strokeWidth = 2f / scaleFactor; selP.isAntiAlias = true
             canvas.drawRect(0f, 0f, w, h, selP)
@@ -1378,7 +1377,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val h = a.size * 1.4f * lines.size
                 val pad = 24f / scaleFactor
                 // Inverse-rotate touch point around pivot (a.x, a.y - h) to check in local (unrotated) space
-                val pivX = a.x; val pivY = a.y - h
+                val pivX = a.x + w / 2f; val pivY = a.y - h / 2f
                 val lx: Float; val ly: Float
                 if (a.rotation != 0f) {
                     val rad = Math.toRadians(-a.rotation.toDouble())
@@ -2432,12 +2431,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val w = (width * scale).toInt().coerceAtLeast(1); val h = (height * scale).toInt().coerceAtLeast(1)
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); val cv = Canvas(bmp)
         cv.save(); cv.scale(scale, scale); cv.translate(translateX, translateY); cv.scale(scaleFactor, scaleFactor)
-        // Draw with minimum 3px stroke so anti-aliased edges form solid closed boundaries
+        // Only render stroke outlines — shape fills would make interiors opaque (= walls),
+        // preventing the flood fill from entering. We want boundaries only.
         for (a in actions) {
             if (a is StrokeItem) {
                 val thickPaint = Paint(a.paint).apply {
+                    style = Paint.Style.STROKE
                     strokeWidth = strokeWidth.coerceAtLeast(3f / scaleFactor)
-                    style = Paint.Style.STROKE; alpha = 255; isAntiAlias = false // hard edges = no leaks
+                    alpha = 255; isAntiAlias = false; shader = null
                 }
                 cv.drawPath(a.path, thickPaint)
             }

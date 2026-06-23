@@ -1776,18 +1776,14 @@ class MainActivity : AppCompatActivity() {
         btnRotate.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> { rotStartRawX = ev.rawX; rotStartRotation = item.rotation; true }
-                android.view.MotionEvent.ACTION_MOVE -> { item.rotation = rotStartRotation + (ev.rawX - rotStartRawX) * 0.5f; drawingView.invalidate(); true }
+                android.view.MotionEvent.ACTION_MOVE -> { item.rotation = rotStartRotation - (ev.rawX - rotStartRawX) * 0.5f; drawingView.invalidate(); true }
                 else -> true
             }
         }
-        val btnFront = tbBtn("\u2B06", Color.parseColor("#1976D2"))
-        btnFront.setOnClickListener { drawingView.bringToFront(item) }
-        val btnBack = tbBtn("\u2B07", Color.parseColor("#1976D2"))
-        btnBack.setOnClickListener { drawingView.sendToBack(item) }
         val btnDone = tbBtn("\u2713", Color.parseColor("#388E3C"))
         btnDone.setOnClickListener { dismissTextSelectionBox() }
         toolbar.addView(btnDel); toolbar.addView(btnFontMinus); toolbar.addView(btnFontPlus)
-        toolbar.addView(btnRotate); toolbar.addView(btnFront); toolbar.addView(btnBack); toolbar.addView(btnDone)
+        toolbar.addView(btnRotate); toolbar.addView(btnDone)
 
         canvasContainer.addView(toolbar)
         textSelectionBox = touchSurface; textSelectionItem = item
