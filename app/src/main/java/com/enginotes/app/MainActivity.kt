@@ -493,30 +493,42 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnInsert).setOnClickListener { showInsertMenu() }
         findViewById<ImageButton>(R.id.btnTools).setOnClickListener { showShapesPicker(it as ImageButton) }
 
-        // Touch/Pan toggle — switches between using tools and finger-pan mode
+        // Touch/Pan toggle
         var touchModeIsPan = false
         val btnTouchToggle = findViewById<ImageButton?>(R.id.btnTouchToggle)
+        btnTouchToggle?.alpha = 0.38f
         btnTouchToggle?.setOnClickListener {
             touchModeIsPan = !touchModeIsPan
             drawingView.fingerPanMode = touchModeIsPan
-            btnTouchToggle.alpha = if (touchModeIsPan) 1f else 0.45f
-            btnTouchToggle.animate().scaleX(1.15f).scaleY(1.15f).setDuration(80)
+            btnTouchToggle.alpha = if (touchModeIsPan) 1f else 0.38f
+            btnTouchToggle.animate().scaleX(1.18f).scaleY(1.18f).setDuration(80)
                 .withEndAction { btnTouchToggle.animate().scaleX(1f).scaleY(1f).setDuration(80).start() }.start()
         }
-        btnTouchToggle?.alpha = 0.45f
 
-        // Page scroll slider — vertical SeekBar on right edge scrolls canvas vertically
-        val pageScrollSlider = findViewById<android.widget.SeekBar?>(R.id.pageScrollSlider)
-        pageScrollSlider?.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
-                if (!fromUser) return
-                drawingView.scrollToPercent(progress / 100f)
+        // Page scroll thumb — touch and drag on right edge moves canvas
+        val scrollThumb = findViewById<View?>(R.id.pageScrollThumb)
+        scrollThumb?.let { thumb ->
+            var dragStartY = 0f; var trackStartPct = 0f
+            thumb.setOnTouchListener { _, ev ->
+                val trackH = (thumb.parent as android.view.View).height - thumb.height
+                when (ev.actionMasked) {
+                    android.view.MotionEvent.ACTION_DOWN -> { dragStartY = ev.rawY; trackStartPct = (thumb.y / trackH.toFloat()).coerceIn(0f, 1f); true }
+                    android.view.MotionEvent.ACTION_MOVE -> {
+                        val dy = ev.rawY - dragStartY
+                        val pct = (trackStartPct + dy / trackH).coerceIn(0f, 1f)
+                        thumb.y = pct * trackH
+                        drawingView.scrollToPercent(pct)
+                        true
+                    }
+                    else -> false
+                }
             }
-            override fun onStartTrackingTouch(sb: android.widget.SeekBar?) {}
-            override fun onStopTrackingTouch(sb: android.widget.SeekBar?) {}
-        })
-        drawingView.onScrollPercentChanged = { pct ->
-            pageScrollSlider?.progress = (pct * 100).toInt()
+            drawingView.onScrollPercentChanged = { pct ->
+                thumb.post {
+                    val trackH = (thumb.parent as android.view.View).height - thumb.height
+                    if (trackH > 0) thumb.y = pct * trackH
+                }
+            }
         }
 
         val toolbarScroll = findViewById<View>(R.id.toolbarScroll)
