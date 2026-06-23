@@ -1133,13 +1133,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE
             selP.strokeWidth = 2f / scaleFactor; selP.isAntiAlias = true
             canvas.drawRect(0f, 0f, contentW, contentH, selP)
-            // Rotate handle — green circle above top-centre
-            val hr = 12f / scaleFactor
-            val hx = contentW / 2f; val hy = -28f / scaleFactor
-            // Stem line from box top to handle
+            // Rotate handle — large green circle above top-centre, fixed 22px screen size
+            val hr = 22f / scaleFactor
+            val hx = contentW / 2f; val hy = -44f / scaleFactor
+            // Stem line
             canvas.drawLine(contentW / 2f, 0f, hx, hy + hr, selP)
-            val hFill = Paint(); hFill.color = Color.parseColor("#4CAF50"); hFill.style = Paint.Style.FILL; hFill.isAntiAlias = true
-            val hStroke = Paint(); hStroke.color = Color.WHITE; hStroke.style = Paint.Style.STROKE; hStroke.strokeWidth = 2f / scaleFactor; hStroke.isAntiAlias = true
+            val hFill = Paint(); hFill.color = Color.parseColor("#34C759"); hFill.style = Paint.Style.FILL; hFill.isAntiAlias = true
+            val hStroke = Paint(); hStroke.color = Color.WHITE; hStroke.style = Paint.Style.STROKE; hStroke.strokeWidth = 3f / scaleFactor; hStroke.isAntiAlias = true
             canvas.drawCircle(hx, hy, hr, hFill)
             canvas.drawCircle(hx, hy, hr, hStroke)
             canvas.restore()

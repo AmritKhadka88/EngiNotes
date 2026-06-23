@@ -1837,9 +1837,9 @@ class MainActivity : AppCompatActivity() {
                     // Handle is at world pos: rotate (item.x + contentW/2, item.y - contentH - 28/scale) around item centre
                     val rotHandleWx = drawingView.worldToScreenX(item.x) // rough check - use screen distance
                     val rotHandleSx = drawingView.worldToScreenX(item.x)
-                    val rotHandleSy = drawingView.worldToScreenY(item.y) - dp(60)
+                    val rotHandleSy = drawingView.worldToScreenY(item.y) - dp(80)
                     val distToHandle = kotlin.math.hypot((ev.x - rotHandleSx).toDouble(), (ev.y - rotHandleSy).toDouble()).toFloat()
-                    if (distToHandle < dp(36)) {
+                    if (distToHandle < dp(44)) {
                         isDraggingRotate = true; rotStartRawX2 = ev.rawX; rotStartRotation2 = item.rotation; true
                     } else {
                         isDraggingRotate = false
