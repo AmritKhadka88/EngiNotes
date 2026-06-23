@@ -648,11 +648,27 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var fingerPanMode: Boolean = false
 
     fun scrollToPercent(pct: Float) {
-        val totalH = pageHeightPx() * scaleFactor
-        val maxScroll = totalH - height
-        if (maxScroll <= 0f) return
+        // Total scrollable height = number of pages × page height, minimum 2 pages
+        val pageH = pageHeightPx()
+        val totalPages = estimatePageCount().coerceAtLeast(2)
+        val totalH = pageH * totalPages * scaleFactor
+        val maxScroll = (totalH - height).coerceAtLeast(0f)
         translateY = -(pct * maxScroll)
         clampTranslation(); onCanvasTransformed?.invoke(); invalidate()
+        // Report back current position
+        if (maxScroll > 0f) onScrollPercentChanged?.invoke((-translateY / maxScroll).coerceIn(0f, 1f))
+    }
+
+    private fun estimatePageCount(): Int {
+        // Count pages based on the lowest content on canvas
+        if (canvasMode == CanvasMode.INFINITE) return 1
+        val pageH = pageHeightPx()
+        var maxY = pageH // at least 1 page
+        for (a in actions) {
+            val b = getBounds(a)
+            if (b != null && b[3] > maxY) maxY = b[3]
+        }
+        return kotlin.math.ceil(maxY / pageH).toInt().coerceAtLeast(1)
     }
 
     private var exportWindowStart: Pair<Float, Float>? = null
@@ -1988,6 +2004,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     if (twoFingerLastX != 0f || twoFingerLastY != 0f) {
                         translateX += fx - twoFingerLastX; translateY += fy - twoFingerLastY
                         clampTranslation(); onScaleChanged?.invoke(scaleFactor); onCanvasTransformed?.invoke(); invalidate()
+                        val maxScroll = (pageHeightPx() * estimatePageCount().coerceAtLeast(2) * scaleFactor - height).coerceAtLeast(1f)
+                        onScrollPercentChanged?.invoke((-translateY / maxScroll).coerceIn(0f, 1f))
                     }
                     twoFingerLastX = fx; twoFingerLastY = fy
                 }

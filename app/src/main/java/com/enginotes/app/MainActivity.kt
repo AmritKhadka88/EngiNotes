@@ -508,16 +508,18 @@ class MainActivity : AppCompatActivity() {
         // Page scroll thumb — touch and drag on right edge moves canvas
         val scrollThumb = findViewById<View?>(R.id.pageScrollThumb)
         scrollThumb?.let { thumb ->
-            var dragStartY = 0f; var trackStartPct = 0f
+            var dragStartRawY = 0f; var dragStartThumbY = 0f
             thumb.setOnTouchListener { _, ev ->
-                val trackH = (thumb.parent as android.view.View).height - thumb.height
                 when (ev.actionMasked) {
-                    android.view.MotionEvent.ACTION_DOWN -> { dragStartY = ev.rawY; trackStartPct = (thumb.y / trackH.toFloat()).coerceIn(0f, 1f); true }
+                    android.view.MotionEvent.ACTION_DOWN -> {
+                        dragStartRawY = ev.rawY; dragStartThumbY = thumb.y; true
+                    }
                     android.view.MotionEvent.ACTION_MOVE -> {
-                        val dy = ev.rawY - dragStartY
-                        val pct = (trackStartPct + dy / trackH).coerceIn(0f, 1f)
-                        thumb.y = pct * trackH
-                        drawingView.scrollToPercent(pct)
+                        val parent = thumb.parent as android.view.View
+                        val trackH = (parent.height - thumb.height).toFloat().coerceAtLeast(1f)
+                        val newY = (dragStartThumbY + (ev.rawY - dragStartRawY)).coerceIn(0f, trackH)
+                        thumb.y = newY
+                        drawingView.scrollToPercent(newY / trackH)
                         true
                     }
                     else -> false
@@ -525,8 +527,9 @@ class MainActivity : AppCompatActivity() {
             }
             drawingView.onScrollPercentChanged = { pct ->
                 thumb.post {
-                    val trackH = (thumb.parent as android.view.View).height - thumb.height
-                    if (trackH > 0) thumb.y = pct * trackH
+                    val parent = thumb.parent as? android.view.View ?: return@post
+                    val trackH = (parent.height - thumb.height).toFloat().coerceAtLeast(1f)
+                    thumb.y = pct * trackH
                 }
             }
         }
@@ -542,7 +545,13 @@ class MainActivity : AppCompatActivity() {
 
         // Old secondary bar buttons wired below via rebuildContextBar
         findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.HIGHLIGHTER) }
+        findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnLongClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.HIGHLIGHTER); true }
         findViewById<ImageButton?>(R.id.btnBrush)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.BRUSH) }
+        findViewById<ImageButton?>(R.id.btnBrush)?.setOnLongClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.BRUSH); true }
+        findViewById<ImageButton?>(R.id.btnQuickFill)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.FILL) }
+        // Long-press on draw/eraser now just activates the tool and shows context bar (no floating panel)
+        findViewById<ImageButton>(R.id.btnDraw).setOnLongClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.PEN); true }
+        findViewById<ImageButton>(R.id.btnQuickEraser).setOnLongClickListener { setActiveTool(it as ImageButton, Tool.ERASER); true }
 
         findViewById<ImageButton?>(R.id.btnMenu)?.setOnClickListener { onMenuClick(it) }
         findViewById<ImageButton?>(R.id.btnLink)?.setOnClickListener { closeInlineEditor(true); showLinkPickerDialog() }
@@ -639,13 +648,18 @@ class MainActivity : AppCompatActivity() {
             label(label)
             row.addView(SeekBar(this).apply {
                 this.max = max; this.progress = progress
-                val lp = LinearLayout.LayoutParams(dp(120), LinearLayout.LayoutParams.WRAP_CONTENT); layoutParams = lp
+                val lp = LinearLayout.LayoutParams(dp(140), LinearLayout.LayoutParams.WRAP_CONTENT); layoutParams = lp
                 progressTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#5C5856"))
                 thumbTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#1C1C1E"))
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { if(f) onChange(v) }
-                    override fun onStartTrackingTouch(sb: SeekBar?) {}
-                    override fun onStopTrackingTouch(sb: SeekBar?) {}
+                    override fun onStartTrackingTouch(sb: SeekBar?) {
+                        // Prevent HorizontalScrollView from stealing touch during slider drag
+                        var p = sb?.parent; while (p != null) { if (p is HorizontalScrollView) { p.requestDisallowInterceptTouchEvent(true); break }; p = (p as? android.view.View)?.parent as? android.view.ViewParent }
+                    }
+                    override fun onStopTrackingTouch(sb: SeekBar?) {
+                        var p = sb?.parent; while (p != null) { if (p is HorizontalScrollView) { p.requestDisallowInterceptTouchEvent(false); break }; p = (p as? android.view.View)?.parent as? android.view.ViewParent }
+                    }
                 })
             })
         }
