@@ -1066,7 +1066,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val w = textWrapWidth(item)
         val layout = StaticLayout.Builder.obtain(spannable, 0, spannable.length, tp, w).setIncludePad(true).build()
         canvas.save(); canvas.translate(item.x, item.y - layout.height)
-        canvas.rotate(item.rotation, 0f, layout.height.toFloat()); layout.draw(canvas); canvas.restore()
+        val w2 = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.div(2f) ?: 0f
+        canvas.rotate(item.rotation, w2, layout.height / 2f); layout.draw(canvas); canvas.restore()
     }
 
     private fun bboxHandlePositions(bounds: FloatArray): List<Pair<HandleType, Pair<Float, Float>>> {

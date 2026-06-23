@@ -491,7 +491,7 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<ImageButton?>(R.id.btnMenu)?.setOnClickListener { onMenuClick(it) }
         findViewById<ImageButton?>(R.id.btnLink)?.setOnClickListener { closeInlineEditor(true); showLinkPickerDialog() }
-        findViewById<ImageButton?>(R.id.btnBack)?.also { it.rotation = 180f; it.setOnClickListener { confirmThenExit() } }
+        findViewById<ImageButton?>(R.id.btnBack)?.setOnClickListener { confirmThenExit() }
         btnLayoutToggle.setOnClickListener { showLayoutMenu(it) }
     }
 
@@ -1764,10 +1764,9 @@ class MainActivity : AppCompatActivity() {
             return h
         }
 
-        // Pivot = bottom-left of box = (anchorScreenX, anchorScreenY) in screen coords
-        // Matches canvas.rotate(item.rotation, 0, layoutHeight) with translate(item.x, item.y-h)
-        fun pivotScreenX() = (box.layoutParams as FrameLayout.LayoutParams).leftMargin + dp(6).toFloat()
-        fun pivotScreenY() = (box.layoutParams as FrameLayout.LayoutParams).topMargin + boxH + dp(6).toFloat()
+        // Pivot = centre of box, matching canvas.rotate(rotation, w/2, h/2)
+        fun pivotScreenX() = (box.layoutParams as FrameLayout.LayoutParams).leftMargin + boxW / 2f
+        fun pivotScreenY() = (box.layoutParams as FrameLayout.LayoutParams).topMargin + boxH / 2f
 
         fun rotatePoint(px: Float, py: Float, cx: Float, cy: Float, angleDeg: Float): Pair<Float, Float> {
             if (angleDeg == 0f) return Pair(px, py)
@@ -1781,9 +1780,7 @@ class MainActivity : AppCompatActivity() {
             val px = pivotScreenX(); val py = pivotScreenY()
             val w = boxW.toFloat(); val hgt = boxH.toFloat(); val half = dp(16).toFloat()
             val rot = item.rotation
-            // Unrotated handle positions relative to pivot (bottom-left)
-            // pivot is at (box.left + dp6, box.top + boxH + dp6) in canvasContainer coords
-            val boxLeft = px - dp(6); val boxTop = py - hgt - dp(6)
+            val boxLeft = px - w / 2f; val boxTop = py - hgt / 2f
             for ((view, frac) in handleViews) {
                 val rawX = boxLeft + frac.first * w
                 val rawY = boxTop + frac.second * hgt
@@ -1800,14 +1797,12 @@ class MainActivity : AppCompatActivity() {
             val px = pivotScreenX(); val py = pivotScreenY()
             val w = boxW.toFloat(); val hgt = boxH.toFloat()
             val rot = item.rotation
-            val boxLeft = px - dp(6); val boxTop = py - hgt - dp(6)
-            // Rotate handle: centre-top, offset above box
-            val (rRx, rRy) = rotatePoint(boxLeft + w / 2f, boxTop - dp(28), px, py, rot)
+            val boxTop = py - hgt / 2f
+            val (rRx, rRy) = rotatePoint(px, boxTop - dp(28), px, py, rot)
             val rlp = rotateHandle.layoutParams as FrameLayout.LayoutParams
             rlp.leftMargin = (rRx - dp(16)).toInt(); rlp.topMargin = (rRy - dp(16)).coerceAtLeast(0f).toInt()
             rotateHandle.layoutParams = rlp
-            // Delete handle: top-right corner, offset above
-            val (dRx, dRy) = rotatePoint(boxLeft + w, boxTop - dp(28), px, py, rot)
+            val (dRx, dRy) = rotatePoint(px + w / 2f, boxTop - dp(28), px, py, rot)
             val dlp = deleteHandle.layoutParams as FrameLayout.LayoutParams
             dlp.leftMargin = (dRx - dp(16)).toInt(); dlp.topMargin = (dRy - dp(16)).coerceAtLeast(0f).toInt()
             deleteHandle.layoutParams = dlp
@@ -1897,16 +1892,11 @@ class MainActivity : AppCompatActivity() {
         canvasContainer.addView(deleteHandle)
 
         val lp = FrameLayout.LayoutParams(boxW, boxH)
-        // The text is drawn with canvas.translate(item.x, item.y - layoutHeight) then
-        // canvas.rotate(item.rotation, 0, layoutHeight) — so the rotation pivot is (item.x, item.y)
-        // in world space, which is the BOTTOM-LEFT of the text block.
-        // We position the box top-left at (anchorScreenX, anchorScreenY - boxH), then set
-        // pivotX=0, pivotY=boxH so View.rotation also rotates around the bottom-left corner,
-        // exactly matching the canvas transform.
+        // Pivot is now centre of text block, matching canvas.rotate(rotation, w/2, h/2)
         lp.leftMargin = (anchorScreenX - dp(6)).toInt().coerceAtLeast(0)
         lp.topMargin = (anchorScreenY - boxH - dp(6)).toInt().coerceAtLeast(0)
-        box.pivotX = dp(6).toFloat()
-        box.pivotY = (boxH + dp(6)).toFloat()
+        box.pivotX = boxW / 2f
+        box.pivotY = boxH / 2f
         box.rotation = item.rotation
         canvasContainer.addView(box, lp)
         textSelectionBox = box; textSelectionItem = item
@@ -1928,8 +1918,7 @@ class MainActivity : AppCompatActivity() {
             newLp.topMargin = (newAnchorY - boxH - dp(6)).toInt().coerceAtLeast(0)
             newLp.width = boxW; newLp.height = boxH
             box.layoutParams = newLp
-            box.pivotX = dp(6).toFloat()
-            box.pivotY = (boxH + dp(6)).toFloat()
+            box.pivotX = boxW / 2f; box.pivotY = boxH / 2f
             box.rotation = item.rotation
             layoutHandles(); layoutTopHandles()
         }
