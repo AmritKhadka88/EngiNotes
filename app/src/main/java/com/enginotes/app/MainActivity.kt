@@ -396,6 +396,7 @@ class MainActivity : AppCompatActivity() {
         canvasContainer.clipChildren = false
         canvasContainer.clipToPadding = false
         tvTitle         = findViewById(R.id.tvTitle)
+        tvTitle.setOnClickListener { showRenameDialog() }
         btnLayoutToggle = findViewById(R.id.btnLayoutToggle)
 
         val prefs = getPrefs()
@@ -427,6 +428,7 @@ class MainActivity : AppCompatActivity() {
             setBottomBarVisible(true)
         }
         drawingView.onLinkTap               = { target -> navigateToLink(target) }
+        drawingView.onPageSwipe             = { dir -> drawingView.scrollPage(dir) }
         drawingView.onTableCellEditRequest  = { table, row, col, sx, sy -> closeInlineEditor(true); dismissCellEditor(); showTableCellEditor(table,row,col,sx,sy) }
         drawingView.onExportWindowSelected  = { l,t,r,b -> exportWindowBitmap = drawingView.exportWindow(l,t,r,b); showExportWindowDialog() }
         drawingView.onAudioItemTap          = { item -> AudioHelper.togglePlay(item) { drawingView.invalidate() }; drawingView.invalidate() }
@@ -601,15 +603,13 @@ class MainActivity : AppCompatActivity() {
         closeInlineEditor(true)
         val popup = PopupMenu(this, v)
         popup.menu.add("Note: ${currentFileName ?: "Untitled"}")
-        popup.menu.add("Rename Note")
         listOf("Save","Save As","Export","Export Window","Clear Canvas").forEach { popup.menu.add(it) }
         if (currentFileName != null) popup.menu.add("Delete This Note")
         popup.menu.add("Add to Book")
         listOf("Open PDF","Chart Builder","Handwriting to Text","Settings","About","Exit").forEach { popup.menu.add(it) }
         popup.setOnMenuItemClickListener { item ->
             when {
-                item.title.toString().startsWith("Note:") -> {}
-                item.title == "Rename Note" -> showRenameDialog()
+                item.title.toString().startsWith("Note:") -> showRenameDialog()
                 item.title == "Save" -> saveCurrent()
                 item.title == "Save As" -> saveAsNew()
                 item.title == "Export" -> showExportDialog()

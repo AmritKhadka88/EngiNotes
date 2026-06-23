@@ -635,6 +635,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var isTextEditorOpen: Boolean = false
     var onScaleChanged: ((Float) -> Unit)? = null
     var onCanvasTransformed: (() -> Unit)? = null
+    var onPageSwipe: ((Int) -> Unit)? = null // +1 = next page, -1 = prev page
 
     private var exportWindowStart: Pair<Float, Float>? = null
     private var exportWindowEnd: Pair<Float, Float>? = null
@@ -804,6 +805,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             return false
         }
 
+        override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
+            if (canvasMode != CanvasMode.PAGINATED && canvasMode != CanvasMode.CONVENIENT) return false
+            if (e1 == null) return false
+            // Only trigger swipe if the touch started OUTSIDE the page bounds (in the margin area)
+            val pageLeft = translateX; val pageRight = translateX + pageWidthPx() * scaleFactor
+            val touchStartX = e1.x
+            val outsidePage = touchStartX < pageLeft || touchStartX > pageRight
+            if (!outsidePage) return false
+            val dx = e2.x - e1.x
+            if (kotlin.math.abs(dx) > kotlin.math.abs(e2.y - e1.y) && kotlin.math.abs(dx) > 80f) {
+                onPageSwipe?.invoke(if (dx < 0) 1 else -1)
+                return true
+            }
+            return false
+        }
+
         override fun onLongPress(e: MotionEvent) {
             if (currentTool != Tool.SELECT) return
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
@@ -818,23 +835,28 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (canvasMode == CanvasMode.INFINITE) return
         val pw = pageWidthPx() * scaleFactor; val ph = pageHeightPx() * scaleFactor
         val margin = 16f
-        val minTx = width - pw - margin; val maxTx = margin
+        // Enforce minimum scale: page must always fill at least the screen width
+        val minScaleW = width.toFloat() / pageWidthPx()
+        val minScaleH = height.toFloat() / pageHeightPx()
+        val minScale = when (canvasMode) {
+            CanvasMode.FIXED -> minScaleW.coerceAtLeast(minScaleH).coerceAtLeast(0.3f)
+            CanvasMode.CONVENIENT, CanvasMode.PAGINATED -> minScaleW.coerceAtLeast(0.3f)
+            else -> 0.3f
+        }
+        if (scaleFactor < minScale) {
+            scaleFactor = minScale
+            translateX = (width - pageWidthPx() * scaleFactor) / 2f
+            if (canvasMode == CanvasMode.FIXED) translateY = (height - pageHeightPx() * scaleFactor) / 2f
+        }
+        val pw2 = pageWidthPx() * scaleFactor; val ph2 = pageHeightPx() * scaleFactor
+        val minTx = width - pw2 - margin; val maxTx = margin
         translateX = translateX.coerceIn(minTx.coerceAtMost(maxTx), maxTx)
         if (canvasMode == CanvasMode.FIXED) {
-            val minTy = height - ph - margin; val maxTy = margin
+            val minTy = height - ph2 - margin; val maxTy = margin
             translateY = translateY.coerceIn(minTy.coerceAtMost(maxTy), maxTy)
         } else if (canvasMode == CanvasMode.CONVENIENT || canvasMode == CanvasMode.PAGINATED) {
-            // Prevent dragging above the first page (top) or far below content - small overscroll allowed
             val maxTy = margin
             translateY = translateY.coerceAtMost(maxTy)
-        }
-        // Restrict minimum scale so page never goes smaller than screen (no zooming out past paper)
-        if (canvasMode == CanvasMode.CONVENIENT || canvasMode == CanvasMode.PAGINATED) {
-            val minScale = (width.toFloat() / pageWidthPx()).coerceAtLeast(0.3f)
-            if (scaleFactor < minScale) {
-                scaleFactor = minScale
-                translateX = (width - pageWidthPx() * scaleFactor) / 2f
-            }
         }
     }
 
@@ -1886,6 +1908,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     fun screenCenterWorldX(): Float = screenToWorldX(width / 2f)
     fun screenCenterWorldY(): Float = screenToWorldY(height / 2f)
     fun getScaleFactor(): Float = scaleFactor
+    fun scrollPage(direction: Int) {
+        translateY -= direction * pageHeightPx() * scaleFactor
+        clampTranslation(); onScaleChanged?.invoke(scaleFactor); onCanvasTransformed?.invoke(); invalidate()
+    }
 
     override fun onHoverEvent(event: MotionEvent): Boolean {
         when (event.action) {
