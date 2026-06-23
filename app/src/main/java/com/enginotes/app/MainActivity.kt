@@ -1698,46 +1698,39 @@ class MainActivity : AppCompatActivity() {
         val convenientBoost = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 1.6f else 1f
         val screenSizePx = (if (useActualSize) item.size else item.size * drawingView.getScaleFactor()) * convenientBoost
 
-        // Anchor the box on the TEXT ITEM'S OWN world position (item.x, item.y - its baseline
-        // origin, same convention used everywhere else for TextItem), converted to screen
-        // coordinates - NOT the raw tap point that was passed in. Using the tap point was the bug:
-        // tapping anywhere along a wide word (e.g. partway through "Amrit") anchored the box at
-        // that arbitrary touch location instead of the text's actual position, producing a box
-        // that floated off to one side with no relation to where the text actually is.
         val anchorScreenX = drawingView.worldToScreenX(item.x)
         val anchorScreenY = drawingView.worldToScreenY(item.y)
 
+        // Selection box — just a blue border, no resize handles
         val box = FrameLayout(this)
-        box.clipChildren = false
-        box.clipToPadding = false
         box.background = android.graphics.drawable.GradientDrawable().apply {
             setStroke(dp(2), Color.parseColor("#2196F3")); setColor(Color.parseColor("#08000000"))
         }
         val (measW, measH) = measureTextBoxSize(item, screenSizePx)
         var boxW = measW; var boxH = measH
 
-        // A transparent touch-target filling the box: dragging it moves the text item.
+        // Drag anywhere on box to move
         val moveSurface = View(this).apply { layoutParams = FrameLayout.LayoutParams(boxW, boxH) }
         var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
-        var onMoveSurfaceDrag: (() -> Unit)? = null
+        var onAfterMove: (() -> Unit)? = null
         moveSurface.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
                     moveStartRawX = ev.rawX; moveStartRawY = ev.rawY
                     val lp = box.layoutParams as FrameLayout.LayoutParams
-                    moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
-                    false
+                    moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin; false
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
-                    val dx = (ev.rawX - moveStartRawX); val dy = (ev.rawY - moveStartRawY)
+                    val dx = ev.rawX - moveStartRawX; val dy = ev.rawY - moveStartRawY
                     if (kotlin.math.abs(dx) > 6 || kotlin.math.abs(dy) > 6) {
                         val lp = box.layoutParams as FrameLayout.LayoutParams
-                        lp.leftMargin = (moveStartLeft + dx).toInt().coerceAtLeast(0); lp.topMargin = (moveStartTop + dy).toInt().coerceAtLeast(0)
+                        lp.leftMargin = (moveStartLeft + dx).toInt().coerceAtLeast(0)
+                        lp.topMargin = (moveStartTop + dy).toInt().coerceAtLeast(0)
                         box.layoutParams = lp
                         item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat())
                         item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + boxH)
                         drawingView.invalidate()
-                        onMoveSurfaceDrag?.invoke()
+                        onAfterMove?.invoke()
                         true
                     } else false
                 }
@@ -1746,173 +1739,89 @@ class MainActivity : AppCompatActivity() {
         }
         box.addView(moveSurface)
 
-        // All handles are direct children of canvasContainer (NOT of box) so they're never
-        // clipped by box's bounds. Touch hit-testing in Android only works reliably when the
-        // touch target view is fully within its parent's bounds - children outside parent bounds
-        // are clipped from touch dispatch even with clipChildren=false. By making handles siblings
-        // of box in canvasContainer, we guarantee their layoutParams.leftMargin/topMargin always
-        // map to real screen positions that Android's hit-testing will find correctly.
-        val handleViews = mutableListOf<Pair<View, Pair<Float, Float>>>() // view → (fracX, fracY) of box
-        fun handle(colorHex: String, fx: Float, fy: Float): View {
-            val visibleSz = dp(16); val touchSz = dp(32)
-            val h = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(touchSz, touchSz) }
-            val dot = View(this).apply {
-                layoutParams = FrameLayout.LayoutParams(visibleSz, visibleSz).also { it.gravity = Gravity.CENTER }
-                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor(colorHex)) }
+        // Floating toolbar above the box: [🗑] [A-] [A+] [⟳ drag] [✓]
+        val toolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.WHITE); cornerRadius = dp(20).toFloat()
+                setStroke(dp(1), Color.parseColor("#DDDDDD"))
             }
-            h.addView(dot)
-            canvasContainer.addView(h)
-            handleViews.add(h to (fx to fy))
-            return h
+            elevation = dp(4).toFloat()
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
-
-        // Pivot matches box.pivotX/Y = ((boxW-dp12)/2, boxH/2) relative to box top-left in canvasContainer
-        fun pivotScreenX() = (box.layoutParams as FrameLayout.LayoutParams).leftMargin + (boxW - dp(12)) / 2f
-        fun pivotScreenY() = (box.layoutParams as FrameLayout.LayoutParams).topMargin + boxH / 2f
-
-        fun rotatePoint(px: Float, py: Float, cx: Float, cy: Float, angleDeg: Float): Pair<Float, Float> {
-            if (angleDeg == 0f) return Pair(px, py)
-            val rad = Math.toRadians(angleDeg.toDouble())
-            val cos = kotlin.math.cos(rad).toFloat(); val sin = kotlin.math.sin(rad).toFloat()
-            val dx = px - cx; val dy = py - cy
-            return Pair(cx + dx * cos - dy * sin, cy + dx * sin + dy * cos)
+        fun tbBtn(label: String, tint: Int? = null): TextView = TextView(this).apply {
+            text = label; textSize = 16f; gravity = Gravity.CENTER
+            val pad = dp(10); setPadding(pad, dp(8), pad, dp(8))
+            tint?.let { setTextColor(it) }
         }
-
-        fun layoutHandles() {
-            val px = pivotScreenX(); val py = pivotScreenY()
-            val w = boxW.toFloat(); val hgt = boxH.toFloat(); val half = dp(16).toFloat()
-            val rot = item.rotation
-            val boxLeft = (box.layoutParams as FrameLayout.LayoutParams).leftMargin.toFloat()
-            val boxTop = (box.layoutParams as FrameLayout.LayoutParams).topMargin.toFloat()
-            for ((view, frac) in handleViews) {
-                val rawX = boxLeft + frac.first * w
-                val rawY = boxTop + frac.second * hgt
-                val (rx, ry) = rotatePoint(rawX, rawY, px, py, rot)
-                val lp = view.layoutParams as FrameLayout.LayoutParams
-                lp.leftMargin = (rx - half).toInt(); lp.topMargin = (ry - half).toInt()
-                view.layoutParams = lp
-            }
+        // Delete
+        val btnDel = tbBtn("🗑", Color.parseColor("#D32F2F"))
+        btnDel.setOnClickListener { drawingView.removeTextItem(item); dismissTextSelectionBox(); drawingView.invalidate() }
+        // Font smaller
+        val btnFontMinus = tbBtn("A-")
+        btnFontMinus.setOnClickListener {
+            item.size = (item.size - 2f).coerceAtLeast(8f); drawingView.invalidate()
+            val newDims = updateTextSelectionBoxSize(box, moveSurface, item)
+            boxW = newDims.first; boxH = newDims.second
+            box.pivotX = (boxW - dp(12)) / 2f; box.pivotY = boxH / 2f
+            onAfterMove?.invoke()
         }
-
-        lateinit var rotateHandle: FrameLayout
-        lateinit var deleteHandle: FrameLayout
-        fun layoutTopHandles() {
-            val px = pivotScreenX(); val py = pivotScreenY()
-            val w = boxW.toFloat(); val hgt = boxH.toFloat()
-            val rot = item.rotation
-            val boxLeft = (box.layoutParams as FrameLayout.LayoutParams).leftMargin.toFloat()
-            val boxTop = (box.layoutParams as FrameLayout.LayoutParams).topMargin.toFloat()
-            val (rRx, rRy) = rotatePoint(boxLeft + w / 2f, boxTop - dp(28), px, py, rot)
-            val rlp = rotateHandle.layoutParams as FrameLayout.LayoutParams
-            rlp.leftMargin = (rRx - dp(16)).toInt(); rlp.topMargin = (rRy - dp(16)).coerceAtLeast(0f).toInt()
-            rotateHandle.layoutParams = rlp
-            val (dRx, dRy) = rotatePoint(boxLeft + w, boxTop - dp(28), px, py, rot)
-            val dlp = deleteHandle.layoutParams as FrameLayout.LayoutParams
-            dlp.leftMargin = (dRx - dp(16)).toInt(); dlp.topMargin = (dRy - dp(16)).coerceAtLeast(0f).toInt()
-            deleteHandle.layoutParams = dlp
+        // Font larger
+        val btnFontPlus = tbBtn("A+")
+        btnFontPlus.setOnClickListener {
+            item.size = (item.size + 2f).coerceAtMost(400f); drawingView.invalidate()
+            val newDims = updateTextSelectionBoxSize(box, moveSurface, item)
+            boxW = newDims.first; boxH = newDims.second
+            box.pivotX = (boxW - dp(12)) / 2f; box.pivotY = boxH / 2f
+            onAfterMove?.invoke()
         }
-
-        // 8 resize handles around the full perimeter (corners + edge midpoints)
-        onMoveSurfaceDrag = { layoutHandles(); layoutTopHandles() }
-        val tl = handle("#2196F3", 0f, 0f)
-        val tm = handle("#2196F3", 0.5f, 0f)
-        val tr = handle("#2196F3", 1f, 0f)
-        val ml = handle("#2196F3", 0f, 0.5f)
-        val mr = handle("#2196F3", 1f, 0.5f)
-        val bl = handle("#2196F3", 0f, 1f)
-        val bm = handle("#2196F3", 0.5f, 1f)
-        val br = handle("#2196F3", 1f, 1f)
-
-        fun wireCornerResize(h: View) {
-            var startRawY = 0f; var startSize = 0f
-            h.setOnTouchListener { _, ev ->
-                when (ev.actionMasked) {
-                    android.view.MotionEvent.ACTION_DOWN -> { startRawY = ev.rawY; startSize = item.size; true }
-                    android.view.MotionEvent.ACTION_MOVE -> {
-                        val dy = ev.rawY - startRawY
-                        item.size = (startSize + dy * 0.6f).coerceIn(8f, 400f)
-                        drawingView.invalidate()
-                        val newDims = updateTextSelectionBoxSize(box, moveSurface, item)
-                        boxW = newDims.first; boxH = newDims.second
-                        layoutHandles(); layoutTopHandles()
-                        true
-                    }
-                    else -> true
-                }
-            }
-        }
-        fun wireMiddleReflow(h: View, isRight: Boolean) {
-            var startRawX = 0f; var startWidth = 0f
-            h.setOnTouchListener { _, ev ->
-                when (ev.actionMasked) {
-                    android.view.MotionEvent.ACTION_DOWN -> {
-                        startRawX = ev.rawX
-                        startWidth = if (item.maxWidth > 0f) item.maxWidth else (box.layoutParams as FrameLayout.LayoutParams).width.toFloat()
-                        true
-                    }
-                    android.view.MotionEvent.ACTION_MOVE -> {
-                        val dx = if (isRight) (ev.rawX - startRawX) else (startRawX - ev.rawX)
-                        val tp = android.text.TextPaint(); tp.textSize = item.size
-                        try { tp.typeface = Typeface.create(item.fontFamily, Typeface.NORMAL) } catch (e: Exception) {}
-                        val longestWord = item.text.split(Regex("\\s+")).maxOfOrNull { tp.measureText(it) } ?: 40f
-                        val compactFloor = (longestWord + 24f).coerceAtLeast(dp(60).toFloat())
-                        item.maxWidth = (startWidth + dx * 2f).coerceAtLeast(compactFloor)
-                        drawingView.invalidate()
-                        val newDims = updateTextSelectionBoxSize(box, moveSurface, item)
-                        boxW = newDims.first; boxH = newDims.second
-                        layoutHandles(); layoutTopHandles()
-                        true
-                    }
-                    else -> true
-                }
-            }
-        }
-        wireCornerResize(tl); wireCornerResize(tr); wireCornerResize(bl); wireCornerResize(br)
-        wireMiddleReflow(ml, false); wireMiddleReflow(mr, true)
-
-        rotateHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
-        rotateHandle.addView(View(this).apply {
-            layoutParams = FrameLayout.LayoutParams(dp(16), dp(16)).also { it.gravity = Gravity.CENTER }
-            background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor("#4CAF50")) }
-        })
-        canvasContainer.addView(rotateHandle)
+        // Rotate — drag this left/right to rotate
+        val btnRotate = tbBtn("⟳", Color.parseColor("#1976D2"))
         var rotStartRawX = 0f; var rotStartRotation = 0f
-        rotateHandle.setOnTouchListener { _, ev ->
+        btnRotate.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> { rotStartRawX = ev.rawX; rotStartRotation = item.rotation; true }
-                android.view.MotionEvent.ACTION_MOVE -> { item.rotation = rotStartRotation + (ev.rawX - rotStartRawX) * 0.5f; if (!useActualSize) box.rotation = item.rotation; drawingView.invalidate(); layoutHandles(); layoutTopHandles(); true }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    item.rotation = rotStartRotation + (ev.rawX - rotStartRawX) * 0.5f
+                    box.rotation = item.rotation
+                    drawingView.invalidate()
+                    onAfterMove?.invoke()
+                    true
+                }
                 else -> true
             }
         }
+        // Done / dismiss
+        val btnDone = tbBtn("✓", Color.parseColor("#388E3C"))
+        btnDone.setOnClickListener { dismissTextSelectionBox() }
 
-        deleteHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
-        deleteHandle.addView(ImageView(this).apply {
-            layoutParams = FrameLayout.LayoutParams(dp(20), dp(20)).also { it.gravity = Gravity.CENTER }
-            setImageResource(R.drawable.ic_text_delete)
-            background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor("#D32F2F")) }
-            setPadding(dp(3), dp(3), dp(3), dp(3))
-        })
-        deleteHandle.setOnClickListener { drawingView.removeTextItem(item); dismissTextSelectionBox(); drawingView.invalidate() }
-        canvasContainer.addView(deleteHandle)
+        toolbar.addView(btnDel); toolbar.addView(btnFontMinus); toolbar.addView(btnFontPlus)
+        toolbar.addView(btnRotate); toolbar.addView(btnDone)
+
+        // Place toolbar above box
+        fun positionToolbar() {
+            val lp = toolbar.layoutParams as FrameLayout.LayoutParams
+            val boxLp = box.layoutParams as FrameLayout.LayoutParams
+            lp.leftMargin = boxLp.leftMargin.coerceAtLeast(0)
+            lp.topMargin = (boxLp.topMargin - dp(52)).coerceAtLeast(dp(4))
+            toolbar.layoutParams = lp
+        }
+        onAfterMove = { positionToolbar() }
 
         val lp = FrameLayout.LayoutParams(boxW, boxH)
-        lp.leftMargin = (anchorScreenX).toInt().coerceAtLeast(0)
+        lp.leftMargin = anchorScreenX.toInt().coerceAtLeast(0)
         lp.topMargin = (anchorScreenY - boxH).toInt().coerceAtLeast(0)
-        // Canvas pivots around (w2, layout.height/2) in world coords → (w2*scale, boxH/2) in screen.
-        // w2 is half the widest line — approx (boxW - dp(12)) / 2 since boxW = measuredW*scale + dp(12)
         box.pivotX = (boxW - dp(12)) / 2f
         box.pivotY = boxH / 2f
         box.rotation = item.rotation
         canvasContainer.addView(box, lp)
+        canvasContainer.addView(toolbar)
         textSelectionBox = box; textSelectionItem = item
-        // Register all handles (perimeter + rotate + delete) so dismissTextSelectionBox() can
-        // remove them from canvasContainer - they're siblings of box now, not children, so box
-        // removal alone won't clean them up.
-        textSelectionHandles = handleViews.map { it.first } + listOf(rotateHandle, deleteHandle)
-        layoutHandles(); layoutTopHandles()
-        box.post { layoutHandles(); layoutTopHandles() }
+        textSelectionHandles = listOf(toolbar)
+        positionToolbar()
+        box.post { positionToolbar() }
 
-        // Keep box and all handles glued to the text item as the user pans/zooms
         fun followCanvasTransform() {
             val newAnchorX = drawingView.worldToScreenX(item.x)
             val newAnchorY = drawingView.worldToScreenY(item.y)
@@ -1925,7 +1834,7 @@ class MainActivity : AppCompatActivity() {
             box.layoutParams = newLp
             box.pivotX = (boxW - dp(12)) / 2f; box.pivotY = boxH / 2f
             box.rotation = item.rotation
-            layoutHandles(); layoutTopHandles()
+            positionToolbar()
         }
         drawingView.onCanvasTransformed = { followCanvasTransform() }
     }

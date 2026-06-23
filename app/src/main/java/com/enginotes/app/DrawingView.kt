@@ -542,6 +542,12 @@ class FillToggleAction(val item: StrokeItem, val wasFilled: Boolean, val wasColo
 
 class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
 
+    init {
+        // Hardware acceleration dramatically improves smoothness for canvas drawing.
+        // LAYER_TYPE_HARDWARE lets the GPU cache the view's rendering output.
+        setLayerType(LAYER_TYPE_HARDWARE, null)
+    }
+
     private val ctx = context
     private val actions = mutableListOf<Any>()
     private val redoStack = mutableListOf<Any>()
@@ -693,6 +699,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean = true
 
+        // onSingleTapUp fires immediately on finger-up with no 300ms delay.
+        // We use it ONLY for text selection in SELECT tool so it feels instant.
+        // Everything else stays in onSingleTapConfirmed to avoid double-firing.
+        override fun onSingleTapUp(e: MotionEvent): Boolean {
+            if (currentTool != Tool.SELECT) return false
+            val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
+            val hit = findTextItemAt(wx, wy)
+            if (hit != null) {
+                selectedItem = hit
+                onTextSelectRequest?.invoke(hit, e.x, e.y)
+                invalidate()
+                return true
+            }
+            return false
+        }
+
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
             // Audio items: tapping an already-selected audio item toggles play.
@@ -723,28 +745,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 Tool.SELECT -> {
                     val hit = findTextItemAt(wx, wy)
-                    val tableHit = if (hit == null) actions.reversed().filterIsInstance<TableItem>().firstOrNull { t -> val b = getBounds(t); b != null && wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3] } else null
+                    // Text hits are handled immediately in onSingleTapUp - skip here to avoid double-fire
+                    if (hit != null) return true
+                    val tableHit = actions.reversed().filterIsInstance<TableItem>().firstOrNull { t -> val b = getBounds(t); b != null && wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3] }
                     when {
-                        hit != null && hit.linkTarget != null -> {
-                            // Single tap SELECTS link text (shows handles so user can move it).
-                            // Long press (see onLongPress below) navigates to the linked note.
-                            selectedItem = hit
-                            onTextSelectRequest?.invoke(hit, e.x, e.y)
-                            invalidate()
-                        }
-                        hit != null -> {
-                            // Single tap SELECTS the text box (shows resize/rotate/delete handles,
-                            // no keyboard) without entering edit mode. Double tap (see onDoubleTap
-                            // below) is what opens the keyboard for actual typing.
-                            selectedItem = hit
-                            onTextSelectRequest?.invoke(hit, e.x, e.y)
-                            invalidate()
-                        }
-                        tableHit != null -> { /* let handleTable manage this; not an empty-area tap */ }
+                        tableHit != null -> { /* let handleTable manage this */ }
                         else -> {
                             if (selectedItem is TextItem) { selectedItem = null; onTextDeselectRequest?.invoke() }
-                            // Tapped genuinely empty canvas with no item under the finger - this
-                            // is the "I'm done" signal for any open text/table editor.
                             onEmptyAreaTap?.invoke()
                             invalidate()
                         }
