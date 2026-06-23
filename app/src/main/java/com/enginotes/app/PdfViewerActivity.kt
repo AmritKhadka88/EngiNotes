@@ -58,14 +58,21 @@ class PdfViewerActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        fun iconBtn(emoji: String, action: () -> Unit): TextView {
+        val toolButtons = mutableMapOf<PdfTool, TextView>()
+        fun iconBtn(emoji: String, tool: PdfTool? = null, action: () -> Unit): TextView {
             return TextView(this).apply {
                 text = emoji; textSize = 18f; setTextColor(Color.parseColor("#4A4A4A"))
                 gravity = Gravity.CENTER
                 val p = LinearLayout.LayoutParams(dp(38), dp(38)); p.setMargins(dp(2), 0, dp(2), 0)
                 layoutParams = p
-                setOnClickListener { action() }
+                setOnClickListener {
+                    action()
+                    // Highlight active tool button
+                    toolButtons.forEach { (_, v) -> v.setBackgroundColor(Color.TRANSPARENT) }
+                    if (tool != null) setBackgroundColor(Color.parseColor("#E3F2FD"))
+                }
                 toolbar.addView(this)
+                if (tool != null) toolButtons[tool] = this
             }
         }
 
@@ -74,14 +81,18 @@ class PdfViewerActivity : AppCompatActivity() {
         toolbar.addView(tvPageInfo)
         iconBtn("›") { if (currentPage < totalPages - 1) { saveCurrentAnnotations(); currentPage++; loadPage() } }
 
-        iconBtn("✎") { pdfCanvas.currentTool = PdfTool.PEN; setSnipMode(false, snipOverlay) }
-        iconBtn("✒") { pdfCanvas.currentTool = PdfTool.HIGHLIGHT; setSnipMode(false, snipOverlay) }
-        iconBtn("⌫") { pdfCanvas.currentTool = PdfTool.ERASER; setSnipMode(false, snipOverlay) }
+        val btnSelect = iconBtn("☞", PdfTool.SELECT) { pdfCanvas.currentTool = PdfTool.SELECT; setSnipMode(false, snipOverlay) }
+        iconBtn("✎", PdfTool.PEN) { pdfCanvas.currentTool = PdfTool.PEN; setSnipMode(false, snipOverlay) }
+        iconBtn("✒", PdfTool.HIGHLIGHT) { pdfCanvas.currentTool = PdfTool.HIGHLIGHT; setSnipMode(false, snipOverlay) }
+        iconBtn("⌫", PdfTool.ERASER) { pdfCanvas.currentTool = PdfTool.ERASER; setSnipMode(false, snipOverlay) }
+
+        // Default to SELECT highlighted
+        btnSelect.setBackgroundColor(Color.parseColor("#E3F2FD"))
 
         iconBtn("✂") {
             val entering = !isSnipMode
             setSnipMode(entering, snipOverlay)
-            if (entering) Toast.makeText(this, "Draw a rectangle over the area to snip, then tap inside to confirm", Toast.LENGTH_LONG).show()
+            if (entering) Toast.makeText(this, "Draw a rectangle over the area to snip, then tap Confirm", Toast.LENGTH_LONG).show()
         }
 
         iconBtn("💾") { saveCurrentAnnotations(); Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show() }
@@ -91,6 +102,12 @@ class PdfViewerActivity : AppCompatActivity() {
         root.addView(toolbar, tlp)
 
         setContentView(root)
+
+        // Wire page swipe from SELECT mode pan gesture
+        pdfCanvas.onPageSwipe = { dir ->
+            val target = currentPage + dir
+            if (target in 0 until totalPages) { saveCurrentAnnotations(); currentPage = target; loadPage() }
+        }
 
         // Snip overlay: confirmed selection -> crop at FULL PDF render resolution for crisp quality,
         // matching the on-screen rectangle's aspect ratio and relative size exactly.
@@ -311,9 +328,9 @@ class SnipOverlayView(context: Context) : View(context) {
 
         if (!dragging && r - l > 30f && b - t > 30f) {
             val cx = (l + r) / 2f
-            val btnY = (b + 50f).coerceAtMost(height - 60f)
-            canvas.drawRoundRect(RectF(cx - 70f, btnY, cx + 70f, btnY + 56f), 28f, 28f, confirmBgPaint)
-            canvas.drawText("Confirm", cx, btnY + 37f, confirmTextPaint)
+            val btnY = (b + 24f).coerceAtMost(height - 90f)
+            canvas.drawRoundRect(RectF(cx - 110f, btnY, cx + 110f, btnY + 72f), 36f, 36f, confirmBgPaint)
+            canvas.drawText("✓  Confirm", cx, btnY + 48f, confirmTextPaint)
         }
     }
 
@@ -337,8 +354,8 @@ class SnipOverlayView(context: Context) : View(context) {
                     if (h >= 0) { activeHandle = h; dragging = true; lastX = x; lastY = y; return true }
                     val l = minOf(left, right); val t = minOf(top, bottom); val r = maxOf(left, right); val b = maxOf(top, bottom)
                     // Confirm button area
-                    val cx = (l + r) / 2f; val btnY = (b + 50f).coerceAtMost(height - 60f)
-                    if (x in (cx - 70f)..(cx + 70f) && y in btnY..(btnY + 56f)) {
+                    val cx = (l + r) / 2f; val btnY = (b + 24f).coerceAtMost(height - 90f)
+                    if (x in (cx - 110f)..(cx + 110f) && y in btnY..(btnY + 72f)) {
                         onSnipSelected?.invoke(RectF(l, t, r, b)); return true
                     }
                     if (x in l..r && y in t..b) { activeHandle = 4; dragging = true; lastX = x; lastY = y; return true }
@@ -367,17 +384,20 @@ class SnipOverlayView(context: Context) : View(context) {
 // ──────────────────────────────────────────────────────────────────
 //  PdfAnnotationView - tracks exact page screen rect for snip mapping
 // ──────────────────────────────────────────────────────────────────
-enum class PdfTool { PEN, HIGHLIGHT, TEXT, ERASER }
+enum class PdfTool { SELECT, PEN, HIGHLIGHT, TEXT, ERASER }
 data class PdfStroke(val points: MutableList<Float>, val color: Int, val width: Float, val alpha: Int)
 
 class PdfAnnotationView(context: Context) : View(context) {
-    var currentTool = PdfTool.PEN
+    var currentTool = PdfTool.SELECT
+    var onPageSwipe: ((Int) -> Unit)? = null // +1 next, -1 prev
     private var pageBitmap: Bitmap? = null
     private val strokes = mutableListOf<PdfStroke>()
     private var currentStroke: PdfStroke? = null
     private var scaleFactor = 1f
     private var translateX = 0f; private var translateY = 0f
     private var prevFocusX = 0f; private var prevFocusY = 0f
+    private var twoFingerActive = false
+    private var swipeStartX = 0f; private var swipeStartY = 0f
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScaleBegin(d: ScaleGestureDetector): Boolean { prevFocusX = d.focusX; prevFocusY = d.focusY; return true }
@@ -453,11 +473,50 @@ class PdfAnnotationView(context: Context) : View(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.pointerCount >= 2) { scaleDetector.onTouchEvent(event); return true }
+        if (event.pointerCount >= 2) {
+            twoFingerActive = true
+            // Cancel any in-progress stroke immediately
+            currentStroke = null; invalidate()
+            scaleDetector.onTouchEvent(event)
+            // Two-finger pan
+            if (event.actionMasked == MotionEvent.ACTION_MOVE) {
+                val fx = (event.getX(0) + event.getX(1)) / 2f
+                val fy = (event.getY(0) + event.getY(1)) / 2f
+                if (prevFocusX != 0f) { translateX += fx - prevFocusX; translateY += fy - prevFocusY; invalidate() }
+                prevFocusX = fx; prevFocusY = fy
+            } else { prevFocusX = 0f; prevFocusY = 0f }
+            return true
+        }
+        // Keep blocking until all fingers lifted after two-finger gesture
+        if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+            twoFingerActive = false
+        }
+        if (twoFingerActive) return true
+
         val bmp = pageBitmap ?: return true
         val baseScale = width.toFloat() / bmp.width
         val totalScale = baseScale * scaleFactor
         val wx = (event.x - translateX) / totalScale; val wy = (event.y - translateY) / totalScale
+
+        // SELECT mode: single-finger pans the page
+        if (currentTool == PdfTool.SELECT) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { swipeStartX = event.x; swipeStartY = event.y; prevFocusX = event.x; prevFocusY = event.y }
+                MotionEvent.ACTION_MOVE -> {
+                    translateX += event.x - prevFocusX; translateY += event.y - prevFocusY
+                    prevFocusX = event.x; prevFocusY = event.y; invalidate()
+                }
+                MotionEvent.ACTION_UP -> {
+                    val dx = event.x - swipeStartX; val dy = event.y - swipeStartY
+                    if (kotlin.math.abs(dx) > 80f && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.5f) {
+                        onPageSwipe?.invoke(if (dx < 0) 1 else -1)
+                    }
+                    prevFocusX = 0f; prevFocusY = 0f
+                }
+            }
+            return true
+        }
+
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 if (currentTool == PdfTool.ERASER) { eraseAt(wx, wy, totalScale); invalidate(); return true }
