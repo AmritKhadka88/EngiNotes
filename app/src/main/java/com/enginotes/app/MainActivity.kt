@@ -493,6 +493,32 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnInsert).setOnClickListener { showInsertMenu() }
         findViewById<ImageButton>(R.id.btnTools).setOnClickListener { showShapesPicker(it as ImageButton) }
 
+        // Touch/Pan toggle — switches between using tools and finger-pan mode
+        var touchModeIsPan = false
+        val btnTouchToggle = findViewById<ImageButton?>(R.id.btnTouchToggle)
+        btnTouchToggle?.setOnClickListener {
+            touchModeIsPan = !touchModeIsPan
+            drawingView.fingerPanMode = touchModeIsPan
+            btnTouchToggle.alpha = if (touchModeIsPan) 1f else 0.45f
+            btnTouchToggle.animate().scaleX(1.15f).scaleY(1.15f).setDuration(80)
+                .withEndAction { btnTouchToggle.animate().scaleX(1f).scaleY(1f).setDuration(80).start() }.start()
+        }
+        btnTouchToggle?.alpha = 0.45f
+
+        // Page scroll slider — vertical SeekBar on right edge scrolls canvas vertically
+        val pageScrollSlider = findViewById<android.widget.SeekBar?>(R.id.pageScrollSlider)
+        pageScrollSlider?.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                drawingView.scrollToPercent(progress / 100f)
+            }
+            override fun onStartTrackingTouch(sb: android.widget.SeekBar?) {}
+            override fun onStopTrackingTouch(sb: android.widget.SeekBar?) {}
+        })
+        drawingView.onScrollPercentChanged = { pct ->
+            pageScrollSlider?.progress = (pct * 100).toInt()
+        }
+
         val toolbarScroll = findViewById<View>(R.id.toolbarScroll)
         val btnExpand = findViewById<ImageButton>(R.id.btnExpand)
         btnExpand.setOnClickListener {

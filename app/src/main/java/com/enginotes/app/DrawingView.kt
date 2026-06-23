@@ -643,7 +643,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var isTextEditorOpen: Boolean = false
     var onScaleChanged: ((Float) -> Unit)? = null
     var onCanvasTransformed: (() -> Unit)? = null
-    var onPageSwipe: ((Int) -> Unit)? = null // +1 = next page, -1 = prev page
+    var onPageSwipe: ((Int) -> Unit)? = null
+    var onScrollPercentChanged: ((Float) -> Unit)? = null
+    var fingerPanMode: Boolean = false
+
+    fun scrollToPercent(pct: Float) {
+        val totalH = pageHeightPx() * scaleFactor
+        val maxScroll = totalH - height
+        if (maxScroll <= 0f) return
+        translateY = -(pct * maxScroll)
+        clampTranslation(); onCanvasTransformed?.invoke(); invalidate()
+    }
 
     private var exportWindowStart: Pair<Float, Float>? = null
     private var exportWindowEnd: Pair<Float, Float>? = null
@@ -2007,6 +2017,23 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (currentTool == Tool.AUTOSELECT) { gestureDetector.onTouchEvent(event); handleAutoSelect(event); return true }
         if (currentTool == Tool.LASSO) { handleLasso(event); return true }
         if (currentTool == Tool.EXPORT_WINDOW) { handleExportWindow(event); return true }
+        // fingerPanMode: single finger always pans, never draws
+        if (fingerPanMode && isFinger) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { twoFingerLastX = event.x; twoFingerLastY = event.y }
+                MotionEvent.ACTION_MOVE -> {
+                    translateX += event.x - twoFingerLastX; translateY += event.y - twoFingerLastY
+                    twoFingerLastX = event.x; twoFingerLastY = event.y
+                    clampTranslation()
+                    val totalH = pageHeightPx() * scaleFactor
+                    val maxScroll = totalH - height
+                    if (maxScroll > 0f) onScrollPercentChanged?.invoke((-translateY / maxScroll).coerceIn(0f, 1f))
+                    onCanvasTransformed?.invoke(); invalidate()
+                }
+                MotionEvent.ACTION_UP -> { twoFingerLastX = 0f; twoFingerLastY = 0f }
+            }
+            return true
+        }
         if (canvasMode == CanvasMode.INFINITE && currentItem == null && event.actionMasked == MotionEvent.ACTION_MOVE && isFinger) gestureDetector.onTouchEvent(event)
         handleDrawing(event); return true
     }
