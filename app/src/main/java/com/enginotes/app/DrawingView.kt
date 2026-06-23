@@ -761,14 +761,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                 }
                 Tool.FILL -> {
-                    val item = findItemAt(wx, wy)
-                    if (item is StrokeItem && CLOSED_SHAPES.contains(item.data.type)) {
-                        val wasFilled = item.data.fill; val wasColor = item.data.fillColorVal
-                        item.data.fill = !item.data.fill; item.data.fillColorVal = fillColor
-                        item.paint = item.data.toPaint()
-                        actions.add(FillToggleAction(item, wasFilled, wasColor, fillColor))
-                        redoStack.clear(); invalidate()
-                    } else performFill(e.x, e.y)
+                    performFill(e.x, e.y)
                 }
                 else -> {}
             }
@@ -1097,9 +1090,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         val w = textWrapWidth(item)
         val layout = StaticLayout.Builder.obtain(spannable, 0, spannable.length, tp, w).setIncludePad(true).build()
-        canvas.save(); canvas.translate(item.x, item.y - layout.height)
-        val pw = layout.width / 2f; val ph = layout.height / 2f
-        canvas.rotate(item.rotation, pw, ph); layout.draw(canvas); canvas.restore()
+        // Actual content width = widest line, not the wrap width (which can be 4000 for infinite canvas)
+        val contentW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
+        val contentH = layout.height.toFloat()
+        canvas.save(); canvas.translate(item.x, item.y - contentH)
+        canvas.rotate(item.rotation, contentW / 2f, contentH / 2f); layout.draw(canvas); canvas.restore()
     }
 
     private fun bboxHandlePositions(bounds: FloatArray): List<Pair<HandleType, Pair<Float, Float>>> {
@@ -1116,15 +1111,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val item = selectedItem ?: return
         if (item is TextItem) {
             val tp = android.text.TextPaint(); tp.textSize = item.size
-            val lines = item.text.split("\n")
-            val w = lines.maxOf { tp.measureText(it) }.coerceAtLeast(10f)
-            val h = item.size * 1.4f * lines.size
+            try { tp.typeface = android.graphics.Typeface.create(item.fontFamily, android.graphics.Typeface.NORMAL) } catch (e: Exception) {}
+            val wrapW = textWrapWidth(item)
+            val layout = android.text.StaticLayout.Builder.obtain(item.text, 0, item.text.length, tp, wrapW).setIncludePad(true).build()
+            val contentW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
+            val contentH = layout.height.toFloat()
             canvas.save()
-            canvas.translate(item.x, item.y - h)
-            canvas.rotate(item.rotation, w / 2f, h / 2f)
+            canvas.translate(item.x, item.y - contentH)
+            canvas.rotate(item.rotation, contentW / 2f, contentH / 2f)
             val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE
             selP.strokeWidth = 2f / scaleFactor; selP.isAntiAlias = true
-            canvas.drawRect(0f, 0f, w, h, selP)
+            canvas.drawRect(0f, 0f, contentW, contentH, selP)
             canvas.restore()
             return
         }
@@ -1372,12 +1369,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         for (a in actions.reversed()) {
             if (a is TextItem) {
                 val tp = TextPaint(); tp.textSize = a.size
-                val lines = a.text.split("\n")
-                val w = lines.maxOf { tp.measureText(it) }.coerceAtLeast(10f)
-                val h = a.size * 1.4f * lines.size
+                try { tp.typeface = android.graphics.Typeface.create(a.fontFamily, android.graphics.Typeface.NORMAL) } catch (e: Exception) {}
+                val wrapW = textWrapWidth(a)
+                val layout = android.text.StaticLayout.Builder.obtain(a.text, 0, a.text.length, tp, wrapW).setIncludePad(true).build()
+                val cw = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
+                val ch = layout.height.toFloat()
                 val pad = 24f / scaleFactor
-                // Inverse-rotate touch point around pivot (a.x, a.y - h) to check in local (unrotated) space
-                val pivX = a.x + w / 2f; val pivY = a.y - h / 2f
+                val pivX = a.x + cw / 2f; val pivY = a.y - ch / 2f
                 val lx: Float; val ly: Float
                 if (a.rotation != 0f) {
                     val rad = Math.toRadians(-a.rotation.toDouble())
@@ -1385,7 +1383,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val dx = x - pivX; val dy = y - pivY
                     lx = pivX + dx * cos - dy * sin; ly = pivY + dx * sin + dy * cos
                 } else { lx = x; ly = y }
-                if (lx >= a.x - pad && lx <= a.x + w + pad && ly >= a.y - h - pad && ly <= a.y + pad) return a
+                if (lx >= a.x - pad && lx <= a.x + cw + pad && ly >= a.y - ch - pad && ly <= a.y + pad) return a
             }
         }
         return null
@@ -2427,27 +2425,32 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     fun performFill(screenX: Float, screenY: Float) {
-        val scale = 1.0f
+        val scale = 2.0f
         val w = (width * scale).toInt().coerceAtLeast(1); val h = (height * scale).toInt().coerceAtLeast(1)
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); val cv = Canvas(bmp)
         cv.save(); cv.scale(scale, scale); cv.translate(translateX, translateY); cv.scale(scaleFactor, scaleFactor)
-        // Only render stroke outlines — shape fills would make interiors opaque (= walls),
-        // preventing the flood fill from entering. We want boundaries only.
+        // Draw ALL stroke items with their proper rotation, stroke-only, thick, hard edges
         for (a in actions) {
             if (a is StrokeItem) {
                 val thickPaint = Paint(a.paint).apply {
                     style = Paint.Style.STROKE
-                    strokeWidth = strokeWidth.coerceAtLeast(3f / scaleFactor)
-                    alpha = 255; isAntiAlias = false; shader = null
+                    strokeWidth = strokeWidth.coerceAtLeast(4f / scaleFactor)
+                    alpha = 255; isAntiAlias = false; shader = null; pathEffect = null
                 }
-                cv.drawPath(a.path, thickPaint)
+                if (a.data.rotation != 0f) {
+                    val b = getBounds(a)
+                    if (b != null) {
+                        val cx = (b[0] + b[2]) / 2f; val cy = (b[1] + b[3]) / 2f
+                        cv.save(); cv.rotate(a.data.rotation, cx, cy)
+                        cv.drawPath(a.path, thickPaint); cv.restore()
+                    } else cv.drawPath(a.path, thickPaint)
+                } else cv.drawPath(a.path, thickPaint)
             }
         }
         cv.restore()
 
         val px = (screenX * scale).toInt().coerceIn(0, w - 1); val py = (screenY * scale).toInt().coerceIn(0, h - 1)
         val pixels = IntArray(w * h); bmp.getPixels(pixels, 0, w, 0, 0, w, h)
-        // Higher threshold — anti-aliased stroke edges can be semi-transparent; treat anything >10% opaque as a wall
         fun isWall(x: Int, y: Int): Boolean = ((pixels[y * w + x] ushr 24) and 0xFF) > 25
         if (isWall(px, py)) { invalidate(); return }
 
@@ -2475,7 +2478,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     invalidate()
                 }
             } else {
-                // Crop bitmap tightly to just the filled region — saves memory and draws correctly
                 val cw = maxX - minX + 1; val ch = maxY - minY + 1
                 val fp = IntArray(cw * ch) { i ->
                     val gx = minX + i % cw; val gy = minY + i / cw
@@ -2485,7 +2487,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val folder = File(ctx.filesDir, "images"); if (!folder.exists()) folder.mkdirs()
                 val outFile = File(folder, "fill_${System.currentTimeMillis()}.png")
                 try { FileOutputStream(outFile).use { fb.compress(Bitmap.CompressFormat.PNG, 100, it) } } catch (e: Exception) { post { invalidate() }; return@execute }
-                // Convert cropped screen rect to world coords
                 val wx0 = screenToWorldX(minX / scale); val wy0 = screenToWorldY(minY / scale)
                 val wx1 = screenToWorldX((minX + cw) / scale); val wy1 = screenToWorldY((minY + ch) / scale)
                 post { actions.add(FillItem(outFile.absolutePath, wx0, wy0, wx1 - wx0, wy1 - wy0)); redoStack.clear(); invalidate() }
