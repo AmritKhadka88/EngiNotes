@@ -654,11 +654,10 @@ class MainActivity : AppCompatActivity() {
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { if(f) onChange(v) }
                     override fun onStartTrackingTouch(sb: SeekBar?) {
-                        // Prevent HorizontalScrollView from stealing touch during slider drag
-                        var p = sb?.parent; while (p != null) { if (p is HorizontalScrollView) { p.requestDisallowInterceptTouchEvent(true); break }; p = (p as? android.view.View)?.parent as? android.view.ViewParent }
+                        var p = sb?.parent; while (p != null) { val hsv = p as? HorizontalScrollView; if (hsv != null) { hsv.requestDisallowInterceptTouchEvent(true); break }; p = (p as? android.view.View)?.parent as? android.view.ViewParent }
                     }
                     override fun onStopTrackingTouch(sb: SeekBar?) {
-                        var p = sb?.parent; while (p != null) { if (p is HorizontalScrollView) { p.requestDisallowInterceptTouchEvent(false); break }; p = (p as? android.view.View)?.parent as? android.view.ViewParent }
+                        var p = sb?.parent; while (p != null) { val hsv = p as? HorizontalScrollView; if (hsv != null) { hsv.requestDisallowInterceptTouchEvent(false); break }; p = (p as? android.view.View)?.parent as? android.view.ViewParent }
                     }
                 })
             })
