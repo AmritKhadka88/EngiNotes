@@ -1748,7 +1748,7 @@ class MainActivity : AppCompatActivity() {
             }
             elevation = dp(4).toFloat()
             layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         }
         fun tbBtn(label: String, tint: Int? = null): TextView = TextView(this).apply {
             text = label; textSize = 16f; gravity = Gravity.CENTER
