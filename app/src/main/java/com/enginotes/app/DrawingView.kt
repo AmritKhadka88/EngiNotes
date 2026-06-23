@@ -1960,6 +1960,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        // Request unbuffered dispatch for lowest possible latency on every touch event
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+            requestUnbufferedDispatch(event)
+        }
         if (event.pointerCount >= 2) {
             twoFingerActive = true
             // Cancel any in-progress stroke immediately when second finger touches
@@ -2061,26 +2065,42 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 currentItem = StrokeItem(data, data.buildPath(), data.toPaint()); invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
-                if (currentTool == Tool.ERASER) { eraseAt(wx, wy); invalidate(); return }
+                if (currentTool == Tool.ERASER) {
+                    // Process historical eraser positions too for smooth erasing
+                    for (h in 0 until event.historySize) { eraseAt(screenToWorldX(event.getHistoricalX(h)), screenToWorldY(event.getHistoricalY(h))) }
+                    eraseAt(wx, wy); invalidate(); return
+                }
                 val item = currentItem ?: return
                 if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH) {
+                    // Process all historically batched points first for smooth, unbroken strokes
+                    for (h in 0 until event.historySize) {
+                        val hx = screenToWorldX(event.getHistoricalX(h)); val hy = screenToWorldY(event.getHistoricalY(h))
+                        item.data.points.add(hx); item.data.points.add(hy)
+                        if (currentTool == Tool.PEN && (currentPenStyle == PenStyle.FOUNTAIN || currentPenStyle == PenStyle.PENCIL)) {
+                            val dt = (event.getHistoricalEventTime(h) - lastMoveTime).coerceAtLeast(1L)
+                            val dist = distance(hx, hy, lastMoveX, lastMoveY)
+                            val speed = dist / dt * 1000f
+                            if (currentPenStyle == PenStyle.FOUNTAIN) {
+                                val targetWidth = (currentStrokeWidth * (0.55f + (1f - (speed / 2200f).coerceIn(0f, 0.7f)) * 0.9f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
+                                item.data.widths.add((item.data.widths.lastOrNull() ?: currentStrokeWidth) * 0.6f + targetWidth * 0.4f)
+                            } else {
+                                val targetIntensity = (1f - (speed / 1800f).coerceIn(0f, 0.75f)).coerceIn(0.25f, 1f)
+                                item.data.widths.add((item.data.widths.lastOrNull() ?: 1f) * 0.5f + targetIntensity * 0.5f)
+                            }
+                            lastMoveTime = event.getHistoricalEventTime(h); lastMoveX = hx; lastMoveY = hy
+                        }
+                    }
                     item.data.points.add(wx); item.data.points.add(wy)
                     if (currentTool == Tool.PEN && (currentPenStyle == PenStyle.FOUNTAIN || currentPenStyle == PenStyle.PENCIL)) {
-                        // Speed = distance / time since last sample.
                         val dt = (event.eventTime - lastMoveTime).coerceAtLeast(1L)
                         val dist = distance(wx, wy, lastMoveX, lastMoveY)
-                        val speed = dist / dt * 1000f // px/sec
+                        val speed = dist / dt * 1000f
                         if (currentPenStyle == PenStyle.FOUNTAIN) {
-                            // Inverse relationship: fast strokes thin out, slow strokes pool thicker, like real ink flow.
-                            val speedFactor = (1f - (speed / 2200f).coerceIn(0f, 0.7f))
-                            val targetWidth = (currentStrokeWidth * (0.55f + speedFactor * 0.9f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
-                            val prevWidth = item.data.widths.lastOrNull() ?: currentStrokeWidth
-                            item.data.widths.add(prevWidth * 0.6f + targetWidth * 0.4f)
+                            val targetWidth = (currentStrokeWidth * (0.55f + (1f - (speed / 2200f).coerceIn(0f, 0.7f)) * 0.9f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
+                            item.data.widths.add((item.data.widths.lastOrNull() ?: currentStrokeWidth) * 0.6f + targetWidth * 0.4f)
                         } else {
-                            // Pencil: faster strokes deposit less graphite (fainter/lighter), slower strokes stay darker.
                             val targetIntensity = (1f - (speed / 1800f).coerceIn(0f, 0.75f)).coerceIn(0.25f, 1f)
-                            val prevIntensity = item.data.widths.lastOrNull() ?: 1f
-                            item.data.widths.add(prevIntensity * 0.5f + targetIntensity * 0.5f)
+                            item.data.widths.add((item.data.widths.lastOrNull() ?: 1f) * 0.5f + targetIntensity * 0.5f)
                         }
                         lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
                     }
