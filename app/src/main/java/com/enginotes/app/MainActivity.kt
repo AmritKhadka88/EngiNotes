@@ -1655,16 +1655,18 @@ class MainActivity : AppCompatActivity() {
     // hundreds of pixels wider than the real text), pushing the right-side corner/edge handles
     // off-screen and making them untappable.
     private fun measureTextBoxSize(item: TextItem, screenSizePx: Float): Pair<Int, Int> {
-        val tp = android.text.TextPaint(); tp.textSize = screenSizePx; tp.isAntiAlias = true
+        // Use WORLD units (item.size) exactly like drawTextItem does, then scale to screen.
+        // Previously used screenSizePx directly which gave different layout than canvas rendering.
+        val scale = screenSizePx / item.size.coerceAtLeast(1f)
+        val tp = android.text.TextPaint(); tp.textSize = item.size; tp.isAntiAlias = true
         try { tp.typeface = Typeface.create(item.fontFamily, Typeface.NORMAL) } catch (e: Exception) {}
-        val wrapWidth = if (item.maxWidth > 0f) {
-            // maxWidth is stored in world units - convert to current screen pixels
-            (item.maxWidth * (screenSizePx / item.size.coerceAtLeast(1f))).toInt().coerceAtLeast(dp(60))
-        } else 4000
+        // Mirror textWrapWidth: maxWidth in world units, else unconstrained
+        val wrapWidth = if (item.maxWidth > 0f) item.maxWidth.toInt().coerceAtLeast(40) else 4000
         val layout = android.text.StaticLayout.Builder.obtain(item.text, 0, item.text.length, tp, wrapWidth).setIncludePad(true).build()
-        val measuredW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) } ?: (screenSizePx * 2f)
-        val w = (measuredW + dp(16)).toInt().coerceAtLeast(dp(60))
-        val h = (layout.height + dp(8)).coerceAtLeast(dp(36))
+        val measuredW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) } ?: (item.size * 2f)
+        // Scale world dimensions to screen pixels, add small padding
+        val w = (measuredW * scale + dp(12)).toInt().coerceAtLeast(dp(40))
+        val h = (layout.height * scale + dp(8)).coerceAtLeast(dp(30))
         return Pair(w, h)
     }
 
@@ -1732,8 +1734,8 @@ class MainActivity : AppCompatActivity() {
                         val lp = box.layoutParams as FrameLayout.LayoutParams
                         lp.leftMargin = (moveStartLeft + dx).toInt().coerceAtLeast(0); lp.topMargin = (moveStartTop + dy).toInt().coerceAtLeast(0)
                         box.layoutParams = lp
-                        item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat() + dp(6))
-                        item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + boxH + dp(6))
+                        item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat())
+                        item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + boxH)
                         drawingView.invalidate()
                         onMoveSurfaceDrag?.invoke()
                         true
@@ -1764,8 +1766,8 @@ class MainActivity : AppCompatActivity() {
             return h
         }
 
-        // Pivot = centre of box, matching canvas.rotate(rotation, w/2, h/2)
-        fun pivotScreenX() = (box.layoutParams as FrameLayout.LayoutParams).leftMargin + boxW / 2f
+        // Pivot matches box.pivotX/Y = ((boxW-dp12)/2, boxH/2) relative to box top-left in canvasContainer
+        fun pivotScreenX() = (box.layoutParams as FrameLayout.LayoutParams).leftMargin + (boxW - dp(12)) / 2f
         fun pivotScreenY() = (box.layoutParams as FrameLayout.LayoutParams).topMargin + boxH / 2f
 
         fun rotatePoint(px: Float, py: Float, cx: Float, cy: Float, angleDeg: Float): Pair<Float, Float> {
@@ -1780,7 +1782,8 @@ class MainActivity : AppCompatActivity() {
             val px = pivotScreenX(); val py = pivotScreenY()
             val w = boxW.toFloat(); val hgt = boxH.toFloat(); val half = dp(16).toFloat()
             val rot = item.rotation
-            val boxLeft = px - w / 2f; val boxTop = py - hgt / 2f
+            val boxLeft = (box.layoutParams as FrameLayout.LayoutParams).leftMargin.toFloat()
+            val boxTop = (box.layoutParams as FrameLayout.LayoutParams).topMargin.toFloat()
             for ((view, frac) in handleViews) {
                 val rawX = boxLeft + frac.first * w
                 val rawY = boxTop + frac.second * hgt
@@ -1797,12 +1800,13 @@ class MainActivity : AppCompatActivity() {
             val px = pivotScreenX(); val py = pivotScreenY()
             val w = boxW.toFloat(); val hgt = boxH.toFloat()
             val rot = item.rotation
-            val boxTop = py - hgt / 2f
-            val (rRx, rRy) = rotatePoint(px, boxTop - dp(28), px, py, rot)
+            val boxLeft = (box.layoutParams as FrameLayout.LayoutParams).leftMargin.toFloat()
+            val boxTop = (box.layoutParams as FrameLayout.LayoutParams).topMargin.toFloat()
+            val (rRx, rRy) = rotatePoint(boxLeft + w / 2f, boxTop - dp(28), px, py, rot)
             val rlp = rotateHandle.layoutParams as FrameLayout.LayoutParams
             rlp.leftMargin = (rRx - dp(16)).toInt(); rlp.topMargin = (rRy - dp(16)).coerceAtLeast(0f).toInt()
             rotateHandle.layoutParams = rlp
-            val (dRx, dRy) = rotatePoint(px + w / 2f, boxTop - dp(28), px, py, rot)
+            val (dRx, dRy) = rotatePoint(boxLeft + w, boxTop - dp(28), px, py, rot)
             val dlp = deleteHandle.layoutParams as FrameLayout.LayoutParams
             dlp.leftMargin = (dRx - dp(16)).toInt(); dlp.topMargin = (dRy - dp(16)).coerceAtLeast(0f).toInt()
             deleteHandle.layoutParams = dlp
@@ -1892,10 +1896,11 @@ class MainActivity : AppCompatActivity() {
         canvasContainer.addView(deleteHandle)
 
         val lp = FrameLayout.LayoutParams(boxW, boxH)
-        // Pivot is now centre of text block, matching canvas.rotate(rotation, w/2, h/2)
-        lp.leftMargin = (anchorScreenX - dp(6)).toInt().coerceAtLeast(0)
-        lp.topMargin = (anchorScreenY - boxH - dp(6)).toInt().coerceAtLeast(0)
-        box.pivotX = boxW / 2f
+        lp.leftMargin = (anchorScreenX).toInt().coerceAtLeast(0)
+        lp.topMargin = (anchorScreenY - boxH).toInt().coerceAtLeast(0)
+        // Canvas pivots around (w2, layout.height/2) in world coords → (w2*scale, boxH/2) in screen.
+        // w2 is half the widest line — approx (boxW - dp(12)) / 2 since boxW = measuredW*scale + dp(12)
+        box.pivotX = (boxW - dp(12)) / 2f
         box.pivotY = boxH / 2f
         box.rotation = item.rotation
         canvasContainer.addView(box, lp)
@@ -1914,11 +1919,11 @@ class MainActivity : AppCompatActivity() {
             val newDims = updateTextSelectionBoxSize(box, moveSurface, item)
             boxW = newDims.first; boxH = newDims.second
             val newLp = box.layoutParams as FrameLayout.LayoutParams
-            newLp.leftMargin = (newAnchorX - dp(6)).toInt().coerceAtLeast(0)
-            newLp.topMargin = (newAnchorY - boxH - dp(6)).toInt().coerceAtLeast(0)
+            newLp.leftMargin = newAnchorX.toInt().coerceAtLeast(0)
+            newLp.topMargin = (newAnchorY - boxH).toInt().coerceAtLeast(0)
             newLp.width = boxW; newLp.height = boxH
             box.layoutParams = newLp
-            box.pivotX = boxW / 2f; box.pivotY = boxH / 2f
+            box.pivotX = (boxW - dp(12)) / 2f; box.pivotY = boxH / 2f
             box.rotation = item.rotation
             layoutHandles(); layoutTopHandles()
         }
