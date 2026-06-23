@@ -1666,7 +1666,7 @@ class MainActivity : AppCompatActivity() {
         val measuredW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) } ?: (item.size * 2f)
         // Scale world dimensions to screen pixels, add small padding
         val w = (measuredW * scale + dp(12)).toInt().coerceAtLeast(dp(40))
-        val h = (layout.height * scale + dp(8)).coerceAtLeast(dp(30))
+        val h = (layout.height * scale + dp(8).toFloat()).coerceAtLeast(dp(30).toFloat()).toInt()
         return Pair(w, h)
     }
 
