@@ -1113,10 +1113,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawSelection(canvas: Canvas) {
         val item = selectedItem ?: return
-        // Text items are handled entirely by MainActivity's overlay boxes (showTextSelectionBox /
-        // showInlineTextEditor) now - drawing this canvas-based dashed selection on top of those
-        // produced two visibly different, overlapping selection UIs for the same text item.
-        if (item is TextItem) return
+        if (item is TextItem) {
+            // Draw selection border directly on canvas - the transform is already correct here.
+            // No View overlay needed; this eliminates all pivot/rotation mismatch problems.
+            val tp = android.text.TextPaint(); tp.textSize = item.size
+            val lines = item.text.split("\n")
+            val w = lines.maxOf { tp.measureText(it) }.coerceAtLeast(10f)
+            val h = item.size * 1.4f * lines.size
+            canvas.save()
+            canvas.translate(item.x, item.y - h)
+            canvas.rotate(item.rotation, 0f, 0f)
+            val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE
+            selP.strokeWidth = 2f / scaleFactor; selP.isAntiAlias = true
+            canvas.drawRect(0f, 0f, w, h, selP)
+            canvas.restore()
+            return
+        }
         val bounds = getBounds(item) ?: return
         val rotation = getRotation(item); val (pivotX, pivotY) = getPivot(item, bounds)
         canvas.save(); canvas.rotate(rotation, pivotX, pivotY)
@@ -1356,6 +1368,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return null
     }
 
+    fun findTextItemAtPublic(x: Float, y: Float): TextItem? = findTextItemAt(x, y)
     private fun findTextItemAt(x: Float, y: Float): TextItem? {
         for (a in actions.reversed()) {
             if (a is TextItem) {
