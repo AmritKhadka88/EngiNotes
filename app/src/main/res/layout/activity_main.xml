@@ -91,12 +91,34 @@
                 android:background="?attr/selectableItemBackgroundBorderless" />
 
             <ImageButton
+                android:id="@+id/btnUndo"
+                android:layout_width="34dp" android:layout_height="34dp"
+                android:src="@drawable/ic_undo" android:scaleType="centerInside" android:padding="7dp"
+                android:background="?attr/selectableItemBackgroundBorderless" />
+
+            <ImageButton
+                android:id="@+id/btnRedo"
+                android:layout_width="34dp" android:layout_height="34dp"
+                android:src="@drawable/ic_redo" android:scaleType="centerInside" android:padding="7dp"
+                android:background="?attr/selectableItemBackgroundBorderless" />
+
+            <View android:layout_width="0.5dp" android:layout_height="22dp"
+                android:background="#E0DDD8" android:layout_marginStart="2dp" android:layout_marginEnd="2dp"/>
+
+            <ImageButton
+                android:id="@+id/btnTouchToggle"
+                android:layout_width="34dp" android:layout_height="34dp"
+                android:src="@drawable/ic_select" android:scaleType="centerInside" android:padding="7dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Toggle touch/pan" />
+
+            <View android:layout_width="0.5dp" android:layout_height="22dp"
+                android:background="#E0DDD8" android:layout_marginStart="2dp" android:layout_marginEnd="2dp"/>
+
+            <ImageButton
                 android:id="@+id/btnMenu"
-                android:layout_width="38dp"
-                android:layout_height="38dp"
-                android:src="@drawable/ic_tools"
-                android:scaleType="centerInside"
-                android:padding="9dp"
+                android:layout_width="34dp" android:layout_height="34dp"
+                android:src="@drawable/ic_tools" android:scaleType="centerInside" android:padding="8dp"
                 android:background="?attr/selectableItemBackgroundBorderless" />
         </LinearLayout>
     </LinearLayout>
