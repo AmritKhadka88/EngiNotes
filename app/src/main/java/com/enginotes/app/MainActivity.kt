@@ -550,8 +550,10 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton?>(R.id.btnBrush)?.setOnLongClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.BRUSH); true }
         findViewById<ImageButton?>(R.id.btnQuickFill)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.FILL) }
         // Long-press on draw/eraser now just activates the tool and shows context bar (no floating panel)
-        findViewById<ImageButton>(R.id.btnDraw).setOnLongClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.PEN); true }
-        findViewById<ImageButton>(R.id.btnQuickEraser).setOnLongClickListener { setActiveTool(it as ImageButton, Tool.ERASER); true }
+        findViewById<ImageButton>(R.id.btnDraw).setOnLongClickListener { closeInlineEditor(true); showPenOptionsPanel(); true }
+        findViewById<ImageButton>(R.id.btnQuickEraser).setOnLongClickListener { showEraserOptionsPanel(); true }
+        findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnLongClickListener { showHighlighterOptionsPanel(); true }
+        findViewById<ImageButton?>(R.id.btnBrush)?.setOnLongClickListener { showBrushOptionsPanel(); true }
 
         findViewById<ImageButton?>(R.id.btnMenu)?.setOnClickListener { onMenuClick(it) }
         findViewById<ImageButton?>(R.id.btnLink)?.setOnClickListener { closeInlineEditor(true); showLinkPickerDialog() }
@@ -606,6 +608,7 @@ class MainActivity : AppCompatActivity() {
     private fun setActiveTool(btn: ImageButton?, tool: Tool) {
         drawingView.currentTool = tool; setActiveToolbarBtn(btn)
         dismissPenOptionsPanel(); dismissEraserOptionsPanel(); dismissHighlighterOptionsPanel(); dismissBrushOptionsPanel(); dismissShapesPicker()
+        contextBarPage = 0
         rebuildContextBar()
     }
     private fun setActiveToolbarBtn(btn: ImageButton?) { activeToolbarButton?.isSelected = false; activeToolbarButton = btn; btn?.isSelected = true }
@@ -620,6 +623,22 @@ class MainActivity : AppCompatActivity() {
             contextBar.addView(it)
         }
         row.removeAllViews()
+
+        // Swipe up/down on context bar to cycle pages of options
+        var swipeStartY = 0f
+        contextBar.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> { swipeStartY = ev.y; false }
+                android.view.MotionEvent.ACTION_UP -> {
+                    val dy = swipeStartY - ev.y
+                    if (kotlin.math.abs(dy) > dp(30)) {
+                        contextBarPage = if (dy > 0) (contextBarPage + 1) else (contextBarPage - 1).coerceAtLeast(0)
+                        rebuildContextBar(); true
+                    } else false
+                }
+                else -> false
+            }
+        }
 
         fun divider() { row.addView(View(this).apply {
             val lp = LinearLayout.LayoutParams(dp(1), dp(28)); lp.setMargins(dp(6),0,dp(6),0); layoutParams = lp
@@ -668,106 +687,108 @@ class MainActivity : AppCompatActivity() {
             Color.parseColor("#FFCC00"), Color.parseColor("#34C759"), Color.parseColor("#007AFF"),
             Color.parseColor("#5856D6"), Color.parseColor("#AF52DE"), Color.WHITE
         )
+        val moreColors = listOf(
+            Color.parseColor("#FF2D55"), Color.parseColor("#FF6B35"), Color.parseColor("#FFD60A"),
+            Color.parseColor("#30D158"), Color.parseColor("#64D2FF"), Color.parseColor("#0A84FF"),
+            Color.parseColor("#BF5AF2"), Color.parseColor("#FF375F"), Color.parseColor("#8E8E93"),
+            Color.parseColor("#636366"), Color.parseColor("#3A3A3C"), Color.parseColor("#48484A")
+        )
+
+        fun chip(text: String, active: Boolean, onClick: () -> Unit) {
+            row.addView(TextView(this).apply {
+                this.text = text; textSize = 12f; gravity = Gravity.CENTER
+                setPadding(dp(10), dp(6), dp(10), dp(6))
+                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(36)); lp.setMargins(dp(2),0,dp(2),0); layoutParams = lp
+                background = android.graphics.drawable.GradientDrawable().apply { setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")); cornerRadius = dp(18).toFloat() }
+                setTextColor(if (active) Color.WHITE else Color.parseColor("#3C3C3E"))
+                setOnClickListener { onClick() }
+            })
+        }
+
+        fun addPageDots(numPages: Int) {
+            if (numPages <= 1) return
+            row.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT); lp.setMargins(dp(4),0,dp(4),0); layoutParams = lp
+                for (i in 0 until numPages) {
+                    addView(View(this@MainActivity).apply {
+                        val dlp = LinearLayout.LayoutParams(dp(5), dp(5)); dlp.setMargins(0,dp(2),0,dp(2)); layoutParams = dlp
+                        background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(if (i == contextBarPage % numPages) Color.parseColor("#1C1C1E") else Color.parseColor("#C8C4BE")) }
+                    })
+                }
+            })
+            divider()
+        }
 
         when (drawingView.currentTool) {
             Tool.PEN -> {
-                // Pen type chips
-                val penTypes = listOf("Fountain" to PenStyle.FOUNTAIN, "Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
-                for ((lbl, style) in penTypes) {
-                    val active = drawingView.currentPenStyle == style
-                    row.addView(TextView(this).apply {
-                        text = lbl; textSize = 12f; gravity = Gravity.CENTER
-                        setPadding(dp(10), dp(6), dp(10), dp(6))
-                        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(34)); lp.setMargins(dp(2),0,dp(2),0); layoutParams = lp
-                        background = android.graphics.drawable.GradientDrawable().apply { setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")); cornerRadius = dp(17).toFloat() }
-                        setTextColor(if (active) Color.WHITE else Color.parseColor("#3C3C3E"))
-                        setOnClickListener { drawingView.currentPenStyle = style; rebuildContextBar() }
-                    })
+                val n = 3; addPageDots(n)
+                when (contextBarPage % n) {
+                    0 -> {
+                        listOf("Fountain" to PenStyle.FOUNTAIN, "Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER).forEach { (lbl, style) ->
+                            chip(lbl, drawingView.currentPenStyle == style) { drawingView.currentPenStyle = style; rebuildContextBar() }
+                        }
+                        divider()
+                        slider("Size", 60, drawingView.currentStrokeWidth.toInt().coerceIn(1,60)) { drawingView.currentStrokeWidth = it.coerceAtLeast(1).toFloat() }
+                    }
+                    1 -> {
+                        for (c in quickColors) colorDot(c, c == drawingView.currentColor) { drawingView.currentColor = c }
+                        row.addView(TextView(this).apply { text = "⋯"; textSize = 16f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#5C5856")); val lp = LinearLayout.LayoutParams(dp(34),dp(34)); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp; setOnClickListener { showColorGridDialog { c -> drawingView.currentColor = c; rebuildContextBar() } } })
+                    }
+                    2 -> { for (c in moreColors) colorDot(c, c == drawingView.currentColor) { drawingView.currentColor = c } }
                 }
-                divider()
-                slider("Size", 60, drawingView.currentStrokeWidth.toInt().coerceIn(1,60)) { drawingView.currentStrokeWidth = it.coerceAtLeast(1).toFloat() }
-                divider()
-                for (c in quickColors) colorDot(c, c == drawingView.currentColor) { drawingView.currentColor = c }
-                row.addView(TextView(this).apply {
-                    text = "⋯"; textSize = 16f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#5C5856"))
-                    val lp = LinearLayout.LayoutParams(dp(32),dp(32)); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp
-                    setOnClickListener { showColorGridDialog { c -> drawingView.currentColor = c; rebuildContextBar() } }
-                })
             }
             Tool.HIGHLIGHTER -> {
-                slider("Opacity", 100, drawingView.highlighterOpacity) { drawingView.highlighterOpacity = it.coerceAtLeast(5) }
-                divider()
-                slider("Size", 60, drawingView.highlighterThickness.toInt().coerceIn(4,60)) { drawingView.highlighterThickness = it.coerceAtLeast(4).toFloat() }
-                divider()
-                for (c in quickColors) colorDot(c, c == drawingView.currentColor) { drawingView.currentColor = c }
+                val n = 2; addPageDots(n)
+                when (contextBarPage % n) {
+                    0 -> { slider("Opacity", 100, drawingView.highlighterOpacity) { drawingView.highlighterOpacity = it.coerceAtLeast(5) }; divider(); slider("Size", 60, drawingView.highlighterThickness.toInt().coerceIn(4,60)) { drawingView.highlighterThickness = it.coerceAtLeast(4).toFloat() } }
+                    1 -> { for (c in quickColors + moreColors.take(3)) colorDot(c, c == drawingView.currentColor) { drawingView.currentColor = c } }
+                }
             }
             Tool.BRUSH -> {
-                val brushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH)
-                for ((lbl, style) in brushTypes) {
-                    val active = drawingView.currentBrushStyle == style
-                    row.addView(TextView(this).apply {
-                        text = lbl; textSize = 12f; gravity = Gravity.CENTER
-                        setPadding(dp(10), dp(6), dp(10), dp(6))
-                        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(34)); lp.setMargins(dp(2),0,dp(2),0); layoutParams = lp
-                        background = android.graphics.drawable.GradientDrawable().apply { setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")); cornerRadius = dp(17).toFloat() }
-                        setTextColor(if (active) Color.WHITE else Color.parseColor("#3C3C3E"))
-                        setOnClickListener { drawingView.currentBrushStyle = style; rebuildContextBar() }
-                    })
+                val n = 2; addPageDots(n)
+                when (contextBarPage % n) {
+                    0 -> {
+                        listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH).forEach { (lbl, style) ->
+                            chip(lbl, drawingView.currentBrushStyle == style) { drawingView.currentBrushStyle = style; rebuildContextBar() }
+                        }
+                        divider(); slider("Size", 60, drawingView.currentStrokeWidth.toInt().coerceIn(1,60)) { drawingView.currentStrokeWidth = it.coerceAtLeast(1).toFloat() }
+                    }
+                    1 -> { for (c in quickColors) colorDot(c, c == drawingView.currentColor) { drawingView.currentColor = c } }
                 }
-                divider()
-                for (c in quickColors) colorDot(c, c == drawingView.currentColor) { drawingView.currentColor = c }
             }
             Tool.ERASER -> {
-                label("Mode")
                 listOf("Object" to EraserMode.OBJECT, "Area" to EraserMode.AREA).forEach { (lbl, mode) ->
-                    val active = drawingView.eraserMode == mode
-                    row.addView(TextView(this).apply {
-                        text = lbl; textSize = 12f; gravity = Gravity.CENTER
-                        setPadding(dp(10), dp(6), dp(10), dp(6))
-                        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(34)); lp.setMargins(dp(2),0,dp(2),0); layoutParams = lp
-                        background = android.graphics.drawable.GradientDrawable().apply { setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")); cornerRadius = dp(17).toFloat() }
-                        setTextColor(if (active) Color.WHITE else Color.parseColor("#3C3C3E"))
-                        setOnClickListener { drawingView.eraserMode = mode; rebuildContextBar() }
-                    })
+                    chip(lbl, drawingView.eraserMode == mode) { drawingView.eraserMode = mode; rebuildContextBar() }
                 }
                 divider()
                 slider("Size", 120, drawingView.eraserSize.toInt().coerceIn(10,120)) { drawingView.eraserSize = it.coerceAtLeast(10).toFloat() }
             }
             Tool.FILL -> {
-                label("Color")
-                for (c in quickColors) colorDot(c, c == drawingView.fillColor) { drawingView.fillColor = c }
-                row.addView(TextView(this).apply {
-                    text = "⋯"; textSize = 16f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#5C5856"))
-                    val lp = LinearLayout.LayoutParams(dp(32),dp(32)); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp
-                    setOnClickListener { showColorGridDialog { c -> drawingView.fillColor = c; rebuildContextBar() } }
-                })
+                val n = 2; addPageDots(n)
+                when (contextBarPage % n) {
+                    0 -> { for (c in quickColors) colorDot(c, c == drawingView.fillColor) { drawingView.fillColor = c }; row.addView(TextView(this).apply { text = "⋯"; textSize = 16f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#5C5856")); val lp = LinearLayout.LayoutParams(dp(34),dp(34)); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp; setOnClickListener { showColorGridDialog { c -> drawingView.fillColor = c; rebuildContextBar() } } }) }
+                    1 -> { for (c in moreColors) colorDot(c, c == drawingView.fillColor) { drawingView.fillColor = c } }
+                }
             }
             Tool.TEXT -> {
-                // Font family picker
-                val fonts = listOf("Default" to "sans-serif", "Serif" to "serif", "Mono" to "monospace")
-                for ((lbl, fam) in fonts) {
-                    val active = pendingFontFamily == fam || (pendingFontFamily == "sans-serif" && fam == "sans-serif")
-                    row.addView(TextView(this).apply {
-                        text = lbl; textSize = 12f; gravity = Gravity.CENTER; typeface = android.graphics.Typeface.create(fam, android.graphics.Typeface.NORMAL)
-                        setPadding(dp(10), dp(6), dp(10), dp(6))
-                        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(34)); lp.setMargins(dp(2),0,dp(2),0); layoutParams = lp
-                        background = android.graphics.drawable.GradientDrawable().apply { setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")); cornerRadius = dp(17).toFloat() }
-                        setTextColor(if (active) Color.WHITE else Color.parseColor("#3C3C3E"))
-                        setOnClickListener { pendingFontFamily = fam; rebuildContextBar() }
-                    })
+                val n = 2; addPageDots(n)
+                when (contextBarPage % n) {
+                    0 -> {
+                        listOf("Default" to "sans-serif", "Serif" to "serif", "Mono" to "monospace", "Cursive" to "cursive").forEach { (lbl, fam) ->
+                            chip(lbl, pendingFontFamily == fam) { pendingFontFamily = fam; rebuildContextBar() }
+                        }
+                        divider(); slider("Size", 120, editSize.toInt().coerceIn(8,120)) { editSize = it.coerceAtLeast(8).toFloat(); activeEditText?.textSize = editSize / resources.displayMetrics.density }
+                    }
+                    1 -> {
+                        slider("Opacity", 100, editOpacity * 100 / 255) { editOpacity = it * 255 / 100 }
+                        divider(); for (c in quickColors) colorDot(c, c == editColor) { editColor = c; activeEditText?.setTextColor(c) }
+                    }
                 }
-                divider()
-                slider("Size", 120, editSize.toInt().coerceIn(8,120)) { editSize = it.coerceAtLeast(8).toFloat(); activeEditText?.textSize = editSize / resources.displayMetrics.density }
-                divider()
-                slider("Opacity", 100, editOpacity * 100 / 255) { editOpacity = it * 255 / 100 }
-                divider()
-                for (c in quickColors) colorDot(c, c == editColor) { editColor = c; activeEditText?.setTextColor(c) }
             }
             else -> {
-                // Default: show color + size
                 slider("Size", 60, drawingView.currentStrokeWidth.toInt().coerceIn(1,60)) { drawingView.currentStrokeWidth = it.coerceAtLeast(1).toFloat() }
-                divider()
-                for (c in quickColors) colorDot(c, c == drawingView.currentColor) { drawingView.currentColor = c }
+                divider(); for (c in quickColors) colorDot(c, c == drawingView.currentColor) { drawingView.currentColor = c }
             }
         }
     }
@@ -1270,6 +1291,7 @@ class MainActivity : AppCompatActivity() {
 
     private var penOptionsPanel: View? = null
     private var eraserOptionsPanel: LinearLayout? = null
+    private var contextBarPage = 0 // 0 = default, increments on swipe-up
 
     private fun dismissPenOptionsPanel() { penOptionsPanel?.let { canvasContainer.removeView(it) }; penOptionsPanel = null }
     private fun dismissEraserOptionsPanel() { eraserOptionsPanel?.let { canvasContainer.removeView(it) }; eraserOptionsPanel = null }
