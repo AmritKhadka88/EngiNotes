@@ -618,216 +618,243 @@ class MainActivity : AppCompatActivity() {
         val contextBar = findViewById<HorizontalScrollView>(R.id.toolbarScroll) ?: return
         val row = (contextBar.getChildAt(0) as? LinearLayout) ?: LinearLayout(this).also {
             it.orientation = LinearLayout.HORIZONTAL; it.gravity = Gravity.CENTER_VERTICAL
-            it.setPadding(dp(6), 0, dp(6), 0); contextBar.addView(it)
+            it.setPadding(dp(8), 0, dp(8), 0); contextBar.addView(it)
         }
         row.removeAllViews()
+        val BAR_H = dp(50)
+        val COLORS_PER_PAGE = 8
 
-        val BAR_H = dp(48) // context bar content height
-        val DOT_SZ = dp(26) // color dot size
-        val CHIP_H = dp(28) // chip height
+        fun divider() { row.addView(View(this).apply {
+            val lp = LinearLayout.LayoutParams(dp(1), dp(24)); lp.setMargins(dp(5),0,dp(5),0); layoutParams = lp
+            setBackgroundColor(Color.parseColor("#DDD9D4"))
+        })}
 
-        fun divider() {
-            row.addView(View(this).apply {
-                val lp = LinearLayout.LayoutParams(dp(1), dp(24)); lp.setMargins(dp(5),0,dp(5),0); layoutParams = lp
-                setBackgroundColor(Color.parseColor("#DDD9D4"))
-            })
-        }
-
-        // A vertically scrollable column — swipe up/down within it to see more items
-        fun verticalColumn(items: List<Pair<String, () -> Unit>>, selectedIdx: Int, itemH: Int = CHIP_H, buildItem: (LinearLayout, Int, Pair<String, () -> Unit>) -> Unit) {
-            val colH = BAR_H
-            // Show 2 items at a time; user scrolls vertically within the column
-            val vs = android.widget.ScrollView(this).apply {
-                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, colH); layoutParams = lp
-                isVerticalScrollBarEnabled = false; overScrollMode = android.view.View.OVER_SCROLL_NEVER
-                setOnTouchListener { _, ev ->
-                    // prevent horizontal scroll bar from stealing vertical scroll
-                    when (ev.actionMasked) {
-                        android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_MOVE ->
-                            parent?.requestDisallowInterceptTouchEvent(true)
-                        else -> parent?.requestDisallowInterceptTouchEvent(false)
-                    }; false
-                }
+        // Paged column: items shown PAGE_SIZE at a time, tap arrows or swipe to page
+        fun pagedColumn(items: List<Pair<String, Boolean>>, pageSize: Int, page: Int, onPage: (Int) -> Unit, onSelect: (Int) -> Unit) {
+            val numPages = kotlin.math.ceil(items.size.toDouble() / pageSize).toInt().coerceAtLeast(1)
+            val col = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, BAR_H); layoutParams = lp
             }
-            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; setPadding(0, dp(2), 0, dp(2)) }
-            items.forEachIndexed { i, item -> buildItem(col, i, item) }
-            vs.addView(col)
-            // Scroll so selected item is visible
-            vs.post { vs.scrollTo(0, (selectedIdx * itemH).coerceAtLeast(0)) }
-            row.addView(vs)
-        }
-
-        fun colorColumn(colors: List<Int>, selectedColor: Int, onPick: (Int) -> Unit) {
-            val colH = BAR_H
-            val vs = android.widget.ScrollView(this).apply {
-                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, colH); layoutParams = lp
-                isVerticalScrollBarEnabled = false; overScrollMode = android.view.View.OVER_SCROLL_NEVER
-                setOnTouchListener { _, ev ->
-                    when (ev.actionMasked) {
-                        android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_MOVE ->
-                            parent?.requestDisallowInterceptTouchEvent(true)
-                        else -> parent?.requestDisallowInterceptTouchEvent(false)
-                    }; false
-                }
-            }
-            // 2 columns of dots in a GridLayout-style
-            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
-            val rowsNeeded = kotlin.math.ceil(colors.size / 2.0).toInt()
-            for (r in 0 until rowsNeeded) {
-                val dRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.setMargins(0,dp(1),0,dp(1)); layoutParams = lp }
-                for (c in 0..1) {
-                    val idx = r * 2 + c
-                    if (idx < colors.size) {
-                        val color = colors[idx]
-                        val sel = color == selectedColor
-                        dRow.addView(View(this).apply {
-                            val lp = LinearLayout.LayoutParams(DOT_SZ, DOT_SZ); lp.setMargins(dp(2),0,dp(2),0); layoutParams = lp
-                            background = android.graphics.drawable.GradientDrawable().apply {
-                                shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(color)
-                                setStroke(if (sel) dp(2) else dp(1), if (sel) Color.parseColor("#1C1C1E") else Color.parseColor("#C8C4BE"))
-                            }
-                            setOnClickListener { onPick(color); rebuildContextBar() }
-                        })
+            val start = (page % numPages) * pageSize
+            val visible = items.subList(start, (start + pageSize).coerceAtMost(items.size))
+            for ((i, item) in visible.withIndex()) {
+                val realIdx = start + i
+                val (lbl, active) = item
+                col.addView(TextView(this).apply {
+                    text = lbl; textSize = 10.5f; gravity = Gravity.CENTER
+                    setPadding(dp(8), dp(2), dp(8), dp(2))
+                    val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                    lp.setMargins(0, dp(1), 0, dp(1)); layoutParams = lp
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7"))
+                        cornerRadius = dp(12).toFloat()
                     }
-                }
-                col.addView(dRow)
+                    setTextColor(if (active) Color.WHITE else Color.parseColor("#3C3C3E"))
+                    setOnClickListener { onSelect(realIdx) }
+                })
             }
-            vs.addView(col)
-            val selRow = (colors.indexOf(selectedColor) / 2) * (DOT_SZ + dp(2))
-            vs.post { vs.scrollTo(0, (selRow - DOT_SZ).coerceAtLeast(0)) }
-            row.addView(vs)
-            // More button
-            row.addView(TextView(this).apply {
-                text = "···"; textSize = 14f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#8A8580"))
-                val lp = LinearLayout.LayoutParams(dp(28), BAR_H); layoutParams = lp
-                setOnClickListener { showColorGridDialog { c -> onPick(c); rebuildContextBar() } }
-            })
+            row.addView(col)
+            // Page indicator + arrows if multiple pages
+            if (numPages > 1) {
+                val nav = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+                    val lp = LinearLayout.LayoutParams(dp(16), BAR_H); layoutParams = lp
+                }
+                nav.addView(TextView(this).apply {
+                    text = "▲"; textSize = 8f; gravity = Gravity.CENTER
+                    val lp = LinearLayout.LayoutParams(dp(16), dp(16)); layoutParams = lp
+                    setTextColor(Color.parseColor("#8A8580"))
+                    setOnClickListener { onPage(((page - 1 + numPages) % numPages)) }
+                })
+                nav.addView(TextView(this).apply {
+                    text = "${page % numPages + 1}/$numPages"; textSize = 7f; gravity = Gravity.CENTER
+                    val lp = LinearLayout.LayoutParams(dp(16), dp(14)); layoutParams = lp
+                    setTextColor(Color.parseColor("#B0ACA8"))
+                })
+                nav.addView(TextView(this).apply {
+                    text = "▼"; textSize = 8f; gravity = Gravity.CENTER
+                    val lp = LinearLayout.LayoutParams(dp(16), dp(16)); layoutParams = lp
+                    setTextColor(Color.parseColor("#8A8580"))
+                    setOnClickListener { onPage((page + 1) % numPages) }
+                })
+                row.addView(nav)
+            }
         }
 
-        fun slider(label: String, max: Int, progress: Int, onChange: (Int) -> Unit) {
+        // Paged color grid: COLORS_PER_PAGE per page, 2 rows of 4
+        fun colorGrid(colors: List<Int>, selected: Int, page: Int, onPage: (Int) -> Unit, onPick: (Int) -> Unit) {
+            val numPages = kotlin.math.ceil(colors.size.toDouble() / COLORS_PER_PAGE).toInt().coerceAtLeast(1)
+            val start = (page % numPages) * COLORS_PER_PAGE
+            val visible = colors.subList(start, (start + COLORS_PER_PAGE).coerceAtMost(colors.size))
+            val DOT = dp(24); val M = dp(2)
+            val grid = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, BAR_H); layoutParams = lp
+            }
+            val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+            val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+            visible.forEachIndexed { i, color ->
+                val sel = color == selected
+                val dot = View(this).apply {
+                    val lp = LinearLayout.LayoutParams(DOT, DOT); lp.setMargins(M,M,M,M); layoutParams = lp
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(color)
+                        setStroke(if (sel) dp(2) else 0, Color.parseColor("#1C1C1E"))
+                    }
+                    setOnClickListener { onPick(colors[start + i]); rebuildContextBar() }
+                }
+                if (i < 4) row1.addView(dot) else row2.addView(dot)
+            }
+            grid.addView(row1); grid.addView(row2)
+            row.addView(grid)
+            // Navigation
+            val nav = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+                val lp = LinearLayout.LayoutParams(dp(18), BAR_H); layoutParams = lp
+            }
+            if (numPages > 1) {
+                nav.addView(TextView(this).apply { text = "▲"; textSize = 8f; gravity = Gravity.CENTER; val lp = LinearLayout.LayoutParams(dp(18),dp(16)); layoutParams=lp; setTextColor(Color.parseColor("#8A8580")); setOnClickListener { onPage(((page-1+numPages)%numPages)) } })
+                nav.addView(TextView(this).apply { text = "${page%numPages+1}/$numPages"; textSize = 7f; gravity = Gravity.CENTER; val lp = LinearLayout.LayoutParams(dp(18),dp(14)); layoutParams=lp; setTextColor(Color.parseColor("#B0ACA8")) })
+                nav.addView(TextView(this).apply { text = "▼"; textSize = 8f; gravity = Gravity.CENTER; val lp = LinearLayout.LayoutParams(dp(18),dp(16)); layoutParams=lp; setTextColor(Color.parseColor("#8A8580")); setOnClickListener { onPage((page+1)%numPages) } })
+            }
+            nav.addView(TextView(this).apply { text = "···"; textSize = 11f; gravity = Gravity.CENTER; val lp = LinearLayout.LayoutParams(dp(18),dp(18)); layoutParams=lp; setTextColor(Color.parseColor("#8A8580")); setOnClickListener { showColorGridDialog { c -> onPick(c); rebuildContextBar() } } })
+            row.addView(nav)
+        }
+
+        // Big-touch slider: tall container so touch registers on whole height
+        fun bigSlider(label: String, max: Int, progress: Int, onChange: (Int) -> Unit) {
             row.addView(TextView(this).apply {
-                text = label; textSize = 10f; setTextColor(Color.parseColor("#8A8580"))
-                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, BAR_H); gravity = Gravity.CENTER; layoutParams = lp
-                setPadding(dp(2), 0, dp(3), 0); this.gravity = Gravity.CENTER
+                text = label; textSize = 9f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#8A8580"))
+                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, BAR_H); this.gravity = Gravity.CENTER; layoutParams = lp
+                setPadding(dp(2),0,dp(3),0)
             })
-            row.addView(SeekBar(this).apply {
+            val container = FrameLayout(this).apply {
+                val lp = LinearLayout.LayoutParams(dp(130), BAR_H); layoutParams = lp
+            }
+            container.addView(SeekBar(this).apply {
                 this.max = max; this.progress = progress
-                val lp = LinearLayout.LayoutParams(dp(130), LinearLayout.LayoutParams.WRAP_CONTENT); layoutParams = lp
+                val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER); layoutParams = lp
                 progressTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#5C5856"))
                 thumbTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#1C1C1E"))
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { if(f) onChange(v) }
-                    override fun onStartTrackingTouch(sb: SeekBar?) { var p = sb?.parent; while (p != null) { val hsv = p as? HorizontalScrollView; if (hsv != null) { hsv.requestDisallowInterceptTouchEvent(true); break }; p = (p as? android.view.View)?.parent as? android.view.ViewParent } }
-                    override fun onStopTrackingTouch(sb: SeekBar?) { var p = sb?.parent; while (p != null) { val hsv = p as? HorizontalScrollView; if (hsv != null) { hsv.requestDisallowInterceptTouchEvent(false); break }; p = (p as? android.view.View)?.parent as? android.view.ViewParent } }
+                    override fun onStartTrackingTouch(sb: SeekBar?) { var p = sb?.parent?.parent; while (p != null) { val hsv = p as? HorizontalScrollView; if (hsv != null) { hsv.requestDisallowInterceptTouchEvent(true); break }; p = (p as? android.view.View)?.parent as? android.view.ViewParent } }
+                    override fun onStopTrackingTouch(sb: SeekBar?) { var p = sb?.parent?.parent; while (p != null) { val hsv = p as? HorizontalScrollView; if (hsv != null) { hsv.requestDisallowInterceptTouchEvent(false); break }; p = (p as? android.view.View)?.parent as? android.view.ViewParent } }
                 })
             })
+            row.addView(container)
         }
 
         val allColors = listOf(
-            Color.parseColor("#1C1C1E"), Color.parseColor("#FF3B30"), Color.parseColor("#FF9500"),
-            Color.parseColor("#FFCC00"), Color.parseColor("#34C759"), Color.parseColor("#007AFF"),
-            Color.parseColor("#5856D6"), Color.parseColor("#AF52DE"), Color.WHITE,
-            Color.parseColor("#FF2D55"), Color.parseColor("#FF6B35"), Color.parseColor("#30D158"),
-            Color.parseColor("#64D2FF"), Color.parseColor("#BF5AF2"), Color.parseColor("#8E8E93"),
-            Color.parseColor("#3A3A3C"), Color.parseColor("#636366"), Color.parseColor("#48484A")
+            Color.parseColor("#1C1C1E"), Color.parseColor("#FF3B30"), Color.parseColor("#FF9500"), Color.parseColor("#FFCC00"),
+            Color.parseColor("#34C759"), Color.parseColor("#007AFF"), Color.parseColor("#5856D6"), Color.parseColor("#AF52DE"),
+            Color.WHITE, Color.parseColor("#FF2D55"), Color.parseColor("#FF6B35"), Color.parseColor("#30D158"),
+            Color.parseColor("#64D2FF"), Color.parseColor("#0A84FF"), Color.parseColor("#BF5AF2"), Color.parseColor("#8E8E93"),
+            Color.parseColor("#3A3A3C"), Color.parseColor("#636366"), Color.parseColor("#48484A"), Color.parseColor("#FFD60A"),
+            Color.parseColor("#FF375F"), Color.parseColor("#5AC8FA"), Color.parseColor("#34AADC"), Color.parseColor("#4CD964")
         )
+
+        // Shared page state per tool (reset on tool change)
+        var colPage = contextBarPage / 10  // upper digits = column page
+        var colorPage = contextBarPage % 10  // lower digit = color page
 
         when (drawingView.currentTool) {
             Tool.PEN -> {
                 val penTypes = listOf("Fountain" to PenStyle.FOUNTAIN, "Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
-                val selIdx = penTypes.indexOfFirst { it.second == drawingView.currentPenStyle }
-                verticalColumn(penTypes.map { it.first to {} }, selIdx.coerceAtLeast(0), CHIP_H) { col, i, item ->
-                    val (lbl, _) = penTypes[i]; val active = drawingView.currentPenStyle == penTypes[i].second
-                    col.addView(TextView(this).apply {
-                        text = lbl; textSize = 11f; gravity = Gravity.CENTER
-                        setPadding(dp(8), dp(4), dp(8), dp(4))
-                        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, CHIP_H); lp.setMargins(0,dp(1),0,dp(1)); layoutParams = lp
-                        background = android.graphics.drawable.GradientDrawable().apply { setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")); cornerRadius = dp(14).toFloat() }
-                        setTextColor(if (active) Color.WHITE else Color.parseColor("#3C3C3E"))
-                        setOnClickListener { drawingView.currentPenStyle = penTypes[i].second; rebuildContextBar() }
-                    })
-                }
+                pagedColumn(penTypes.map { (lbl, style) -> lbl to (drawingView.currentPenStyle == style) }, 3, colPage,
+                    onPage = { p -> contextBarPage = p * 10 + colorPage; rebuildContextBar() },
+                    onSelect = { i -> drawingView.currentPenStyle = penTypes[i].second; rebuildContextBar() })
                 divider()
-                slider("Size", 60, drawingView.currentStrokeWidth.toInt().coerceIn(1,60)) { drawingView.currentStrokeWidth = it.coerceAtLeast(1).toFloat() }
+                bigSlider("Size", 60, drawingView.currentStrokeWidth.toInt().coerceIn(1,60)) { drawingView.currentStrokeWidth = it.coerceAtLeast(1).toFloat() }
                 divider()
-                colorColumn(allColors, drawingView.currentColor) { c -> drawingView.currentColor = c }
+                colorGrid(allColors, drawingView.currentColor, colorPage,
+                    onPage = { p -> contextBarPage = colPage * 10 + p; rebuildContextBar() },
+                    onPick = { c -> drawingView.currentColor = c })
             }
             Tool.HIGHLIGHTER -> {
-                slider("Opacity", 100, drawingView.highlighterOpacity) { drawingView.highlighterOpacity = it.coerceAtLeast(5) }
+                bigSlider("Opacity", 100, drawingView.highlighterOpacity) { drawingView.highlighterOpacity = it.coerceAtLeast(5) }
                 divider()
-                slider("Size", 60, drawingView.highlighterThickness.toInt().coerceIn(4,60)) { drawingView.highlighterThickness = it.coerceAtLeast(4).toFloat() }
+                bigSlider("Size", 60, drawingView.highlighterThickness.toInt().coerceIn(4,60)) { drawingView.highlighterThickness = it.coerceAtLeast(4).toFloat() }
                 divider()
-                colorColumn(allColors, drawingView.currentColor) { c -> drawingView.currentColor = c }
+                colorGrid(allColors, drawingView.currentColor, colorPage,
+                    onPage = { p -> contextBarPage = p; rebuildContextBar() },
+                    onPick = { c -> drawingView.currentColor = c })
             }
             Tool.BRUSH -> {
                 val brushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH)
-                val selIdx = brushTypes.indexOfFirst { it.second == drawingView.currentBrushStyle }
-                verticalColumn(brushTypes.map { it.first to {} }, selIdx.coerceAtLeast(0), CHIP_H) { col, i, _ ->
-                    val (lbl, style) = brushTypes[i]; val active = drawingView.currentBrushStyle == style
-                    col.addView(TextView(this).apply {
-                        text = lbl; textSize = 11f; gravity = Gravity.CENTER
-                        setPadding(dp(8), dp(4), dp(8), dp(4))
-                        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, CHIP_H); lp.setMargins(0,dp(1),0,dp(1)); layoutParams = lp
-                        background = android.graphics.drawable.GradientDrawable().apply { setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")); cornerRadius = dp(14).toFloat() }
-                        setTextColor(if (active) Color.WHITE else Color.parseColor("#3C3C3E"))
-                        setOnClickListener { drawingView.currentBrushStyle = style; rebuildContextBar() }
-                    })
-                }
+                pagedColumn(brushTypes.map { (lbl, style) -> lbl to (drawingView.currentBrushStyle == style) }, 3, colPage,
+                    onPage = { p -> contextBarPage = p * 10 + colorPage; rebuildContextBar() },
+                    onSelect = { i -> drawingView.currentBrushStyle = brushTypes[i].second; rebuildContextBar() })
                 divider()
-                slider("Size", 60, drawingView.currentStrokeWidth.toInt().coerceIn(1,60)) { drawingView.currentStrokeWidth = it.coerceAtLeast(1).toFloat() }
+                bigSlider("Size", 60, drawingView.currentStrokeWidth.toInt().coerceIn(1,60)) { drawingView.currentStrokeWidth = it.coerceAtLeast(1).toFloat() }
                 divider()
-                colorColumn(allColors, drawingView.currentColor) { c -> drawingView.currentColor = c }
+                colorGrid(allColors, drawingView.currentColor, colorPage,
+                    onPage = { p -> contextBarPage = colPage * 10 + p; rebuildContextBar() },
+                    onPick = { c -> drawingView.currentColor = c })
             }
             Tool.ERASER -> {
                 val modes = listOf("Object" to EraserMode.OBJECT, "Area" to EraserMode.AREA)
-                val selIdx = modes.indexOfFirst { it.second == drawingView.eraserMode }
-                verticalColumn(modes.map { it.first to {} }, selIdx.coerceAtLeast(0), CHIP_H) { col, i, _ ->
-                    val (lbl, mode) = modes[i]; val active = drawingView.eraserMode == mode
-                    col.addView(TextView(this).apply {
-                        text = lbl; textSize = 11f; gravity = Gravity.CENTER
-                        setPadding(dp(8), dp(4), dp(8), dp(4))
-                        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, CHIP_H); lp.setMargins(0,dp(1),0,dp(1)); layoutParams = lp
-                        background = android.graphics.drawable.GradientDrawable().apply { setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")); cornerRadius = dp(14).toFloat() }
-                        setTextColor(if (active) Color.WHITE else Color.parseColor("#3C3C3E"))
-                        setOnClickListener { drawingView.eraserMode = mode; rebuildContextBar() }
-                    })
-                }
+                pagedColumn(modes.map { (lbl, mode) -> lbl to (drawingView.eraserMode == mode) }, 2, 0,
+                    onPage = {}, onSelect = { i -> drawingView.eraserMode = modes[i].second; rebuildContextBar() })
                 divider()
-                slider("Size", 120, drawingView.eraserSize.toInt().coerceIn(10,120)) { drawingView.eraserSize = it.coerceAtLeast(10).toFloat() }
+                bigSlider("Size", 120, drawingView.eraserSize.toInt().coerceIn(10,120)) { drawingView.eraserSize = it.coerceAtLeast(10).toFloat() }
             }
             Tool.FILL -> {
-                colorColumn(allColors, drawingView.fillColor) { c -> drawingView.fillColor = c }
+                colorGrid(allColors.take(12), drawingView.fillColor, colorPage,
+                    onPage = { p -> contextBarPage = p; rebuildContextBar() },
+                    onPick = { c -> drawingView.fillColor = c })
             }
             Tool.TEXT -> {
-                val fonts = listOf("Default" to "sans-serif", "Serif" to "serif", "Mono" to "monospace", "Cursive" to "cursive", "Fantasy" to "fantasy", "Arial" to "arial", "Georgia" to "georgia")
-                val selIdx = fonts.indexOfFirst { it.second == pendingFontFamily }
-                verticalColumn(fonts.map { it.first to {} }, selIdx.coerceAtLeast(0), CHIP_H) { col, i, _ ->
-                    val (lbl, fam) = fonts[i]; val active = pendingFontFamily == fam
-                    col.addView(TextView(this).apply {
+                val fonts = listOf("Default" to "sans-serif", "Serif" to "serif", "Mono" to "monospace", "Cursive" to "cursive", "Fantasy" to "fantasy")
+                pagedColumn(fonts.map { (lbl, fam) -> lbl to (pendingFontFamily == fam) }, 3, colPage,
+                    onPage = { p -> contextBarPage = p * 10 + colorPage; rebuildContextBar() },
+                    onSelect = { i ->
+                        pendingFontFamily = fonts[i].second
+                        // Update active text item font in real time
+                        textSelectionItem?.let { it.fontFamily = pendingFontFamily; drawingView.invalidate() }
+                        activeEditText?.typeface = try { android.graphics.Typeface.create(pendingFontFamily, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
+                        rebuildContextBar()
+                    })
+                divider()
+                bigSlider("Size", 120, editSize.toInt().coerceIn(8,120)) { editSize = it.coerceAtLeast(8).toFloat(); activeEditText?.textSize = editSize / resources.displayMetrics.density; textSelectionItem?.let { it.size = editSize; drawingView.invalidate() } }
+                divider()
+                bigSlider("Opacity", 100, editOpacity * 100 / 255) { editOpacity = it * 255 / 100; activeEditText?.alpha = it / 100f }
+                divider()
+                colorGrid(allColors, editColor, colorPage,
+                    onPage = { p -> contextBarPage = colPage * 10 + p; rebuildContextBar() },
+                    onPick = { c -> editColor = c; activeEditText?.setTextColor(c); textSelectionItem?.let { it.color = c; drawingView.invalidate() } })
+            }
+            Tool.SELECT -> {
+                // Show select mode options as icon chips
+                val selectModes = listOf("Default" to "select_default", "Lasso" to "select_lasso", "Auto" to "select_auto", "Box" to "select_box")
+                for ((lbl, _) in selectModes) {
+                    row.addView(TextView(this).apply {
                         text = lbl; textSize = 11f; gravity = Gravity.CENTER
-                        typeface = try { android.graphics.Typeface.create(fam, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
-                        setPadding(dp(8), dp(4), dp(8), dp(4))
-                        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, CHIP_H); lp.setMargins(0,dp(1),0,dp(1)); layoutParams = lp
-                        background = android.graphics.drawable.GradientDrawable().apply { setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")); cornerRadius = dp(14).toFloat() }
-                        setTextColor(if (active) Color.WHITE else Color.parseColor("#3C3C3E"))
-                        setOnClickListener { pendingFontFamily = fam; rebuildContextBar() }
+                        setPadding(dp(10), dp(5), dp(10), dp(5))
+                        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(32)); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp
+                        background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(16).toFloat() }
+                        setTextColor(Color.parseColor("#3C3C3E"))
+                        setOnClickListener {
+                            when (lbl) {
+                                "Default" -> setActiveTool(null, Tool.SELECT)
+                                "Lasso" -> setActiveTool(null, Tool.LASSO)
+                                "Auto" -> setActiveTool(null, Tool.AUTOSELECT)
+                                "Box" -> setActiveTool(null, Tool.SELECT)
+                            }
+                        }
                     })
                 }
-                divider()
-                slider("Size", 120, editSize.toInt().coerceIn(8,120)) { editSize = it.coerceAtLeast(8).toFloat(); activeEditText?.textSize = editSize / resources.displayMetrics.density }
-                divider()
-                slider("Opacity", 100, editOpacity * 100 / 255) { editOpacity = it * 255 / 100 }
-                divider()
-                colorColumn(allColors, editColor) { c -> editColor = c; activeEditText?.setTextColor(c) }
             }
             else -> {
-                slider("Size", 60, drawingView.currentStrokeWidth.toInt().coerceIn(1,60)) { drawingView.currentStrokeWidth = it.coerceAtLeast(1).toFloat() }
+                bigSlider("Size", 60, drawingView.currentStrokeWidth.toInt().coerceIn(1,60)) { drawingView.currentStrokeWidth = it.coerceAtLeast(1).toFloat() }
                 divider()
-                colorColumn(allColors, drawingView.currentColor) { c -> drawingView.currentColor = c }
+                colorGrid(allColors, drawingView.currentColor, colorPage,
+                    onPage = { p -> contextBarPage = p; rebuildContextBar() },
+                    onPick = { c -> drawingView.currentColor = c })
             }
         }
     }
-
 
     // Hides the primary bottom toolbar while typing in a table cell (so the keyboard has more
     // room and the toolbar doesn't visually compete with it), and brings it back when the user
@@ -1311,10 +1338,14 @@ class MainActivity : AppCompatActivity() {
     private var eraserOptionsPanel: LinearLayout? = null
     private var contextBarPage = 0 // 0 = default, increments on swipe-up
 
-    private fun dismissPenOptionsPanel() { penOptionsPanel?.let { canvasContainer.removeView(it) }; penOptionsPanel = null }
-    private fun dismissEraserOptionsPanel() { eraserOptionsPanel?.let { canvasContainer.removeView(it) }; eraserOptionsPanel = null }
+    private fun dismissPenOptionsPanel() {
+        penOptionsPanel?.let { canvasContainer.removeView(it) }; penOptionsPanel = null
+        findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
+    }
+    private fun dismissEraserOptionsPanel() { eraserOptionsPanel?.let { canvasContainer.removeView(it) }; eraserOptionsPanel = null; findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE }
 
     private fun showPenOptionsPanel() {
+        findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
         if (penOptionsPanel != null) { dismissPenOptionsPanel(); return }
         dismissAllFloatingPanels()
         setActiveTool(findViewById(R.id.btnDraw), Tool.PEN)
@@ -1419,7 +1450,7 @@ class MainActivity : AppCompatActivity() {
         penOptionsPanel = scroll
     }
 
-    private fun showEraserOptionsPanel() {
+    private fun showEraserOptionsPanel() { findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
         if (eraserOptionsPanel != null) { dismissEraserOptionsPanel(); return }
         dismissAllFloatingPanels()
         setActiveTool(findViewById(R.id.btnQuickEraser), Tool.ERASER)
@@ -1513,9 +1544,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var highlighterOptionsPanel: View? = null
-    private fun dismissHighlighterOptionsPanel() { highlighterOptionsPanel?.let { canvasContainer.removeView(it) }; highlighterOptionsPanel = null }
+    private fun dismissHighlighterOptionsPanel() { highlighterOptionsPanel?.let { canvasContainer.removeView(it) }; highlighterOptionsPanel = null; findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE }
 
-    private fun showHighlighterOptionsPanel() {
+    private fun showHighlighterOptionsPanel() { findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
         if (highlighterOptionsPanel != null) { dismissHighlighterOptionsPanel(); return }
         dismissAllFloatingPanels()
         setActiveTool(findViewById(R.id.btnHighlighter), Tool.HIGHLIGHTER)
@@ -1596,9 +1627,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var brushOptionsPanel: View? = null
-    private fun dismissBrushOptionsPanel() { brushOptionsPanel?.let { canvasContainer.removeView(it) }; brushOptionsPanel = null }
+    private fun dismissBrushOptionsPanel() { brushOptionsPanel?.let { canvasContainer.removeView(it) }; brushOptionsPanel = null; findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE }
 
-    private fun showBrushOptionsPanel() {
+    private fun showBrushOptionsPanel() { findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
         if (brushOptionsPanel != null) { dismissBrushOptionsPanel(); return }
         dismissAllFloatingPanels()
         setActiveTool(findViewById(R.id.btnBrush), Tool.BRUSH)
