@@ -2160,6 +2160,8 @@ class MainActivity : AppCompatActivity() {
         textSelectionHandles = emptyList()
         if (textSelectionBox != null) drawingView.onCanvasTransformed = null
         textSelectionBox = null; textSelectionItem = null
+        drawingView.isTextSelected = false
+        drawingView.selectedItem = null; drawingView.invalidate()
     }
 
     // Lightweight selection box for a single tap on text: shows the same border + move/resize/
@@ -2213,6 +2215,7 @@ class MainActivity : AppCompatActivity() {
         dismissTextSelectionBox()
         closeInlineEditor(true)
         dismissCellEditor()
+        drawingView.isTextSelected = true
 
         val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
         val convenientBoost = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 1.6f else 1f

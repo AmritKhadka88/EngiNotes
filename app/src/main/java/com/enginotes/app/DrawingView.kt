@@ -642,6 +642,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // this to navigate to the linked note/page instead of selecting or editing the text.
     var onLinkTap: ((String) -> Unit)? = null
     var isTextEditorOpen: Boolean = false
+    var isTextSelected: Boolean = false  // true when text selection box is showing — blocks new editor
     var onScaleChanged: ((Float) -> Unit)? = null
     var onCanvasTransformed: (() -> Unit)? = null
     var onPageSwipe: ((Int) -> Unit)? = null
@@ -772,7 +773,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         // current one instead of opening another.
                         onEmptyAreaTap?.invoke()
                     } else {
-                        selectedItem = null; onTextEditRequest?.invoke(null, e.x, e.y, wx, wy)
+                        selectedItem = null; if (!isTextSelected) onTextEditRequest?.invoke(null, e.x, e.y, wx, wy)
                     }
                 }
                 Tool.SELECT -> {
@@ -806,7 +807,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 onTextEditRequest?.invoke(hit, e.x, e.y, wx, wy)
                 return true
             }
-            if (currentTool == Tool.TEXT) { onTextEditRequest?.invoke(null, e.x, e.y, wx, wy); return true }
+            if (currentTool == Tool.TEXT) { if (!isTextSelected) onTextEditRequest?.invoke(null, e.x, e.y, wx, wy); return true }
             // Double-tap a table in SELECT tool: enter cell-editing mode and open the tapped cell
             if (currentTool == Tool.SELECT) {
                 for (action in actions.reversed()) {
