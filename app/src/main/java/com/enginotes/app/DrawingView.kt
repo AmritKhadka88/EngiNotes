@@ -1439,6 +1439,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private val longPressHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var longPressRunnable: Runnable? = null
+    private var textLongPressStartX = 0f; private var textLongPressStartY = 0f
 
     private fun handleTable(event: MotionEvent) {
         val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
@@ -2041,7 +2042,36 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { if (isStylus) isStylusDown = false; drawingPointerId = -1 }
             MotionEvent.ACTION_MOVE -> { if (isStylusDown && isFinger) return true }
         }
-        if (currentTool == Tool.TEXT || currentTool == Tool.FILL) { gestureDetector.onTouchEvent(event); return true }
+        if (currentTool == Tool.TEXT || currentTool == Tool.FILL) {
+            if (currentTool == Tool.TEXT) {
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        val wx2 = screenToWorldX(event.x); val wy2 = screenToWorldY(event.y)
+                        val hit = findTextItemAt(wx2, wy2)
+                        textLongPressStartX = event.x; textLongPressStartY = event.y
+                        longPressRunnable?.let { longPressHandler.removeCallbacks(it) }; longPressRunnable = null
+                        if (hit != null) {
+                            val capturedHit = hit; val lx = event.x; val ly = event.y
+                            longPressRunnable = Runnable {
+                                longPressRunnable = null
+                                selectedItem = capturedHit; invalidate()
+                                onTextSelectRequest?.invoke(capturedHit, lx, ly)
+                            }
+                            longPressHandler.postDelayed(longPressRunnable!!, 450L)
+                        }
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        if (longPressRunnable != null && (kotlin.math.abs(event.x - textLongPressStartX) > 10f || kotlin.math.abs(event.y - textLongPressStartY) > 10f)) {
+                            longPressHandler.removeCallbacks(longPressRunnable!!); longPressRunnable = null
+                        }
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
+                    }
+                }
+            }
+            gestureDetector.onTouchEvent(event); return true
+        }
         if (currentTool == Tool.SELECT) { gestureDetector.onTouchEvent(event); handleSelect(event); return true }
         if (currentTool == Tool.ARC) { handleArc(event); return true }
         if (currentTool == Tool.AUTOSELECT) { gestureDetector.onTouchEvent(event); handleAutoSelect(event); return true }
