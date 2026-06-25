@@ -116,6 +116,9 @@ class MainActivity : AppCompatActivity() {
     private var pendingBold = false; private var pendingItalic = false
     private var pendingUnderline = false; private var pendingHighlight: Int? = null
     private var pendingFontFamily: String = "sans-serif"
+    private val recentFonts = mutableListOf("sans-serif", "serif", "monospace")
+    private val recentPenStyles = mutableListOf(PenStyle.FOUNTAIN, PenStyle.BALL, PenStyle.PENCIL)
+    private val recentBrushStyles = mutableListOf(BrushStyle.ROUND, BrushStyle.INK, BrushStyle.WATERCOLOR)
     private var cameraImageFile: File? = null
     private var activeToolbarButton: ImageButton? = null
     private var isSwitchingTextEditor = false
@@ -894,42 +897,73 @@ class MainActivity : AppCompatActivity() {
             Color.parseColor("#3A3A3C"), Color.parseColor("#636366"), Color.parseColor("#48484A"), Color.parseColor("#FFD60A"),
             Color.parseColor("#FF375F"), Color.parseColor("#5AC8FA"), Color.parseColor("#34AADC"), Color.parseColor("#4CD964")
         )
-        var colorPage = contextBarPage % 10
+        val quickColors = listOf(
+            Color.parseColor("#1C1C1E"), Color.parseColor("#FF3B30"), Color.parseColor("#FF9500"), Color.parseColor("#FFCC00"),
+            Color.parseColor("#34C759"), Color.parseColor("#007AFF"), Color.parseColor("#5856D6"), Color.parseColor("#AF52DE")
+        )
+        // 8 fixed colors + swipe for more
+        fun eightColors(selected: Int, onPick: (Int) -> Unit) {
+            val DOT = dp(28); val M = dp(2)
+            quickColors.forEach { color ->
+                val sel = color == selected
+                row.addView(View(this).apply {
+                    val lp = LinearLayout.LayoutParams(DOT, DOT); lp.setMargins(M,0,M,0); layoutParams = lp
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(color)
+                        setStroke(if (sel) dp(2) else dp(1), if (sel) Color.parseColor("#1C1C1E") else Color.parseColor("#D0CCC8"))
+                    }
+                    setOnClickListener { onPick(color); rebuildContextBar() }
+                })
+            }
+            row.addView(TextView(this).apply {
+                text = "···"; textSize = 11f; gravity = Gravity.CENTER
+                val lp = LinearLayout.LayoutParams(dp(24), dp(24)); lp.setMargins(dp(2),0,dp(2),0); layoutParams = lp
+                setTextColor(Color.parseColor("#5C5856"))
+                background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(10).toFloat() }
+                setOnClickListener { showColorGridDialog { c -> onPick(c); rebuildContextBar() } }
+            })
+        }
+
+        val allPenTypes = listOf("Fountain" to PenStyle.FOUNTAIN, "Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
+        val allBrushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH)
+        val allFontFamilies = listOf("Default" to "sans-serif", "Serif" to "serif", "Mono" to "monospace", "Cursive" to "cursive", "Fantasy" to "fantasy")
 
         when (drawingView.currentTool) {
             Tool.PEN -> {
-                val penTypes = listOf("Fountain" to PenStyle.FOUNTAIN, "Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
-                chipScrollRow(penTypes.map { (lbl, style) -> lbl to (drawingView.currentPenStyle == style) }) { i ->
-                    drawingView.currentPenStyle = penTypes[i].second; rebuildContextBar()
+                // Show 3 recently used pen types
+                val recent = recentPenStyles.take(3)
+                val recentLabels = recent.map { style -> (allPenTypes.firstOrNull { it.second == style }?.first ?: style.name) to (drawingView.currentPenStyle == style) }
+                chipScrollRow(recentLabels) { i ->
+                    val chosen = recent[i]; drawingView.currentPenStyle = chosen
+                    recentPenStyles.remove(chosen); recentPenStyles.add(0, chosen)
+                    rebuildContextBar()
                 }
                 divider()
                 sizeButton(drawingView.currentStrokeWidth, 60) { drawingView.currentStrokeWidth = it }
                 opacityButton(drawingView.brushOpacity) { drawingView.brushOpacity = it; drawingView.invalidate() }
                 divider()
-                colorGrid(allColors, drawingView.currentColor, colorPage,
-                    onPage = { p -> contextBarPage = (contextBarPage / 10) * 10 + p; rebuildContextBar() },
-                    onPick = { c -> drawingView.currentColor = c })
+                eightColors(drawingView.currentColor) { c -> drawingView.currentColor = c }
             }
             Tool.HIGHLIGHTER -> {
                 sizeButton(drawingView.highlighterThickness, 60) { drawingView.highlighterThickness = it }
                 opacityButton(drawingView.highlighterOpacity * 255 / 100) { drawingView.highlighterOpacity = it * 100 / 255; drawingView.invalidate() }
                 divider()
-                colorGrid(allColors, drawingView.currentColor, colorPage,
-                    onPage = { p -> contextBarPage = p; rebuildContextBar() },
-                    onPick = { c -> drawingView.currentColor = c })
+                eightColors(drawingView.currentColor) { c -> drawingView.currentColor = c }
             }
             Tool.BRUSH -> {
-                val brushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH)
-                chipScrollRow(brushTypes.map { (lbl, style) -> lbl to (drawingView.currentBrushStyle == style) }) { i ->
-                    drawingView.currentBrushStyle = brushTypes[i].second; rebuildContextBar()
+                // Show 3 recently used brush types
+                val recent = recentBrushStyles.take(3)
+                val recentLabels = recent.map { style -> (allBrushTypes.firstOrNull { it.second == style }?.first ?: style.name) to (drawingView.currentBrushStyle == style) }
+                chipScrollRow(recentLabels) { i ->
+                    val chosen = recent[i]; drawingView.currentBrushStyle = chosen
+                    recentBrushStyles.remove(chosen); recentBrushStyles.add(0, chosen)
+                    rebuildContextBar()
                 }
                 divider()
                 sizeButton(drawingView.currentStrokeWidth, 60) { drawingView.currentStrokeWidth = it }
                 opacityButton(drawingView.brushOpacity) { drawingView.brushOpacity = it; drawingView.invalidate() }
                 divider()
-                colorGrid(allColors, drawingView.currentColor, colorPage,
-                    onPage = { p -> contextBarPage = (contextBarPage / 10) * 10 + p; rebuildContextBar() },
-                    onPick = { c -> drawingView.currentColor = c })
+                eightColors(drawingView.currentColor) { c -> drawingView.currentColor = c }
             }
             Tool.ERASER -> {
                 chipScrollRow(listOf("Object" to (drawingView.eraserMode == EraserMode.OBJECT), "Area" to (drawingView.eraserMode == EraserMode.AREA))) { i ->
@@ -940,24 +974,24 @@ class MainActivity : AppCompatActivity() {
                 opacityButton(drawingView.eraserOpacity) { drawingView.eraserOpacity = it; drawingView.invalidate() }
             }
             Tool.FILL -> {
-                colorGrid(allColors.take(16), drawingView.fillColor, colorPage,
-                    onPage = { p -> contextBarPage = p; rebuildContextBar() },
-                    onPick = { c -> drawingView.fillColor = c })
+                eightColors(drawingView.fillColor) { c -> drawingView.fillColor = c }
             }
             Tool.TEXT -> {
-                val fonts = listOf("Default" to "sans-serif", "Serif" to "serif", "Mono" to "monospace", "Cursive" to "cursive", "Fantasy" to "fantasy", "Arial" to "Arial", "Georgia" to "Georgia")
-                fontRow(fonts, pendingFontFamily) { fam ->
-                    pendingFontFamily = fam
+                // Show 3 recently used fonts (no scrollable row — just 3 chips)
+                val recent = recentFonts.take(3)
+                val recentLabels = recent.map { fam -> (allFontFamilies.firstOrNull { it.second == fam }?.first ?: fam) to (pendingFontFamily == fam) }
+                chipScrollRow(recentLabels) { i ->
+                    val fam = recent[i]; pendingFontFamily = fam
+                    recentFonts.remove(fam); recentFonts.add(0, fam)
                     textSelectionItem?.let { it.fontFamily = fam; drawingView.invalidate() }
                     activeEditText?.typeface = try { android.graphics.Typeface.create(fam, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
+                    rebuildContextBar()
                 }
                 divider()
                 sizeButton(editSize, 120) { v -> editSize = v; activeEditText?.textSize = v / resources.displayMetrics.density; textSelectionItem?.let { it.size = v; drawingView.invalidate() } }
                 opacityButton(editOpacity) { v -> editOpacity = v; activeEditText?.alpha = v / 255f; textSelectionItem?.let { it.opacity = v; drawingView.invalidate() } }
                 divider()
-                colorGrid(allColors, editColor, colorPage,
-                    onPage = { p -> contextBarPage = p; rebuildContextBar() },
-                    onPick = { c -> editColor = c; activeEditText?.setTextColor(c); textSelectionItem?.let { it.color = c; drawingView.invalidate() } })
+                eightColors(editColor) { c -> editColor = c; activeEditText?.setTextColor(c); textSelectionItem?.let { it.color = c; drawingView.invalidate() } }
             }
             Tool.SELECT, Tool.LASSO, Tool.AUTOSELECT -> {
                 // Select: rectangle icon, Lasso: lasso icon, Rectangle (was Auto): dashed rect icon
@@ -2233,23 +2267,24 @@ class MainActivity : AppCompatActivity() {
         // Patch the touch surface to call updateToolbarPos on move
         var isDraggingRotate = false
         var rotStartRawX2 = 0f; var rotStartRotation2 = 0f
+        var justShown = true // ignore the first touch-down (finger still down from long press)
         touchSurface.setOnTouchListener { _, ev ->
             val wx = drawingView.screenToWorldX(ev.x); val wy = drawingView.screenToWorldY(ev.y)
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
-                    // Check if tapping the rotate handle (green circle above box top-centre)
-                    // Handle is at world pos: rotate (item.x + contentW/2, item.y - contentH - 28/scale) around item centre
-                    val rotHandleWx = drawingView.worldToScreenX(item.x) // rough check - use screen distance
-                    val rotHandleSx = drawingView.worldToScreenX(item.x)
-                    val rotHandleSy = drawingView.worldToScreenY(item.y) - dp(90)
-                    val distToHandle = kotlin.math.hypot((ev.x - rotHandleSx).toDouble(), (ev.y - rotHandleSy).toDouble()).toFloat()
-                    if (distToHandle < dp(56)) {
-                        isDraggingRotate = true; rotStartRawX2 = ev.rawX; rotStartRotation2 = item.rotation; true
-                    } else {
-                        isDraggingRotate = false
-                        val hit = drawingView.findTextItemAtPublic(wx, wy)
-                        if (hit === item) { moveStartRawX = ev.rawX; moveStartRawY = ev.rawY; lastMoveRawX = ev.rawX; lastMoveRawY = ev.rawY; true }
-                        else { dismissTextSelectionBox(); false }
+                    if (justShown) { justShown = false; moveStartRawX = ev.rawX; moveStartRawY = ev.rawY; lastMoveRawX = ev.rawX; lastMoveRawY = ev.rawY; true }
+                    else {
+                        val rotHandleSx = drawingView.worldToScreenX(item.x)
+                        val rotHandleSy = drawingView.worldToScreenY(item.y) - dp(90)
+                        val distToHandle = kotlin.math.hypot((ev.x - rotHandleSx).toDouble(), (ev.y - rotHandleSy).toDouble()).toFloat()
+                        if (distToHandle < dp(56)) {
+                            isDraggingRotate = true; rotStartRawX2 = ev.rawX; rotStartRotation2 = item.rotation; true
+                        } else {
+                            isDraggingRotate = false
+                            val hit = drawingView.findTextItemAtPublic(wx, wy)
+                            if (hit === item) { moveStartRawX = ev.rawX; moveStartRawY = ev.rawY; lastMoveRawX = ev.rawX; lastMoveRawY = ev.rawY; true }
+                            else { dismissTextSelectionBox(); false }
+                        }
                     }
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
