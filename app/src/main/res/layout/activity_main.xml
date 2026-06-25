@@ -99,7 +99,7 @@
     <HorizontalScrollView
         android:id="@+id/toolbarScroll"
         android:layout_width="match_parent"
-        android:layout_height="50dp"
+        android:layout_height="46dp"
         android:background="#FFFFFF"
         android:scrollbars="none"
         android:visibility="visible"
