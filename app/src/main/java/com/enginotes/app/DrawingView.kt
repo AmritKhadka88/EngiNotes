@@ -2361,7 +2361,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 MotionEvent.ACTION_UP -> {
                     if (isDimDrawing && (kotlin.math.abs(dimEndWx - dimStartWx) > 5f || kotlin.math.abs(dimEndWy - dimStartWy) > 5f)) {
                         actions.add(DimensionItem(dimStartWx, dimStartWy, dimEndWx, dimEndWy, 30f / scaleFactor, currentColor, currentStrokeWidth))
-                        saveState(); invalidate()
+                        redoStack.clear(); invalidate()
                     }
                     isDimDrawing = false
                 }
