@@ -860,6 +860,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (hit.linkTarget != null && currentTool == Tool.SELECT) { onLinkTap?.invoke(hit.linkTarget!!); return }
                 selectedItem = hit; invalidate()
                 onTextSelectRequest?.invoke(hit, e.x, e.y)
+                // Cancel the current touch to prevent ACTION_UP from dismissing the selection
+                val cancel = MotionEvent.obtain(e.downTime, e.eventTime, MotionEvent.ACTION_CANCEL, e.x, e.y, 0)
+                onTouchEvent(cancel); cancel.recycle()
                 return
             }
         }
