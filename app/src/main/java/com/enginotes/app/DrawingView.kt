@@ -561,7 +561,39 @@ class FillItem(var path: String, var x: Float, var y: Float, var w: Float, var h
     var hatchScale: Float = 1f
 }
 
-class DimensionItem(var x1: Float, var y1: Float, var x2: Float, var y2: Float, var offsetPx: Float = 0f, var color: Int = android.graphics.Color.parseColor("#1565C0"), var strokeW: Float = 2f)
+enum class DimMode { AUTO, MANUAL }
+enum class DimPhase { IDLE, FIRST_POINT, SECOND_POINT, DRAGGING_OFFSET }
+
+class DimensionItem(
+    var x1: Float, var y1: Float,   // first endpoint (world)
+    var x2: Float, var y2: Float,   // second endpoint (world)
+    var offset: Float = 0f,          // perpendicular offset of dim line (world)
+    var color: Int = android.graphics.Color.parseColor("#1565C0"),
+    var strokeW: Float = 2f,
+    var label: String = "",          // empty = auto-compute; non-empty = manual label
+    var mode: DimMode = DimMode.AUTO,
+    var unit: String = "m",          // unit string for auto mode
+    var refLength: Float = 0f,       // real-world reference length (set once in auto mode)
+    var isAngular: Boolean = false,  // angular dimension flag
+    var angle: Float = 0f            // for angular: the stored angle (degrees)
+) {
+    val len: Float get() { val dx=x2-x1; val dy=y2-y1; return kotlin.math.sqrt((dx*dx+dy*dy).toDouble()).toFloat() }
+    fun displayLabel(refPixelLen: Float): String {
+        return when {
+            label.isNotEmpty() -> label
+            isAngular -> "%.1f°".format(angle)
+            mode == DimMode.AUTO && refPixelLen > 0f -> {
+                val scale = refLength / refPixelLen
+                "%.2f %s".format(len * scale, unit)
+            }
+            else -> "%.0fpx".format(len)
+        }
+    }
+    // Three drag handles in screen space (set during draw)
+    var handleP1sx = 0f; var handleP1sy = 0f  // endpoint 1
+    var handleP2sx = 0f; var handleP2sy = 0f  // endpoint 2
+    var handleMidsx = 0f; var handleMidsy = 0f // midpoint (offset drag)
+}
 
 // Represents an undoable fill-toggle on a shape. Undo/redo flip fill back and rebuild the paint.
 class FillToggleAction(val item: StrokeItem, val wasFilled: Boolean, val wasColor: Int, val newColor: Int)
@@ -827,6 +859,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         override fun onDoubleTap(e: MotionEvent): Boolean {
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
+            // Double-tap on a DimensionItem → edit it
+            if (currentTool == Tool.DIMENSION || currentTool == Tool.SELECT) {
+                val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
+                    val hr = dp(28).toFloat()
+                    kotlin.math.hypot((e.x - d.handleMidsx).toDouble(), (e.y - d.handleMidsy).toDouble()) < hr ||
+                    kotlin.math.hypot((e.x - d.handleP1sx).toDouble(), (e.y - d.handleP1sy).toDouble()) < hr ||
+                    kotlin.math.hypot((e.x - d.handleP2sx).toDouble(), (e.y - d.handleP2sy).toDouble()) < hr
+                }
+                if (hitDim != null) { selectedItem = hitDim; onDimensionEdit?.invoke(hitDim); invalidate(); return true }
+            }
             val hit = findTextItemAt(wx, wy)
             if (hit != null) {
                 selectedItem = null
@@ -1029,40 +1071,76 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
-    private fun drawDimensionItem(canvas: Canvas, d: DimensionItem) {
-        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = d.color; strokeWidth = d.strokeW / scaleFactor; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
-        val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = d.color; textSize = 12f / scaleFactor; textAlign = Paint.Align.CENTER }
-        // Direction vector
+    private fun drawDimensionItem(canvas: Canvas, d: DimensionItem, preview: Boolean = false) {
         val dx = d.x2 - d.x1; val dy = d.y2 - d.y1
-        val len = kotlin.math.sqrt((dx*dx + dy*dy).toDouble()).toFloat()
+        val len = kotlin.math.sqrt((dx*dx+dy*dy).toDouble()).toFloat()
         if (len < 1f) return
-        val nx = -dy / len; val ny = dx / len  // normal (perpendicular)
-        val off = d.offsetPx
-        // Offset endpoints
-        val ox1 = d.x1 + nx * off; val oy1 = d.y1 + ny * off
-        val ox2 = d.x2 + nx * off; val oy2 = d.y2 + ny * off
+        val ux = dx/len; val uy = dy/len        // unit along dim line
+        val nx = -uy; val ny = ux               // unit normal (perpendicular)
+
+        val sw = d.strokeW / scaleFactor
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = d.color; strokeWidth = sw; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
+        val fp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = d.color; style = Paint.Style.FILL }
+        val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = d.color; textSize = 11f / scaleFactor; textAlign = Paint.Align.CENTER
+            typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD) }
+
+        val off = d.offset  // perpendicular offset in world coords
+        // Dim-line endpoints (offset from source points)
+        val dl1x = d.x1 + nx*off; val dl1y = d.y1 + ny*off
+        val dl2x = d.x2 + nx*off; val dl2y = d.y2 + ny*off
+
+        // Extension lines: from just inside source to just past dim line
+        val extGap = 3f/scaleFactor; val extOver = 4f/scaleFactor
+        canvas.drawLine(d.x1 + nx*extGap, d.y1 + ny*extGap, dl1x + nx*extOver, dl1y + ny*extOver, p)
+        canvas.drawLine(d.x2 + nx*extGap, d.y2 + ny*extGap, dl2x + nx*extOver, dl2y + ny*extOver, p)
+
         // Main dimension line
-        canvas.drawLine(ox1, oy1, ox2, oy2, p)
-        // Extension lines
-        val extOff = off * 0.1f
-        canvas.drawLine(d.x1 + nx * extOff, d.y1 + ny * extOff, ox1 + nx * off * 0.2f, oy1 + ny * off * 0.2f, p)
-        canvas.drawLine(d.x2 + nx * extOff, d.y2 + ny * extOff, ox2 + nx * off * 0.2f, oy2 + ny * off * 0.2f, p)
-        // Arrows at ends
-        val arrowL = 8f / scaleFactor; val arrowW = 4f / scaleFactor
-        val ux = dx / len; val uy = dy / len
-        fun arrow(ex: Float, ey: Float, dirX: Float, dirY: Float) {
+        canvas.drawLine(dl1x, dl1y, dl2x, dl2y, p)
+
+        // Arrowheads (filled triangles)
+        val arL = 9f/scaleFactor; val arW = 3.5f/scaleFactor
+        fun arrowHead(ex: Float, ey: Float, dirX: Float, dirY: Float) {
             val path2 = android.graphics.Path()
             path2.moveTo(ex, ey)
-            path2.lineTo(ex - dirX * arrowL + uy * arrowW, ey - dirY * arrowL - ux * arrowW)  // Swapped -ux for consistency
-            path2.moveTo(ex, ey)
-            path2.lineTo(ex - dirX * arrowL - uy * arrowW, ey - dirY * arrowL + ux * arrowW)
-            canvas.drawPath(path2, p)
+            path2.lineTo(ex + dirX*arL + ny*arW, ey + dirY*arL - nx*arW)
+            path2.lineTo(ex + dirX*arL - ny*arW, ey + dirY*arL + nx*arW)
+            path2.close(); canvas.drawPath(path2, fp)
         }
-        arrow(ox1, oy1, -ux, -uy); arrow(ox2, oy2, ux, uy)
-        // Label: distance in world units, centred on dim line
-        val midX = (ox1 + ox2) / 2f; val midY = (oy1 + oy2) / 2f
-        val dist = len.toInt()
-        canvas.drawText("${dist}px", midX, midY - 4f / scaleFactor, tp)
+        arrowHead(dl1x, dl1y, ux, uy)    // arrow at p1 pointing toward p2
+        arrowHead(dl2x, dl2y, -ux, -uy)  // arrow at p2 pointing toward p1
+
+        // Label centred on dim line
+        val midX = (dl1x+dl2x)/2f; val midY = (dl1y+dl2y)/2f
+        val labelStr = d.displayLabel(autoRefPixelLen)
+        val textOff = 6f/scaleFactor
+        canvas.save()
+        canvas.translate(midX, midY)
+        val angle = kotlin.math.atan2(dy.toDouble(), dx.toDouble()).toFloat() * 180f / Math.PI.toFloat()
+        val normAngle = if (angle > 90f || angle < -90f) angle + 180f else angle
+        canvas.rotate(normAngle)
+        // White background for readability
+        val bgP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.WHITE; style = Paint.Style.FILL }
+        val tw = tp.measureText(labelStr); val th = tp.textSize
+        canvas.drawRoundRect(android.graphics.RectF(-tw/2f-2f/scaleFactor, -th-2f/scaleFactor, tw/2f+2f/scaleFactor, 2f/scaleFactor), 2f/scaleFactor, 2f/scaleFactor, bgP)
+        canvas.drawText(labelStr, 0f, -textOff, tp)
+        canvas.restore()
+
+        // Store screen-space handle positions for hit testing (only when not preview)
+        if (!preview) {
+            d.handleP1sx = worldToScreenX(d.x1); d.handleP1sy = worldToScreenY(d.y1)
+            d.handleP2sx = worldToScreenX(d.x2); d.handleP2sy = worldToScreenY(d.y2)
+            d.handleMidsx = worldToScreenX(midX); d.handleMidsy = worldToScreenY(midY)
+        }
+
+        // Draw drag handles when selected
+        if (!preview && selectedItem === d) {
+            val hr = 7f/scaleFactor
+            val hFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.WHITE; style = Paint.Style.FILL }
+            val hStr = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = d.color; style = Paint.Style.STROKE; strokeWidth = sw*1.5f }
+            for ((hx,hy) in listOf(d.x1 to d.y1, d.x2 to d.y2, midX to midY)) {
+                canvas.drawCircle(hx, hy, hr, hFill); canvas.drawCircle(hx, hy, hr, hStr)
+            }
+        }
     }
 
     private fun drawHatchPattern(canvas: Canvas, item: FillItem) {
@@ -1391,8 +1469,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawSelection(canvas: Canvas) {
         // Preview dimension line while drawing
-        if (currentTool == Tool.DIMENSION && isDimDrawing) {
-            drawDimensionItem(canvas, DimensionItem(dimStartWx, dimStartWy, dimEndWx, dimEndWy, 30f / scaleFactor, currentColor, currentStrokeWidth))
+        if (currentTool == Tool.DIMENSION && dimPhase == DimPhase.SECOND_POINT) {
+            val preview = DimensionItem(dimP1wx, dimP1wy, dimCurWx, dimCurWy, 0f, currentColor, currentStrokeWidth)
+            drawDimensionItem(canvas, preview, preview = true)
         }
         val item = selectedItem ?: return
         if (item is TextItem) {
@@ -1694,12 +1773,25 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val longPressHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var longPressRunnable: Runnable? = null
     private var textLongPressStartX = 0f; private var textLongPressStartY = 0f
+    private var dimPhase = DimPhase.IDLE
+    private var dimP1wx = 0f; private var dimP1wy = 0f
+    private var dimP2wx = 0f; private var dimP2wy = 0f
+    private var dimCurWx = 0f; private var dimCurWy = 0f   // live finger position
+    private var dimDraggingItem: DimensionItem? = null
+    private var dimDragHandle = 0  // 1=p1, 2=p2, 3=mid
+    var dimMode: DimMode = DimMode.AUTO
+    var autoRefPixelLen: Float = 0f    // pixel length of the reference dimension
+    var autoRefRealLen: Float = 1f     // user-entered real length
+    var autoRefUnit: String = "m"
+    // Legacy compat
     private var dimStartWx = 0f; private var dimStartWy = 0f
     private var dimEndWx = 0f; private var dimEndWy = 0f
     private var isDimDrawing = false
     var pendingHatchPattern: HatchPattern? = null
     var pendingHatchColor: Int = android.graphics.Color.BLACK
     private var fillScrollGuard = false
+    var onDimensionCreated: ((DimensionItem) -> Unit)? = null
+    var onDimensionEdit: ((DimensionItem) -> Unit)? = null
 
     private fun handleTable(event: MotionEvent) {
         val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
@@ -2304,15 +2396,83 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_MOVE -> { if (isStylusDown && isFinger) return true }
         }
         if (currentTool == Tool.DIMENSION) {
+            if (twoFingerActive) return true  // ignore while two-finger gesture
             when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { dimStartWx = screenToWorldX(event.x); dimStartWy = screenToWorldY(event.y); isDimDrawing = true }
-                MotionEvent.ACTION_MOVE -> { if (isDimDrawing) { dimEndWx = screenToWorldX(event.x); dimEndWy = screenToWorldY(event.y); invalidate() } }
-                MotionEvent.ACTION_UP -> {
-                    if (isDimDrawing && (kotlin.math.abs(dimEndWx - dimStartWx) > 5f || kotlin.math.abs(dimEndWy - dimStartWy) > 5f)) {
-                        actions.add(DimensionItem(dimStartWx, dimStartWy, dimEndWx, dimEndWy, 30f / scaleFactor, currentColor, currentStrokeWidth))
-                        redoStack.clear(); invalidate()
+                MotionEvent.ACTION_DOWN -> {
+                    val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
+                    // Check if tapping near an existing dimension item's handles for editing
+                    val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
+                        val hr = dp(20).toFloat()
+                        kotlin.math.hypot((event.x - d.handleP1sx).toDouble(), (event.y - d.handleP1sy).toDouble()) < hr ||
+                        kotlin.math.hypot((event.x - d.handleP2sx).toDouble(), (event.y - d.handleP2sy).toDouble()) < hr ||
+                        kotlin.math.hypot((event.x - d.handleMidsx).toDouble(), (event.y - d.handleMidsy).toDouble()) < hr
                     }
-                    isDimDrawing = false
+                    if (hitDim != null) {
+                        selectedItem = hitDim; dimDraggingItem = hitDim
+                        val hr = dp(20).toFloat()
+                        dimDragHandle = when {
+                            kotlin.math.hypot((event.x - hitDim.handleP1sx).toDouble(), (event.y - hitDim.handleP1sy).toDouble()) < hr -> 1
+                            kotlin.math.hypot((event.x - hitDim.handleP2sx).toDouble(), (event.y - hitDim.handleP2sy).toDouble()) < hr -> 2
+                            else -> 3
+                        }
+                        invalidate()
+                    } else {
+                        // Start new dimension
+                        dimDraggingItem = null; selectedItem = null
+                        when (dimPhase) {
+                            DimPhase.IDLE, DimPhase.FIRST_POINT -> {
+                                dimP1wx = wx; dimP1wy = wy; dimCurWx = wx; dimCurWy = wy
+                                dimPhase = DimPhase.SECOND_POINT
+                            }
+                            else -> {}
+                        }
+                        invalidate()
+                    }
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
+                    if (dimDraggingItem != null) {
+                        val d = dimDraggingItem!!
+                        when (dimDragHandle) {
+                            1 -> { d.x1 = wx; d.y1 = wy }
+                            2 -> { d.x2 = wx; d.y2 = wy }
+                            3 -> {
+                                // Compute perpendicular offset from the dimension baseline
+                                val ddx = d.x2-d.x1; val ddy = d.y2-d.y1
+                                val dlen = kotlin.math.sqrt((ddx*ddx+ddy*ddy).toDouble()).toFloat()
+                                if (dlen > 0f) {
+                                    val nx = -ddy/dlen; val ny = ddx/dlen
+                                    val toFx = wx - d.x1; val toFy = wy - d.y1
+                                    d.offset = toFx*nx + toFy*ny
+                                }
+                            }
+                        }
+                        invalidate()
+                    } else if (dimPhase == DimPhase.SECOND_POINT) {
+                        dimCurWx = wx; dimCurWy = wy; invalidate()
+                    }
+                }
+                MotionEvent.ACTION_UP -> {
+                    val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
+                    if (dimDraggingItem != null) {
+                        dimDraggingItem = null; redoStack.clear()
+                    } else if (dimPhase == DimPhase.SECOND_POINT) {
+                        dimP2wx = wx; dimP2wy = wy
+                        val dist = kotlin.math.hypot((dimP2wx-dimP1wx).toDouble(), (dimP2wy-dimP1wy).toDouble())
+                        if (dist > dp(10)) {
+                            val newDim = DimensionItem(dimP1wx, dimP1wy, dimP2wx, dimP2wy, 0f, currentColor, currentStrokeWidth, mode = dimMode)
+                            if (dimMode == DimMode.AUTO && autoRefPixelLen == 0f) {
+                                // First auto dimension — becomes the reference
+                                newDim.refLength = autoRefRealLen; newDim.unit = autoRefUnit
+                                autoRefPixelLen = newDim.len
+                            } else if (dimMode == DimMode.AUTO) {
+                                newDim.refLength = autoRefRealLen; newDim.unit = autoRefUnit
+                            }
+                            actions.add(newDim); redoStack.clear()
+                            onDimensionCreated?.invoke(newDim)  // signals MainActivity to show label dialog
+                        }
+                        dimPhase = DimPhase.IDLE; invalidate()
+                    }
                 }
             }
             return true

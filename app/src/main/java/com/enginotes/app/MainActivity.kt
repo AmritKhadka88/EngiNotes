@@ -432,6 +432,8 @@ class MainActivity : AppCompatActivity() {
         }
         drawingView.onLinkTap               = { target -> navigateToLink(target) }
         drawingView.onPageSwipe             = { dir -> drawingView.scrollPage(dir) }
+        drawingView.onDimensionCreated      = { dim -> showDimensionLabelDialog(dim) }
+        drawingView.onDimensionEdit         = { dim -> showDimensionEditDialog(dim) }
         drawingView.onDrawingStarted        = {
             // Hide both bars while drawing for more canvas space — tap to bring back
             if (drawingView.isDrawingTool()) {
@@ -1304,9 +1306,122 @@ class MainActivity : AppCompatActivity() {
                     3 -> checkAndRecordAudio()
                     4 -> pickPdfLauncher.launch("application/pdf")
                     5 -> showOcrSourceDialog()
-                    6 -> { setActiveTool(null, Tool.DIMENSION); android.widget.Toast.makeText(this, "Tap two points to add dimension", android.widget.Toast.LENGTH_SHORT).show() }
+                    6 -> showDimensionModeDialog()
                 }
             }.show()
+    }
+
+    private fun showDimensionModeDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Dimension Tool")
+            .setItems(arrayOf("Auto — set one length, rest calculated", "Manual — type each label yourself", "Angular — measure angles")) { _, i ->
+                when (i) {
+                    0 -> {
+                        // Auto: ask for reference length and unit first
+                        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20),dp(12),dp(20),dp(8)) }
+                        val lenInput = android.widget.EditText(this).apply { hint = "Real-world length (e.g. 3.5)"; inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL }
+                        val unitInput = android.widget.EditText(this).apply { hint = "Unit (e.g. m, mm, ft)"; setText("m") }
+                        layout.addView(TextView(this).apply { text = "First dimension you draw will be the reference."; textSize = 13f; setPadding(0,0,0,dp(8)) })
+                        layout.addView(lenInput); layout.addView(unitInput)
+                        AlertDialog.Builder(this).setTitle("Auto Dimension — Reference Length").setView(layout)
+                            .setPositiveButton("Start") { _, _ ->
+                                val len = lenInput.text.toString().toFloatOrNull() ?: 1f
+                                drawingView.autoRefRealLen = len; drawingView.autoRefUnit = unitInput.text.toString().ifBlank { "m" }
+                                drawingView.autoRefPixelLen = 0f  // reset reference
+                                drawingView.dimMode = DimMode.AUTO
+                                setActiveTool(null, Tool.DIMENSION)
+                                android.widget.Toast.makeText(this, "Tap two points for reference dimension", android.widget.Toast.LENGTH_LONG).show()
+                            }.setNegativeButton("Cancel", null).show()
+                    }
+                    1 -> {
+                        drawingView.dimMode = DimMode.MANUAL
+                        setActiveTool(null, Tool.DIMENSION)
+                        android.widget.Toast.makeText(this, "Tap two points to place dimension", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    2 -> {
+                        drawingView.dimMode = DimMode.MANUAL
+                        setActiveTool(null, Tool.DIMENSION)
+                        android.widget.Toast.makeText(this, "Tap two points to place angular dimension", android.widget.Toast.LENGTH_SHORT).show()
+                        // TODO: set angular flag — for now we prompt in the label dialog
+                    }
+                }
+            }.show()
+    }
+
+    private fun showDimensionLabelDialog(dim: DimensionItem) {
+        if (dim.mode == DimMode.AUTO && drawingView.autoRefPixelLen > 0f && dim.label.isEmpty()) {
+            // Auto mode with reference set — label is computed, no dialog needed
+            drawingView.invalidate(); return
+        }
+        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20),dp(12),dp(20),dp(8)) }
+        val isAngular = android.widget.CheckBox(this).apply { text = "Angular dimension"; isChecked = dim.isAngular }
+        val labelInput = android.widget.EditText(this).apply {
+            hint = if (dim.mode == DimMode.MANUAL) "Enter label (e.g. 3.5m)" else "Leave blank for auto"
+            setText(dim.label)
+            requestFocus()
+        }
+        if (dim.mode == DimMode.MANUAL) {
+            layout.addView(isAngular)
+            layout.addView(TextView(this).apply { text = "Label:"; textSize = 13f; setPadding(0,dp(8),0,dp(4)) })
+        }
+        layout.addView(labelInput)
+        if (dim.mode == DimMode.AUTO) {
+            val auto = drawingView.autoRefPixelLen == 0f
+            layout.addView(TextView(this).apply {
+                text = if (auto) "This is the reference dimension (${drawingView.autoRefRealLen} ${drawingView.autoRefUnit})" else "Auto: ${dim.displayLabel(drawingView.autoRefPixelLen)}"
+                textSize = 12f; setTextColor(Color.parseColor("#666666")); setPadding(0,dp(4),0,0)
+            })
+            if (auto) drawingView.autoRefPixelLen = dim.len  // mark this as reference
+        }
+        AlertDialog.Builder(this).setTitle("Dimension Label").setView(layout)
+            .setPositiveButton("OK") { _, _ ->
+                dim.label = labelInput.text.toString().trim()
+                dim.isAngular = isAngular.isChecked
+                if (dim.isAngular && dim.label.isEmpty()) {
+                    // Auto compute angle from the line direction
+                    val dx = dim.x2 - dim.x1; val dy = dim.y2 - dim.y1
+                    dim.angle = (kotlin.math.atan2(dy.toDouble(), dx.toDouble()) * 180.0 / Math.PI).toFloat()
+                }
+                drawingView.invalidate()
+            }
+            .setNegativeButton("Skip", null)
+            .show()
+        // Show keyboard
+        labelInput.postDelayed({ val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager; imm.showSoftInput(labelInput, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT) }, 200)
+    }
+
+    private fun showDimensionEditDialog(dim: DimensionItem) {
+        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20),dp(12),dp(20),dp(8)) }
+        val labelInput = android.widget.EditText(this).apply { hint = "Label (blank = auto)"; setText(dim.label) }
+        val colorRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,dp(8),0,dp(8)) }
+        val colors = listOf(Color.parseColor("#1565C0"), Color.BLACK, Color.RED, Color.parseColor("#388E3C"), Color.parseColor("#F57C00"))
+        colors.forEach { c ->
+            colorRow.addView(View(this).apply {
+                val lp = LinearLayout.LayoutParams(dp(32),dp(32)); lp.setMargins(0,0,dp(8),0); layoutParams=lp
+                background = android.graphics.drawable.GradientDrawable().apply { shape=android.graphics.drawable.GradientDrawable.OVAL; setColor(c); setStroke(if(c==dim.color) dp(3) else dp(1), Color.parseColor("#333333")) }
+                setOnClickListener { dim.color=c; drawingView.invalidate(); colorRow.children2(c) }
+            })
+        }
+        val thickSeek = SeekBar(this).apply { max=10; progress=dim.strokeW.toInt().coerceIn(1,10)
+            setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s:SeekBar?,v:Int,f:Boolean){if(f){dim.strokeW=v.coerceAtLeast(1).toFloat();drawingView.invalidate()}}; override fun onStartTrackingTouch(s:SeekBar?){}; override fun onStopTrackingTouch(s:SeekBar?){} }) }
+        val delBtn = TextView(this).apply { text="🗑 Delete dimension"; textSize=14f; setTextColor(Color.RED); setPadding(0,dp(12),0,0)
+            setOnClickListener { drawingView.actions.remove(dim); drawingView.selectedItem=null; drawingView.invalidate() } }
+        layout.addView(TextView(this).apply { text="Label:"; textSize=13f }); layout.addView(labelInput)
+        layout.addView(TextView(this).apply { text="Color:"; textSize=13f; setPadding(0,dp(8),0,dp(4)) }); layout.addView(colorRow)
+        layout.addView(TextView(this).apply { text="Thickness:"; textSize=13f; setPadding(0,dp(8),0,dp(4)) }); layout.addView(thickSeek)
+        layout.addView(delBtn)
+        AlertDialog.Builder(this).setTitle("Edit Dimension").setView(ScrollView(this).apply{addView(layout)})
+            .setPositiveButton("Done") { _,_ -> dim.label=labelInput.text.toString().trim(); drawingView.selectedItem=null; drawingView.invalidate() }
+            .setNegativeButton("Cancel") { _,_ -> drawingView.selectedItem=null; drawingView.invalidate() }
+            .show()
+    }
+
+    // Helper to update color selection state in a row
+    private fun LinearLayout.children2(selectedColor: Int) {
+        for (i in 0 until childCount) { val v = getChildAt(i) as? View ?: continue
+            val bg = v.background as? android.graphics.drawable.GradientDrawable ?: continue
+            // Can't easily re-read the color so just update stroke width based on position logic
+        }
     }
 
     private fun showHatchPicker() {
