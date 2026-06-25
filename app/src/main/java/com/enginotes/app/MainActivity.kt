@@ -118,7 +118,7 @@ class MainActivity : AppCompatActivity() {
     private var pendingFontFamily: String = "sans-serif"
     private val recentFonts = mutableListOf("sans-serif", "serif", "monospace")
     private val recentPenStyles = mutableListOf(PenStyle.FOUNTAIN, PenStyle.BALL, PenStyle.PENCIL)
-    private val recentBrushStyles = mutableListOf(BrushStyle.ROUND, BrushStyle.INK, BrushStyle.WATERCOLOR)
+    private val recentBrushStyles = mutableListOf(BrushStyle.ROUND, BrushStyle.SPRAY, BrushStyle.WATERCOLOR)
     private var cameraImageFile: File? = null
     private var activeToolbarButton: ImageButton? = null
     private var isSwitchingTextEditor = false
@@ -583,6 +583,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton?>(R.id.btnBrush)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.BRUSH) }
         findViewById<ImageButton?>(R.id.btnBrush)?.setOnLongClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.BRUSH); true }
         findViewById<ImageButton?>(R.id.btnQuickFill)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.FILL) }
+        findViewById<ImageButton?>(R.id.btnQuickFill)?.setOnLongClickListener { showHatchPicker(); true }
         // Long-press on draw/eraser now just activates the tool and shows context bar (no floating panel)
         findViewById<ImageButton>(R.id.btnDraw).setOnLongClickListener { closeInlineEditor(true); showPenOptionsPanel(); true }
         findViewById<ImageButton>(R.id.btnQuickEraser).setOnLongClickListener { showEraserOptionsPanel(); true }
@@ -926,7 +927,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val allPenTypes = listOf("Fountain" to PenStyle.FOUNTAIN, "Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
-        val allBrushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH)
+        val allBrushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH, "Spray" to BrushStyle.SPRAY, "Stipple" to BrushStyle.STIPPLE, "Splatter" to BrushStyle.SPLATTER, "Neon" to BrushStyle.NEON)
         val allFontFamilies = listOf("Default" to "sans-serif", "Serif" to "serif", "Mono" to "monospace", "Cursive" to "cursive", "Fantasy" to "fantasy")
 
         when (drawingView.currentTool) {
@@ -1294,9 +1295,7 @@ class MainActivity : AppCompatActivity() {
     private fun showInsertMenu() {
         closeInlineEditor(true)
         AlertDialog.Builder(this).setTitle("Insert")
-            .setItems(arrayOf("Image from Gallery","Take Photo","Table","Record Audio","Snip from PDF","Extract Text (OCR)")) { _, i ->
-                // Whatever tool was active before opening Insert (e.g. Eraser) must not remain
-                // active afterward - otherwise the next tap on the canvas silently erases content.
+            .setItems(arrayOf("Image from Gallery","Take Photo","Table","Record Audio","Snip from PDF","Extract Text (OCR)","Dimension Tool")) { _, i ->
                 setActiveTool(null, Tool.SELECT)
                 when(i) {
                     0 -> pickImageLauncher.launch("image/*")
@@ -1305,7 +1304,32 @@ class MainActivity : AppCompatActivity() {
                     3 -> checkAndRecordAudio()
                     4 -> pickPdfLauncher.launch("application/pdf")
                     5 -> showOcrSourceDialog()
+                    6 -> { setActiveTool(null, Tool.DIMENSION); android.widget.Toast.makeText(this, "Tap two points to add dimension", android.widget.Toast.LENGTH_SHORT).show() }
                 }
+            }.show()
+    }
+
+    private fun showHatchPicker() {
+        val categories = linkedMapOf(
+            "Lines" to listOf("45° Lines" to HatchPattern.HATCH_45, "135° Lines" to HatchPattern.HATCH_135, "Vertical" to HatchPattern.HATCH_90, "Horizontal" to HatchPattern.HATCH_0, "Cross" to HatchPattern.HATCH_CROSS, "Diagonal Cross" to HatchPattern.HATCH_DIAGONAL_CROSS),
+            "Civil/Structural" to listOf("Concrete" to HatchPattern.CONCRETE, "Steel" to HatchPattern.STEEL, "Earth" to HatchPattern.EARTH, "Sand" to HatchPattern.SAND, "Rock" to HatchPattern.ROCK, "Gravel" to HatchPattern.GRAVEL, "Compacted Fill" to HatchPattern.COMPACTED_FILL, "Loose Fill" to HatchPattern.LOOSE_FILL, "Clay" to HatchPattern.CLAY, "Silt" to HatchPattern.SILT, "Peat" to HatchPattern.PEAT, "Chalk" to HatchPattern.CHALK, "Asphalt" to HatchPattern.ASPHALT, "Rebar" to HatchPattern.REBAR, "Concrete Precast" to HatchPattern.CONCRETE_PRECAST),
+            "Wood/Building" to listOf("Wood Grain" to HatchPattern.WOOD_GRAIN, "Wood End" to HatchPattern.WOOD_END, "Brick" to HatchPattern.BRICK, "Block" to HatchPattern.BLOCK, "Plywood" to HatchPattern.PLYWOOD, "Drywall" to HatchPattern.DRYWALL, "Insulation" to HatchPattern.INSULATION),
+            "Metal" to listOf("Aluminum" to HatchPattern.ALUMINUM, "Copper" to HatchPattern.COPPER, "Iron" to HatchPattern.IRON, "Bronze" to HatchPattern.BRONZE, "Titanium" to HatchPattern.TITANIUM, "Gold" to HatchPattern.GOLD_HATCH),
+            "Material" to listOf("Glass" to HatchPattern.GLASS, "Rubber" to HatchPattern.RUBBER, "Plastic" to HatchPattern.PLASTIC, "Ceramic" to HatchPattern.CERAMIC, "Fiberglass" to HatchPattern.FIBERGLASS, "Foam" to HatchPattern.FOAM, "Membrane" to HatchPattern.MEMBRANE),
+            "Patterns" to listOf("Dots Fine" to HatchPattern.DOTS_FINE, "Dots Coarse" to HatchPattern.DOTS_COARSE, "Stipple" to HatchPattern.STIPPLE, "Honeycomb" to HatchPattern.HONEYCOMB, "Basket Weave" to HatchPattern.BASKET_WEAVE, "Diamond Grid" to HatchPattern.DIAMOND_GRID, "Zigzag" to HatchPattern.ZIGZAG, "Wave" to HatchPattern.WAVE, "Herringbone" to HatchPattern.HERRINGBONE, "Scale" to HatchPattern.SCALE, "Chain Link" to HatchPattern.CHAIN_LINK, "Contour" to HatchPattern.CONTOUR, "Water" to HatchPattern.WATER)
+        )
+        val allItems = mutableListOf<String>(); val allPatterns = mutableListOf<HatchPattern>()
+        categories.forEach { (cat, items) -> allItems.add("── $cat ──"); allPatterns.add(HatchPattern.HATCH_45); items.forEach { (name, pat) -> allItems.add("  $name"); allPatterns.add(pat) } }
+
+        AlertDialog.Builder(this).setTitle("Hatch Pattern (long-press area to fill)")
+            .setItems(allItems.toTypedArray()) { _, i ->
+                val selected = allPatterns[i]; val label = allItems[i]
+                if (label.startsWith("──")) return@setItems
+                // Set fill tool with hatch — next tap fills the tapped area with this hatch
+                drawingView.pendingHatchPattern = selected
+                drawingView.pendingHatchColor = drawingView.currentColor
+                setActiveTool(null, Tool.FILL)
+                android.widget.Toast.makeText(this, "Tap area to fill with hatch", android.widget.Toast.LENGTH_SHORT).show()
             }.show()
     }
 
