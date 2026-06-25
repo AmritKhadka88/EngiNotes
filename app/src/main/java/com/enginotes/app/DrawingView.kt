@@ -608,6 +608,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private val ctx = context
     private val actions = mutableListOf<Any>()
+    fun removeDimensionItem(d: DimensionItem) { actions.remove(d); selectedItem = null; redoStack.clear(); invalidate() }
     private val redoStack = mutableListOf<Any>()
     private var currentItem: StrokeItem? = null
     // Velocity tracking for the Fountain pen's speed-sensitive width (fast = thin, slow = thick)
@@ -862,10 +863,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // Double-tap on a DimensionItem → edit it
             if (currentTool == Tool.DIMENSION || currentTool == Tool.SELECT) {
                 val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
-                    val hr = dp(28).toFloat()
-                    kotlin.math.hypot((e.x - d.handleMidsx).toDouble(), (e.y - d.handleMidsy).toDouble()) < hr ||
-                    kotlin.math.hypot((e.x - d.handleP1sx).toDouble(), (e.y - d.handleP1sy).toDouble()) < hr ||
-                    kotlin.math.hypot((e.x - d.handleP2sx).toDouble(), (e.y - d.handleP2sy).toDouble()) < hr
+                    val hr = 80f
+                    kotlin.math.hypot((e.x - d.handleMidsx), (e.y - d.handleMidsy)) < hr ||
+                    kotlin.math.hypot((e.x - d.handleP1sx), (e.y - d.handleP1sy)) < hr ||
+                    kotlin.math.hypot((e.x - d.handleP2sx), (e.y - d.handleP2sy)) < hr
                 }
                 if (hitDim != null) { selectedItem = hitDim; onDimensionEdit?.invoke(hitDim); invalidate(); return true }
             }
@@ -2402,17 +2403,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
                     // Check if tapping near an existing dimension item's handles for editing
                     val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
-                        val hr = dp(20).toFloat()
-                        kotlin.math.hypot((event.x - d.handleP1sx).toDouble(), (event.y - d.handleP1sy).toDouble()) < hr ||
-                        kotlin.math.hypot((event.x - d.handleP2sx).toDouble(), (event.y - d.handleP2sy).toDouble()) < hr ||
-                        kotlin.math.hypot((event.x - d.handleMidsx).toDouble(), (event.y - d.handleMidsy).toDouble()) < hr
+                        val hr = 60f
+                        kotlin.math.hypot((event.x - d.handleP1sx), (event.y - d.handleP1sy)) < hr ||
+                        kotlin.math.hypot((event.x - d.handleP2sx), (event.y - d.handleP2sy)) < hr ||
+                        kotlin.math.hypot((event.x - d.handleMidsx), (event.y - d.handleMidsy)) < hr
                     }
                     if (hitDim != null) {
                         selectedItem = hitDim; dimDraggingItem = hitDim
-                        val hr = dp(20).toFloat()
+                        val hr = 60f
                         dimDragHandle = when {
-                            kotlin.math.hypot((event.x - hitDim.handleP1sx).toDouble(), (event.y - hitDim.handleP1sy).toDouble()) < hr -> 1
-                            kotlin.math.hypot((event.x - hitDim.handleP2sx).toDouble(), (event.y - hitDim.handleP2sy).toDouble()) < hr -> 2
+                            kotlin.math.hypot((event.x - hitDim.handleP1sx), (event.y - hitDim.handleP1sy)) < hr -> 1
+                            kotlin.math.hypot((event.x - hitDim.handleP2sx), (event.y - hitDim.handleP2sy)) < hr -> 2
                             else -> 3
                         }
                         invalidate()
@@ -2458,8 +2459,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         dimDraggingItem = null; redoStack.clear()
                     } else if (dimPhase == DimPhase.SECOND_POINT) {
                         dimP2wx = wx; dimP2wy = wy
-                        val dist = kotlin.math.hypot((dimP2wx-dimP1wx).toDouble(), (dimP2wy-dimP1wy).toDouble())
-                        if (dist > dp(10)) {
+                        val dist = kotlin.math.hypot((dimP2wx-dimP1wx), (dimP2wy-dimP1wy))
+                        if (dist > 30f) {
                             val newDim = DimensionItem(dimP1wx, dimP1wy, dimP2wx, dimP2wy, 0f, currentColor, currentStrokeWidth, mode = dimMode)
                             if (dimMode == DimMode.AUTO && autoRefPixelLen == 0f) {
                                 // First auto dimension — becomes the reference

@@ -1405,7 +1405,7 @@ class MainActivity : AppCompatActivity() {
         val thickSeek = SeekBar(this).apply { max=10; progress=dim.strokeW.toInt().coerceIn(1,10)
             setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s:SeekBar?,v:Int,f:Boolean){if(f){dim.strokeW=v.coerceAtLeast(1).toFloat();drawingView.invalidate()}}; override fun onStartTrackingTouch(s:SeekBar?){}; override fun onStopTrackingTouch(s:SeekBar?){} }) }
         val delBtn = TextView(this).apply { text="🗑 Delete dimension"; textSize=14f; setTextColor(Color.RED); setPadding(0,dp(12),0,0)
-            setOnClickListener { drawingView.actions.remove(dim); drawingView.selectedItem=null; drawingView.invalidate() } }
+            setOnClickListener { drawingView.removeDimensionItem(dim) } }
         layout.addView(TextView(this).apply { text="Label:"; textSize=13f }); layout.addView(labelInput)
         layout.addView(TextView(this).apply { text="Color:"; textSize=13f; setPadding(0,dp(8),0,dp(4)) }); layout.addView(colorRow)
         layout.addView(TextView(this).apply { text="Thickness:"; textSize=13f; setPadding(0,dp(8),0,dp(4)) }); layout.addView(thickSeek)
