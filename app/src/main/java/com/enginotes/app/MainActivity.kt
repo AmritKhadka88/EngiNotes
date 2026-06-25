@@ -518,6 +518,7 @@ class MainActivity : AppCompatActivity() {
             else setActiveTool(btn as ImageButton, Tool.SELECT)
         }
         findViewById<ImageButton>(R.id.btnText).setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.TEXT) }
+        findViewById<ImageButton>(R.id.btnText).setOnLongClickListener { showTextOptionsPanel(); true }
         findViewById<ImageButton>(R.id.btnInsert).setOnClickListener { showInsertMenu() }
         findViewById<ImageButton>(R.id.btnTools).setOnClickListener { showShapesPicker(it as ImageButton) }
 
@@ -1287,6 +1288,7 @@ class MainActivity : AppCompatActivity() {
         dismissEraserOptionsPanel()
         dismissHighlighterOptionsPanel()
         dismissBrushOptionsPanel()
+        dismissTextOptionsPanel()
     }
 
     private fun showInsertMenu() {
@@ -1537,6 +1539,102 @@ class MainActivity : AppCompatActivity() {
     private var penOptionsPanel: View? = null
     private var eraserOptionsPanel: LinearLayout? = null
     private var contextBarPage = 0 // 0 = default, increments on swipe-up
+
+    private var textOptionsPanel: View? = null
+    private fun dismissTextOptionsPanel() {
+        textOptionsPanel?.let { canvasContainer.removeView(it) }; textOptionsPanel = null
+        findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
+    }
+
+    private fun showTextOptionsPanel() {
+        findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
+        if (textOptionsPanel != null) { dismissTextOptionsPanel(); return }
+        dismissAllFloatingPanels()
+        setActiveTool(findViewById(R.id.btnText), Tool.TEXT)
+
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.WHITE)
+            elevation = dp(10).toFloat()
+            setPadding(dp(16), dp(12), dp(16), dp(16))
+        }
+
+        // Title + close
+        val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        titleRow.addView(TextView(this).apply { text = "Text"; textSize = 18f; setTypeface(null, android.graphics.Typeface.BOLD); setTextColor(Color.parseColor("#1C1C1E")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+        val closeBtn = TextView(this).apply { text = "✕"; textSize = 18f; setTextColor(Color.parseColor("#8A8580")); gravity = Gravity.CENTER; val lp = LinearLayout.LayoutParams(dp(36), dp(36)); layoutParams = lp; setOnClickListener { dismissTextOptionsPanel() } }
+        titleRow.addView(closeBtn); panel.addView(titleRow)
+
+        // Font family
+        panel.addView(TextView(this).apply { text = "Font"; textSize = 13f; setTextColor(Color.parseColor("#8A8580")); setPadding(0, dp(12), 0, dp(6)) })
+        val fontRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val fonts = listOf("Default" to "sans-serif", "Serif" to "serif", "Mono" to "monospace", "Cursive" to "cursive")
+        fun refreshFontChips() {}
+        fonts.forEach { (lbl, fam) ->
+            val chip = TextView(this).apply {
+                text = lbl; textSize = 13f; gravity = Gravity.CENTER
+                typeface = try { android.graphics.Typeface.create(fam, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.setMargins(0, 0, dp(8), 0); layoutParams = lp
+                fun updateState() { background = android.graphics.drawable.GradientDrawable().apply { setColor(if (pendingFontFamily == fam) Color.parseColor("#6D4C41") else Color.parseColor("#F0EBE0")); cornerRadius = dp(8).toFloat() }; setTextColor(if (pendingFontFamily == fam) Color.WHITE else Color.parseColor("#4A4A4A")) }
+                updateState()
+                setOnClickListener {
+                    pendingFontFamily = fam
+                    recentFonts.remove(fam); recentFonts.add(0, fam)
+                    for (i in 0 until fontRow.childCount) { (fontRow.getChildAt(i) as? TextView)?.let { tv -> tv.background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#F0EBE0")); cornerRadius = dp(8).toFloat() }; tv.setTextColor(Color.parseColor("#4A4A4A")) } }
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#6D4C41")); cornerRadius = dp(8).toFloat() }; setTextColor(Color.WHITE)
+                    rebuildContextBar()
+                }
+            }
+            fontRow.addView(chip)
+        }
+        panel.addView(fontRow)
+
+        // Size slider
+        panel.addView(TextView(this).apply { text = "Size: ${editSize.toInt()}pt"; textSize = 13f; setTextColor(Color.parseColor("#8A8580")); setPadding(0, dp(12), 0, dp(4)) })
+        panel.addView(SeekBar(this).apply {
+            max = 120; progress = editSize.toInt().coerceIn(8, 120)
+            progressTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#26A69A"))
+            thumbTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#26A69A"))
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { if(f) { editSize = v.coerceAtLeast(8).toFloat(); rebuildContextBar() } }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        })
+
+        // Opacity slider
+        panel.addView(TextView(this).apply { text = "Opacity: ${editOpacity * 100 / 255}%"; textSize = 13f; setTextColor(Color.parseColor("#8A8580")); setPadding(0, dp(10), 0, dp(4)) })
+        panel.addView(SeekBar(this).apply {
+            max = 255; progress = editOpacity
+            progressTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#26A69A"))
+            thumbTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#26A69A"))
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { if(f) { editOpacity = v; rebuildContextBar() } }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        })
+
+        // Color row
+        panel.addView(TextView(this).apply { text = "Color"; textSize = 13f; setTextColor(Color.parseColor("#8A8580")); setPadding(0, dp(10), 0, dp(6)) })
+        val colorRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val quickCols = listOf(Color.parseColor("#1C1C1E"), Color.parseColor("#FF3B30"), Color.parseColor("#007AFF"), Color.parseColor("#34C759"), Color.parseColor("#FF9500"), Color.parseColor("#5856D6"), Color.parseColor("#AF52DE"), Color.WHITE)
+        quickCols.forEach { c ->
+            colorRow2.addView(View(this).apply {
+                val lp = LinearLayout.LayoutParams(dp(32), dp(32)); lp.setMargins(0, 0, dp(8), 0); layoutParams = lp
+                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(c); setStroke(if (c == editColor) dp(3) else dp(1), if (c == editColor) Color.parseColor("#1C1C1E") else Color.parseColor("#C8C4BE")) }
+                setOnClickListener { editColor = c; activeEditText?.setTextColor(c); dismissTextOptionsPanel(); showTextOptionsPanel() }
+            })
+        }
+        panel.addView(colorRow2)
+
+        val scroll = ScrollView(this)
+        scroll.addView(panel)
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        canvasContainer.addView(scroll, lp)
+        textOptionsPanel = scroll
+    }
 
     private fun dismissPenOptionsPanel() {
         penOptionsPanel?.let { canvasContainer.removeView(it) }; penOptionsPanel = null
@@ -2221,17 +2319,62 @@ class MainActivity : AppCompatActivity() {
         val convenientBoost = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 1.6f else 1f
         val screenSizePx = (if (useActualSize) item.size else item.size * drawingView.getScaleFactor()) * convenientBoost
 
-        // Selection border is drawn on canvas in drawSelection() — no View box needed.
-        // We only need a full-screen transparent touch surface for drag-to-move.
-        val touchSurface = FrameLayout(this).apply {
-            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-            setBackgroundColor(Color.TRANSPARENT)
-        }
-        var moveStartRawX = 0f; var moveStartRawY = 0f; var lastMoveRawX = 0f; var lastMoveRawY = 0f
-        // touch listener set up below after updateToolbarPos is defined
-        canvasContainer.addView(touchSurface)
+        // Use a touch surface sized to the text item (not full-screen).
+        // Always returns true on ACTION_DOWN so the gesture is never dropped mid-sequence.
+        // Taps outside fall through naturally to DrawingView below.
+        val anchorScreenX = drawingView.worldToScreenX(item.x)
+        val anchorScreenY = drawingView.worldToScreenY(item.y)
+        val (measW, measH) = measureTextBoxSize(item, screenSizePx)
+        var boxW = measW; var boxH = measH
 
-        // Floating toolbar: Delete | A- | A+ | Rotate(drag) | Layer⬆ | Layer⬇ | Done
+        val moveSurface = View(this)
+        var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
+        var isDraggingRotate = false; var rotStartRawX2 = 0f; var rotStartRotation2 = 0f
+        moveSurface.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    val rotHandleSx = drawingView.worldToScreenX(item.x)
+                    val rotHandleSy = drawingView.worldToScreenY(item.y) - dp(90)
+                    val dist = kotlin.math.hypot((ev.rawX - rotHandleSx).toDouble(), (ev.rawY - rotHandleSy).toDouble()).toFloat()
+                    if (dist < dp(56)) {
+                        isDraggingRotate = true; rotStartRawX2 = ev.rawX; rotStartRotation2 = item.rotation
+                    } else {
+                        isDraggingRotate = false
+                        moveStartRawX = ev.rawX; moveStartRawY = ev.rawY
+                        val lp = moveSurface.layoutParams as FrameLayout.LayoutParams
+                        moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
+                    }
+                    true // ALWAYS true — never drop the touch sequence
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    if (isDraggingRotate) {
+                        item.rotation = rotStartRotation2 - (ev.rawX - rotStartRawX2) * 0.5f
+                        drawingView.invalidate()
+                    } else {
+                        val dx = ev.rawX - moveStartRawX; val dy = ev.rawY - moveStartRawY
+                        val lp = moveSurface.layoutParams as FrameLayout.LayoutParams
+                        lp.leftMargin = (moveStartLeft + dx).toInt().coerceAtLeast(0)
+                        lp.topMargin = (moveStartTop + dy).toInt().coerceAtLeast(0)
+                        moveSurface.layoutParams = lp
+                        item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat())
+                        item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + boxH)
+                        drawingView.invalidate()
+                    }
+                    true
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    isDraggingRotate = false; true
+                }
+                else -> true
+            }
+        }
+        val surfaceLp = FrameLayout.LayoutParams(boxW, boxH)
+        surfaceLp.leftMargin = anchorScreenX.toInt().coerceAtLeast(0)
+        surfaceLp.topMargin = (anchorScreenY - boxH).toInt().coerceAtLeast(0)
+        moveSurface.layoutParams = surfaceLp
+        canvasContainer.addView(moveSurface)
+
+        // Floating toolbar: Delete | Done
         val toolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             background = android.graphics.drawable.GradientDrawable().apply {
@@ -2253,7 +2396,7 @@ class MainActivity : AppCompatActivity() {
         toolbar.addView(btnDel); toolbar.addView(btnDone)
 
         canvasContainer.addView(toolbar)
-        textSelectionBox = touchSurface; textSelectionItem = item
+        textSelectionBox = moveSurface; textSelectionItem = item
         textSelectionHandles = listOf(toolbar)
 
         fun updateToolbarPos() {
@@ -2265,51 +2408,6 @@ class MainActivity : AppCompatActivity() {
             toolbar.layoutParams = lp
         }
         updateToolbarPos()
-        // Patch the touch surface to call updateToolbarPos on move
-        var isDraggingRotate = false
-        var rotStartRawX2 = 0f; var rotStartRotation2 = 0f
-        var justShown = true // ignore the first touch-down (finger still down from long press)
-        touchSurface.setOnTouchListener { _, ev ->
-            val wx = drawingView.screenToWorldX(ev.x); val wy = drawingView.screenToWorldY(ev.y)
-            when (ev.actionMasked) {
-                android.view.MotionEvent.ACTION_DOWN -> {
-                    if (justShown) { justShown = false; moveStartRawX = ev.rawX; moveStartRawY = ev.rawY; lastMoveRawX = ev.rawX; lastMoveRawY = ev.rawY; true }
-                    else {
-                        val rotHandleSx = drawingView.worldToScreenX(item.x)
-                        val rotHandleSy = drawingView.worldToScreenY(item.y) - dp(90)
-                        val distToHandle = kotlin.math.hypot((ev.x - rotHandleSx).toDouble(), (ev.y - rotHandleSy).toDouble()).toFloat()
-                        if (distToHandle < dp(56)) {
-                            isDraggingRotate = true; rotStartRawX2 = ev.rawX; rotStartRotation2 = item.rotation; true
-                        } else {
-                            isDraggingRotate = false
-                            val hit = drawingView.findTextItemAtPublic(wx, wy)
-                            if (hit === item) { moveStartRawX = ev.rawX; moveStartRawY = ev.rawY; lastMoveRawX = ev.rawX; lastMoveRawY = ev.rawY; true }
-                            else { dismissTextSelectionBox(); false }
-                        }
-                    }
-                }
-                android.view.MotionEvent.ACTION_MOVE -> {
-                    if (isDraggingRotate) {
-                        item.rotation = rotStartRotation2 - (ev.rawX - rotStartRawX2) * 0.5f
-                        drawingView.invalidate(); true
-                    } else {
-                        if (moveStartRawX == 0f) return@setOnTouchListener false
-                        val dx = ev.rawX - lastMoveRawX; val dy = ev.rawY - lastMoveRawY
-                        if (kotlin.math.abs(ev.rawX - moveStartRawX) > 4 || kotlin.math.abs(ev.rawY - moveStartRawY) > 4) {
-                            item.x += dx / drawingView.getScaleFactor()
-                            item.y += dy / drawingView.getScaleFactor()
-                            lastMoveRawX = ev.rawX; lastMoveRawY = ev.rawY
-                            drawingView.invalidate(); updateToolbarPos()
-                        }
-                        true
-                    }
-                }
-                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
-                    isDraggingRotate = false; moveStartRawX = 0f; false
-                }
-                else -> false
-            }
-        }
         drawingView.onCanvasTransformed = { updateToolbarPos() }
     }
 
