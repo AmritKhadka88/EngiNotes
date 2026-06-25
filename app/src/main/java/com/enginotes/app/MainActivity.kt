@@ -1024,9 +1024,7 @@ class MainActivity : AppCompatActivity() {
             else -> {
                 sizeButton(drawingView.currentStrokeWidth, 60) { drawingView.currentStrokeWidth = it }
                 divider()
-                colorGrid(allColors, drawingView.currentColor, colorPage,
-                    onPage = { p -> contextBarPage = p; rebuildContextBar() },
-                    onPick = { c -> drawingView.currentColor = c })
+                eightColors(drawingView.currentColor) { c -> drawingView.currentColor = c }
             }
         }
     }
