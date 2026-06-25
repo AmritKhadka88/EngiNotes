@@ -61,6 +61,16 @@
             android:contentDescription="Insert Link" />
 
         <ImageButton
+            android:id="@+id/btnTouchToggle"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:src="@drawable/ic_select"
+            android:scaleType="centerInside"
+            android:padding="9dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Toggle touch/pan" />
+
+        <ImageButton
             android:id="@+id/btnMenu"
             android:layout_width="40dp"
             android:layout_height="40dp"
@@ -211,5 +221,16 @@
 
         </LinearLayout>
     </HorizontalScrollView>
+
+    <!-- Hidden stubs for IDs referenced in code — kept for R.id compilation -->
+    <ImageButton android:id="@+id/btnTouchToggle"
+        android:layout_width="0dp" android:layout_height="0dp"
+        android:visibility="gone"
+        android:src="@drawable/ic_select"
+        android:background="@drawable/btn_toolbar_selector" />
+
+    <View android:id="@+id/pageScrollThumb"
+        android:layout_width="0dp" android:layout_height="0dp"
+        android:visibility="gone" />
 
 </LinearLayout>
