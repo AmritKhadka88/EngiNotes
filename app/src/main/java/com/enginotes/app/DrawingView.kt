@@ -1065,206 +1065,150 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun drawHatchPattern(canvas: Canvas, item: FillItem) {
         val hp = item.hatchPattern ?: return
         val l = item.x; val t = item.y; val r = item.x + item.w; val b = item.y + item.h
-        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = item.hatchColor; style = Paint.Style.STROKE; strokeWidth = 1.5f / scaleFactor; strokeCap = Paint.Cap.ROUND }
+        // s is in world coordinates — fixed size regardless of zoom
+        val s = 8f * item.hatchScale
+        val sw = 1.5f  // stroke width in world coords
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = item.hatchColor; style = Paint.Style.STROKE; strokeWidth = sw; strokeCap = Paint.Cap.ROUND }
         val sp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = item.hatchColor; style = Paint.Style.FILL }
-        val s = 8f * item.hatchScale / scaleFactor  // base spacing in world coords
-        canvas.save(); canvas.clipRect(l, t, r, b)
+
+        // Draw hatch into offscreen bitmap clipped to the flood-fill shape mask
+        val bmp = getOrLoadFillBitmap(item)
+        if (bmp != null) {
+            // Render hatch to a temp bitmap at the same world size, then composite using flood-fill alpha as mask
+            val bw = item.w.toInt().coerceAtLeast(1); val bh = item.h.toInt().coerceAtLeast(1)
+            val hatchBmp = android.graphics.Bitmap.createBitmap(bw, bh, android.graphics.Bitmap.Config.ARGB_8888)
+            val hc = Canvas(hatchBmp)
+            // Offset into local coords (0,0 = top-left of bounding box)
+            val lp = Paint(p).apply { strokeWidth = sw }
+            val lsp = Paint(sp)
+            drawHatchLocal(hc, hp, 0f, 0f, bw.toFloat(), bh.toFloat(), s, lp, lsp)
+            // Use flood-fill bitmap as alpha mask: multiply alpha channels
+            val maskPaint = Paint().apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN) }
+            hc.drawBitmap(bmp, null, android.graphics.Rect(0, 0, bw, bh), maskPaint)
+            canvas.drawBitmap(hatchBmp, null, RectF(l, t, r, b), null)
+        } else {
+            // Fallback: clip to rect
+            canvas.save(); canvas.clipRect(l, t, r, b)
+            drawHatchLocal(canvas, hp, l, t, r, b, s, p, sp)
+            canvas.restore()
+        }
+    }
+
+    private fun drawHatchLocal(canvas: Canvas, hp: HatchPattern, l: Float, t: Float, r: Float, b: Float, s: Float, p: Paint, sp: Paint) {
+        val w = r - l; val h = b - t
         when (hp) {
-            HatchPattern.HATCH_45 -> { var x = l - (b-t); while (x < r + (b-t)) { canvas.drawLine(x, t, x+(b-t), b, p); x += s } }
-            HatchPattern.HATCH_135 -> { var x = l - (b-t); while (x < r + (b-t)) { canvas.drawLine(x+(b-t), t, x, b, p); x += s } }
+            HatchPattern.HATCH_45 -> { var x = l - h; while (x < r + h) { canvas.drawLine(x, t, x+h, b, p); x += s } }
+            HatchPattern.HATCH_135 -> { var x = l - h; while (x < r + h) { canvas.drawLine(x+h, t, x, b, p); x += s } }
             HatchPattern.HATCH_90 -> { var x = l; while (x < r) { canvas.drawLine(x, t, x, b, p); x += s } }
             HatchPattern.HATCH_0 -> { var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s } }
             HatchPattern.HATCH_CROSS -> { var x = l; while (x < r) { canvas.drawLine(x, t, x, b, p); x += s }; var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s } }
             HatchPattern.HATCH_DIAGONAL_CROSS -> {
-                var x = l - (b-t); while (x < r + (b-t)) { canvas.drawLine(x, t, x+(b-t), b, p); x += s }
-                x = l - (b-t); while (x < r + (b-t)) { canvas.drawLine(x+(b-t), t, x, b, p); x += s }
+                var x = l - h; while (x < r + h) { canvas.drawLine(x, t, x+h, b, p); x += s }
+                x = l - h; while (x < r + h) { canvas.drawLine(x+h, t, x, b, p); x += s }
             }
             HatchPattern.CONCRETE -> {
-                // Concrete: random dots + irregular lines
                 val rand = java.util.Random(42); var y = t
                 while (y < b) { canvas.drawLine(l, y, r, y, p); y += s * 1.5f }
-                for (i in 0..((r-l)*(b-t)/s/s*3).toInt()) { canvas.drawCircle(l + rand.nextFloat()*(r-l), t + rand.nextFloat()*(b-t), s*0.15f, sp) }
+                for (i in 0..((w*h/s/s*3).toInt())) { canvas.drawCircle(l + rand.nextFloat()*w, t + rand.nextFloat()*h, s*0.15f, sp) }
             }
-            HatchPattern.STEEL -> {
-                // Steel: diagonal hatching with double lines
-                var x = l - (b-t); while (x < r + (b-t)) { canvas.drawLine(x, t, x+(b-t), b, p); canvas.drawLine(x+s*0.3f, t, x+(b-t)+s*0.3f, b, p); x += s * 2f }
-            }
+            HatchPattern.STEEL -> { var x = l - h; while (x < r + h) { canvas.drawLine(x, t, x+h, b, p); canvas.drawLine(x+s*0.3f, t, x+h+s*0.3f, b, p); x += s * 2f } }
             HatchPattern.EARTH -> {
-                // Earth: horizontal lines with dots
                 var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s }
-                val rand = java.util.Random(42)
-                for (i in 0..((r-l)*(b-t)/s/s).toInt()) { canvas.drawCircle(l + rand.nextFloat()*(r-l), t + rand.nextFloat()*(b-t), s*0.12f, sp) }
+                val rand = java.util.Random(42); for (i in 0..(w*h/s/s).toInt()) canvas.drawCircle(l+rand.nextFloat()*w, t+rand.nextFloat()*h, s*0.12f, sp)
             }
-            HatchPattern.SAND -> {
-                val rand = java.util.Random(42)
-                for (i in 0..((r-l)*(b-t)/s/s*5).toInt()) { canvas.drawCircle(l + rand.nextFloat()*(r-l), t + rand.nextFloat()*(b-t), s*0.08f, sp) }
-            }
+            HatchPattern.SAND -> { val rand = java.util.Random(42); for (i in 0..(w*h/s/s*5).toInt()) canvas.drawCircle(l+rand.nextFloat()*w, t+rand.nextFloat()*h, s*0.08f, sp) }
             HatchPattern.ROCK -> {
-                // Rock: irregular polygons
                 val rand = java.util.Random(42); var y = t
                 while (y < b) { var x = l; while (x < r) { val path2 = android.graphics.Path()
-                    path2.moveTo(x + rand.nextFloat()*s, y + rand.nextFloat()*s*0.5f)
-                    path2.lineTo(x + s + rand.nextFloat()*s*0.3f, y + rand.nextFloat()*s*0.5f)
-                    path2.lineTo(x + s*1.2f, y + s + rand.nextFloat()*s*0.3f)
-                    path2.lineTo(x + rand.nextFloat()*s*0.5f, y + s + rand.nextFloat()*s*0.3f)
-                    path2.close(); canvas.drawPath(path2, p); x += s * 1.5f }; y += s * 1.5f }
+                    path2.moveTo(x+rand.nextFloat()*s, y+rand.nextFloat()*s*0.5f); path2.lineTo(x+s+rand.nextFloat()*s*0.3f, y+rand.nextFloat()*s*0.5f)
+                    path2.lineTo(x+s*1.2f, y+s+rand.nextFloat()*s*0.3f); path2.lineTo(x+rand.nextFloat()*s*0.5f, y+s+rand.nextFloat()*s*0.3f); path2.close()
+                    canvas.drawPath(path2, p); x += s*1.5f }; y += s*1.5f }
             }
-            HatchPattern.GRAVEL -> {
-                val rand = java.util.Random(42)
-                for (i in 0..((r-l)*(b-t)/s/s*3).toInt()) {
-                    val cx = l + rand.nextFloat()*(r-l); val cy = t + rand.nextFloat()*(b-t); val rs = s*0.2f + rand.nextFloat()*s*0.3f
-                    canvas.drawOval(android.graphics.RectF(cx-rs, cy-rs*0.6f, cx+rs, cy+rs*0.6f), p)
-                }
-            }
+            HatchPattern.GRAVEL -> { val rand = java.util.Random(42); for (i in 0..(w*h/s/s*3).toInt()) { val cx=l+rand.nextFloat()*w; val cy=t+rand.nextFloat()*h; val rs=s*0.2f+rand.nextFloat()*s*0.3f; canvas.drawOval(android.graphics.RectF(cx-rs,cy-rs*0.6f,cx+rs,cy+rs*0.6f),p) } }
             HatchPattern.WOOD_GRAIN -> {
-                var y = t; while (y < b) {
-                    val path2 = android.graphics.Path(); path2.moveTo(l, y)
-                    var x = l; while (x < r) { path2.quadTo(x + s*1.5f, y + s*0.3f * kotlin.math.sin((x/(r-l)*Math.PI*4).toFloat()), x + s*3f, y); x += s*3f }
-                    canvas.drawPath(path2, p); y += s * 0.8f
-                }
+                var y = t; while (y < b) { val path2 = android.graphics.Path(); path2.moveTo(l, y); var x = l
+                    while (x < r) { path2.quadTo(x+s*1.5f, y+s*0.3f*kotlin.math.sin((x-l)/w.toFloat()*Math.PI.toFloat()*4), x+s*3f, y); x+=s*3f }
+                    canvas.drawPath(path2, p); y += s*0.8f }
             }
-            HatchPattern.WOOD_END -> {
-                // End grain: concentric ellipses
-                val cx = (l+r)/2f; val cny = (t+b)/2f; val maxR = minOf(r-l, b-t)/2f
-                var rad = s; while (rad < maxR) { canvas.drawOval(android.graphics.RectF(cx-rad, cny-rad*0.6f, cx+rad, cny+rad*0.6f), p); rad += s * 0.8f }
-            }
+            HatchPattern.WOOD_END -> { val cx=(l+r)/2f; val cy=(t+b)/2f; val maxR=minOf(w,h)/2f; var rad=s; while(rad<maxR){canvas.drawOval(android.graphics.RectF(cx-rad,cy-rad*0.6f,cx+rad,cy+rad*0.6f),p);rad+=s*0.8f} }
             HatchPattern.BRICK -> {
-                var y = t; var row = 0
-                while (y < b) {
-                    val offset = if (row % 2 == 0) 0f else s * 1.5f
-                    canvas.drawLine(l, y, r, y, p)
-                    var x = l - offset; while (x < r) { canvas.drawLine(x, y, x, y + s, p); x += s * 3f }
-                    y += s; row++
-                }
+                var y = t; var row = 0; while (y < b) { val offset=if(row%2==0)0f else s*1.5f; canvas.drawLine(l,y,r,y,p); var x=l-offset; while(x<r){canvas.drawLine(x,y,x,y+s,p);x+=s*3f}; y+=s; row++ }
             }
-            HatchPattern.BLOCK -> {
-                var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s }
-                var x = l; while (x < r) { canvas.drawLine(x, t, x, b, p); x += s }
-            }
-            HatchPattern.GLASS -> {
-                // Glass: diagonal with white/clear effect
-                p.alpha = 120; var x = l - (b-t); while (x < r + (b-t)) { canvas.drawLine(x, t, x+(b-t), b, p); x += s * 0.8f }
-                p.alpha = 60; x = l - (b-t); while (x < r + (b-t)) { canvas.drawLine(x+(b-t), t, x, b, p); x += s * 1.6f }; p.alpha = 255
-            }
+            HatchPattern.BLOCK -> { var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s}; var x=l; while(x<r){canvas.drawLine(x,t,x,b,p);x+=s} }
+            HatchPattern.GLASS -> { val ap=p.alpha; p.alpha=(ap*0.6f).toInt(); var x=l-h; while(x<r+h){canvas.drawLine(x,t,x+h,b,p);x+=s*0.8f}; p.alpha=(ap*0.3f).toInt(); x=l-h; while(x<r+h){canvas.drawLine(x+h,t,x,b,p);x+=s*1.6f}; p.alpha=ap }
             HatchPattern.INSULATION -> {
-                // Insulation: wavy lines
-                var y = t; while (y < b) {
-                    val path2 = android.graphics.Path(); path2.moveTo(l, y)
-                    var x = l; while (x < r) { path2.quadTo(x + s*0.5f, y - s*0.4f, x + s, y); path2.quadTo(x + s*1.5f, y + s*0.4f, x + s*2f, y); x += s*2f }
-                    canvas.drawPath(path2, p); y += s * 1.2f
-                }
+                var y=t; while(y<b){ val path2=android.graphics.Path(); path2.moveTo(l,y); var x=l; while(x<r){path2.quadTo(x+s*0.5f,y-s*0.4f,x+s,y);path2.quadTo(x+s*1.5f,y+s*0.4f,x+s*2f,y);x+=s*2f}; canvas.drawPath(path2,p); y+=s*1.2f }
             }
-            HatchPattern.RUBBER -> { var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s*0.5f }; p.alpha = 100; var x = l-(b-t); while (x < r+(b-t)) { canvas.drawLine(x, t, x+(b-t), b, p); x += s*3f }; p.alpha = 255 }
-            HatchPattern.PLASTIC -> { var x = l; while (x < r) { canvas.drawLine(x, t, x, b, p); x += s * 0.6f } }
-            HatchPattern.CERAMIC -> {
-                var y = t; var row = 0; while (y < b) { var x = l + if (row % 2 == 0) 0f else s; while (x < r) { canvas.drawRect(x, y, x+s*1.8f, y+s*1.8f, p); x += s*2f }; y += s*2f; row++ }
-            }
-            HatchPattern.FIBERGLASS -> {
-                var y = t; while (y < b) { var x = l; while (x < r) { canvas.drawLine(x, y, x+s*0.5f, y+s, p); x += s * 0.4f }; y += s * 1.5f }
-            }
-            HatchPattern.FOAM -> {
-                // Foam: irregular circles
-                val rand = java.util.Random(42); var y = t
-                while (y < b) { var x = l; while (x < r) { val rs = s * (0.3f + rand.nextFloat() * 0.4f); canvas.drawCircle(x + rand.nextFloat()*s*0.5f, y + rand.nextFloat()*s*0.5f, rs, p); x += s * 1.2f }; y += s * 1.2f }
-            }
-            HatchPattern.MEMBRANE -> {
-                var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s * 0.4f }
-                p.strokeWidth = 3f / scaleFactor; var y2 = t + s; while (y2 < b) { canvas.drawLine(l, y2, r, y2, p); p.strokeWidth = 1.5f / scaleFactor; y2 += s * 3f }
-            }
-            HatchPattern.ALUMINUM -> { var x = l-(b-t); while (x < r+(b-t)) { canvas.drawLine(x, t, x+(b-t), b, p); x += s * 1.5f }; var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s * 3f } }
-            HatchPattern.COPPER -> { var x = l-(b-t); while (x < r+(b-t)) { canvas.drawLine(x, t, x+(b-t), b, p); canvas.drawLine(x+s*0.5f, t, x+(b-t)+s*0.5f, b, p); x += s * 2f } }
-            HatchPattern.IRON -> { var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s*0.6f }; p.strokeWidth = 3f/scaleFactor; var y2 = t; while (y2 < b) { canvas.drawLine(l, y2, r, y2, p); y2 += s*3f }; p.strokeWidth = 1.5f/scaleFactor }
-            HatchPattern.BRONZE -> { var x = l-(b-t); while (x < r+(b-t)) { canvas.drawLine(x, t, x+(b-t), b, p); x += s }; var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s * 2f } }
-            HatchPattern.TITANIUM -> { var x = l-(b-t); while (x < r+(b-t)) { canvas.drawLine(x+(b-t), t, x, b, p); x += s*1.2f }; var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s*2.4f } }
-            HatchPattern.GOLD_HATCH -> { var x = l; while (x < r) { canvas.drawLine(x, t, x, b, p); x += s*0.8f }; var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s*0.8f } }
+            HatchPattern.RUBBER -> { var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s*0.5f}; var x=l-h; while(x<r+h){canvas.drawLine(x,t,x+h,b,p);x+=s*3f} }
+            HatchPattern.PLASTIC -> { var x=l; while(x<r){canvas.drawLine(x,t,x,b,p);x+=s*0.6f} }
+            HatchPattern.CERAMIC -> { var y=t; var row=0; while(y<b){var x=l+if(row%2==0)0f else s; while(x<r){canvas.drawRect(x,y,x+s*1.8f,y+s*1.8f,p);x+=s*2f};y+=s*2f;row++} }
+            HatchPattern.FIBERGLASS -> { var y=t; while(y<b){var x=l; while(x<r){canvas.drawLine(x,y,x+s*0.5f,y+s,p);x+=s*0.4f};y+=s*1.5f} }
+            HatchPattern.FOAM -> { val rand=java.util.Random(42); var y=t; while(y<b){var x=l; while(x<r){val rs=s*(0.3f+rand.nextFloat()*0.4f);canvas.drawCircle(x+rand.nextFloat()*s*0.5f,y+rand.nextFloat()*s*0.5f,rs,p);x+=s*1.2f};y+=s*1.2f} }
+            HatchPattern.MEMBRANE -> { var y=t; val origSW=p.strokeWidth; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s*0.4f}; p.strokeWidth=origSW*2f; var y2=t+s; while(y2<b){canvas.drawLine(l,y2,r,y2,p);p.strokeWidth=origSW;y2+=s*3f} }
+            HatchPattern.ALUMINUM -> { var x=l-h; while(x<r+h){canvas.drawLine(x,t,x+h,b,p);x+=s*1.5f}; var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s*3f} }
+            HatchPattern.COPPER -> { var x=l-h; while(x<r+h){canvas.drawLine(x,t,x+h,b,p);canvas.drawLine(x+s*0.5f,t,x+h+s*0.5f,b,p);x+=s*2f} }
+            HatchPattern.IRON -> { val origSW=p.strokeWidth; var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s*0.6f}; p.strokeWidth=origSW*2f; var y2=t; while(y2<b){canvas.drawLine(l,y2,r,y2,p);y2+=s*3f}; p.strokeWidth=origSW }
+            HatchPattern.BRONZE -> { var x=l-h; while(x<r+h){canvas.drawLine(x,t,x+h,b,p);x+=s}; var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s*2f} }
+            HatchPattern.TITANIUM -> { var x=l-h; while(x<r+h){canvas.drawLine(x+h,t,x,b,p);x+=s*1.2f}; var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s*2.4f} }
+            HatchPattern.GOLD_HATCH -> { var x=l; while(x<r){canvas.drawLine(x,t,x,b,p);x+=s*0.8f}; var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s*0.8f} }
             HatchPattern.COMPACTED_FILL -> {
-                var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s }
-                val rand = java.util.Random(42); for (i in 0..((r-l)*(b-t)/s/s*2).toInt()) { val cx = l+rand.nextFloat()*(r-l); val cy = t+rand.nextFloat()*(b-t); canvas.drawLine(cx-s*0.3f, cy, cx+s*0.3f, cy+s*0.3f, p) }
+                var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s}
+                val rand=java.util.Random(42); for(i in 0..(w*h/s/s*2).toInt()){val cx=l+rand.nextFloat()*w;val cy=t+rand.nextFloat()*h;canvas.drawLine(cx-s*0.3f,cy,cx+s*0.3f,cy+s*0.3f,p)}
             }
-            HatchPattern.LOOSE_FILL -> {
-                val rand = java.util.Random(42); for (i in 0..((r-l)*(b-t)/s/s*4).toInt()) { val cx = l+rand.nextFloat()*(r-l); val cy = t+rand.nextFloat()*(b-t); val a = rand.nextFloat()*Math.PI.toFloat()*2f; canvas.drawLine(cx, cy, cx+kotlin.math.cos(a)*s*0.5f, cy+kotlin.math.sin(a)*s*0.5f, p) }
-            }
-            HatchPattern.CLAY -> { var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s*0.4f } }
-            HatchPattern.SILT -> { var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s*0.3f }; val rand = java.util.Random(42); for (i in 0..((r-l)*(b-t)/s/s*2).toInt()) canvas.drawCircle(l+rand.nextFloat()*(r-l), t+rand.nextFloat()*(b-t), s*0.06f, sp) }
-            HatchPattern.PEAT -> { var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s }; val rand = java.util.Random(42); for (i in 0..((r-l)*(b-t)/s/s*3).toInt()) { val cx = l+rand.nextFloat()*(r-l); val cy = t+rand.nextFloat()*(b-t); canvas.drawOval(android.graphics.RectF(cx-s*0.2f, cy-s*0.1f, cx+s*0.2f, cy+s*0.1f), sp) } }
-            HatchPattern.CHALK -> { var x = l-(b-t); while (x < r+(b-t)) { canvas.drawLine(x, t, x+(b-t), b, p); x += s*0.7f } }
-            HatchPattern.DOTS_FINE -> { var y = t; while (y < b) { var x = l; while (x < r) { canvas.drawCircle(x, y, s*0.08f, sp); x += s*0.6f }; y += s*0.6f } }
-            HatchPattern.DOTS_COARSE -> { var y = t; while (y < b) { var x = l; while (x < r) { canvas.drawCircle(x, y, s*0.2f, sp); x += s }; y += s } }
+            HatchPattern.LOOSE_FILL -> { val rand=java.util.Random(42); for(i in 0..(w*h/s/s*4).toInt()){val cx=l+rand.nextFloat()*w;val cy=t+rand.nextFloat()*h;val a=rand.nextFloat()*Math.PI.toFloat()*2f;canvas.drawLine(cx,cy,cx+kotlin.math.cos(a)*s*0.5f,cy+kotlin.math.sin(a)*s*0.5f,p)} }
+            HatchPattern.CLAY -> { var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s*0.4f} }
+            HatchPattern.SILT -> { var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s*0.3f}; val rand=java.util.Random(42); for(i in 0..(w*h/s/s*2).toInt())canvas.drawCircle(l+rand.nextFloat()*w,t+rand.nextFloat()*h,s*0.06f,sp) }
+            HatchPattern.PEAT -> { var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s}; val rand=java.util.Random(42); for(i in 0..(w*h/s/s*3).toInt()){val cx=l+rand.nextFloat()*w;val cy=t+rand.nextFloat()*h;canvas.drawOval(android.graphics.RectF(cx-s*0.2f,cy-s*0.1f,cx+s*0.2f,cy+s*0.1f),sp)} }
+            HatchPattern.CHALK -> { var x=l-h; while(x<r+h){canvas.drawLine(x,t,x+h,b,p);x+=s*0.7f} }
+            HatchPattern.DOTS_FINE -> { var y=t; while(y<b){var x=l; while(x<r){canvas.drawCircle(x,y,s*0.08f,sp);x+=s*0.6f};y+=s*0.6f} }
+            HatchPattern.DOTS_COARSE -> { var y=t; while(y<b){var x=l; while(x<r){canvas.drawCircle(x,y,s*0.2f,sp);x+=s};y+=s} }
             HatchPattern.HONEYCOMB -> {
-                val hw = s * 1.2f; val hh = s * 1.4f; var row = 0; var y = t
-                while (y < b) { var x = l + if (row % 2 == 0) 0f else hw * 0.75f
-                    while (x < r) { val path2 = android.graphics.Path()
-                        path2.moveTo(x + hw*0.25f, y); path2.lineTo(x + hw*0.75f, y); path2.lineTo(x + hw, y + hh*0.3f)
-                        path2.lineTo(x + hw*0.75f, y + hh*0.6f); path2.lineTo(x + hw*0.25f, y + hh*0.6f); path2.lineTo(x, y + hh*0.3f); path2.close()
-                        canvas.drawPath(path2, p); x += hw * 1.5f }; y += hh * 0.6f; row++ }
+                val hw=s*1.2f; val hh=s*1.4f; var row=0; var y=t
+                while(y<b){var x=l+if(row%2==0)0f else hw*0.75f; while(x<r){val path2=android.graphics.Path()
+                    path2.moveTo(x+hw*0.25f,y);path2.lineTo(x+hw*0.75f,y);path2.lineTo(x+hw,y+hh*0.3f);path2.lineTo(x+hw*0.75f,y+hh*0.6f);path2.lineTo(x+hw*0.25f,y+hh*0.6f);path2.lineTo(x,y+hh*0.3f);path2.close()
+                    canvas.drawPath(path2,p);x+=hw*1.5f};y+=hh*0.6f;row++}
             }
             HatchPattern.BASKET_WEAVE -> {
-                var y = t; var row = 0
-                while (y < b) { var x = l + if (row % 2 == 0) 0f else s
-                    while (x < r) { if (row % 2 == 0) { canvas.drawLine(x, y, x+s, y, p); canvas.drawLine(x, y, x, y+s, p) } else { canvas.drawLine(x, y+s, x+s, y+s, p); canvas.drawLine(x+s, y, x+s, y+s, p) }; x += s*2f }; y += s; row++ }
+                var y=t; var row=0; while(y<b){var x=l+if(row%2==0)0f else s; while(x<r){if(row%2==0){canvas.drawLine(x,y,x+s,y,p);canvas.drawLine(x,y,x,y+s,p)}else{canvas.drawLine(x,y+s,x+s,y+s,p);canvas.drawLine(x+s,y,x+s,y+s,p)};x+=s*2f};y+=s;row++}
             }
             HatchPattern.DIAMOND_GRID -> {
-                var x = l-(b-t); while (x < r+(b-t)) { canvas.drawLine(x, t, x+(b-t), b, p); x += s }
-                x = l-(b-t); while (x < r+(b-t)) { canvas.drawLine(x+(b-t), t, x, b, p); x += s }
+                var x=l-h; while(x<r+h){canvas.drawLine(x,t,x+h,b,p);x+=s}
+                x=l-h; while(x<r+h){canvas.drawLine(x+h,t,x,b,p);x+=s}
             }
             HatchPattern.ZIGZAG -> {
-                var y = t; while (y < b) { val path2 = android.graphics.Path(); path2.moveTo(l, y); var x = l; var up = true
-                    while (x < r) { path2.lineTo(x+s, if (up) y-s*0.5f else y+s*0.5f); x += s; up = !up }
-                    canvas.drawPath(path2, p); y += s * 1.2f }
+                var y=t; while(y<b){val path2=android.graphics.Path();path2.moveTo(l,y);var x=l;var up=true; while(x<r){path2.lineTo(x+s,if(up)y-s*0.5f else y+s*0.5f);x+=s;up=!up};canvas.drawPath(path2,p);y+=s*1.2f}
             }
             HatchPattern.WAVE -> {
-                var y = t; while (y < b) {
-                    val path2 = android.graphics.Path(); path2.moveTo(l, y); var x = l
-                    while (x < r) { path2.quadTo(x+s*0.5f, y-s*0.5f, x+s, y); path2.quadTo(x+s*1.5f, y+s*0.5f, x+s*2f, y); x += s*2f }
-                    canvas.drawPath(path2, p); y += s * 1.2f }
+                var y=t; while(y<b){val path2=android.graphics.Path();path2.moveTo(l,y);var x=l; while(x<r){path2.quadTo(x+s*0.5f,y-s*0.5f,x+s,y);path2.quadTo(x+s*1.5f,y+s*0.5f,x+s*2f,y);x+=s*2f};canvas.drawPath(path2,p);y+=s*1.2f}
             }
             HatchPattern.HERRINGBONE -> {
-                var y = t; var row = 0
-                while (y < b) { var x = l
-                    while (x < r) {
-                        if (row % 2 == 0) { canvas.drawLine(x, y, x+s, y+s, p); canvas.drawLine(x+s, y+s, x+s*2f, y, p) }
-                        else { canvas.drawLine(x, y+s, x+s, y, p); canvas.drawLine(x+s, y, x+s*2f, y+s, p) }
-                        x += s*2f }; y += s; row++ }
+                var y=t;var row=0; while(y<b){var x=l; while(x<r){if(row%2==0){canvas.drawLine(x,y,x+s,y+s,p);canvas.drawLine(x+s,y+s,x+s*2f,y,p)}else{canvas.drawLine(x,y+s,x+s,y,p);canvas.drawLine(x+s,y,x+s*2f,y+s,p)};x+=s*2f};y+=s;row++}
             }
             HatchPattern.SCALE -> {
-                var y = t; var row = 0
-                while (y < b) { var x = l + if (row % 2 == 0) 0f else s
-                    while (x < r) { canvas.drawArc(android.graphics.RectF(x-s, y, x+s, y+s*2f), 0f, -180f, false, p); x += s*2f }; y += s; row++ }
+                var y=t;var row=0; while(y<b){var x=l+if(row%2==0)0f else s; while(x<r){canvas.drawArc(android.graphics.RectF(x-s,y,x+s,y+s*2f),0f,-180f,false,p);x+=s*2f};y+=s;row++}
             }
-            HatchPattern.CHAIN_LINK -> {
-                var y = t; while (y < b) { var x = l; while (x < r) { canvas.drawOval(android.graphics.RectF(x-s*0.3f, y-s*0.5f, x+s*0.3f, y+s*0.5f), p); x += s }; y += s }
-            }
-            HatchPattern.STIPPLE -> {
-                val rand = java.util.Random(42); for (i in 0..((r-l)*(b-t)/s/s*8).toInt()) canvas.drawCircle(l+rand.nextFloat()*(r-l), t+rand.nextFloat()*(b-t), s*0.06f, sp)
-            }
-            HatchPattern.CONTOUR -> { var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s * 2f } }
+            HatchPattern.CHAIN_LINK -> { var y=t; while(y<b){var x=l; while(x<r){canvas.drawOval(android.graphics.RectF(x-s*0.3f,y-s*0.5f,x+s*0.3f,y+s*0.5f),p);x+=s};y+=s} }
+            HatchPattern.STIPPLE -> { val rand=java.util.Random(42); for(i in 0..(w*h/s/s*8).toInt())canvas.drawCircle(l+rand.nextFloat()*w,t+rand.nextFloat()*h,s*0.06f,sp) }
+            HatchPattern.CONTOUR -> { var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s*2f} }
             HatchPattern.WATER -> {
-                var y = t; while (y < b) {
-                    val path2 = android.graphics.Path(); path2.moveTo(l, y); var x = l
-                    while (x < r) { path2.quadTo(x+s*0.5f, y-s*0.3f, x+s, y); x += s }
-                    canvas.drawPath(path2, p); y += s * 0.8f }
+                var y=t; while(y<b){val path2=android.graphics.Path();path2.moveTo(l,y);var x=l; while(x<r){path2.quadTo(x+s*0.5f,y-s*0.3f,x+s,y);x+=s};canvas.drawPath(path2,p);y+=s*0.8f}
             }
             HatchPattern.CONCRETE_PRECAST -> {
-                var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s * 2f }
-                var x = l; while (x < r) { canvas.drawLine(x, t, x, b, p); x += s * 3f }
-                val rand = java.util.Random(42); for (i in 0..((r-l)*(b-t)/s/s).toInt()) canvas.drawCircle(l+rand.nextFloat()*(r-l), t+rand.nextFloat()*(b-t), s*0.08f, sp)
+                var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s*2f}; var x=l; while(x<r){canvas.drawLine(x,t,x,b,p);x+=s*3f}
+                val rand=java.util.Random(42); for(i in 0..(w*h/s/s).toInt())canvas.drawCircle(l+rand.nextFloat()*w,t+rand.nextFloat()*h,s*0.08f,sp)
             }
-            HatchPattern.REBAR -> { var x = l; while (x < r) { canvas.drawLine(x, t, x, b, p); x += s * 2f }; var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s * 2f } }
+            HatchPattern.REBAR -> { var x=l; while(x<r){canvas.drawLine(x,t,x,b,p);x+=s*2f}; var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s*2f} }
             HatchPattern.ASPHALT -> {
-                val rand = java.util.Random(42)
-                for (i in 0..((r-l)*(b-t)/s/s*6).toInt()) { val cx = l+rand.nextFloat()*(r-l); val cy = t+rand.nextFloat()*(b-t); canvas.drawCircle(cx, cy, s*0.05f+rand.nextFloat()*s*0.1f, sp) }
-                var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s * 2f }
+                val rand=java.util.Random(42); for(i in 0..(w*h/s/s*6).toInt()){val cx=l+rand.nextFloat()*w;val cy=t+rand.nextFloat()*h;canvas.drawCircle(cx,cy,s*0.05f+rand.nextFloat()*s*0.1f,sp)}
+                var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s*2f}
             }
             HatchPattern.PLYWOOD -> {
-                var y = t; var layer = 0
-                while (y < b) { if (layer % 2 == 0) { var x = l; while (x < r) { canvas.drawLine(x, y, x, y+s, p); x += s*0.3f } } else { canvas.drawLine(l, y+s*0.5f, r, y+s*0.5f, p) }; y += s; layer++ }
+                var y=t;var layer=0; while(y<b){if(layer%2==0){var x=l; while(x<r){canvas.drawLine(x,y,x,y+s,p);x+=s*0.3f}}else{canvas.drawLine(l,y+s*0.5f,r,y+s*0.5f,p)};y+=s;layer++}
             }
             HatchPattern.DRYWALL -> {
-                var y = t; while (y < b) { canvas.drawLine(l, y, r, y, p); y += s * 3f }
-                var x = l; while (x < r) { canvas.drawLine(x, t, x, b, p); x += s * 4f }
+                var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s*3f}; var x=l; while(x<r){canvas.drawLine(x,t,x,b,p);x+=s*4f}
             }
         }
-        canvas.restore()
     }
 
     private val rng = java.util.Random(42L)
