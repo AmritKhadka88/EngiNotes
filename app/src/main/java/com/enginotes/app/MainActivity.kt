@@ -651,7 +651,7 @@ class MainActivity : AppCompatActivity() {
             it.setPadding(dp(8), 0, dp(8), 0); contextBar.addView(it)
         }
         row.removeAllViews()
-        val BAR_H = dp(50)
+        val BAR_H = dp(42)
         val COLORS_PER_PAGE = 8
 
         fun divider() { row.addView(View(this).apply {
@@ -769,14 +769,14 @@ class MainActivity : AppCompatActivity() {
 
         // Size button — tapping it shows a popup slider above the bar
         fun sizeButton(currentSize: Float, max: Int, onChange: (Float) -> Unit) {
+            var currentVal = currentSize
             val btn = FrameLayout(this).apply {
                 val lp = LinearLayout.LayoutParams(BAR_H, BAR_H); lp.setMargins(dp(2),0,dp(2),0); layoutParams = lp
                 background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(14).toFloat() }
             }
-            // Draw size preview circle
             val preview = object : android.view.View(this) {
                 override fun onDraw(c: Canvas) {
-                    val r = (currentSize / max * (width / 2f - 4f)).coerceIn(3f, width / 2f - 4f)
+                    val r = (currentVal / max * (width / 2f - 4f)).coerceIn(3f, width / 2f - 4f)
                     val p = Paint(); p.color = Color.parseColor("#1C1C1E"); p.isAntiAlias = true
                     c.drawCircle(width / 2f, height / 2f, r, p)
                 }
@@ -784,97 +784,122 @@ class MainActivity : AppCompatActivity() {
             btn.addView(preview, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             btn.setOnClickListener { v ->
                 val popup = android.widget.PopupWindow(this)
-                val pLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(10), dp(12), dp(10)); setBackgroundColor(Color.WHITE) }
-                val sb = SeekBar(this).apply {
-                    this.max = max; progress = currentSize.toInt()
-                    progressTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#1C1C1E"))
-                    thumbTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#1C1C1E"))
-                    val lp = LinearLayout.LayoutParams(dp(200), LinearLayout.LayoutParams.WRAP_CONTENT); layoutParams = lp
-                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                        override fun onProgressChanged(s: SeekBar?, v: Int, f: Boolean) { if(f) { onChange(v.coerceAtLeast(1).toFloat()); preview.invalidate() } }
-                        override fun onStartTrackingTouch(s: SeekBar?) {}
-                        override fun onStopTrackingTouch(s: SeekBar?) { popup.dismiss() }
-                    })
+                val pLayout = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14))
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat() }
                 }
-                pLayout.addView(sb)
-                popup.contentView = pLayout; popup.width = dp(228); popup.height = android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
-                popup.isOutsideTouchable = true; popup.isFocusable = false
-                popup.elevation = dp(8).toFloat()
-                popup.showAsDropDown(v, 0, -dp(80))
+                val sliderView = object : android.view.View(this) {
+                    val trackH = dp(16).toFloat()
+                    override fun onDraw(c: Canvas) {
+                        val tw = width.toFloat(); val ty = (height - trackH) / 2f
+                        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+                        p.color = Color.parseColor("#E0E0E0")
+                        c.drawRoundRect(android.graphics.RectF(0f,ty,tw,ty+trackH), trackH/2f, trackH/2f, p)
+                        p.color = Color.parseColor("#1C1C1E")
+                        val prog = currentVal / max * tw
+                        c.drawRoundRect(android.graphics.RectF(0f,ty,prog,ty+trackH), trackH/2f, trackH/2f, p)
+                        p.color = Color.WHITE
+                        c.drawCircle(prog, height/2f, trackH/2f+dp(3).toFloat(), p)
+                        p.color = Color.parseColor("#1C1C1E"); p.style = Paint.Style.STROKE; p.strokeWidth = dp(1).toFloat()
+                        c.drawCircle(prog, height/2f, trackH/2f+dp(3).toFloat(), p)
+                    }
+                    override fun onTouchEvent(e: MotionEvent): Boolean {
+                        if (e.actionMasked == MotionEvent.ACTION_DOWN || e.actionMasked == MotionEvent.ACTION_MOVE) {
+                            currentVal = (e.x / width * max).coerceIn(1f, max.toFloat())
+                            onChange(currentVal); preview.invalidate(); invalidate()
+                        }
+                        return true
+                    }
+                }
+                sliderView.layoutParams = LinearLayout.LayoutParams(dp(220), dp(44))
+                pLayout.addView(sliderView)
+                popup.contentView = pLayout; popup.width = dp(256); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+                popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
+                popup.showAsDropDown(v, -dp(100), -dp(90))
             }
             row.addView(btn)
         }
 
-        // Opacity button — Notewise-style gradient slider shown in popup
         fun opacityButton(currentOpacity: Int, onChange: (Int) -> Unit) {
+            var currentVal = currentOpacity
             val btn = FrameLayout(this).apply {
                 val lp = LinearLayout.LayoutParams(BAR_H, BAR_H); lp.setMargins(dp(2),0,dp(2),0); layoutParams = lp
                 background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(14).toFloat() }
             }
-            // Checkerboard + gradient preview
             val preview = object : android.view.View(this) {
                 override fun onDraw(c: Canvas) {
-                    val p = Paint()
-                    // Checkerboard
-                    p.color = Color.parseColor("#C0C0C0"); val sq = width / 4f
-                    for (i in 0..3) for (j in 0..3) { if ((i+j) % 2 == 0) c.drawRect(i*sq, j*sq, (i+1)*sq, (j+1)*sq, p) }
-                    // Color overlay with current opacity
-                    p.color = Color.argb(currentOpacity, 0x1C, 0x1C, 0x1E)
-                    c.drawRect(0f, 0f, width.toFloat(), height.toFloat(), p)
+                    val p = Paint(); val sq = width / 4f; p.color = Color.parseColor("#C0C0C0")
+                    for (i in 0..3) for (j in 0..3) { if ((i+j)%2==0) c.drawRect(i*sq,j*sq,(i+1)*sq,(j+1)*sq,p) }
+                    p.color = Color.argb(currentVal, 0x1C, 0x1C, 0x1E)
+                    c.drawRect(0f,0f,width.toFloat(),height.toFloat(),p)
                 }
             }
             btn.addView(preview, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             btn.setOnClickListener { v ->
                 val popup = android.widget.PopupWindow(this)
-                val pLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(10), dp(12), dp(10)); setBackgroundColor(Color.WHITE) }
-                // Gradient seekbar background
-                val sb = SeekBar(this).apply {
-                    this.max = 255; progress = currentOpacity
-                    val lp = LinearLayout.LayoutParams(dp(200), LinearLayout.LayoutParams.WRAP_CONTENT); layoutParams = lp
-                    progressDrawable = object : android.graphics.drawable.Drawable() {
-                        override fun draw(c: Canvas) {
-                            val b = bounds; val r = android.graphics.RectF(b); val p2 = Paint(Paint.ANTI_ALIAS_FLAG)
-                            // Checkerboard bg
-                            p2.color = Color.parseColor("#C0C0C0"); val sq = b.height() / 2f
-                            for (i in 0 until (b.width() / sq).toInt() + 1) for (j in 0..1) { if ((i+j) % 2 == 0) c.drawRect(i*sq, j*sq, (i+1)*sq, (j+1)*sq, p2) }
-                            // Gradient
-                            p2.shader = android.graphics.LinearGradient(b.left.toFloat(), 0f, b.right.toFloat(), 0f, Color.TRANSPARENT, Color.parseColor("#1C1C1E"), android.graphics.Shader.TileMode.CLAMP)
-                            c.drawRoundRect(r, b.height() / 2f, b.height() / 2f, p2)
-                        }
-                        override fun setAlpha(a: Int) {}
-                        override fun setColorFilter(cf: android.graphics.ColorFilter?) {}
-                        override fun getOpacity() = android.graphics.PixelFormat.TRANSLUCENT
-                    }
-                    thumbTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
-                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                        override fun onProgressChanged(s: SeekBar?, v: Int, f: Boolean) { if(f) { onChange(v); preview.invalidate() } }
-                        override fun onStartTrackingTouch(s: SeekBar?) {}
-                        override fun onStopTrackingTouch(s: SeekBar?) { popup.dismiss() }
-                    })
+                val pLayout = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14))
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat() }
                 }
-                pLayout.addView(sb)
-                popup.contentView = pLayout; popup.width = dp(228); popup.height = android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
-                popup.isOutsideTouchable = true; popup.isFocusable = false; popup.elevation = dp(8).toFloat()
-                popup.showAsDropDown(v, 0, -dp(80))
+                val sliderView = object : android.view.View(this) {
+                    val trackH = dp(16).toFloat()
+                    override fun onDraw(c: Canvas) {
+                        val tw = width.toFloat(); val ty = (height - trackH) / 2f
+                        val rr = android.graphics.RectF(0f, ty, tw, ty + trackH)
+                        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+                        // Checkerboard bg
+                        val sq = trackH / 2f; p.color = Color.parseColor("#C0C0C0")
+                        for (i in 0 until (tw/sq).toInt()+1) for (j in 0..1) { if((i+j)%2==0) c.drawRect(i*sq, ty+j*sq, (i+1)*sq, ty+(j+1)*sq, p) }
+                        // Gradient overlay
+                        p.shader = android.graphics.LinearGradient(0f,0f,tw,0f,Color.TRANSPARENT,Color.parseColor("#1C1C1E"),android.graphics.Shader.TileMode.CLAMP)
+                        c.drawRoundRect(rr, trackH/2f, trackH/2f, p); p.shader = null
+                        // Thumb at current opacity position
+                        val tx = currentVal / 255f * tw
+                        p.color = Color.WHITE; p.style = Paint.Style.FILL
+                        c.drawCircle(tx, height/2f, trackH/2f+dp(3).toFloat(), p)
+                        p.color = Color.parseColor("#888888"); p.style = Paint.Style.STROKE; p.strokeWidth = dp(1).toFloat()
+                        c.drawCircle(tx, height/2f, trackH/2f+dp(3).toFloat(), p)
+                    }
+                    override fun onTouchEvent(e: MotionEvent): Boolean {
+                        if (e.actionMasked == MotionEvent.ACTION_DOWN || e.actionMasked == MotionEvent.ACTION_MOVE) {
+                            currentVal = (e.x / width * 255).toInt().coerceIn(0,255)
+                            onChange(currentVal); preview.invalidate(); invalidate()
+                        }
+                        return true
+                    }
+                }
+                sliderView.layoutParams = LinearLayout.LayoutParams(dp(220), dp(44))
+                pLayout.addView(sliderView)
+                popup.contentView = pLayout; popup.width = dp(256); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+                popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
+                popup.showAsDropDown(v, -dp(100), -dp(90))
             }
             row.addView(btn)
         }
-
-        // Horizontal scrollable font row — all fonts in one row, 3 visible
+        // Horizontal scrollable font row — 3 visible, swipe right for more
         fun fontRow(fonts: List<Pair<String, String>>, selectedFam: String, onSelect: (String) -> Unit) {
+            val chipW = dp(72)
             val hs = HorizontalScrollView(this).apply {
-                val lp = LinearLayout.LayoutParams(dp(3 * 72), BAR_H); layoutParams = lp
+                val lp = LinearLayout.LayoutParams(chipW * 3 + dp(8), BAR_H); layoutParams = lp
                 isHorizontalScrollBarEnabled = false; overScrollMode = android.view.View.OVER_SCROLL_NEVER
+                // Allow horizontal scroll, don't steal from parent
+                setOnTouchListener { _, ev ->
+                    when (ev.actionMasked) {
+                        android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_MOVE ->
+                            parent?.requestDisallowInterceptTouchEvent(true)
+                        else -> parent?.requestDisallowInterceptTouchEvent(false)
+                    }; false
+                }
             }
-            val fr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            val fr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(2),0,dp(2),0) }
             fonts.forEach { (lbl, fam) ->
                 val active = selectedFam == fam
                 fr.addView(TextView(this).apply {
                     text = lbl; textSize = 11f; gravity = Gravity.CENTER
                     typeface = try { android.graphics.Typeface.create(fam, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
-                    setPadding(dp(10), dp(5), dp(10), dp(5))
-                    val lp = LinearLayout.LayoutParams(dp(70), BAR_H - dp(6)); lp.setMargins(dp(2), dp(3), dp(2), dp(3)); layoutParams = lp
-                    background = android.graphics.drawable.GradientDrawable().apply { setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")); cornerRadius = dp(14).toFloat() }
+                    setPadding(dp(6), dp(4), dp(6), dp(4))
+                    val lp = LinearLayout.LayoutParams(chipW - dp(4), BAR_H - dp(6)); lp.setMargins(dp(2),dp(3),dp(2),dp(3)); layoutParams = lp
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")); cornerRadius = dp(12).toFloat() }
                     setTextColor(if (active) Color.WHITE else Color.parseColor("#3C3C3E"))
                     setOnClickListener { onSelect(fam); rebuildContextBar() }
                 })

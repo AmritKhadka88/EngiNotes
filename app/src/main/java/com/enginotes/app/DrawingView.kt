@@ -854,11 +854,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
 
         override fun onLongPress(e: MotionEvent) {
-            if (currentTool != Tool.SELECT) return
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
             val hit = findTextItemAt(wx, wy)
-            if (hit != null && hit.linkTarget != null) {
-                onLinkTap?.invoke(hit.linkTarget!!)
+            if (hit != null) {
+                if (hit.linkTarget != null && currentTool == Tool.SELECT) { onLinkTap?.invoke(hit.linkTarget!!); return }
+                selectedItem = hit; invalidate()
+                onTextSelectRequest?.invoke(hit, e.x, e.y)
+                return
             }
         }
     })
@@ -2106,12 +2108,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     currentTool == Tool.PEN -> {
                         // Ball pen is strictly uniform - no pressure or speed sensitivity, per spec.
                         val baseW = if (currentPenStyle == PenStyle.BALL) currentStrokeWidth else currentStrokeWidth * pressure
-                        StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, baseW, false, rotation = 0f, penStyle = currentPenStyle, opacity = if (currentPenStyle == PenStyle.BALL) 255 else currentOpacity)
+                        StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, baseW, false, rotation = 0f, penStyle = currentPenStyle, opacity = if (currentPenStyle == PenStyle.BALL) 255 else brushOpacity)
                     }
                     currentTool == Tool.HIGHLIGHTER -> StrokeData(Tool.HIGHLIGHTER, mutableListOf(wx, wy), currentColor, highlighterThickness, false, rotation = 0f, penStyle = PenStyle.MARKER, opacity = (highlighterOpacity * 255 / 100))
                     currentTool == Tool.BRUSH -> StrokeData(Tool.BRUSH, mutableListOf(wx, wy), currentColor, brushThickness * pressure, false, rotation = 0f, brushStyle = currentBrushStyle, opacity = brushOpacity)
                     SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, fillShapes)
-                    else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = currentOpacity)
+                    else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = brushOpacity)
                 }
                 if (currentTool == Tool.PEN && currentPenStyle == PenStyle.FOUNTAIN) data.widths.add(currentStrokeWidth)
                 if (currentTool == Tool.PEN && currentPenStyle == PenStyle.PENCIL) data.widths.add(1f)
