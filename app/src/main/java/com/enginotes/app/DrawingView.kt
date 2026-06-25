@@ -645,6 +645,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var onCanvasTransformed: (() -> Unit)? = null
     var onPageSwipe: ((Int) -> Unit)? = null
     var onScrollPercentChanged: ((Float) -> Unit)? = null
+    var onDrawingStarted: (() -> Unit)? = null
+    var onDrawingEnded: (() -> Unit)? = null
     var fingerPanMode: Boolean = false
 
     fun scrollToPercent(pct: Float) {
@@ -688,7 +690,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var convenientPageW = 0f
     private var convenientPageH = 0f
 
-    private fun isDrawingTool() = currentTool == Tool.PEN || currentTool == Tool.ERASER || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH ||
+    fun isDrawingTool() = currentTool == Tool.PEN || currentTool == Tool.ERASER || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH ||
         currentTool in SHAPE_TOOLS || currentTool == Tool.ARC || currentTool == Tool.FILL
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -884,8 +886,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val minTy = height - ph2 - margin; val maxTy = margin
             translateY = translateY.coerceIn(minTy.coerceAtMost(maxTy), maxTy)
         } else if (canvasMode == CanvasMode.CONVENIENT || canvasMode == CanvasMode.PAGINATED) {
-            val maxTy = margin
-            translateY = translateY.coerceAtMost(maxTy)
+            val topBarH = 64f * resources.displayMetrics.density
+            translateY = translateY.coerceAtMost(topBarH)
         }
     }
 
@@ -2109,6 +2111,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (currentTool == Tool.PEN && currentPenStyle == PenStyle.PENCIL) data.widths.add(1f)
                 lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
                 currentItem = StrokeItem(data, data.buildPath(), data.toPaint()); invalidate()
+                onDrawingStarted?.invoke()
             }
             MotionEvent.ACTION_MOVE -> {
                 if (currentTool == Tool.ERASER) {
@@ -2168,6 +2171,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     if (!tooShort) { actions.add(item); redoStack.clear() }
                 }
                 currentItem = null; invalidate()
+                onDrawingEnded?.invoke()
             }
         }
     }

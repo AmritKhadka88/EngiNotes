@@ -429,6 +429,31 @@ class MainActivity : AppCompatActivity() {
         }
         drawingView.onLinkTap               = { target -> navigateToLink(target) }
         drawingView.onPageSwipe             = { dir -> drawingView.scrollPage(dir) }
+        drawingView.onDrawingStarted        = {
+            // Hide both bars while drawing for more canvas space — tap to bring back
+            if (drawingView.isDrawingTool()) {
+                runOnUiThread {
+                    val anim = android.view.animation.AnimationUtils.loadAnimation(this, android.R.anim.fade_out)
+                    anim.duration = 150
+                    findViewById<View?>(R.id.primaryToolbarScroll)?.startAnimation(anim)
+                    findViewById<View?>(R.id.primaryToolbarScroll)?.visibility = View.GONE
+                    findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.startAnimation(anim)
+                    findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
+                }
+            }
+        }
+        drawingView.onDrawingEnded          = {
+            runOnUiThread {
+                val anim = android.view.animation.AnimationUtils.loadAnimation(this, android.R.anim.fade_in)
+                anim.duration = 200
+                android.os.Handler(mainLooper).postDelayed({
+                    findViewById<View?>(R.id.primaryToolbarScroll)?.let { v -> v.visibility = View.VISIBLE; v.startAnimation(anim) }
+                    if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
+                        findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.let { v -> v.visibility = View.VISIBLE; v.startAnimation(anim) }
+                    }
+                }, 300) // slight delay so bars don't flicker on quick strokes
+            }
+        }
         drawingView.onItemSelected          = { item ->
             layerToolbar?.let { canvasContainer.removeView(it) }; layerToolbar = null
             if (item != null && item !is TextItem) {
@@ -496,12 +521,17 @@ class MainActivity : AppCompatActivity() {
         // Touch/Pan toggle
         var touchModeIsPan = false
         val btnTouchToggle = findViewById<ImageButton?>(R.id.btnTouchToggle)
-        btnTouchToggle?.alpha = 0.38f
+        btnTouchToggle?.setImageResource(R.drawable.ic_finger)
+        btnTouchToggle?.alpha = 0.35f
         btnTouchToggle?.setOnClickListener {
             touchModeIsPan = !touchModeIsPan
             drawingView.fingerPanMode = touchModeIsPan
-            btnTouchToggle.alpha = if (touchModeIsPan) 1f else 0.38f
-            btnTouchToggle.animate().scaleX(1.18f).scaleY(1.18f).setDuration(80)
+            btnTouchToggle.alpha = if (touchModeIsPan) 1f else 0.35f
+            btnTouchToggle.background = if (touchModeIsPan)
+                android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#1C1C1E")); cornerRadius = dp(18).toFloat() }
+            else android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)
+            btnTouchToggle.setColorFilter(if (touchModeIsPan) Color.WHITE else Color.parseColor("#1C1C1E"))
+            btnTouchToggle.animate().scaleX(1.15f).scaleY(1.15f).setDuration(80)
                 .withEndAction { btnTouchToggle.animate().scaleX(1f).scaleY(1f).setDuration(80).start() }.start()
         }
 
@@ -632,15 +662,14 @@ class MainActivity : AppCompatActivity() {
         // Paged column: items shown PAGE_SIZE at a time, tap arrows or swipe to page
         fun pagedColumn(items: List<Pair<String, Boolean>>, pageSize: Int, page: Int, onPage: (Int) -> Unit, onSelect: (Int) -> Unit) {
             val numPages = kotlin.math.ceil(items.size.toDouble() / pageSize).toInt().coerceAtLeast(1)
+            val start = (page % numPages) * pageSize
+            val visible = items.subList(start, (start + pageSize).coerceAtMost(items.size))
             val col = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
                 val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, BAR_H); layoutParams = lp
             }
-            val start = (page % numPages) * pageSize
-            val visible = items.subList(start, (start + pageSize).coerceAtMost(items.size))
             for ((i, item) in visible.withIndex()) {
-                val realIdx = start + i
-                val (lbl, active) = item
+                val realIdx = start + i; val (lbl, active) = item
                 col.addView(TextView(this).apply {
                     text = lbl; textSize = 10.5f; gravity = Gravity.CENTER
                     setPadding(dp(8), dp(2), dp(8), dp(2))
@@ -654,71 +683,81 @@ class MainActivity : AppCompatActivity() {
                     setOnClickListener { onSelect(realIdx) }
                 })
             }
-            row.addView(col)
-            // Page indicator + arrows if multiple pages
+            // Swipe up/down on the column to page through - no buttons needed
             if (numPages > 1) {
-                val nav = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
-                    val lp = LinearLayout.LayoutParams(dp(16), BAR_H); layoutParams = lp
+                var swipeStartY = 0f
+                col.setOnTouchListener { _, ev ->
+                    when (ev.actionMasked) {
+                        android.view.MotionEvent.ACTION_DOWN -> { swipeStartY = ev.y; false }
+                        android.view.MotionEvent.ACTION_UP -> {
+                            val dy = swipeStartY - ev.y
+                            if (kotlin.math.abs(dy) > dp(15)) { onPage(if (dy > 0) (page+1)%numPages else ((page-1+numPages)%numPages)); true }
+                            else false
+                        }
+                        else -> false
+                    }
                 }
-                nav.addView(TextView(this).apply {
-                    text = "▲"; textSize = 8f; gravity = Gravity.CENTER
-                    val lp = LinearLayout.LayoutParams(dp(16), dp(16)); layoutParams = lp
-                    setTextColor(Color.parseColor("#8A8580"))
-                    setOnClickListener { onPage(((page - 1 + numPages) % numPages)) }
-                })
-                nav.addView(TextView(this).apply {
-                    text = "${page % numPages + 1}/$numPages"; textSize = 7f; gravity = Gravity.CENTER
-                    val lp = LinearLayout.LayoutParams(dp(16), dp(14)); layoutParams = lp
-                    setTextColor(Color.parseColor("#B0ACA8"))
-                })
-                nav.addView(TextView(this).apply {
-                    text = "▼"; textSize = 8f; gravity = Gravity.CENTER
-                    val lp = LinearLayout.LayoutParams(dp(16), dp(16)); layoutParams = lp
-                    setTextColor(Color.parseColor("#8A8580"))
-                    setOnClickListener { onPage((page + 1) % numPages) }
-                })
-                row.addView(nav)
             }
+            row.addView(col)
         }
 
-        // Paged color grid: COLORS_PER_PAGE per page, 2 rows of 4
+        // 8 colors in ONE horizontal row, swipe left/right to page
         fun colorGrid(colors: List<Int>, selected: Int, page: Int, onPage: (Int) -> Unit, onPick: (Int) -> Unit) {
-            val numPages = kotlin.math.ceil(colors.size.toDouble() / COLORS_PER_PAGE).toInt().coerceAtLeast(1)
-            val start = (page % numPages) * COLORS_PER_PAGE
-            val visible = colors.subList(start, (start + COLORS_PER_PAGE).coerceAtMost(colors.size))
-            val DOT = dp(24); val M = dp(2)
-            val grid = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+            val PER_PAGE = 8
+            val numPages = kotlin.math.ceil(colors.size.toDouble() / PER_PAGE).toInt().coerceAtLeast(1)
+            val start = (page % numPages) * PER_PAGE
+            val visible = colors.subList(start, (start + PER_PAGE).coerceAtMost(colors.size))
+            val DOT = dp(30); val M = dp(3)
+            val colorRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                 val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, BAR_H); layoutParams = lp
             }
-            val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-            val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
             visible.forEachIndexed { i, color ->
                 val sel = color == selected
-                val dot = View(this).apply {
-                    val lp = LinearLayout.LayoutParams(DOT, DOT); lp.setMargins(M,M,M,M); layoutParams = lp
+                colorRow.addView(View(this).apply {
+                    val lp = LinearLayout.LayoutParams(DOT, DOT); lp.setMargins(M,0,M,0); layoutParams = lp
                     background = android.graphics.drawable.GradientDrawable().apply {
                         shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(color)
-                        setStroke(if (sel) dp(2) else 0, Color.parseColor("#1C1C1E"))
+                        setStroke(if (sel) dp(3) else dp(1), if (sel) Color.parseColor("#1C1C1E") else Color.parseColor("#D0CCC8"))
                     }
                     setOnClickListener { onPick(colors[start + i]); rebuildContextBar() }
-                }
-                if (i < 4) row1.addView(dot) else row2.addView(dot)
+                })
             }
-            grid.addView(row1); grid.addView(row2)
-            row.addView(grid)
-            // Navigation
+            // Swipe left/right on color row to page - no arrow buttons
+            if (numPages > 1) {
+                var swipeStartX = 0f
+                colorRow.setOnTouchListener { _, ev ->
+                    when (ev.actionMasked) {
+                        android.view.MotionEvent.ACTION_DOWN -> { swipeStartX = ev.x; false }
+                        android.view.MotionEvent.ACTION_UP -> {
+                            val dx = swipeStartX - ev.x
+                            if (kotlin.math.abs(dx) > dp(20)) { onPage(if (dx > 0) (page+1)%numPages else ((page-1+numPages)%numPages)); true }
+                            else false
+                        }
+                        else -> false
+                    }
+                }
+            }
+            row.addView(colorRow)
+            // Small page dot indicator + more button
             val nav = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
-                val lp = LinearLayout.LayoutParams(dp(18), BAR_H); layoutParams = lp
+                val lp = LinearLayout.LayoutParams(dp(16), BAR_H); lp.setMargins(dp(2),0,0,0); layoutParams = lp
             }
             if (numPages > 1) {
-                nav.addView(TextView(this).apply { text = "▲"; textSize = 8f; gravity = Gravity.CENTER; val lp = LinearLayout.LayoutParams(dp(18),dp(16)); layoutParams=lp; setTextColor(Color.parseColor("#8A8580")); setOnClickListener { onPage(((page-1+numPages)%numPages)) } })
-                nav.addView(TextView(this).apply { text = "${page%numPages+1}/$numPages"; textSize = 7f; gravity = Gravity.CENTER; val lp = LinearLayout.LayoutParams(dp(18),dp(14)); layoutParams=lp; setTextColor(Color.parseColor("#B0ACA8")) })
-                nav.addView(TextView(this).apply { text = "▼"; textSize = 8f; gravity = Gravity.CENTER; val lp = LinearLayout.LayoutParams(dp(18),dp(16)); layoutParams=lp; setTextColor(Color.parseColor("#8A8580")); setOnClickListener { onPage((page+1)%numPages) } })
+                for (i in 0 until numPages) {
+                    nav.addView(View(this).apply {
+                        val lp = LinearLayout.LayoutParams(dp(4), dp(4)); lp.setMargins(0,dp(1),0,dp(1)); layoutParams = lp
+                        background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(if (i == page%numPages) Color.parseColor("#5C5856") else Color.parseColor("#D0CCC8")) }
+                    })
+                }
             }
-            nav.addView(TextView(this).apply { text = "···"; textSize = 11f; gravity = Gravity.CENTER; val lp = LinearLayout.LayoutParams(dp(18),dp(18)); layoutParams=lp; setTextColor(Color.parseColor("#8A8580")); setOnClickListener { showColorGridDialog { c -> onPick(c); rebuildContextBar() } } })
+            nav.addView(TextView(this).apply {
+                text = "···"; textSize = 10f; gravity = Gravity.CENTER
+                val lp = LinearLayout.LayoutParams(dp(16), dp(20)); lp.setMargins(0,dp(2),0,0); layoutParams = lp
+                setTextColor(Color.parseColor("#8A8580"))
+                setOnClickListener { showColorGridDialog { c -> onPick(c); rebuildContextBar() } }
+            })
             row.addView(nav)
         }
 
@@ -825,25 +864,36 @@ class MainActivity : AppCompatActivity() {
                     onPage = { p -> contextBarPage = colPage * 10 + p; rebuildContextBar() },
                     onPick = { c -> editColor = c; activeEditText?.setTextColor(c); textSelectionItem?.let { it.color = c; drawingView.invalidate() } })
             }
-            Tool.SELECT -> {
-                // Show select mode options as icon chips
-                val selectModes = listOf("Default" to "select_default", "Lasso" to "select_lasso", "Auto" to "select_auto", "Box" to "select_box")
-                for ((lbl, _) in selectModes) {
-                    row.addView(TextView(this).apply {
-                        text = lbl; textSize = 11f; gravity = Gravity.CENTER
-                        setPadding(dp(10), dp(5), dp(10), dp(5))
-                        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(32)); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp
-                        background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(16).toFloat() }
-                        setTextColor(Color.parseColor("#3C3C3E"))
-                        setOnClickListener {
-                            when (lbl) {
-                                "Default" -> setActiveTool(null, Tool.SELECT)
-                                "Lasso" -> setActiveTool(null, Tool.LASSO)
-                                "Auto" -> setActiveTool(null, Tool.AUTOSELECT)
-                                "Box" -> setActiveTool(null, Tool.SELECT)
-                            }
+            Tool.SELECT, Tool.LASSO, Tool.AUTOSELECT -> {
+                data class SelectMode(val label: String, val emoji: String, val tool: Tool)
+                val modes = listOf(
+                    SelectMode("Select", "⬚", Tool.SELECT),
+                    SelectMode("Lasso", "⌖", Tool.LASSO),
+                    SelectMode("Auto", "⊹", Tool.AUTOSELECT)
+                )
+                for (mode in modes) {
+                    val active = drawingView.currentTool == mode.tool
+                    val col = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+                        val lp = LinearLayout.LayoutParams(dp(46), BAR_H); lp.setMargins(dp(2),0,dp(2),0); layoutParams = lp
+                        background = android.graphics.drawable.GradientDrawable().apply {
+                            shape = android.graphics.drawable.GradientDrawable.OVAL
+                            setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7"))
                         }
+                        setOnClickListener { setActiveTool(null, mode.tool) }
+                    }
+                    col.addView(ImageView(this).apply {
+                        setImageResource(R.drawable.ic_select)
+                        scaleType = ImageView.ScaleType.CENTER_INSIDE
+                        val lp = LinearLayout.LayoutParams(dp(24), dp(24)); layoutParams = lp
+                        if (active) setColorFilter(Color.WHITE) else clearColorFilter()
                     })
+                    col.addView(TextView(this).apply {
+                        text = mode.label; textSize = 8f; gravity = Gravity.CENTER
+                        setTextColor(if (active) Color.WHITE else Color.parseColor("#5C5856"))
+                        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT); layoutParams = lp
+                    })
+                    row.addView(col)
                 }
             }
             else -> {
