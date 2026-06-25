@@ -817,7 +817,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                 }
                 Tool.FILL -> {
-                    performFill(e.x, e.y)
+                    if (!fillScrollGuard) performFill(e.x, e.y)
+                    fillScrollGuard = false
                 }
                 else -> {}
             }
@@ -861,6 +862,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 onScaleChanged?.invoke(scaleFactor); onCanvasTransformed?.invoke()
                 invalidate(); return true
             }
+            // Mark that a scroll happened so onSingleTapConfirmed doesn't fire fill
+            if (kotlin.math.abs(distanceX) > 2f || kotlin.math.abs(distanceY) > 2f) fillScrollGuard = true
             return false
         }
 
@@ -1696,6 +1699,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var isDimDrawing = false
     var pendingHatchPattern: HatchPattern? = null
     var pendingHatchColor: Int = android.graphics.Color.BLACK
+    private var fillScrollGuard = false
 
     private fun handleTable(event: MotionEvent) {
         val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
@@ -2259,6 +2263,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
             requestUnbufferedDispatch(event)
         }
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) fillScrollGuard = false
         if (event.pointerCount >= 2) {
             twoFingerActive = true
             // Cancel any in-progress stroke immediately when second finger touches
@@ -2848,7 +2853,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val w = (width * scale).toInt().coerceAtLeast(1); val h = (height * scale).toInt().coerceAtLeast(1)
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); val cv = Canvas(bmp)
         cv.save(); cv.scale(scale, scale); cv.translate(translateX, translateY); cv.scale(scaleFactor, scaleFactor)
-        // Draw ALL stroke items with their proper rotation, stroke-only, thick, hard edges
         for (a in actions) {
             if (a is StrokeItem) {
                 val thickPaint = Paint(a.paint).apply {
@@ -2858,11 +2862,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 if (a.data.rotation != 0f) {
                     val b = getBounds(a)
-                    if (b != null) {
-                        val cx = (b[0] + b[2]) / 2f; val cy = (b[1] + b[3]) / 2f
-                        cv.save(); cv.rotate(a.data.rotation, cx, cy)
-                        cv.drawPath(a.path, thickPaint); cv.restore()
-                    } else cv.drawPath(a.path, thickPaint)
+                    if (b != null) { val cx=(b[0]+b[2])/2f; val cy=(b[1]+b[3])/2f; cv.save(); cv.rotate(a.data.rotation,cx,cy); cv.drawPath(a.path,thickPaint); cv.restore() }
+                    else cv.drawPath(a.path, thickPaint)
                 } else cv.drawPath(a.path, thickPaint)
             }
         }
@@ -2892,23 +2893,29 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             if (leaked) {
                 val clusters = clusterEdgePoints(edgeHits)
-                post {
-                    if (clusters.isNotEmpty()) { val (cx, cy) = clusters[0]; zoomTo(screenToWorldX(cx/scale), screenToWorldY(cy/scale), (scaleFactor*2.5f).coerceAtMost(6f)) }
-                    invalidate()
-                }
+                post { if (clusters.isNotEmpty()) { val (cx, cy) = clusters[0]; zoomTo(screenToWorldX(cx/scale), screenToWorldY(cy/scale), (scaleFactor*2.5f).coerceAtMost(6f)) }; invalidate() }
             } else {
                 val cw = maxX - minX + 1; val ch = maxY - minY + 1
-                val fp = IntArray(cw * ch) { i ->
-                    val gx = minX + i % cw; val gy = minY + i / cw
-                    if (visited[gy * w + gx]) fillColor else Color.TRANSPARENT
-                }
+                val fp = IntArray(cw * ch) { i -> val gx=minX+i%cw; val gy=minY+i/cw; if(visited[gy*w+gx]) fillColor else Color.TRANSPARENT }
                 val fb = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888); fb.setPixels(fp, 0, cw, 0, 0, cw, ch)
                 val folder = File(ctx.filesDir, "images"); if (!folder.exists()) folder.mkdirs()
                 val outFile = File(folder, "fill_${System.currentTimeMillis()}.png")
                 try { FileOutputStream(outFile).use { fb.compress(Bitmap.CompressFormat.PNG, 100, it) } } catch (e: Exception) { post { invalidate() }; return@execute }
                 val wx0 = screenToWorldX(minX / scale); val wy0 = screenToWorldY(minY / scale)
                 val wx1 = screenToWorldX((minX + cw) / scale); val wy1 = screenToWorldY((minY + ch) / scale)
-                post { val fi = FillItem(outFile.absolutePath, wx0, wy0, wx1 - wx0, wy1 - wy0); if (pendingHatchPattern != null) { fi.hatchPattern = pendingHatchPattern; fi.hatchColor = pendingHatchColor; pendingHatchPattern = null }; actions.add(fi); redoStack.clear(); invalidate() }
+                post {
+                    val fi = FillItem(outFile.absolutePath, wx0, wy0, wx1 - wx0, wy1 - wy0)
+                    if (pendingHatchPattern != null) { fi.hatchPattern = pendingHatchPattern; fi.hatchColor = pendingHatchColor; pendingHatchPattern = null }
+                    // Pre-attach the bitmap so it draws immediately without async blink
+                    fi.bitmap = fb
+                    // Remove any existing FillItem that covers the same tap point (same area)
+                    actions.removeAll { existing ->
+                        existing is FillItem &&
+                        existing.x <= wx0 + fi.w * 0.5f && existing.x + existing.w >= wx0 + fi.w * 0.5f &&
+                        existing.y <= wy0 + fi.h * 0.5f && existing.y + existing.h >= wy0 + fi.h * 0.5f
+                    }
+                    actions.add(fi); redoStack.clear(); invalidate()
+                }
             }
         }
     }
