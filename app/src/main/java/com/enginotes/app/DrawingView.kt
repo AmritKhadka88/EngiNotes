@@ -574,6 +574,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var currentBrushStyle: BrushStyle = BrushStyle.ROUND
     var brushThickness: Float = 10f
     var brushOpacity: Int = 255
+    var eraserOpacity: Int = 255 // 255 = full erase, lower = partial erase
     var eraserSize: Float = 40f
     var eraserMode: EraserMode = EraserMode.OBJECT
     var eraserShape: EraserShape = EraserShape.ROUND
@@ -1151,15 +1152,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE
             selP.strokeWidth = 2f / scaleFactor; selP.isAntiAlias = true
             canvas.drawRect(0f, 0f, contentW, contentH, selP)
-            // Rotate handle — large green circle above top-centre, fixed 22px screen size
-            val hr = 22f / scaleFactor
-            val hx = contentW / 2f; val hy = -44f / scaleFactor
-            // Stem line
+            // Rotate handle — large green circle, 32px screen size, easy to tap
+            val hr = 32f / scaleFactor
+            val hx = contentW / 2f; val hy = -56f / scaleFactor
             canvas.drawLine(contentW / 2f, 0f, hx, hy + hr, selP)
             val hFill = Paint(); hFill.color = Color.parseColor("#34C759"); hFill.style = Paint.Style.FILL; hFill.isAntiAlias = true
-            val hStroke = Paint(); hStroke.color = Color.WHITE; hStroke.style = Paint.Style.STROKE; hStroke.strokeWidth = 3f / scaleFactor; hStroke.isAntiAlias = true
+            val hStroke = Paint(); hStroke.color = Color.WHITE; hStroke.style = Paint.Style.STROKE; hStroke.strokeWidth = 4f / scaleFactor; hStroke.isAntiAlias = true
+            // Draw rotation symbol inside the handle
             canvas.drawCircle(hx, hy, hr, hFill)
             canvas.drawCircle(hx, hy, hr, hStroke)
+            // Draw ↻ arrow inside
+            val ap = Paint(); ap.color = Color.WHITE; ap.style = Paint.Style.STROKE; ap.strokeWidth = 3f / scaleFactor; ap.isAntiAlias = true; ap.strokeCap = Paint.Cap.ROUND
+            val ar = hr * 0.5f
+            canvas.drawArc(android.graphics.RectF(hx - ar, hy - ar, hx + ar, hy + ar), -150f, 270f, false, ap)
+            val arrowPath = android.graphics.Path(); arrowPath.moveTo(hx + ar * 0.3f, hy - ar * 0.95f); arrowPath.lineTo(hx + ar, hy - ar * 0.3f); arrowPath.lineTo(hx + ar * 0.3f, hy + ar * 0.3f)
+            canvas.drawPath(arrowPath, ap)
             canvas.restore()
             return
         }

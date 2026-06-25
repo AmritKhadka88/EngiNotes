@@ -767,33 +767,134 @@ class MainActivity : AppCompatActivity() {
             row.addView(nav)
         }
 
-        // Big-touch slider: full BAR_H container height, wider for easier sliding
-        fun bigSlider(label: String, max: Int, progress: Int, onChange: (Int) -> Unit) {
-            val container = FrameLayout(this).apply {
-                val lp = LinearLayout.LayoutParams(dp(150), BAR_H); layoutParams = lp
+        // Size button — tapping it shows a popup slider above the bar
+        fun sizeButton(currentSize: Float, max: Int, onChange: (Float) -> Unit) {
+            val btn = FrameLayout(this).apply {
+                val lp = LinearLayout.LayoutParams(BAR_H, BAR_H); lp.setMargins(dp(2),0,dp(2),0); layoutParams = lp
+                background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(14).toFloat() }
             }
-            container.addView(TextView(this).apply {
-                text = label; textSize = 9f; setTextColor(Color.parseColor("#8A8580"))
-                val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START)
-                lp.setMargins(dp(2), dp(2), 0, 0); layoutParams = lp
-            })
-            container.addView(SeekBar(this).apply {
-                this.max = max; this.progress = progress
-                val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER); layoutParams = lp
-                progressTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#5C5856"))
-                thumbTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#1C1C1E"))
-                setPadding(0, 0, 0, 0)
-                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                    override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { if(f) onChange(v) }
-                    override fun onStartTrackingTouch(sb: SeekBar?) {
-                        var p = sb?.parent; while (p != null) { val hsv = p as? HorizontalScrollView; if (hsv != null) { hsv.requestDisallowInterceptTouchEvent(true); break }; p = (p as? android.view.View)?.parent as? android.view.ViewParent }
+            // Draw size preview circle
+            val preview = object : android.view.View(this) {
+                override fun onDraw(c: Canvas) {
+                    val r = (currentSize / max * (width / 2f - 4f)).coerceIn(3f, width / 2f - 4f)
+                    val p = Paint(); p.color = Color.parseColor("#1C1C1E"); p.isAntiAlias = true
+                    c.drawCircle(width / 2f, height / 2f, r, p)
+                }
+            }
+            btn.addView(preview, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            btn.setOnClickListener { v ->
+                val popup = android.widget.PopupWindow(this)
+                val pLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(10), dp(12), dp(10)); setBackgroundColor(Color.WHITE) }
+                val sb = SeekBar(this).apply {
+                    this.max = max; progress = currentSize.toInt()
+                    progressTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#1C1C1E"))
+                    thumbTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#1C1C1E"))
+                    val lp = LinearLayout.LayoutParams(dp(200), LinearLayout.LayoutParams.WRAP_CONTENT); layoutParams = lp
+                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                        override fun onProgressChanged(s: SeekBar?, v: Int, f: Boolean) { if(f) { onChange(v.coerceAtLeast(1).toFloat()); preview.invalidate() } }
+                        override fun onStartTrackingTouch(s: SeekBar?) {}
+                        override fun onStopTrackingTouch(s: SeekBar?) { popup.dismiss() }
+                    })
+                }
+                pLayout.addView(sb)
+                popup.contentView = pLayout; popup.width = dp(228); popup.height = android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                popup.isOutsideTouchable = true; popup.isFocusable = false
+                popup.elevation = dp(8).toFloat()
+                popup.showAsDropDown(v, 0, -dp(80))
+            }
+            row.addView(btn)
+        }
+
+        // Opacity button — Notewise-style gradient slider shown in popup
+        fun opacityButton(currentOpacity: Int, onChange: (Int) -> Unit) {
+            val btn = FrameLayout(this).apply {
+                val lp = LinearLayout.LayoutParams(BAR_H, BAR_H); lp.setMargins(dp(2),0,dp(2),0); layoutParams = lp
+                background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(14).toFloat() }
+            }
+            // Checkerboard + gradient preview
+            val preview = object : android.view.View(this) {
+                override fun onDraw(c: Canvas) {
+                    val p = Paint()
+                    // Checkerboard
+                    p.color = Color.parseColor("#C0C0C0"); val sq = width / 4f
+                    for (i in 0..3) for (j in 0..3) { if ((i+j) % 2 == 0) c.drawRect(i*sq, j*sq, (i+1)*sq, (j+1)*sq, p) }
+                    // Color overlay with current opacity
+                    p.color = Color.argb(currentOpacity, 0x1C, 0x1C, 0x1E)
+                    c.drawRect(0f, 0f, width.toFloat(), height.toFloat(), p)
+                }
+            }
+            btn.addView(preview, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            btn.setOnClickListener { v ->
+                val popup = android.widget.PopupWindow(this)
+                val pLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(10), dp(12), dp(10)); setBackgroundColor(Color.WHITE) }
+                // Gradient seekbar background
+                val sb = SeekBar(this).apply {
+                    this.max = 255; progress = currentOpacity
+                    val lp = LinearLayout.LayoutParams(dp(200), LinearLayout.LayoutParams.WRAP_CONTENT); layoutParams = lp
+                    progressDrawable = object : android.graphics.drawable.Drawable() {
+                        override fun draw(c: Canvas) {
+                            val b = bounds; val r = android.graphics.RectF(b); val p2 = Paint(Paint.ANTI_ALIAS_FLAG)
+                            // Checkerboard bg
+                            p2.color = Color.parseColor("#C0C0C0"); val sq = b.height() / 2f
+                            for (i in 0 until (b.width() / sq).toInt() + 1) for (j in 0..1) { if ((i+j) % 2 == 0) c.drawRect(i*sq, j*sq, (i+1)*sq, (j+1)*sq, p2) }
+                            // Gradient
+                            p2.shader = android.graphics.LinearGradient(b.left.toFloat(), 0f, b.right.toFloat(), 0f, Color.TRANSPARENT, Color.parseColor("#1C1C1E"), android.graphics.Shader.TileMode.CLAMP)
+                            c.drawRoundRect(r, b.height() / 2f, b.height() / 2f, p2)
+                        }
+                        override fun setAlpha(a: Int) {}
+                        override fun setColorFilter(cf: android.graphics.ColorFilter?) {}
+                        override fun getOpacity() = android.graphics.PixelFormat.TRANSLUCENT
                     }
-                    override fun onStopTrackingTouch(sb: SeekBar?) {
-                        var p = sb?.parent; while (p != null) { val hsv = p as? HorizontalScrollView; if (hsv != null) { hsv.requestDisallowInterceptTouchEvent(false); break }; p = (p as? android.view.View)?.parent as? android.view.ViewParent }
-                    }
+                    thumbTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
+                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                        override fun onProgressChanged(s: SeekBar?, v: Int, f: Boolean) { if(f) { onChange(v); preview.invalidate() } }
+                        override fun onStartTrackingTouch(s: SeekBar?) {}
+                        override fun onStopTrackingTouch(s: SeekBar?) { popup.dismiss() }
+                    })
+                }
+                pLayout.addView(sb)
+                popup.contentView = pLayout; popup.width = dp(228); popup.height = android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+                popup.isOutsideTouchable = true; popup.isFocusable = false; popup.elevation = dp(8).toFloat()
+                popup.showAsDropDown(v, 0, -dp(80))
+            }
+            row.addView(btn)
+        }
+
+        // Horizontal scrollable font row — all fonts in one row, 3 visible
+        fun fontRow(fonts: List<Pair<String, String>>, selectedFam: String, onSelect: (String) -> Unit) {
+            val hs = HorizontalScrollView(this).apply {
+                val lp = LinearLayout.LayoutParams(dp(3 * 72), BAR_H); layoutParams = lp
+                isHorizontalScrollBarEnabled = false; overScrollMode = android.view.View.OVER_SCROLL_NEVER
+            }
+            val fr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            fonts.forEach { (lbl, fam) ->
+                val active = selectedFam == fam
+                fr.addView(TextView(this).apply {
+                    text = lbl; textSize = 11f; gravity = Gravity.CENTER
+                    typeface = try { android.graphics.Typeface.create(fam, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
+                    setPadding(dp(10), dp(5), dp(10), dp(5))
+                    val lp = LinearLayout.LayoutParams(dp(70), BAR_H - dp(6)); lp.setMargins(dp(2), dp(3), dp(2), dp(3)); layoutParams = lp
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")); cornerRadius = dp(14).toFloat() }
+                    setTextColor(if (active) Color.WHITE else Color.parseColor("#3C3C3E"))
+                    setOnClickListener { onSelect(fam); rebuildContextBar() }
                 })
-            })
-            row.addView(container)
+            }
+            hs.addView(fr)
+            row.addView(hs)
+        }
+
+        // Chip row — horizontal, no paging, for small sets like eraser modes
+        fun chipRow(items: List<Pair<String, Boolean>>, onSelect: (Int) -> Unit) {
+            items.forEachIndexed { i, (lbl, active) ->
+                row.addView(TextView(this).apply {
+                    text = lbl; textSize = 11f; gravity = Gravity.CENTER
+                    setPadding(dp(10), dp(5), dp(10), dp(5))
+                    val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, BAR_H - dp(8)); lp.setMargins(dp(2),dp(4),dp(2),dp(4)); layoutParams = lp
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")); cornerRadius = dp(14).toFloat() }
+                    setTextColor(if (active) Color.WHITE else Color.parseColor("#3C3C3E"))
+                    setOnClickListener { onSelect(i) }
+                })
+            }
         }
 
         val allColors = listOf(
@@ -804,28 +905,26 @@ class MainActivity : AppCompatActivity() {
             Color.parseColor("#3A3A3C"), Color.parseColor("#636366"), Color.parseColor("#48484A"), Color.parseColor("#FFD60A"),
             Color.parseColor("#FF375F"), Color.parseColor("#5AC8FA"), Color.parseColor("#34AADC"), Color.parseColor("#4CD964")
         )
-
-        // Shared page state per tool (reset on tool change)
-        var colPage = contextBarPage / 10  // upper digits = column page
-        var colorPage = contextBarPage % 10  // lower digit = color page
+        var colorPage = contextBarPage % 10
 
         when (drawingView.currentTool) {
             Tool.PEN -> {
                 val penTypes = listOf("Fountain" to PenStyle.FOUNTAIN, "Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
+                val colPage = contextBarPage / 10
                 pagedColumn(penTypes.map { (lbl, style) -> lbl to (drawingView.currentPenStyle == style) }, 3, colPage,
                     onPage = { p -> contextBarPage = p * 10 + colorPage; rebuildContextBar() },
                     onSelect = { i -> drawingView.currentPenStyle = penTypes[i].second; rebuildContextBar() })
                 divider()
-                bigSlider("Size", 60, drawingView.currentStrokeWidth.toInt().coerceIn(1,60)) { drawingView.currentStrokeWidth = it.coerceAtLeast(1).toFloat() }
+                sizeButton(drawingView.currentStrokeWidth, 60) { drawingView.currentStrokeWidth = it }
+                opacityButton(drawingView.brushOpacity) { drawingView.brushOpacity = it; drawingView.invalidate() }
                 divider()
                 colorGrid(allColors, drawingView.currentColor, colorPage,
-                    onPage = { p -> contextBarPage = colPage * 10 + p; rebuildContextBar() },
+                    onPage = { p -> contextBarPage = (contextBarPage / 10) * 10 + p; rebuildContextBar() },
                     onPick = { c -> drawingView.currentColor = c })
             }
             Tool.HIGHLIGHTER -> {
-                bigSlider("Opacity", 100, drawingView.highlighterOpacity) { drawingView.highlighterOpacity = it.coerceAtLeast(5) }
-                divider()
-                bigSlider("Size", 60, drawingView.highlighterThickness.toInt().coerceIn(4,60)) { drawingView.highlighterThickness = it.coerceAtLeast(4).toFloat() }
+                sizeButton(drawingView.highlighterThickness, 60) { drawingView.highlighterThickness = it }
+                opacityButton(drawingView.highlighterOpacity * 255 / 100) { drawingView.highlighterOpacity = it * 100 / 255; drawingView.invalidate() }
                 divider()
                 colorGrid(allColors, drawingView.currentColor, colorPage,
                     onPage = { p -> contextBarPage = p; rebuildContextBar() },
@@ -833,82 +932,76 @@ class MainActivity : AppCompatActivity() {
             }
             Tool.BRUSH -> {
                 val brushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH)
+                val colPage = contextBarPage / 10
                 pagedColumn(brushTypes.map { (lbl, style) -> lbl to (drawingView.currentBrushStyle == style) }, 3, colPage,
                     onPage = { p -> contextBarPage = p * 10 + colorPage; rebuildContextBar() },
                     onSelect = { i -> drawingView.currentBrushStyle = brushTypes[i].second; rebuildContextBar() })
                 divider()
-                bigSlider("Size", 60, drawingView.currentStrokeWidth.toInt().coerceIn(1,60)) { drawingView.currentStrokeWidth = it.coerceAtLeast(1).toFloat() }
+                sizeButton(drawingView.currentStrokeWidth, 60) { drawingView.currentStrokeWidth = it }
+                opacityButton(drawingView.brushOpacity) { drawingView.brushOpacity = it; drawingView.invalidate() }
                 divider()
                 colorGrid(allColors, drawingView.currentColor, colorPage,
-                    onPage = { p -> contextBarPage = colPage * 10 + p; rebuildContextBar() },
+                    onPage = { p -> contextBarPage = (contextBarPage / 10) * 10 + p; rebuildContextBar() },
                     onPick = { c -> drawingView.currentColor = c })
             }
             Tool.ERASER -> {
-                val modes = listOf("Object" to EraserMode.OBJECT, "Area" to EraserMode.AREA)
-                pagedColumn(modes.map { (lbl, mode) -> lbl to (drawingView.eraserMode == mode) }, 2, 0,
-                    onPage = {}, onSelect = { i -> drawingView.eraserMode = modes[i].second; rebuildContextBar() })
+                chipRow(listOf("Object" to (drawingView.eraserMode == EraserMode.OBJECT), "Area" to (drawingView.eraserMode == EraserMode.AREA))) { i ->
+                    drawingView.eraserMode = if (i == 0) EraserMode.OBJECT else EraserMode.AREA; rebuildContextBar()
+                }
                 divider()
-                bigSlider("Size", 120, drawingView.eraserSize.toInt().coerceIn(10,120)) { drawingView.eraserSize = it.coerceAtLeast(10).toFloat() }
+                sizeButton(drawingView.eraserSize, 120) { drawingView.eraserSize = it }
+                opacityButton(drawingView.eraserOpacity) { drawingView.eraserOpacity = it; drawingView.invalidate() }
             }
             Tool.FILL -> {
-                colorGrid(allColors.take(12), drawingView.fillColor, colorPage,
+                colorGrid(allColors.take(16), drawingView.fillColor, colorPage,
                     onPage = { p -> contextBarPage = p; rebuildContextBar() },
                     onPick = { c -> drawingView.fillColor = c })
             }
             Tool.TEXT -> {
-                val fonts = listOf("Default" to "sans-serif", "Serif" to "serif", "Mono" to "monospace", "Cursive" to "cursive", "Fantasy" to "fantasy")
-                pagedColumn(fonts.map { (lbl, fam) -> lbl to (pendingFontFamily == fam) }, 3, colPage,
-                    onPage = { p -> contextBarPage = p * 10 + colorPage; rebuildContextBar() },
-                    onSelect = { i ->
-                        pendingFontFamily = fonts[i].second
-                        // Update active text item font in real time
-                        textSelectionItem?.let { it.fontFamily = pendingFontFamily; drawingView.invalidate() }
-                        activeEditText?.typeface = try { android.graphics.Typeface.create(pendingFontFamily, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
-                        rebuildContextBar()
-                    })
+                val fonts = listOf("Default" to "sans-serif", "Serif" to "serif", "Mono" to "monospace", "Cursive" to "cursive", "Fantasy" to "fantasy", "Arial" to "Arial", "Georgia" to "Georgia")
+                fontRow(fonts, pendingFontFamily) { fam ->
+                    pendingFontFamily = fam
+                    textSelectionItem?.let { it.fontFamily = fam; drawingView.invalidate() }
+                    activeEditText?.typeface = try { android.graphics.Typeface.create(fam, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
+                }
                 divider()
-                bigSlider("Size", 120, editSize.toInt().coerceIn(8,120)) { editSize = it.coerceAtLeast(8).toFloat(); activeEditText?.textSize = editSize / resources.displayMetrics.density; textSelectionItem?.let { it.size = editSize; drawingView.invalidate() } }
-                divider()
-                bigSlider("Opacity", 100, editOpacity * 100 / 255) { editOpacity = it * 255 / 100; activeEditText?.alpha = it / 100f }
+                sizeButton(editSize, 120) { v -> editSize = v; activeEditText?.textSize = v / resources.displayMetrics.density; textSelectionItem?.let { it.size = v; drawingView.invalidate() } }
+                opacityButton(editOpacity) { v -> editOpacity = v; activeEditText?.alpha = v / 255f; textSelectionItem?.let { it.opacity = v; drawingView.invalidate() } }
                 divider()
                 colorGrid(allColors, editColor, colorPage,
-                    onPage = { p -> contextBarPage = colPage * 10 + p; rebuildContextBar() },
+                    onPage = { p -> contextBarPage = p; rebuildContextBar() },
                     onPick = { c -> editColor = c; activeEditText?.setTextColor(c); textSelectionItem?.let { it.color = c; drawingView.invalidate() } })
             }
             Tool.SELECT, Tool.LASSO, Tool.AUTOSELECT -> {
-                data class SelectMode(val label: String, val emoji: String, val tool: Tool)
+                // Select: rectangle icon, Lasso: lasso icon, Rectangle (was Auto): dashed rect icon
+                data class SM(val label: String, val drawIcon: (Canvas, Paint, android.graphics.RectF) -> Unit, val tool: Tool)
                 val modes = listOf(
-                    SelectMode("Select", "⬚", Tool.SELECT),
-                    SelectMode("Lasso", "⌖", Tool.LASSO),
-                    SelectMode("Auto", "⊹", Tool.AUTOSELECT)
+                    SM("Select", { c, p, r -> p.style = Paint.Style.STROKE; p.strokeWidth = 3f; c.drawRect(r, p) }, Tool.SELECT),
+                    SM("Lasso", { c, p, r -> p.style = Paint.Style.STROKE; p.strokeWidth = 3f; val path = android.graphics.Path(); path.moveTo(r.centerX(), r.top); path.cubicTo(r.right, r.top, r.right, r.bottom, r.centerX(), r.bottom); path.cubicTo(r.left, r.bottom, r.left, r.top, r.centerX(), r.top); c.drawPath(path, p) }, Tool.LASSO),
+                    SM("Rect", { c, p, r -> p.style = Paint.Style.STROKE; p.strokeWidth = 3f; p.pathEffect = android.graphics.DashPathEffect(floatArrayOf(8f, 5f), 0f); c.drawRect(r, p) }, Tool.AUTOSELECT)
                 )
-                for (mode in modes) {
+                modes.forEach { mode ->
                     val active = drawingView.currentTool == mode.tool
+                    val iconView = object : android.view.View(this) {
+                        override fun onDraw(c: Canvas) {
+                            val p = Paint(Paint.ANTI_ALIAS_FLAG); p.color = if (active) Color.WHITE else Color.parseColor("#1C1C1E")
+                            val r = android.graphics.RectF(dp(6).toFloat(), dp(6).toFloat(), (width - dp(6)).toFloat(), (height - dp(6)).toFloat())
+                            mode.drawIcon(c, p, r)
+                        }
+                    }
                     val col = LinearLayout(this).apply {
                         orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
-                        val lp = LinearLayout.LayoutParams(dp(46), BAR_H); lp.setMargins(dp(2),0,dp(2),0); layoutParams = lp
-                        background = android.graphics.drawable.GradientDrawable().apply {
-                            shape = android.graphics.drawable.GradientDrawable.OVAL
-                            setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7"))
-                        }
+                        val lp = LinearLayout.LayoutParams(dp(50), BAR_H); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp
+                        background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(14).toFloat(); setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")) }
                         setOnClickListener { setActiveTool(null, mode.tool) }
                     }
-                    col.addView(ImageView(this).apply {
-                        setImageResource(R.drawable.ic_select)
-                        scaleType = ImageView.ScaleType.CENTER_INSIDE
-                        val lp = LinearLayout.LayoutParams(dp(24), dp(24)); layoutParams = lp
-                        if (active) setColorFilter(Color.WHITE) else clearColorFilter()
-                    })
-                    col.addView(TextView(this).apply {
-                        text = mode.label; textSize = 8f; gravity = Gravity.CENTER
-                        setTextColor(if (active) Color.WHITE else Color.parseColor("#5C5856"))
-                        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT); layoutParams = lp
-                    })
+                    col.addView(iconView, LinearLayout.LayoutParams(dp(28), dp(28)).also { it.gravity = Gravity.CENTER_HORIZONTAL })
+                    col.addView(TextView(this).apply { text = mode.label; textSize = 8f; gravity = Gravity.CENTER; setTextColor(if (active) Color.WHITE else Color.parseColor("#5C5856")) })
                     row.addView(col)
                 }
             }
             else -> {
-                bigSlider("Size", 60, drawingView.currentStrokeWidth.toInt().coerceIn(1,60)) { drawingView.currentStrokeWidth = it.coerceAtLeast(1).toFloat() }
+                sizeButton(drawingView.currentStrokeWidth, 60) { drawingView.currentStrokeWidth = it }
                 divider()
                 colorGrid(allColors, drawingView.currentColor, colorPage,
                     onPage = { p -> contextBarPage = p; rebuildContextBar() },
@@ -2159,9 +2252,9 @@ class MainActivity : AppCompatActivity() {
                     // Handle is at world pos: rotate (item.x + contentW/2, item.y - contentH - 28/scale) around item centre
                     val rotHandleWx = drawingView.worldToScreenX(item.x) // rough check - use screen distance
                     val rotHandleSx = drawingView.worldToScreenX(item.x)
-                    val rotHandleSy = drawingView.worldToScreenY(item.y) - dp(80)
+                    val rotHandleSy = drawingView.worldToScreenY(item.y) - dp(90)
                     val distToHandle = kotlin.math.hypot((ev.x - rotHandleSx).toDouble(), (ev.y - rotHandleSy).toDouble()).toFloat()
-                    if (distToHandle < dp(44)) {
+                    if (distToHandle < dp(56)) {
                         isDraggingRotate = true; rotStartRawX2 = ev.rawX; rotStartRotation2 = item.rotation; true
                     } else {
                         isDraggingRotate = false
