@@ -1044,10 +1044,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             when (canvasMode) {
                 CanvasMode.CONVENIENT -> {
                     val margin = 16f
-                    val topOffset = 64f * resources.displayMetrics.density // below top bar
                     scaleFactor = ((width.toFloat() - margin * 2f) / pageWidthPx()).coerceAtMost(1f)
                     translateX = (width - pageWidthPx() * scaleFactor) / 2f
-                    translateY = topOffset
+                    translateY = margin // start near top, let clampTranslation enforce the top bar limit
                     clampTranslation(); invalidate()
                 }
                 CanvasMode.INFINITE -> {}

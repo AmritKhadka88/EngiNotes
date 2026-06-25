@@ -683,16 +683,21 @@ class MainActivity : AppCompatActivity() {
                     setOnClickListener { onSelect(realIdx) }
                 })
             }
-            // Swipe up/down on the column to page through - no buttons needed
+            // Swipe up/down on the column to page through
             if (numPages > 1) {
                 var swipeStartY = 0f
                 col.setOnTouchListener { _, ev ->
                     when (ev.actionMasked) {
-                        android.view.MotionEvent.ACTION_DOWN -> { swipeStartY = ev.y; false }
+                        android.view.MotionEvent.ACTION_DOWN -> { swipeStartY = ev.y; true }
+                        android.view.MotionEvent.ACTION_MOVE -> {
+                            val dy = kotlin.math.abs(swipeStartY - ev.y)
+                            if (dy > dp(8)) { (col.parent as? android.view.View)?.parent?.requestDisallowInterceptTouchEvent(true) }
+                            false
+                        }
                         android.view.MotionEvent.ACTION_UP -> {
                             val dy = swipeStartY - ev.y
                             if (kotlin.math.abs(dy) > dp(15)) { onPage(if (dy > 0) (page+1)%numPages else ((page-1+numPages)%numPages)); true }
-                            else false
+                            else { col.performClick(); false }
                         }
                         else -> false
                     }
@@ -753,33 +758,39 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             nav.addView(TextView(this).apply {
-                text = "···"; textSize = 10f; gravity = Gravity.CENTER
-                val lp = LinearLayout.LayoutParams(dp(16), dp(20)); lp.setMargins(0,dp(2),0,0); layoutParams = lp
-                setTextColor(Color.parseColor("#8A8580"))
+                text = "···"; textSize = 13f; gravity = Gravity.CENTER
+                val lp = LinearLayout.LayoutParams(dp(24), dp(28)); lp.setMargins(dp(2),dp(2),0,0); layoutParams = lp
+                setTextColor(Color.parseColor("#5C5856"))
+                background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(12).toFloat() }
                 setOnClickListener { showColorGridDialog { c -> onPick(c); rebuildContextBar() } }
             })
             row.addView(nav)
         }
 
-        // Big-touch slider: tall container so touch registers on whole height
+        // Big-touch slider: full BAR_H container height, wider for easier sliding
         fun bigSlider(label: String, max: Int, progress: Int, onChange: (Int) -> Unit) {
-            row.addView(TextView(this).apply {
-                text = label; textSize = 9f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#8A8580"))
-                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, BAR_H); this.gravity = Gravity.CENTER; layoutParams = lp
-                setPadding(dp(2),0,dp(3),0)
-            })
             val container = FrameLayout(this).apply {
-                val lp = LinearLayout.LayoutParams(dp(130), BAR_H); layoutParams = lp
+                val lp = LinearLayout.LayoutParams(dp(150), BAR_H); layoutParams = lp
             }
+            container.addView(TextView(this).apply {
+                text = label; textSize = 9f; setTextColor(Color.parseColor("#8A8580"))
+                val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START)
+                lp.setMargins(dp(2), dp(2), 0, 0); layoutParams = lp
+            })
             container.addView(SeekBar(this).apply {
                 this.max = max; this.progress = progress
                 val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER); layoutParams = lp
                 progressTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#5C5856"))
                 thumbTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#1C1C1E"))
+                setPadding(0, 0, 0, 0)
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { if(f) onChange(v) }
-                    override fun onStartTrackingTouch(sb: SeekBar?) { var p = sb?.parent?.parent; while (p != null) { val hsv = p as? HorizontalScrollView; if (hsv != null) { hsv.requestDisallowInterceptTouchEvent(true); break }; p = (p as? android.view.View)?.parent as? android.view.ViewParent } }
-                    override fun onStopTrackingTouch(sb: SeekBar?) { var p = sb?.parent?.parent; while (p != null) { val hsv = p as? HorizontalScrollView; if (hsv != null) { hsv.requestDisallowInterceptTouchEvent(false); break }; p = (p as? android.view.View)?.parent as? android.view.ViewParent } }
+                    override fun onStartTrackingTouch(sb: SeekBar?) {
+                        var p = sb?.parent; while (p != null) { val hsv = p as? HorizontalScrollView; if (hsv != null) { hsv.requestDisallowInterceptTouchEvent(true); break }; p = (p as? android.view.View)?.parent as? android.view.ViewParent }
+                    }
+                    override fun onStopTrackingTouch(sb: SeekBar?) {
+                        var p = sb?.parent; while (p != null) { val hsv = p as? HorizontalScrollView; if (hsv != null) { hsv.requestDisallowInterceptTouchEvent(false); break }; p = (p as? android.view.View)?.parent as? android.view.ViewParent }
+                    }
                 })
             })
             row.addView(container)
@@ -1268,6 +1279,20 @@ class MainActivity : AppCompatActivity() {
         sizeLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Paper Size").setItems(PaperSizeOption.values().map{it.name}.toTypedArray()){ _,i-> drawingView.paperSize=PaperSizeOption.values()[i]; drawingView.invalidate(); refPage() }.show() }
         orientLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Orientation").setItems(arrayOf("Portrait","Landscape")){ _,i-> drawingView.pageOrientation=if(i==0)Orientation.PORTRAIT else Orientation.LANDSCAPE; drawingView.invalidate(); refPage() }.show() }
 
+        div(); hdr("TOOLBAR")
+        val barSizeLabels = arrayOf("Small (36dp)", "Medium (44dp)", "Large (52dp)", "Extra Large (60dp)")
+        val barSizeValues = arrayOf(36, 44, 52, 60)
+        var selBarSize = prefs.getInt("bar_icon_size", 44)
+        val barSizeLbl = TextView(this).apply { textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(8),0,dp(8)) }
+        fun refBarSize() { barSizeLbl.text = "Icon size: ${barSizeLabels[barSizeValues.indexOf(selBarSize).coerceAtLeast(0)]}  (tap)" }
+        refBarSize()
+        barSizeLbl.setOnClickListener {
+            AlertDialog.Builder(this).setTitle("Icon Size").setItems(barSizeLabels) { _, i ->
+                selBarSize = barSizeValues[i]; refBarSize()
+            }.show()
+        }
+        container.addView(barSizeLbl)
+
         val scroll = ScrollView(this).apply{ addView(container) }
         AlertDialog.Builder(this).setTitle("Settings").setView(scroll)
             .setPositiveButton("Done") { _,_ ->
@@ -1276,10 +1301,21 @@ class MainActivity : AppCompatActivity() {
                     .putBoolean("autosave",autosaveCb.isChecked)
                     .putString("default_paper",selPaper)
                     .putInt("arc_divisions",(arcInput.text.toString().toIntOrNull()?:3).coerceIn(2,12))
+                    .putInt("bar_icon_size", selBarSize)
                     .apply()
                 drawingView.arcDivisions = prefs.getInt("arc_divisions",3)
                 try { drawingView.paperType = PaperType.valueOf(selPaper) } catch(e:Exception){}
                 drawingView.invalidate()
+                // Apply new bar size — resize all primary bar buttons
+                val sz = dp(selBarSize)
+                val primaryBar = findViewById<HorizontalScrollView?>(R.id.primaryToolbarScroll)
+                (primaryBar?.getChildAt(0) as? LinearLayout)?.let { ll ->
+                    for (i in 0 until ll.childCount) {
+                        val child = ll.getChildAt(i) as? ImageButton ?: continue
+                        val lp = child.layoutParams as LinearLayout.LayoutParams
+                        lp.width = sz; lp.height = sz; child.layoutParams = lp
+                    }
+                }
             }.show()
     }
 
