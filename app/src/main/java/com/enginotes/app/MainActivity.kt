@@ -803,8 +803,8 @@ class MainActivity : AppCompatActivity() {
                         p.color = Color.parseColor("#1C1C1E"); p.style = Paint.Style.STROKE; p.strokeWidth = dp(1).toFloat()
                         c.drawCircle(prog, height/2f, trackH/2f+dp(3).toFloat(), p)
                     }
-                    override fun onTouchEvent(e: MotionEvent): Boolean {
-                        if (e.actionMasked == MotionEvent.ACTION_DOWN || e.actionMasked == MotionEvent.ACTION_MOVE) {
+                    override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+                        if (e.actionMasked == android.view.MotionEvent.ACTION_DOWN || e.actionMasked == android.view.MotionEvent.ACTION_MOVE) {
                             currentVal = (e.x / width * max).coerceIn(1f, max.toFloat())
                             onChange(currentVal); preview.invalidate(); invalidate()
                         }
@@ -860,8 +860,8 @@ class MainActivity : AppCompatActivity() {
                         p.color = Color.parseColor("#888888"); p.style = Paint.Style.STROKE; p.strokeWidth = dp(1).toFloat()
                         c.drawCircle(tx, height/2f, trackH/2f+dp(3).toFloat(), p)
                     }
-                    override fun onTouchEvent(e: MotionEvent): Boolean {
-                        if (e.actionMasked == MotionEvent.ACTION_DOWN || e.actionMasked == MotionEvent.ACTION_MOVE) {
+                    override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+                        if (e.actionMasked == android.view.MotionEvent.ACTION_DOWN || e.actionMasked == android.view.MotionEvent.ACTION_MOVE) {
                             currentVal = (e.x / width * 255).toInt().coerceIn(0,255)
                             onChange(currentVal); preview.invalidate(); invalidate()
                         }
