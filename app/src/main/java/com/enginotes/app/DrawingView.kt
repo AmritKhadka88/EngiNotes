@@ -1245,17 +1245,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val hr = 10f/scaleFactor
             val hFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=android.graphics.Color.WHITE; style=Paint.Style.FILL }
             val hStr = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=d.color; style=Paint.Style.STROKE; strokeWidth=sw*1.5f }
-            // P1/P2 endpoint handles
             for ((hx,hy) in listOf(vx to vy, d.x2 to d.y2, p3x to p3y)) {
                 canvas.drawCircle(hx, hy, hr, hFill); canvas.drawCircle(hx, hy, hr, hStr)
             }
-            // Mid-arc handle (orange) — drag across vertex to flip supplementary angle
-            val midArcX = vx + arcR * kotlin.math.cos(midAngle)
-            val midArcY = vy + arcR * kotlin.math.sin(midAngle)
+            // Orange supplementary handle — sits on the drawn arc midpoint
+            val drawSweepRad2 = Math.toRadians(drawSweep.toDouble()).toFloat()
+            val midArcAngle = a1 + drawSweepRad2 / 2f
+            val midArcX = vx + arcR * kotlin.math.cos(midArcAngle)
+            val midArcY = vy + arcR * kotlin.math.sin(midArcAngle)
             val hSupFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=android.graphics.Color.parseColor("#FF9500"); style=Paint.Style.FILL }
-            canvas.drawCircle(midArcX, midArcY, hr*1.3f, hSupFill)
-            canvas.drawCircle(midArcX, midArcY, hr*1.3f, hStr)
-            // Update handleMid to this orange handle for drag detection
+            canvas.drawCircle(midArcX, midArcY, hr*1.4f, hSupFill)
+            canvas.drawCircle(midArcX, midArcY, hr*1.4f, hStr)
+            // Update handleMid for drag detection
             d.handleMidsx = worldToScreenX(midArcX); d.handleMidsy = worldToScreenY(midArcY)
         }
     }
@@ -2681,26 +2682,25 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             2 -> { d.x2 = wx; d.y2 = wy }
                             3 -> {
                                 if (d.isAngular) {
-                                    // Check if finger has crossed to the opposite side of the vertex
                                     val parts2 = d.unit.split(",").toMutableList()
                                     while (parts2.size < 3) parts2.add("false")
                                     val p3x2 = parts2[0].toFloatOrNull() ?: d.x2
                                     val p3y2 = parts2[1].toFloatOrNull() ?: d.y2
-                                    // Midpoint of angle — compute current side vs dragged side
+                                    // Compute the bisector direction of the inner angle
                                     val a1r2 = kotlin.math.atan2((d.y2-d.y1).toDouble(),(d.x2-d.x1).toDouble()).toFloat()
                                     val a2r2 = kotlin.math.atan2((p3y2-d.y1).toDouble(),(p3x2-d.x1).toDouble()).toFloat()
                                     var sweep2 = (Math.toDegrees(a2r2.toDouble()) - Math.toDegrees(a1r2.toDouble())).toFloat()
                                     if (sweep2 > 180f) sweep2 -= 360f; if (sweep2 < -180f) sweep2 += 360f
                                     val midA2 = a1r2 + Math.toRadians(sweep2.toDouble()).toFloat()/2f
-                                    // Vector from vertex to midArc
-                                    val midVx = kotlin.math.cos(midA2); val midVy = kotlin.math.sin(midA2)
-                                    // Dot product of drag direction with midArc direction
-                                    val dragDotMid = (wx - d.x1) * midVx + (wy - d.y1) * midVy
-                                    val isSup = dragDotMid < 0f  // negative = opposite side
-                                    parts2[2] = isSup.toString()
+                                    // Inner bisector direction from vertex
+                                    val innerBx = kotlin.math.cos(midA2); val innerBy = kotlin.math.sin(midA2)
+                                    // Dot product of finger-from-vertex with inner bisector
+                                    val dot = (wx - d.x1) * innerBx + (wy - d.y1) * innerBy
+                                    // Negative dot = finger is on the OUTER side → supplementary
+                                    parts2[2] = (dot < 0f).toString()
                                     d.unit = parts2.joinToString(",")
-                                    // Adjust arc radius based on drag distance
-                                    d.offset = kotlin.math.hypot(wx-d.x1, wy-d.y1).coerceAtLeast(10f/scaleFactor)
+                                    // Arc radius = distance from vertex to finger
+                                    d.offset = kotlin.math.hypot(wx - d.x1, wy - d.y1).coerceAtLeast(8f)
                                 } else {
                                     val ddx = d.x2-d.x1; val ddy = d.y2-d.y1
                                     val dlen = kotlin.math.sqrt((ddx*ddx+ddy*ddy).toDouble()).toFloat()
