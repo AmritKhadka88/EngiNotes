@@ -1182,6 +1182,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (absSweep < 1f) return  // nearly parallel — don't draw
         // Note: 180° case handled by returning without drawing arc
 
+        // For supplementary, draw the reflex arc (outside) by extending sweep
+        val drawSweep = if (supplementary) {
+            if (sweep >= 0f) sweep - 360f else sweep + 360f
+        } else sweep
+
         // Extension lines from vertex to beyond arc radius
         val extR = arcR * 1.15f
         canvas.drawLine(vx, vy + 0f, vx + (d.x2-vx)/arm1Len*extR, vy + (d.y2-vy)/arm1Len*extR, p)
@@ -1218,11 +1223,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val ly = vy + labelR * kotlin.math.sin(midAngle)
         val displayAngle = if (supplementary) 360f - absSweep else absSweep
         val labelStr = if (d.label.isNotEmpty()) d.label else "%.1f°".format(displayAngle)
-        // For supplementary, draw the reflex arc (outside) by extending sweep
-        val drawSweep = if (supplementary) {
-            if (sweep >= 0f) sweep - 360f else sweep + 360f
-        } else sweep
-
         // Leader line for tiny angles
         if (angleIsSmall) {
             val arcMidX = vx + arcR * 1.05f * kotlin.math.cos(midAngle)
