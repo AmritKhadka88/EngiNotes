@@ -1241,9 +1241,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val hr = 10f/scaleFactor
             val hFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=android.graphics.Color.WHITE; style=Paint.Style.FILL }
             val hStr = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=d.color; style=Paint.Style.STROKE; strokeWidth=sw*1.5f }
+            // P1/P2 endpoint handles
             for ((hx,hy) in listOf(vx to vy, d.x2 to d.y2, p3x to p3y)) {
                 canvas.drawCircle(hx, hy, hr, hFill); canvas.drawCircle(hx, hy, hr, hStr)
             }
+            // Mid-arc handle (orange) — drag across vertex to flip supplementary angle
+            val midArcX = vx + arcR * kotlin.math.cos(midAngle)
+            val midArcY = vy + arcR * kotlin.math.sin(midAngle)
+            val hSupFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=android.graphics.Color.parseColor("#FF9500"); style=Paint.Style.FILL }
+            canvas.drawCircle(midArcX, midArcY, hr*1.3f, hSupFill)
+            canvas.drawCircle(midArcX, midArcY, hr*1.3f, hStr)
+            // Update handleMid to this orange handle for drag detection
+            d.handleMidsx = worldToScreenX(midArcX); d.handleMidsy = worldToScreenY(midArcY)
         }
     }
 
@@ -1620,65 +1629,54 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // Preview dimension line while drawing
         if (currentTool == Tool.DIMENSION) {
             if (dimAngular) {
-                val glowP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x4400AAFF; style = Paint.Style.FILL }
-                val dotP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = currentColor; style = Paint.Style.FILL }
-                val ringP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = currentColor; style = Paint.Style.STROKE; strokeWidth = 2f/scaleFactor }
-                val labelP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = currentColor; textSize = 9f*resources.displayMetrics.scaledDensity/scaleFactor; textAlign = Paint.Align.CENTER }
-
-                // Phase 1+: arm1 point placed
-                if (dimAngPhase >= 1) {
-                    canvas.drawCircle(dimP1wx, dimP1wy, 20f/scaleFactor, glowP)
-                    canvas.drawCircle(dimP1wx, dimP1wy, 6f/scaleFactor, dotP)
-                    canvas.drawCircle(dimP1wx, dimP1wy, 16f/scaleFactor, ringP)
-                    canvas.drawText("arm1", dimP1wx, dimP1wy - 24f/scaleFactor, labelP)
-                    // Line to cursor showing arm1 direction from future vertex
-                    val dashP = Paint(ringP).apply { alpha=100; pathEffect=android.graphics.DashPathEffect(floatArrayOf(8f/scaleFactor,6f/scaleFactor),0f) }
-                    canvas.drawLine(dimP1wx, dimP1wy, dimCurWx, dimCurWy, dashP)
-                }
-
-                // Phase 2+: vertex placed
-                if (dimAngPhase >= 2) {
-                    canvas.drawCircle(dimP2wx, dimP2wy, 22f/scaleFactor, glowP)
-                    canvas.drawCircle(dimP2wx, dimP2wy, 7f/scaleFactor, dotP)
-                    canvas.drawCircle(dimP2wx, dimP2wy, 18f/scaleFactor, ringP)
-                    canvas.drawText("vertex", dimP2wx, dimP2wy - 26f/scaleFactor, labelP)
-                    // Draw arm1 line from vertex to arm1 point
-                    canvas.drawLine(dimP2wx, dimP2wy, dimP1wx, dimP1wy, ringP)
-                    // Ghost arm2 line to cursor
-                    val dashP = Paint(ringP).apply { alpha=100; pathEffect=android.graphics.DashPathEffect(floatArrayOf(8f/scaleFactor,6f/scaleFactor),0f) }
-                    canvas.drawLine(dimP2wx, dimP2wy, dimCurWx, dimCurWy, dashP)
-                }
-
-                // Phase 3: arm2 being dragged — show live arc preview
-                if (dimAngPhase >= 3) {
-                    canvas.drawLine(dimP2wx, dimP2wy, dimAngP3wx, dimAngP3wy, ringP)
-                    val a1r = kotlin.math.atan2((dimP1wy-dimP2wy).toDouble(),(dimP1wx-dimP2wx).toDouble()).toFloat()
-                    val a2r = kotlin.math.atan2((dimCurWy-dimP2wy).toDouble(),(dimCurWx-dimP2wx).toDouble()).toFloat()
-                    val r1 = kotlin.math.hypot(dimP1wx-dimP2wx, dimP1wy-dimP2wy)
-                    val r2 = kotlin.math.hypot(dimCurWx-dimP2wx, dimCurWy-dimP2wy)
-                    val arcR2 = minOf(r1,r2)*0.4f
-                    if (arcR2 > 2f/scaleFactor) {
-                        var sweep2 = (Math.toDegrees(a2r.toDouble()) - Math.toDegrees(a1r.toDouble())).toFloat()
-                        if (sweep2 > 180f) sweep2 -= 360f; if (sweep2 < -180f) sweep2 += 360f
-                        val arcP2 = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=currentColor; style=Paint.Style.STROKE; strokeWidth=2f/scaleFactor; alpha=160 }
-                        canvas.drawArc(android.graphics.RectF(dimP2wx-arcR2,dimP2wy-arcR2,dimP2wx+arcR2,dimP2wy+arcR2), Math.toDegrees(a1r.toDouble()).toFloat(), sweep2, false, arcP2)
-                        val midA2 = a1r + Math.toRadians(sweep2.toDouble()).toFloat()/2f
-                        val deg2 = kotlin.math.abs(sweep2)
-                        val angleLabel = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=currentColor; alpha=180; textSize=11f*resources.displayMetrics.scaledDensity/scaleFactor; textAlign=Paint.Align.CENTER }
-                        canvas.drawText("%.1f°".format(deg2), dimP2wx+arcR2*1.4f*kotlin.math.cos(midA2), dimP2wy+arcR2*1.4f*kotlin.math.sin(midA2), angleLabel)
+                val lineP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=currentColor; style=Paint.Style.STROKE; strokeWidth=2f/scaleFactor; strokeCap=Paint.Cap.ROUND }
+                val dotP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=currentColor; style=Paint.Style.FILL }
+                val glowP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=0x3300AAFF; style=Paint.Style.FILL }
+                when (dimAngPhase) {
+                    0 -> { if (dimFingerDown) drawMagnifierLens(canvas, dimCurWx, dimCurWy) }
+                    1 -> {
+                        canvas.drawCircle(dimP1wx, dimP1wy, 5f/scaleFactor, dotP)
+                        canvas.drawCircle(dimP1wx, dimP1wy, 14f/scaleFactor, glowP)
+                        canvas.drawLine(dimP1wx, dimP1wy, dimCurWx, dimCurWy, lineP)
+                        if (dimFingerDown) drawMagnifierLens(canvas, dimCurWx, dimCurWy)
+                    }
+                    2 -> {
+                        canvas.drawCircle(dimP1wx, dimP1wy, 5f/scaleFactor, dotP)
+                        canvas.drawCircle(dimP1wx, dimP1wy, 14f/scaleFactor, glowP)
+                        canvas.drawCircle(dimP2wx, dimP2wy, 6f/scaleFactor, dotP)
+                        canvas.drawCircle(dimP2wx, dimP2wy, 18f/scaleFactor, glowP)
+                        canvas.drawLine(dimP2wx, dimP2wy, dimP1wx, dimP1wy, lineP)
+                        val dashP = Paint(lineP).apply { alpha=140; pathEffect=android.graphics.DashPathEffect(floatArrayOf(8f/scaleFactor,5f/scaleFactor),0f) }
+                        canvas.drawLine(dimP2wx, dimP2wy, dimCurWx, dimCurWy, dashP)
+                        val a1r = kotlin.math.atan2((dimP1wy-dimP2wy).toDouble(),(dimP1wx-dimP2wx).toDouble()).toFloat()
+                        val a2r = kotlin.math.atan2((dimCurWy-dimP2wy).toDouble(),(dimCurWx-dimP2wx).toDouble()).toFloat()
+                        val r1 = kotlin.math.hypot(dimP1wx-dimP2wx, dimP1wy-dimP2wy)
+                        val r2 = kotlin.math.hypot(dimCurWx-dimP2wx, dimCurWy-dimP2wy)
+                        val arcR = minOf(r1,r2)*0.4f
+                        if (arcR > 2f/scaleFactor) {
+                            var sweep = (Math.toDegrees(a2r.toDouble()) - Math.toDegrees(a1r.toDouble())).toFloat()
+                            if (sweep > 180f) sweep -= 360f; if (sweep < -180f) sweep += 360f
+                            canvas.drawArc(android.graphics.RectF(dimP2wx-arcR,dimP2wy-arcR,dimP2wx+arcR,dimP2wy+arcR), Math.toDegrees(a1r.toDouble()).toFloat(), sweep, false, lineP)
+                            val midA = a1r + Math.toRadians(sweep.toDouble()).toFloat()/2f
+                            val tp2 = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=currentColor; textSize=defaultDimFontSize*resources.displayMetrics.scaledDensity/scaleFactor; textAlign=Paint.Align.CENTER; typeface=android.graphics.Typeface.DEFAULT_BOLD }
+                            canvas.drawText("%.1f°".format(kotlin.math.abs(sweep)), dimP2wx+arcR*1.4f*kotlin.math.cos(midA), dimP2wy+arcR*1.4f*kotlin.math.sin(midA), tp2)
+                        }
+                        if (dimFingerDown) drawMagnifierLens(canvas, dimCurWx, dimCurWy)
+                    }
+                    3 -> {
+                        canvas.drawCircle(dimP1wx, dimP1wy, 5f/scaleFactor, dotP)
+                        canvas.drawCircle(dimP2wx, dimP2wy, 6f/scaleFactor, dotP)
+                        canvas.drawLine(dimP2wx, dimP2wy, dimP1wx, dimP1wy, lineP)
+                        canvas.drawLine(dimP2wx, dimP2wy, dimCurWx, dimCurWy, lineP)
+                        if (dimFingerDown) drawMagnifierLens(canvas, dimCurWx, dimCurWy)
                     }
                 }
-
-                // Magnifier lens at current cursor position
-                drawMagnifierLens(canvas, dimCurWx, dimCurWy)
             } else if (dimPhase == DimPhase.SECOND_POINT) {
                 val preview = DimensionItem(dimP1wx, dimP1wy, dimCurWx, dimCurWy, 0f, currentColor, currentStrokeWidth)
                 drawDimensionItem(canvas, preview, preview = true)
-                // Glow dot at first point
-                canvas.drawCircle(dimP1wx, dimP1wy, 8f/scaleFactor, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=0x4400AAFF; style=Paint.Style.FILL })
-                canvas.drawCircle(dimP1wx, dimP1wy, 4f/scaleFactor, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=currentColor; style=Paint.Style.FILL })
-                // Magnifier at current finger tip
-                drawMagnifierLens(canvas, dimCurWx, dimCurWy)
+                canvas.drawCircle(dimP1wx, dimP1wy, 5f/scaleFactor, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=currentColor; style=Paint.Style.FILL })
+                canvas.drawCircle(dimP1wx, dimP1wy, 14f/scaleFactor, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=0x3300AAFF; style=Paint.Style.FILL })
+                if (dimFingerDown) drawMagnifierLens(canvas, dimCurWx, dimCurWy)
             }
         }
         val item = selectedItem ?: return
@@ -1991,7 +1989,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var dimAngular: Boolean = false   // true = angular mode, tap 3 points
     // Angular: p1=vertex, p2=arm1 end, p3=arm2 end
     private var dimAngP3wx = 0f; private var dimAngP3wy = 0f
-    private var dimAngPhase = 0  // 0=idle,1=got vertex,2=got arm1, 3=complete
+    private var dimAngPhase = 0  // 0=idle,1=arm1 confirmed,2=vertex confirmed,3=arm2 dragging
+    private var dimFingerDown = false  // true only while finger is actively touching
     var autoRefPixelLen: Float = 0f
     var autoRefRealLen: Float = 1f
     var autoRefUnit: String = "m"
@@ -2635,6 +2634,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    dimFingerDown = true
                     val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
                     val HR = 80f
                     val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
@@ -2682,9 +2682,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             2 -> { d.x2 = wx; d.y2 = wy }
                             3 -> {
                                 if (d.isAngular) {
-                                    // Drag mid handle of angular — change arc radius
-                                    val vx2 = d.x1; val vy2 = d.y1
-                                    d.offset = kotlin.math.hypot(wx-vx2, wy-vy2).coerceAtLeast(10f/scaleFactor)
+                                    // Check if finger has crossed to the opposite side of the vertex
+                                    val parts2 = d.unit.split(",").toMutableList()
+                                    while (parts2.size < 3) parts2.add("false")
+                                    val p3x2 = parts2[0].toFloatOrNull() ?: d.x2
+                                    val p3y2 = parts2[1].toFloatOrNull() ?: d.y2
+                                    // Midpoint of angle — compute current side vs dragged side
+                                    val a1r2 = kotlin.math.atan2((d.y2-d.y1).toDouble(),(d.x2-d.x1).toDouble()).toFloat()
+                                    val a2r2 = kotlin.math.atan2((p3y2-d.y1).toDouble(),(p3x2-d.x1).toDouble()).toFloat()
+                                    var sweep2 = (Math.toDegrees(a2r2.toDouble()) - Math.toDegrees(a1r2.toDouble())).toFloat()
+                                    if (sweep2 > 180f) sweep2 -= 360f; if (sweep2 < -180f) sweep2 += 360f
+                                    val midA2 = a1r2 + Math.toRadians(sweep2.toDouble()).toFloat()/2f
+                                    // Vector from vertex to midArc
+                                    val midVx = kotlin.math.cos(midA2); val midVy = kotlin.math.sin(midA2)
+                                    // Dot product of drag direction with midArc direction
+                                    val dragDotMid = (wx - d.x1) * midVx + (wy - d.y1) * midVy
+                                    val isSup = dragDotMid < 0f  // negative = opposite side
+                                    parts2[2] = isSup.toString()
+                                    d.unit = parts2.joinToString(",")
+                                    // Adjust arc radius based on drag distance
+                                    d.offset = kotlin.math.hypot(wx-d.x1, wy-d.y1).coerceAtLeast(10f/scaleFactor)
                                 } else {
                                     val ddx = d.x2-d.x1; val ddy = d.y2-d.y1
                                     val dlen = kotlin.math.sqrt((ddx*ddx+ddy*ddy).toDouble()).toFloat()
@@ -2700,6 +2717,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                 }
                 MotionEvent.ACTION_UP -> {
+                    dimFingerDown = false
                     val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
                     if (dimDraggingItem != null) {
                         dimDraggingItem = null; redoStack.clear()
