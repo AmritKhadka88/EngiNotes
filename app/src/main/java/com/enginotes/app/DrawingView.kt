@@ -1195,23 +1195,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val arL = d.arrowSize * resources.displayMetrics.density / scaleFactor
         val arW = arL * 0.4f
         fun arcArrow(atAngleRad: Float, sweepDir: Float) {
+            // Tip of arrow is ON the arc
             val ax = vx + arcR * kotlin.math.cos(atAngleRad)
             val ay = vy + arcR * kotlin.math.sin(atAngleRad)
-            val tx = (-kotlin.math.sin(atAngleRad) * sweepDir)
-            val ty = (kotlin.math.cos(atAngleRad) * sweepDir)
+            // Tangent direction at this point (in sweep direction)
+            val tx = -kotlin.math.sin(atAngleRad) * sweepDir
+            val ty =  kotlin.math.cos(atAngleRad) * sweepDir
+            // Normal to tangent
             val nx2 = -ty; val ny2 = tx
+            // Arrow: tip at (ax,ay), body goes AGAINST tangent direction (backward)
             val path2 = android.graphics.Path()
             path2.moveTo(ax, ay)
-            path2.lineTo(ax + tx*arL + nx2*arW, ay + ty*arL + ny2*arW)
-            path2.lineTo(ax + tx*arL - nx2*arW, ay + ty*arL - ny2*arW)
+            path2.lineTo(ax - tx*arL + nx2*arW, ay - ty*arL + ny2*arW)
+            path2.lineTo(ax - tx*arL - nx2*arW, ay - ty*arL - ny2*arW)
             path2.close(); canvas.drawPath(path2, fp)
         }
         val drawStartRad = Math.toRadians(drawStartDeg.toDouble()).toFloat()
         val drawSweepRad = Math.toRadians(drawSweep.toDouble()).toFloat()
         val drawSweepSign = if (drawSweep >= 0f) 1f else -1f
-        // Arrow at start points AGAINST sweep direction (inward), at end points WITH sweep (outward)
-        arcArrow(drawStartRad, -drawSweepSign)
-        arcArrow(drawStartRad + drawSweepRad, drawSweepSign)
+        arcArrow(drawStartRad, drawSweepSign)          // start: sweep direction
+        arcArrow(drawStartRad + drawSweepRad, drawSweepSign)  // end: same sweep direction
 
         val midAngle = drawStartRad + drawSweepRad / 2f
         val displayAngle = if (supplementary) 360f - absSweep else absSweep
