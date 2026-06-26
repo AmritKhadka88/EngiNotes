@@ -1314,79 +1314,73 @@ class MainActivity : AppCompatActivity() {
     private fun showDimensionModeDialog() {
         AlertDialog.Builder(this)
             .setTitle("Dimension Tool")
-            .setItems(arrayOf("Auto — set one length, rest calculated", "Manual — type each label yourself", "Angular — measure angles")) { _, i ->
+            .setItems(arrayOf("Auto — draw first line, then set its length", "Manual — type each label yourself")) { _, i ->
                 when (i) {
                     0 -> {
-                        // Auto: ask for reference length and unit first
-                        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20),dp(12),dp(20),dp(8)) }
-                        val lenInput = android.widget.EditText(this).apply { hint = "Real-world length (e.g. 3.5)"; inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL }
-                        val unitInput = android.widget.EditText(this).apply { hint = "Unit (e.g. m, mm, ft)"; setText("m") }
-                        layout.addView(TextView(this).apply { text = "First dimension you draw will be the reference."; textSize = 13f; setPadding(0,0,0,dp(8)) })
-                        layout.addView(lenInput); layout.addView(unitInput)
-                        AlertDialog.Builder(this).setTitle("Auto Dimension — Reference Length").setView(layout)
-                            .setPositiveButton("Start") { _, _ ->
-                                val len = lenInput.text.toString().toFloatOrNull() ?: 1f
-                                drawingView.autoRefRealLen = len; drawingView.autoRefUnit = unitInput.text.toString().ifBlank { "m" }
-                                drawingView.autoRefPixelLen = 0f  // reset reference
-                                drawingView.dimMode = DimMode.AUTO
-                                setActiveTool(null, Tool.DIMENSION)
-                                android.widget.Toast.makeText(this, "Tap two points for reference dimension", android.widget.Toast.LENGTH_LONG).show()
-                            }.setNegativeButton("Cancel", null).show()
+                        drawingView.dimMode = DimMode.AUTO
+                        drawingView.autoRefPixelLen = 0f  // reset so next drawn line becomes reference
+                        setActiveTool(null, Tool.DIMENSION)
+                        android.widget.Toast.makeText(this, "Draw a line on a known length", android.widget.Toast.LENGTH_LONG).show()
                     }
                     1 -> {
                         drawingView.dimMode = DimMode.MANUAL
                         setActiveTool(null, Tool.DIMENSION)
                         android.widget.Toast.makeText(this, "Tap two points to place dimension", android.widget.Toast.LENGTH_SHORT).show()
                     }
-                    2 -> {
-                        drawingView.dimMode = DimMode.MANUAL
-                        setActiveTool(null, Tool.DIMENSION)
-                        android.widget.Toast.makeText(this, "Tap two points to place angular dimension", android.widget.Toast.LENGTH_SHORT).show()
-                        // TODO: set angular flag — for now we prompt in the label dialog
-                    }
                 }
             }.show()
     }
 
     private fun showDimensionLabelDialog(dim: DimensionItem) {
-        if (dim.mode == DimMode.AUTO && drawingView.autoRefPixelLen > 0f && dim.label.isEmpty()) {
-            // Auto mode with reference set — label is computed, no dialog needed
+        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20),dp(12),dp(20),dp(8)) }
+
+        if (dim.mode == DimMode.AUTO && drawingView.autoRefPixelLen == 0f) {
+            // This is the first/reference dimension — ask user what length this line represents
+            layout.addView(TextView(this).apply {
+                text = "What is the real-world length of this line?"; textSize = 14f; setPadding(0,0,0,dp(10))
+            })
+            val lenInput = android.widget.EditText(this).apply {
+                hint = "Length (e.g. 3.5)"; inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+                requestFocus()
+            }
+            val unitInput = android.widget.EditText(this).apply { hint = "Unit (e.g. m, mm, ft)"; setText("m") }
+            layout.addView(lenInput)
+            layout.addView(TextView(this).apply { text = "Unit:"; textSize = 13f; setPadding(0,dp(8),0,dp(4)) })
+            layout.addView(unitInput)
+            AlertDialog.Builder(this).setTitle("Set Reference Length").setView(layout)
+                .setPositiveButton("Set") { _, _ ->
+                    val realLen = lenInput.text.toString().toFloatOrNull() ?: 1f
+                    val unit = unitInput.text.toString().ifBlank { "m" }
+                    drawingView.autoRefPixelLen = dim.len   // this line's pixel length = reference
+                    drawingView.autoRefRealLen = realLen
+                    drawingView.autoRefUnit = unit
+                    dim.refLength = realLen; dim.unit = unit
+                    dim.label = "%.2f %s".format(realLen, unit)
+                    drawingView.invalidate()
+                }
+                .setNegativeButton("Cancel") { _, _ -> drawingView.removeDimensionItem(dim) }
+                .show()
+            lenInput.postDelayed({ val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager; imm.showSoftInput(lenInput, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT) }, 200)
+            return
+        }
+
+        if (dim.mode == DimMode.AUTO) {
+            // Subsequent auto dimensions — label computed automatically, no dialog needed
+            dim.label = dim.displayLabel(drawingView.autoRefPixelLen)
             drawingView.invalidate(); return
         }
-        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20),dp(12),dp(20),dp(8)) }
-        val isAngular = android.widget.CheckBox(this).apply { text = "Angular dimension"; isChecked = dim.isAngular }
+
+        // MANUAL mode — show text input with cursor
+        layout.addView(TextView(this).apply { text = "Enter label for this dimension:"; textSize = 14f; setPadding(0,0,0,dp(8)) })
         val labelInput = android.widget.EditText(this).apply {
-            hint = if (dim.mode == DimMode.MANUAL) "Enter label (e.g. 3.5m)" else "Leave blank for auto"
-            setText(dim.label)
-            requestFocus()
-        }
-        if (dim.mode == DimMode.MANUAL) {
-            layout.addView(isAngular)
-            layout.addView(TextView(this).apply { text = "Label:"; textSize = 13f; setPadding(0,dp(8),0,dp(4)) })
+            hint = "e.g. 3.5m or 45°"; setText(dim.label); requestFocus()
+            selectAll()
         }
         layout.addView(labelInput)
-        if (dim.mode == DimMode.AUTO) {
-            val auto = drawingView.autoRefPixelLen == 0f
-            layout.addView(TextView(this).apply {
-                text = if (auto) "This is the reference dimension (${drawingView.autoRefRealLen} ${drawingView.autoRefUnit})" else "Auto: ${dim.displayLabel(drawingView.autoRefPixelLen)}"
-                textSize = 12f; setTextColor(Color.parseColor("#666666")); setPadding(0,dp(4),0,0)
-            })
-            if (auto) drawingView.autoRefPixelLen = dim.len  // mark this as reference
-        }
         AlertDialog.Builder(this).setTitle("Dimension Label").setView(layout)
-            .setPositiveButton("OK") { _, _ ->
-                dim.label = labelInput.text.toString().trim()
-                dim.isAngular = isAngular.isChecked
-                if (dim.isAngular && dim.label.isEmpty()) {
-                    // Auto compute angle from the line direction
-                    val dx = dim.x2 - dim.x1; val dy = dim.y2 - dim.y1
-                    dim.angle = (kotlin.math.atan2(dy.toDouble(), dx.toDouble()) * 180.0 / Math.PI).toFloat()
-                }
-                drawingView.invalidate()
-            }
-            .setNegativeButton("Skip", null)
+            .setPositiveButton("OK") { _, _ -> dim.label = labelInput.text.toString().trim(); drawingView.invalidate() }
+            .setNegativeButton("Cancel") { _, _ -> drawingView.removeDimensionItem(dim) }
             .show()
-        // Show keyboard
         labelInput.postDelayed({ val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager; imm.showSoftInput(labelInput, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT) }, 200)
     }
 
