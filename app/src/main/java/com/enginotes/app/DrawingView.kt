@@ -1261,7 +1261,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun drawMagnifierLens(canvas: Canvas, worldX: Float, worldY: Float) {
         val sx = worldToScreenX(worldX); val sy = worldToScreenY(worldY)
         val lensRadius = 70f
-        val lensOffsetY = -(lensRadius + 40f)  // above finger in screen space
+        val oneCm = resources.displayMetrics.xdpi / 2.54f  // 1cm in pixels
+        val lensOffsetY = -(lensRadius + oneCm)  // 1cm above finger
         val cx = sx; val cy = sy + lensOffsetY
         val zoomFactor = 3f
 
@@ -1670,6 +1671,28 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             drawMagnifierLens(canvas, dimCurWx, dimCurWy)
                         }
                     }
+                }
+            } else {
+                // Linear dimension preview
+                val dotP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=currentColor; style=Paint.Style.FILL }
+                val glowP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=0x3300AAFF; style=Paint.Style.FILL }
+                when (dimPhase) {
+                    DimPhase.FIRST_POINT -> {
+                        // Searching for point1 — lens only while finger down
+                        if (dimFingerDown) drawMagnifierLens(canvas, dimCurWx, dimCurWy)
+                    }
+                    DimPhase.SECOND_POINT -> {
+                        // Point1 fixed — show dot at p1
+                        canvas.drawCircle(dimP1wx, dimP1wy, 4f/scaleFactor, dotP)
+                        canvas.drawCircle(dimP1wx, dimP1wy, 14f/scaleFactor, glowP)
+                        if (dimFingerDown) {
+                            // Live preview line while searching for p2
+                            val preview = DimensionItem(dimP1wx, dimP1wy, dimCurWx, dimCurWy, 0f, currentColor, currentStrokeWidth)
+                            drawDimensionItem(canvas, preview, preview = true)
+                            drawMagnifierLens(canvas, dimCurWx, dimCurWy)
+                        }
+                    }
+                    else -> {}
                 }
             }
         }
@@ -2660,9 +2683,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     } else {
                         dimDraggingItem = null; selectedItem = null
                         when (dimPhase) {
-                            DimPhase.IDLE, DimPhase.FIRST_POINT -> {
-                                dimP1wx = wx; dimP1wy = wy; dimCurWx = wx; dimCurWy = wy
-                                dimPhase = DimPhase.SECOND_POINT
+                            DimPhase.IDLE -> {
+                                // DOWN = start searching for point1, don't commit yet
+                                dimCurWx = wx; dimCurWy = wy
+                                dimPhase = DimPhase.FIRST_POINT
+                            }
+                            DimPhase.SECOND_POINT -> {
+                                // DOWN = start searching for point2
+                                dimCurWx = wx; dimCurWy = wy
                             }
                             else -> {}
                         }
@@ -2745,6 +2773,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             }
                         }
                         invalidate()
+                    } else if (dimPhase == DimPhase.FIRST_POINT) {
+                        // First UP — commit point1, start searching for point2
+                        dimP1wx = wx; dimP1wy = wy; dimCurWx = wx; dimCurWy = wy
+                        dimPhase = DimPhase.SECOND_POINT; invalidate()
                     } else if (dimPhase == DimPhase.SECOND_POINT) {
                         // Linear: slide to final position, UP commits
                         dimP2wx = wx; dimP2wy = wy
