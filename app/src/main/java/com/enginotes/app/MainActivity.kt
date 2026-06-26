@@ -1316,18 +1316,29 @@ class MainActivity : AppCompatActivity() {
     private fun showDimensionModeDialog() {
         AlertDialog.Builder(this)
             .setTitle("Dimension Tool")
-            .setItems(arrayOf("Auto — draw first line, then set its length", "Manual — type each label yourself")) { _, i ->
+            .setItems(arrayOf(
+                "Linear — Auto (draw reference, enter length)",
+                "Linear — Manual (type each label)",
+                "Angular — tap 3 points (vertex, arm1, arm2)"
+            )) { _, i ->
                 when (i) {
                     0 -> {
                         drawingView.dimMode = DimMode.AUTO
-                        drawingView.autoRefPixelLen = 0f  // reset so next drawn line becomes reference
+                        drawingView.autoRefPixelLen = 0f
                         setActiveTool(null, Tool.DIMENSION)
                         android.widget.Toast.makeText(this, "Draw a line on a known length", android.widget.Toast.LENGTH_LONG).show()
                     }
                     1 -> {
                         drawingView.dimMode = DimMode.MANUAL
+                        drawingView.dimAngular = false
                         setActiveTool(null, Tool.DIMENSION)
                         android.widget.Toast.makeText(this, "Tap two points to place dimension", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    2 -> {
+                        drawingView.dimMode = DimMode.MANUAL
+                        drawingView.dimAngular = true
+                        setActiveTool(null, Tool.DIMENSION)
+                        android.widget.Toast.makeText(this, "Tap: 1=vertex, 2=first arm, 3=second arm", android.widget.Toast.LENGTH_LONG).show()
                     }
                 }
             }.show()
@@ -1392,8 +1403,20 @@ class MainActivity : AppCompatActivity() {
 
         fun lbl(t: String) = TextView(this).apply { text=t; textSize=12f; setTextColor(Color.parseColor("#8A8580")); setPadding(0,dp(10),0,dp(4)) }
         fun seekRow(label: String, max: Int, current: Int, onChange: (Int)->Unit) {
-            panel.addView(lbl(label))
-            panel.addView(SeekBar(this).apply { this.max=max; progress=current; progressTintList=android.content.res.ColorStateList.valueOf(Color.parseColor("#1565C0")); thumbTintList=android.content.res.ColorStateList.valueOf(Color.parseColor("#1565C0")); setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s:SeekBar?,v:Int,f:Boolean){if(f){onChange(v);drawingView.invalidate()}}; override fun onStartTrackingTouch(s:SeekBar?){}; override fun onStopTrackingTouch(s:SeekBar?){} }) })
+            val lbl2 = lbl(label); panel.addView(lbl2)
+            panel.addView(SeekBar(this).apply {
+                this.max=max; progress=current
+                progressTintList=android.content.res.ColorStateList.valueOf(Color.parseColor("#1565C0"))
+                thumbTintList=android.content.res.ColorStateList.valueOf(Color.parseColor("#1565C0"))
+                setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener{
+                    override fun onProgressChanged(s:SeekBar?,v:Int,f:Boolean) {
+                        onChange(v); drawingView.invalidate()
+                        lbl2.text = label.substringBefore(":") + ": $v"
+                    }
+                    override fun onStartTrackingTouch(s:SeekBar?){}
+                    override fun onStopTrackingTouch(s:SeekBar?){}
+                })
+            })
         }
 
         // Title row

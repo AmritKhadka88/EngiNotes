@@ -1075,6 +1075,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun drawDimensionItem(canvas: Canvas, d: DimensionItem, preview: Boolean = false) {
+        if (d.isAngular) { drawAngularDimensionItem(canvas, d, preview); return }
         val dx = d.x2 - d.x1; val dy = d.y2 - d.y1
         val len = kotlin.math.sqrt((dx*dx+dy*dy).toDouble()).toFloat()
         if (len < 1f) return
@@ -1085,7 +1086,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = d.color; strokeWidth = sw; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
         val fp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = d.color; style = Paint.Style.FILL }
         val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = d.textColor; textSize = d.fontSize / scaleFactor; textAlign = Paint.Align.CENTER
+            color = d.textColor
+            // Absolute text size: fontSize is in sp, convert to screen pixels, then to world coords
+            // This makes text appear the same physical size regardless of zoom
+            textSize = d.fontSize * resources.displayMetrics.scaledDensity / scaleFactor
+            textAlign = Paint.Align.CENTER
             typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD)
         }
 
@@ -1101,8 +1106,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // Main dimension line
         canvas.drawLine(dl1x, dl1y, dl2x, dl2y, p)
 
-        // Filled arrowheads
-        val arL = d.arrowSize / scaleFactor; val arW = (d.arrowSize * 0.38f) / scaleFactor
+        // Filled arrowheads — absolute size in screen pixels
+        val arL = d.arrowSize * resources.displayMetrics.density / scaleFactor
+        val arW = (d.arrowSize * 0.38f) * resources.displayMetrics.density / scaleFactor
         fun arrowHead(ex: Float, ey: Float, dirX: Float, dirY: Float) {
             val path2 = android.graphics.Path()
             path2.moveTo(ex, ey)
@@ -1142,6 +1148,81 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val hFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.WHITE; style = Paint.Style.FILL }
             val hStr = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = d.color; style = Paint.Style.STROKE; strokeWidth = sw*1.5f }
             for ((hx,hy) in listOf(d.x1 to d.y1, d.x2 to d.y2, midX to midY)) {
+                canvas.drawCircle(hx, hy, hr, hFill); canvas.drawCircle(hx, hy, hr, hStr)
+            }
+        }
+    }
+
+    private fun drawAngularDimensionItem(canvas: Canvas, d: DimensionItem, preview: Boolean = false) {
+        // Parse stored p3 from unit field
+        val parts = d.unit.split(",")
+        val p3x = parts.getOrNull(0)?.toFloatOrNull() ?: (d.x2); val p3y = parts.getOrNull(1)?.toFloatOrNull() ?: (d.y2)
+
+        val sw = d.strokeW / scaleFactor
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=d.color; strokeWidth=sw; style=Paint.Style.STROKE; strokeCap=Paint.Cap.ROUND }
+        val fp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=d.color; style=Paint.Style.FILL }
+        val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=d.textColor; textSize=d.fontSize*resources.displayMetrics.scaledDensity/scaleFactor; textAlign=Paint.Align.CENTER; typeface=android.graphics.Typeface.create("sans-serif",android.graphics.Typeface.BOLD) }
+
+        // Vertex = (d.x1, d.y1), arm1 end = (d.x2, d.y2), arm2 end = (p3x, p3y)
+        val vx = d.x1; val vy = d.y1
+        val a1 = kotlin.math.atan2((d.y2-vy).toDouble(),(d.x2-vx).toDouble()).toFloat()
+        val a2 = kotlin.math.atan2((p3y-vy).toDouble(),(p3x-vx).toDouble()).toFloat()
+
+        // Arc radius = min(arm1 len, arm2 len) * 0.4
+        val arm1Len = kotlin.math.hypot((d.x2-vx),(d.y2-vy))
+        val arm2Len = kotlin.math.hypot((p3x-vx),(p3y-vy))
+        val arcR = minOf(arm1Len, arm2Len) * 0.4f
+
+        // Draw arm lines from vertex
+        canvas.drawLine(vx, vy, d.x2, d.y2, p)
+        canvas.drawLine(vx, vy, p3x, p3y, p)
+
+        // Draw arc
+        val a1Deg = Math.toDegrees(a1.toDouble()).toFloat()
+        val a2Deg = Math.toDegrees(a2.toDouble()).toFloat()
+        var sweep = a2Deg - a1Deg
+        if (sweep > 180f) sweep -= 360f; if (sweep < -180f) sweep += 360f
+        val oval = android.graphics.RectF(vx-arcR, vy-arcR, vx+arcR, vy+arcR)
+        canvas.drawArc(oval, a1Deg, sweep, false, p)
+
+        // Arrowheads at arc ends
+        val arL = d.arrowSize*resources.displayMetrics.density/scaleFactor
+        val arW = arL*0.38f
+        fun arcArrow(atAngle: Float, sweepSign: Float) {
+            val ax = vx + arcR * kotlin.math.cos(atAngle); val ay = vy + arcR * kotlin.math.sin(atAngle)
+            // Tangent direction at this arc point (perpendicular to radius, in sweep direction)
+            val tx = -kotlin.math.sin(atAngle) * sweepSign; val ty = kotlin.math.cos(atAngle) * sweepSign
+            val path2 = android.graphics.Path()
+            path2.moveTo(ax, ay)
+            path2.lineTo(ax + tx*arL - ty*arW, ay + ty*arL + tx*arW)
+            path2.lineTo(ax + tx*arL + ty*arW, ay + ty*arL - tx*arW)
+            path2.close(); canvas.drawPath(path2, fp)
+        }
+        val sign = if (sweep >= 0f) 1f else -1f
+        arcArrow(a1, sign); arcArrow(a1 + Math.toRadians(sweep.toDouble()).toFloat(), -sign)
+
+        // Angle label at arc midpoint
+        val midAngle = a1 + Math.toRadians((sweep/2.0)).toFloat()
+        val labelR = arcR * 1.3f
+        val lx = vx + labelR * kotlin.math.cos(midAngle); val ly = vy + labelR * kotlin.math.sin(midAngle)
+        val labelStr = if (d.label.isNotEmpty()) d.label else "%.1f°".format(d.angle)
+        val bgP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=android.graphics.Color.WHITE; style=Paint.Style.FILL }
+        val tw = tp.measureText(labelStr); val th = tp.textSize
+        val pad = 2f/scaleFactor
+        canvas.drawRoundRect(android.graphics.RectF(lx-tw/2f-pad, ly-th-pad, lx+tw/2f+pad, ly+pad), pad, pad, bgP)
+        canvas.drawText(labelStr, lx, ly, tp)
+
+        // Store handles
+        if (!preview) {
+            d.handleP1sx = worldToScreenX(vx); d.handleP1sy = worldToScreenY(vy)
+            d.handleP2sx = worldToScreenX(d.x2); d.handleP2sy = worldToScreenY(d.y2)
+            d.handleMidsx = worldToScreenX(lx); d.handleMidsy = worldToScreenY(ly)
+        }
+        if (!preview && (selectedItem === d || currentTool == Tool.DIMENSION)) {
+            val hr = 10f/scaleFactor
+            val hFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=android.graphics.Color.WHITE; style=Paint.Style.FILL }
+            val hStr = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=d.color; style=Paint.Style.STROKE; strokeWidth=sw*1.5f }
+            for ((hx,hy) in listOf(vx to vy, d.x2 to d.y2, p3x to p3y)) {
                 canvas.drawCircle(hx, hy, hr, hFill); canvas.drawCircle(hx, hy, hr, hStr)
             }
         }
@@ -1784,11 +1865,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var dimDraggingItem: DimensionItem? = null
     private var dimDragHandle = 0  // 1=p1, 2=p2, 3=mid
     var dimMode: DimMode = DimMode.AUTO
+    var dimAngular: Boolean = false   // true = angular mode, tap 3 points
+    // Angular: p1=vertex, p2=arm1 end, p3=arm2 end
+    private var dimAngP3wx = 0f; private var dimAngP3wy = 0f
+    private var dimAngPhase = 0  // 0=idle,1=got vertex,2=got arm1, 3=complete
     var autoRefPixelLen: Float = 0f
     var autoRefRealLen: Float = 1f
     var autoRefUnit: String = "m"
-    var defaultDimFontSize: Float = 11f   // sp, settable from Settings
-    var defaultDimArrowSize: Float = 9f   // world units base
+    var defaultDimFontSize: Float = 11f
+    var defaultDimArrowSize: Float = 9f
     // Legacy compat
     private var dimStartWx = 0f; private var dimStartWy = 0f
     private var dimEndWx = 0f; private var dimEndWy = 0f
@@ -2402,12 +2487,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_MOVE -> { if (isStylusDown && isFinger) return true }
         }
         if (currentTool == Tool.DIMENSION) {
-            // Block when two fingers, panning mode, or finger-pan toggle is on
-            if (twoFingerActive || fingerPanMode) return true
+            // Block if finger-pan mode is on
+            if (fingerPanMode) return true
+            // If ANY second finger appears, cancel the current dimension-in-progress
+            if (event.pointerCount > 1 || event.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
+                dimPhase = DimPhase.IDLE; dimDraggingItem = null; invalidate(); return true
+            }
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
-                    val HR = 80f  // large touch target for handles
+                    val HR = 80f
                     val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
                         kotlin.math.hypot((event.x - d.handleP1sx), (event.y - d.handleP1sy)) < HR ||
                         kotlin.math.hypot((event.x - d.handleP2sx), (event.y - d.handleP2sy)) < HR ||
@@ -2419,6 +2508,35 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             kotlin.math.hypot((event.x - hitDim.handleP1sx), (event.y - hitDim.handleP1sy)) < HR -> 1
                             kotlin.math.hypot((event.x - hitDim.handleP2sx), (event.y - hitDim.handleP2sy)) < HR -> 2
                             else -> 3
+                        }
+                        invalidate()
+                    } else if (dimAngular) {
+                        // Angular: 3-tap state machine
+                        when (dimAngPhase) {
+                            0 -> { dimP1wx=wx; dimP1wy=wy; dimAngPhase=1 }
+                            1 -> { dimP2wx=wx; dimP2wy=wy; dimAngPhase=2 }
+                            2 -> {
+                                dimAngP3wx=wx; dimAngP3wy=wy; dimAngPhase=0
+                                // Compute angle between the two arms from the vertex
+                                val a1 = kotlin.math.atan2((dimP2wy-dimP1wy).toDouble(),(dimP2wx-dimP1wx).toDouble())
+                                val a2 = kotlin.math.atan2((dimAngP3wy-dimP1wy).toDouble(),(dimAngP3wx-dimP1wx).toDouble())
+                                var deg = Math.toDegrees(a2 - a1).toFloat()
+                                if (deg < 0f) deg += 360f; if (deg > 180f) deg = 360f - deg
+                                val newDim = DimensionItem(
+                                    dimP1wx, dimP1wy, dimP2wx, dimP2wy, 0f,
+                                    currentColor, currentStrokeWidth, mode = DimMode.MANUAL,
+                                    isAngular = true, angle = deg,
+                                    fontSize = defaultDimFontSize, arrowSize = defaultDimArrowSize, textColor = currentColor
+                                )
+                                // Store the third point in offset (encode as: offset = signed angle in world)
+                                newDim.offset = dimAngP3wx - dimP1wx  // store arm2 x relative to vertex
+                                // Actually store p3 in a dedicated way using the label mechanism
+                                // For now store p3 world coords encoded in the unit field
+                                newDim.unit = "$dimAngP3wx,$dimAngP3wy"
+                                actions.add(newDim); redoStack.clear()
+                                onDimensionCreated?.invoke(newDim)
+                                invalidate()
+                            }
                         }
                         invalidate()
                     } else {
