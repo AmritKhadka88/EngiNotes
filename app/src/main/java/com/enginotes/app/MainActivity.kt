@@ -415,6 +415,8 @@ class MainActivity : AppCompatActivity() {
         drawingView.migrateOldNotes(filesDir)
         lastSavedContent = drawingView.serialize()
         drawingView.arcDivisions = prefs.getInt("arc_divisions",3)
+        drawingView.defaultDimFontSize = prefs.getFloat("dim_font_size", 11f)
+        drawingView.defaultDimArrowSize = prefs.getFloat("dim_arrow_size", 9f)
 
         applyConvenientLayout()
 
@@ -433,7 +435,7 @@ class MainActivity : AppCompatActivity() {
         drawingView.onLinkTap               = { target -> navigateToLink(target) }
         drawingView.onPageSwipe             = { dir -> drawingView.scrollPage(dir) }
         drawingView.onDimensionCreated      = { dim -> showDimensionLabelDialog(dim) }
-        drawingView.onDimensionEdit         = { dim -> showDimensionEditDialog(dim) }
+        drawingView.onDimensionEdit         = { dim -> showDimensionStylePanel(dim) }
         drawingView.onDrawingStarted        = {
             // Hide both bars while drawing for more canvas space — tap to bring back
             if (drawingView.isDrawingTool()) {
@@ -1384,38 +1386,58 @@ class MainActivity : AppCompatActivity() {
         labelInput.postDelayed({ val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager; imm.showSoftInput(labelInput, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT) }, 200)
     }
 
-    private fun showDimensionEditDialog(dim: DimensionItem) {
-        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20),dp(12),dp(20),dp(8)) }
-        val labelInput = android.widget.EditText(this).apply { hint = "Label (blank = auto)"; setText(dim.label) }
-        val colorRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0,dp(8),0,dp(8)) }
-        val colors = listOf(Color.parseColor("#1565C0"), Color.BLACK, Color.RED, Color.parseColor("#388E3C"), Color.parseColor("#F57C00"))
-        colors.forEach { c ->
-            colorRow.addView(View(this).apply {
-                val lp = LinearLayout.LayoutParams(dp(32),dp(32)); lp.setMargins(0,0,dp(8),0); layoutParams=lp
-                background = android.graphics.drawable.GradientDrawable().apply { shape=android.graphics.drawable.GradientDrawable.OVAL; setColor(c); setStroke(if(c==dim.color) dp(3) else dp(1), Color.parseColor("#333333")) }
-                setOnClickListener { dim.color=c; drawingView.invalidate(); colorRow.children2(c) }
-            })
-        }
-        val thickSeek = SeekBar(this).apply { max=10; progress=dim.strokeW.toInt().coerceIn(1,10)
-            setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s:SeekBar?,v:Int,f:Boolean){if(f){dim.strokeW=v.coerceAtLeast(1).toFloat();drawingView.invalidate()}}; override fun onStartTrackingTouch(s:SeekBar?){}; override fun onStopTrackingTouch(s:SeekBar?){} }) }
-        val delBtn = TextView(this).apply { text="🗑 Delete dimension"; textSize=14f; setTextColor(Color.RED); setPadding(0,dp(12),0,0)
-            setOnClickListener { drawingView.removeDimensionItem(dim) } }
-        layout.addView(TextView(this).apply { text="Label:"; textSize=13f }); layout.addView(labelInput)
-        layout.addView(TextView(this).apply { text="Color:"; textSize=13f; setPadding(0,dp(8),0,dp(4)) }); layout.addView(colorRow)
-        layout.addView(TextView(this).apply { text="Thickness:"; textSize=13f; setPadding(0,dp(8),0,dp(4)) }); layout.addView(thickSeek)
-        layout.addView(delBtn)
-        AlertDialog.Builder(this).setTitle("Edit Dimension").setView(ScrollView(this).apply{addView(layout)})
-            .setPositiveButton("Done") { _,_ -> dim.label=labelInput.text.toString().trim(); drawingView.selectedItem=null; drawingView.invalidate() }
-            .setNegativeButton("Cancel") { _,_ -> drawingView.selectedItem=null; drawingView.invalidate() }
-            .show()
-    }
+    private fun showDimensionStylePanel(dim: DimensionItem) {
+        dismissAllFloatingPanels()
+        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE); elevation = dp(10).toFloat(); setPadding(dp(16),dp(12),dp(16),dp(20)) }
 
-    // Helper to update color selection state in a row
-    private fun LinearLayout.children2(selectedColor: Int) {
-        for (i in 0 until childCount) { val v = getChildAt(i) as? View ?: continue
-            val bg = v.background as? android.graphics.drawable.GradientDrawable ?: continue
-            // Can't easily re-read the color so just update stroke width based on position logic
+        fun lbl(t: String) = TextView(this).apply { text=t; textSize=12f; setTextColor(Color.parseColor("#8A8580")); setPadding(0,dp(10),0,dp(4)) }
+        fun seekRow(label: String, max: Int, current: Int, onChange: (Int)->Unit) {
+            panel.addView(lbl(label))
+            panel.addView(SeekBar(this).apply { this.max=max; progress=current; progressTintList=android.content.res.ColorStateList.valueOf(Color.parseColor("#1565C0")); thumbTintList=android.content.res.ColorStateList.valueOf(Color.parseColor("#1565C0")); setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s:SeekBar?,v:Int,f:Boolean){if(f){onChange(v);drawingView.invalidate()}}; override fun onStartTrackingTouch(s:SeekBar?){}; override fun onStopTrackingTouch(s:SeekBar?){} }) })
         }
+
+        // Title row
+        val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        titleRow.addView(TextView(this).apply { text = "Dimension Style"; textSize = 17f; setTypeface(null, android.graphics.Typeface.BOLD); setTextColor(Color.parseColor("#1C1C1E")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+        val scrollRef = arrayOfNulls<ScrollView>(1)
+        titleRow.addView(TextView(this).apply { text = "✕"; textSize = 18f; setTextColor(Color.parseColor("#8A8580")); gravity = Gravity.CENTER; val lp2 = LinearLayout.LayoutParams(dp(36),dp(36)); layoutParams=lp2; setOnClickListener { scrollRef[0]?.let { canvasContainer.removeView(it) }; drawingView.selectedItem=null; drawingView.invalidate() } })
+        panel.addView(titleRow)
+
+        // Label edit
+        panel.addView(lbl("Label (blank = auto)"))
+        val labelEdit = android.widget.EditText(this).apply { setText(dim.label); hint="Auto" }
+        panel.addView(labelEdit)
+
+        // Line color
+        panel.addView(lbl("Line & Arrow Color"))
+        val lineColorRow = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+        val dimColors = listOf(Color.parseColor("#1565C0"),Color.BLACK,Color.RED,Color.parseColor("#388E3C"),Color.parseColor("#F57C00"),Color.parseColor("#7B1FA2"),Color.WHITE)
+        dimColors.forEach { c -> lineColorRow.addView(View(this).apply { val lp2=LinearLayout.LayoutParams(dp(30),dp(30));lp2.setMargins(0,0,dp(8),0);layoutParams=lp2; background=android.graphics.drawable.GradientDrawable().apply{shape=android.graphics.drawable.GradientDrawable.OVAL;setColor(c);setStroke(if(c==dim.color)dp(3) else dp(1),Color.parseColor("#333333"))}; setOnClickListener{dim.color=c;drawingView.invalidate()} }) }
+        panel.addView(lineColorRow)
+
+        // Text color
+        panel.addView(lbl("Text Color"))
+        val textColorRow = LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+        dimColors.forEach { c -> textColorRow.addView(View(this).apply { val lp2=LinearLayout.LayoutParams(dp(30),dp(30));lp2.setMargins(0,0,dp(8),0);layoutParams=lp2; background=android.graphics.drawable.GradientDrawable().apply{shape=android.graphics.drawable.GradientDrawable.OVAL;setColor(c);setStroke(if(c==dim.textColor)dp(3) else dp(1),Color.parseColor("#333333"))}; setOnClickListener{dim.textColor=c;drawingView.invalidate()} }) }
+        panel.addView(textColorRow)
+
+        seekRow("Font Size: ${dim.fontSize.toInt()}sp", 40, dim.fontSize.toInt().coerceIn(6,40)) { dim.fontSize=it.coerceAtLeast(6).toFloat() }
+        seekRow("Arrow Size: ${dim.arrowSize.toInt()}", 40, dim.arrowSize.toInt().coerceIn(4,40)) { dim.arrowSize=it.coerceAtLeast(4).toFloat() }
+        seekRow("Line Thickness: ${dim.strokeW.toInt()}", 12, dim.strokeW.toInt().coerceIn(1,12)) { dim.strokeW=it.coerceAtLeast(1).toFloat() }
+
+        // Delete
+        panel.addView(TextView(this).apply { text="🗑 Delete dimension"; textSize=14f; setTextColor(Color.RED); setPadding(0,dp(12),0,0); setOnClickListener { drawingView.removeDimensionItem(dim); scrollRef[0]?.let { canvasContainer.removeView(it) } } })
+
+        // Done
+        panel.addView(TextView(this).apply { text="✓ Done"; textSize=15f; gravity=Gravity.CENTER; setTextColor(Color.WHITE); setPadding(dp(16),dp(12),dp(16),dp(12))
+            background=android.graphics.drawable.GradientDrawable().apply{setColor(Color.parseColor("#1565C0"));cornerRadius=dp(12).toFloat()}
+            val lp2=LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,LinearLayout.LayoutParams.WRAP_CONTENT);lp2.setMargins(0,dp(12),0,0);layoutParams=lp2
+            setOnClickListener { dim.label=labelEdit.text.toString().trim(); drawingView.selectedItem=null; drawingView.invalidate(); scrollRef[0]?.let{canvasContainer.removeView(it)} } })
+
+        val scroll = ScrollView(this).apply { addView(panel) }
+        scrollRef[0] = scroll
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        canvasContainer.addView(scroll, lp)
     }
 
     private fun showHatchPicker() {
@@ -1540,6 +1562,18 @@ class MainActivity : AppCompatActivity() {
         }
         container.addView(barSizeLbl)
 
+        div(); hdr("DIMENSION")
+        var dimFontSz = prefs.getFloat("dim_font_size", 11f)
+        var dimArrowSz = prefs.getFloat("dim_arrow_size", 9f)
+        container.addView(TextView(this).apply { text = "Default Font Size: ${dimFontSz.toInt()}sp"; textSize=13f; setTextColor(Color.parseColor("#1C1C1E")); setPadding(0,dp(4),0,dp(4)) }.also { lbl ->
+            container.addView(SeekBar(this).apply { max=40; progress=dimFontSz.toInt().coerceIn(6,40)
+                setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s:SeekBar?,v:Int,f:Boolean){if(f){dimFontSz=v.coerceAtLeast(6).toFloat();lbl.text="Default Font Size: ${dimFontSz.toInt()}sp"}}; override fun onStartTrackingTouch(s:SeekBar?){}; override fun onStopTrackingTouch(s:SeekBar?){} }) })
+        })
+        container.addView(TextView(this).apply { text = "Default Arrow Size: ${dimArrowSz.toInt()}"; textSize=13f; setTextColor(Color.parseColor("#1C1C1E")); setPadding(0,dp(4),0,dp(4)) }.also { lbl ->
+            container.addView(SeekBar(this).apply { max=40; progress=dimArrowSz.toInt().coerceIn(4,40)
+                setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s:SeekBar?,v:Int,f:Boolean){if(f){dimArrowSz=v.coerceAtLeast(4).toFloat();lbl.text="Default Arrow Size: ${dimArrowSz.toInt()}"}}; override fun onStartTrackingTouch(s:SeekBar?){}; override fun onStopTrackingTouch(s:SeekBar?){} }) })
+        })
+
         val scroll = ScrollView(this).apply{ addView(container) }
         AlertDialog.Builder(this).setTitle("Settings").setView(scroll)
             .setPositiveButton("Done") { _,_ ->
@@ -1549,11 +1583,14 @@ class MainActivity : AppCompatActivity() {
                     .putString("default_paper",selPaper)
                     .putInt("arc_divisions",(arcInput.text.toString().toIntOrNull()?:3).coerceIn(2,12))
                     .putInt("bar_icon_size", selBarSize)
+                    .putFloat("dim_font_size", dimFontSz)
+                    .putFloat("dim_arrow_size", dimArrowSz)
                     .apply()
                 drawingView.arcDivisions = prefs.getInt("arc_divisions",3)
+                drawingView.defaultDimFontSize = dimFontSz
+                drawingView.defaultDimArrowSize = dimArrowSz
                 try { drawingView.paperType = PaperType.valueOf(selPaper) } catch(e:Exception){}
                 drawingView.invalidate()
-                // Apply new bar size — resize all primary bar AND context bar buttons
                 val sz = dp(selBarSize)
                 val primaryBar = findViewById<HorizontalScrollView?>(R.id.primaryToolbarScroll)
                 (primaryBar?.getChildAt(0) as? LinearLayout)?.let { ll ->
@@ -1563,7 +1600,6 @@ class MainActivity : AppCompatActivity() {
                         lp.width = sz; lp.height = sz; child.layoutParams = lp
                     }
                 }
-                // Rebuild context bar with new size (BAR_H is local, but rebuildContextBar uses dp(38) — update prefs first)
                 rebuildContextBar()
             }.show()
     }
