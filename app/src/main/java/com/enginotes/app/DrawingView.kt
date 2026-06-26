@@ -1154,61 +1154,80 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun drawAngularDimensionItem(canvas: Canvas, d: DimensionItem, preview: Boolean = false) {
-        // Parse stored p3 from unit field
         val parts = d.unit.split(",")
-        val p3x = parts.getOrNull(0)?.toFloatOrNull() ?: (d.x2); val p3y = parts.getOrNull(1)?.toFloatOrNull() ?: (d.y2)
+        val p3x = parts.getOrNull(0)?.toFloatOrNull() ?: d.x2
+        val p3y = parts.getOrNull(1)?.toFloatOrNull() ?: d.y2
+        val supplementary = parts.getOrNull(2)?.toBooleanStrictOrNull() ?: false
 
+        val vx = d.x1; val vy = d.y1
         val sw = d.strokeW / scaleFactor
         val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=d.color; strokeWidth=sw; style=Paint.Style.STROKE; strokeCap=Paint.Cap.ROUND }
         val fp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=d.color; style=Paint.Style.FILL }
         val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=d.textColor; textSize=d.fontSize*resources.displayMetrics.scaledDensity/scaleFactor; textAlign=Paint.Align.CENTER; typeface=android.graphics.Typeface.create("sans-serif",android.graphics.Typeface.BOLD) }
 
-        // Vertex = (d.x1, d.y1), arm1 end = (d.x2, d.y2), arm2 end = (p3x, p3y)
-        val vx = d.x1; val vy = d.y1
         val a1 = kotlin.math.atan2((d.y2-vy).toDouble(),(d.x2-vx).toDouble()).toFloat()
         val a2 = kotlin.math.atan2((p3y-vy).toDouble(),(p3x-vx).toDouble()).toFloat()
-
-        // Arc radius = min(arm1 len, arm2 len) * 0.4
         val arm1Len = kotlin.math.hypot((d.x2-vx),(d.y2-vy))
         val arm2Len = kotlin.math.hypot((p3x-vx),(p3y-vy))
-        val arcR = minOf(arm1Len, arm2Len) * 0.4f
+        val arcR = (d.offset.takeIf { it > 0f } ?: minOf(arm1Len, arm2Len) * 0.4f)
 
-        // Draw arm lines from vertex
-        canvas.drawLine(vx, vy, d.x2, d.y2, p)
-        canvas.drawLine(vx, vy, p3x, p3y, p)
-
-        // Draw arc
         val a1Deg = Math.toDegrees(a1.toDouble()).toFloat()
         val a2Deg = Math.toDegrees(a2.toDouble()).toFloat()
         var sweep = a2Deg - a1Deg
         if (sweep > 180f) sweep -= 360f; if (sweep < -180f) sweep += 360f
+        if (supplementary) { sweep = if (sweep > 0f) sweep - 360f else sweep + 360f }
+
+        // Skip near-zero / 180° edge cases
+        val absSweep = kotlin.math.abs(sweep)
+        if (absSweep < 1f) return  // nearly parallel — don't draw
+        // Note: 180° case handled by returning without drawing arc
+
+        // Extension lines from vertex to beyond arc radius
+        val extR = arcR * 1.15f
+        canvas.drawLine(vx, vy + 0f, vx + (d.x2-vx)/arm1Len*extR, vy + (d.y2-vy)/arm1Len*extR, p)
+        canvas.drawLine(vx, vy + 0f, vx + (p3x-vx)/arm2Len*extR, vy + (p3y-vy)/arm2Len*extR, p)
+
+        // Arc
         val oval = android.graphics.RectF(vx-arcR, vy-arcR, vx+arcR, vy+arcR)
         canvas.drawArc(oval, a1Deg, sweep, false, p)
 
-        // Arrowheads at arc ends
-        val arL = d.arrowSize*resources.displayMetrics.density/scaleFactor
-        val arW = arL*0.38f
-        fun arcArrow(atAngle: Float, sweepSign: Float) {
-            val ax = vx + arcR * kotlin.math.cos(atAngle); val ay = vy + arcR * kotlin.math.sin(atAngle)
-            // Tangent direction at this arc point (perpendicular to radius, in sweep direction)
-            val tx = -kotlin.math.sin(atAngle) * sweepSign; val ty = kotlin.math.cos(atAngle) * sweepSign
+        // Arrowheads — tangent to arc, pointing in sweep direction
+        val arL = d.arrowSize * resources.displayMetrics.density / scaleFactor
+        val arW = arL * 0.4f
+        fun arcArrow(atAngleRad: Float, sweepDir: Float) {
+            val ax = vx + arcR * kotlin.math.cos(atAngleRad)
+            val ay = vy + arcR * kotlin.math.sin(atAngleRad)
+            val tx = (-kotlin.math.sin(atAngleRad) * sweepDir)
+            val ty = (kotlin.math.cos(atAngleRad) * sweepDir)
+            val nx2 = -ty; val ny2 = tx
             val path2 = android.graphics.Path()
             path2.moveTo(ax, ay)
-            path2.lineTo(ax + tx*arL - ty*arW, ay + ty*arL + tx*arW)
-            path2.lineTo(ax + tx*arL + ty*arW, ay + ty*arL - tx*arW)
+            path2.lineTo(ax + tx*arL + nx2*arW, ay + ty*arL + ny2*arW)
+            path2.lineTo(ax + tx*arL - nx2*arW, ay + ty*arL - ny2*arW)
             path2.close(); canvas.drawPath(path2, fp)
         }
-        val sign = if (sweep >= 0f) 1f else -1f
-        arcArrow(a1, sign); arcArrow(a1 + Math.toRadians(sweep.toDouble()).toFloat(), -sign)
+        val sweepSign = if (sweep >= 0f) 1f else -1f
+        val sweepRad = Math.toRadians(sweep.toDouble()).toFloat()
+        arcArrow(a1, sweepSign); arcArrow(a1 + sweepRad, -sweepSign)
 
-        // Angle label at arc midpoint
-        val midAngle = a1 + Math.toRadians((sweep/2.0)).toFloat()
-        val labelR = arcR * 1.3f
-        val lx = vx + labelR * kotlin.math.cos(midAngle); val ly = vy + labelR * kotlin.math.sin(midAngle)
-        val labelStr = if (d.label.isNotEmpty()) d.label else "%.1f°".format(d.angle)
+        // Label — outside arc if angle < 15° or > 270° (spec: leader line for tiny angles)
+        val midAngle = a1 + sweepRad / 2f
+        val angleIsSmall = absSweep < 15f
+        val labelR = if (angleIsSmall) arcR * 2.2f else arcR * 1.25f
+        val lx = vx + labelR * kotlin.math.cos(midAngle)
+        val ly = vy + labelR * kotlin.math.sin(midAngle)
+        val displayAngle = if (supplementary) 360f - absSweep else absSweep
+        val labelStr = if (d.label.isNotEmpty()) d.label else "%.1f°".format(displayAngle)
+
+        // Leader line for tiny angles
+        if (angleIsSmall) {
+            val arcMidX = vx + arcR * 1.05f * kotlin.math.cos(midAngle)
+            val arcMidY = vy + arcR * 1.05f * kotlin.math.sin(midAngle)
+            canvas.drawLine(arcMidX, arcMidY, lx, ly, p)
+        }
+
         val bgP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=android.graphics.Color.WHITE; style=Paint.Style.FILL }
-        val tw = tp.measureText(labelStr); val th = tp.textSize
-        val pad = 2f/scaleFactor
+        val tw = tp.measureText(labelStr); val th = tp.textSize; val pad = 2f/scaleFactor
         canvas.drawRoundRect(android.graphics.RectF(lx-tw/2f-pad, ly-th-pad, lx+tw/2f+pad, ly+pad), pad, pad, bgP)
         canvas.drawText(labelStr, lx, ly, tp)
 
@@ -1554,9 +1573,48 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawSelection(canvas: Canvas) {
         // Preview dimension line while drawing
-        if (currentTool == Tool.DIMENSION && dimPhase == DimPhase.SECOND_POINT) {
-            val preview = DimensionItem(dimP1wx, dimP1wy, dimCurWx, dimCurWy, 0f, currentColor, currentStrokeWidth)
-            drawDimensionItem(canvas, preview, preview = true)
+        if (currentTool == Tool.DIMENSION) {
+            if (dimAngular) {
+                // Angular: draw glow dots for each tap, and live arc preview after 2 points
+                val glowP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x4400AAFF; style = Paint.Style.FILL }
+                val dotP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = currentColor; style = Paint.Style.FILL }
+                val ringP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = currentColor; style = Paint.Style.STROKE; strokeWidth = 2f/scaleFactor }
+                if (dimAngPhase >= 1) {  // vertex placed
+                    canvas.drawCircle(dimP1wx, dimP1wy, 20f/scaleFactor, glowP)
+                    canvas.drawCircle(dimP1wx, dimP1wy, 6f/scaleFactor, dotP)
+                    canvas.drawCircle(dimP1wx, dimP1wy, 16f/scaleFactor, ringP)
+                }
+                if (dimAngPhase >= 2) {  // arm1 placed — draw line + second glow at cursor
+                    canvas.drawLine(dimP1wx, dimP1wy, dimP2wx, dimP2wy, ringP)
+                    canvas.drawCircle(dimP2wx, dimP2wy, 14f/scaleFactor, glowP)
+                    canvas.drawCircle(dimP2wx, dimP2wy, 5f/scaleFactor, dotP)
+                    // Line to cursor as preview of arm2
+                    canvas.drawLine(dimP1wx, dimP1wy, dimCurWx, dimCurWy, Paint(ringP).apply { alpha=100; pathEffect=android.graphics.DashPathEffect(floatArrayOf(8f/scaleFactor,6f/scaleFactor),0f) })
+                    // Ghost arc preview
+                    val a1 = kotlin.math.atan2((dimP2wy-dimP1wy).toDouble(),(dimP2wx-dimP1wx).toDouble()).toFloat()
+                    val a2 = kotlin.math.atan2((dimCurWy-dimP1wy).toDouble(),(dimCurWx-dimP1wx).toDouble()).toFloat()
+                    val r1 = kotlin.math.hypot(dimP2wx-dimP1wx, dimP2wy-dimP1wy)
+                    val r2 = kotlin.math.hypot(dimCurWx-dimP1wx, dimCurWy-dimP1wy)
+                    val arcR = minOf(r1,r2)*0.4f
+                    if (arcR > 2f/scaleFactor) {
+                        var sweep = (Math.toDegrees(a2.toDouble()) - Math.toDegrees(a1.toDouble())).toFloat()
+                        if (sweep > 180f) sweep -= 360f; if (sweep < -180f) sweep += 360f
+                        val arcP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = currentColor; style=Paint.Style.STROKE; strokeWidth=2f/scaleFactor; alpha=140 }
+                        canvas.drawArc(android.graphics.RectF(dimP1wx-arcR,dimP1wy-arcR,dimP1wx+arcR,dimP1wy+arcR), Math.toDegrees(a1.toDouble()).toFloat(), sweep, false, arcP)
+                        // Ghost angle text
+                        val midA = a1 + Math.toRadians(sweep.toDouble()).toFloat()/2f
+                        val tp2 = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=currentColor; alpha=140; textSize=11f*resources.displayMetrics.scaledDensity/scaleFactor; textAlign=Paint.Align.CENTER }
+                        val deg = kotlin.math.abs(sweep)
+                        canvas.drawText("%.1f°".format(deg), dimP1wx + arcR*1.3f*kotlin.math.cos(midA), dimP1wy + arcR*1.3f*kotlin.math.sin(midA), tp2)
+                    }
+                }
+            } else if (dimPhase == DimPhase.SECOND_POINT) {
+                val preview = DimensionItem(dimP1wx, dimP1wy, dimCurWx, dimCurWy, 0f, currentColor, currentStrokeWidth)
+                drawDimensionItem(canvas, preview, preview = true)
+                // Glow dot at first point
+                canvas.drawCircle(dimP1wx, dimP1wy, 8f/scaleFactor, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=0x4400AAFF; style=Paint.Style.FILL })
+                canvas.drawCircle(dimP1wx, dimP1wy, 4f/scaleFactor, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=currentColor; style=Paint.Style.FILL })
+            }
         }
         val item = selectedItem ?: return
         if (item is TextItem) {
@@ -2532,7 +2590,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 newDim.offset = dimAngP3wx - dimP1wx  // store arm2 x relative to vertex
                                 // Actually store p3 in a dedicated way using the label mechanism
                                 // For now store p3 world coords encoded in the unit field
-                                newDim.unit = "$dimAngP3wx,$dimAngP3wy"
+                                newDim.unit = "$dimAngP3wx,$dimAngP3wy,false"
                                 actions.add(newDim); redoStack.clear()
                                 onDimensionCreated?.invoke(newDim)
                                 invalidate()
@@ -2553,23 +2611,29 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
+                    dimCurWx = wx; dimCurWy = wy  // always track for preview
                     if (dimDraggingItem != null) {
                         val d = dimDraggingItem!!
                         when (dimDragHandle) {
                             1 -> { d.x1 = wx; d.y1 = wy }
                             2 -> { d.x2 = wx; d.y2 = wy }
                             3 -> {
-                                val ddx = d.x2-d.x1; val ddy = d.y2-d.y1
-                                val dlen = kotlin.math.sqrt((ddx*ddx+ddy*ddy).toDouble()).toFloat()
-                                if (dlen > 0f) {
-                                    val nx2 = -ddy/dlen; val ny2 = ddx/dlen
-                                    d.offset = (wx-d.x1)*nx2 + (wy-d.y1)*ny2
+                                if (d.isAngular) {
+                                    // Drag mid handle of angular — change arc radius
+                                    val vx2 = d.x1; val vy2 = d.y1
+                                    d.offset = kotlin.math.hypot(wx-vx2, wy-vy2).coerceAtLeast(10f/scaleFactor)
+                                } else {
+                                    val ddx = d.x2-d.x1; val ddy = d.y2-d.y1
+                                    val dlen = kotlin.math.sqrt((ddx*ddx+ddy*ddy).toDouble()).toFloat()
+                                    if (dlen > 0f) { val nx2 = -ddy/dlen; val ny2 = ddx/dlen; d.offset = (wx-d.x1)*nx2 + (wy-d.y1)*ny2 }
                                 }
                             }
                         }
                         invalidate()
+                    } else if (dimAngular && dimAngPhase > 0) {
+                        invalidate()  // redraw cursor preview
                     } else if (dimPhase == DimPhase.SECOND_POINT) {
-                        dimCurWx = wx; dimCurWy = wy; invalidate()
+                        invalidate()
                     }
                 }
                 MotionEvent.ACTION_UP -> {
