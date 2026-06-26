@@ -1248,40 +1248,48 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun drawMagnifierLens(canvas: Canvas, worldX: Float, worldY: Float) {
-        // Draw a circular magnifier 80px above the finger position
         val sx = worldToScreenX(worldX); val sy = worldToScreenY(worldY)
-        val lensRadius = 60f   // screen pixels
-        val zoomFactor = 3f    // 3× zoom inside lens
-        val lensOffsetY = -lensRadius - 30f  // position above finger
+        val lensRadius = 70f
+        val lensOffsetY = -(lensRadius + 40f)  // above finger in screen space
         val cx = sx; val cy = sy + lensOffsetY
+        val zoomFactor = 3f
 
+        // Save world transform and switch to screen space for the lens overlay
         canvas.save()
-        // Clip to circle
-        val path2 = android.graphics.Path(); path2.addCircle(cx, cy, lensRadius, android.graphics.Path.Direction.CW)
-        canvas.clipPath(path2)
+        canvas.setMatrix(null)  // reset to screen coordinates
 
-        // Fill white background
+        // Clip to lens circle
+        val lenPath = android.graphics.Path(); lenPath.addCircle(cx, cy, lensRadius, android.graphics.Path.Direction.CW)
+        canvas.clipPath(lenPath)
+
+        // White fill
         canvas.drawCircle(cx, cy, lensRadius, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=android.graphics.Color.WHITE; style=Paint.Style.FILL })
 
-        // Draw the canvas content zoomed in around the touch point
+        // Zoom: translate so worldX,worldY maps to cx,cy, then scale by zoomFactor
+        val zTx = cx - sx * zoomFactor * scaleFactor + translateX * zoomFactor - translateX
+        val zTy = cy - sy * zoomFactor * scaleFactor + translateY * zoomFactor - translateY
+        // Simpler: apply the world transform but scaled up
         canvas.translate(cx - sx * zoomFactor, cy - sy * zoomFactor)
         canvas.scale(zoomFactor, zoomFactor)
-        // Redraw the paper background and actions in the zoomed view
+        canvas.translate(translateX, translateY)
+        canvas.scale(scaleFactor, scaleFactor)
         drawBackground(canvas)
-        for (action in actions) { drawActionItem(canvas, action, includeFills = true) }
+        for (action in actions) drawActionItem(canvas, action, includeFills = true)
+
         canvas.restore()
 
-        // Crosshair at centre of lens (marks exact point)
-        val chP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=Color.RED; strokeWidth=1.5f; style=Paint.Style.STROKE }
-        canvas.drawLine(cx-10f, cy, cx+10f, cy, chP)
-        canvas.drawLine(cx, cy-10f, cx, cy+10f, chP)
-
-        // Border circle
-        canvas.drawCircle(cx, cy, lensRadius, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=Color.parseColor("#1C1C1E"); strokeWidth=2f; style=Paint.Style.STROKE })
+        // Border, crosshair, stem — all in screen space
+        canvas.save(); canvas.setMatrix(null)
+        // Crosshair
+        val chP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.RED; strokeWidth = 1.5f; style = Paint.Style.STROKE }
+        canvas.drawLine(cx-12f, cy, cx+12f, cy, chP); canvas.drawLine(cx, cy-12f, cx, cy+12f, chP)
+        // Lens border
+        canvas.drawCircle(cx, cy, lensRadius, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=android.graphics.Color.parseColor("#1C1C1E"); strokeWidth=2f; style=Paint.Style.STROKE })
         // Shadow
-        canvas.drawCircle(cx, cy, lensRadius+1f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=0x33000000; strokeWidth=3f; style=Paint.Style.STROKE })
-        // Stem line from lens down to finger
-        canvas.drawLine(cx, cy+lensRadius, sx, sy-6f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=Color.parseColor("#1C1C1E"); strokeWidth=1.5f; style=Paint.Style.STROKE })
+        canvas.drawCircle(cx, cy, lensRadius+2f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=0x22000000; strokeWidth=4f; style=Paint.Style.STROKE })
+        // Stem line from lens bottom to finger
+        canvas.drawLine(cx, cy+lensRadius, sx, sy-8f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=android.graphics.Color.parseColor("#1C1C1E"); strokeWidth=1.5f; style=Paint.Style.STROKE })
+        canvas.restore()
     }
 
     private fun drawHatchPattern(canvas: Canvas, item: FillItem) {
@@ -2557,11 +2565,28 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        // Request unbuffered dispatch for lowest possible latency on every touch event
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
             requestUnbufferedDispatch(event)
         }
         if (event.actionMasked == MotionEvent.ACTION_DOWN) fillScrollGuard = false
+
+        // fingerPanMode: single finger ALWAYS pans — block ALL other tools immediately
+        if (fingerPanMode && event.pointerCount == 1) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { twoFingerLastX = event.x; twoFingerLastY = event.y }
+                MotionEvent.ACTION_MOVE -> {
+                    translateX += event.x - twoFingerLastX; translateY += event.y - twoFingerLastY
+                    twoFingerLastX = event.x; twoFingerLastY = event.y
+                    clampTranslation()
+                    val totalH = pageHeightPx() * scaleFactor
+                    val maxScroll = totalH - height
+                    if (maxScroll > 0f) onScrollPercentChanged?.invoke((-translateY / maxScroll).coerceIn(0f, 1f))
+                    onCanvasTransformed?.invoke(); invalidate()
+                }
+                MotionEvent.ACTION_UP -> { twoFingerLastX = 0f; twoFingerLastY = 0f }
+            }
+            return true
+        }
         if (event.pointerCount >= 2) {
             twoFingerActive = true
             // Cancel any in-progress stroke immediately when second finger touches
@@ -2770,23 +2795,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (currentTool == Tool.AUTOSELECT) { gestureDetector.onTouchEvent(event); handleAutoSelect(event); return true }
         if (currentTool == Tool.LASSO) { handleLasso(event); return true }
         if (currentTool == Tool.EXPORT_WINDOW) { handleExportWindow(event); return true }
-        // fingerPanMode: single finger always pans, never draws
-        if (fingerPanMode && isFinger) {
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { twoFingerLastX = event.x; twoFingerLastY = event.y }
-                MotionEvent.ACTION_MOVE -> {
-                    translateX += event.x - twoFingerLastX; translateY += event.y - twoFingerLastY
-                    twoFingerLastX = event.x; twoFingerLastY = event.y
-                    clampTranslation()
-                    val totalH = pageHeightPx() * scaleFactor
-                    val maxScroll = totalH - height
-                    if (maxScroll > 0f) onScrollPercentChanged?.invoke((-translateY / maxScroll).coerceIn(0f, 1f))
-                    onCanvasTransformed?.invoke(); invalidate()
-                }
-                MotionEvent.ACTION_UP -> { twoFingerLastX = 0f; twoFingerLastY = 0f }
-            }
-            return true
-        }
         if (canvasMode == CanvasMode.INFINITE && currentItem == null && event.actionMasked == MotionEvent.ACTION_MOVE && isFinger) gestureDetector.onTouchEvent(event)
         handleDrawing(event); return true
     }
