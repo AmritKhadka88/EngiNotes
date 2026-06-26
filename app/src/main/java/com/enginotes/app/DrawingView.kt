@@ -1178,9 +1178,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val absSweep = kotlin.math.abs(innerSweep)
         if (absSweep < 1f) return  // nearly parallel
 
-        // drawSweep: inner = the arc between the two arms
-        //            supplementary = the arc on the OTHER side (negate = reverse direction = other side)
-        val drawSweep = if (supplementary) -innerSweep else innerSweep
+        // drawSweep: inner = short arc between arms (absSweep degrees)
+        //            exterior = long arc the other way (360 - absSweep degrees)
+        val exteriorSweep = if (innerSweep >= 0f) -(360f - absSweep) else (360f - absSweep)
+        val drawSweep = if (supplementary) exteriorSweep else innerSweep
         val drawStartDeg = a1Deg
 
         // Extension lines from vertex to beyond arc radius
