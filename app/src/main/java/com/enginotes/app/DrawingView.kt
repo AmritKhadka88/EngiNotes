@@ -1182,10 +1182,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (absSweep < 1f) return  // nearly parallel — don't draw
         // Note: 180° case handled by returning without drawing arc
 
-        // For supplementary, draw the reflex arc (outside) by extending sweep
-        val drawSweep = if (supplementary) {
-            if (sweep >= 0f) sweep - 360f else sweep + 360f
-        } else sweep
+        // drawSweep: normal = inner arc. supplementary = outer arc (same endpoints, other side)
+        // Outer arc starts at a2 and sweeps back the long way around
+        val innerSweepRad = Math.toRadians(sweep.toDouble()).toFloat()
+        val outerSweep = if (sweep >= 0f) sweep - 360f else sweep + 360f
+        val drawSweep = if (supplementary) outerSweep else sweep
+        val drawStartDeg = if (supplementary) a1Deg + sweep else a1Deg
 
         // Extension lines from vertex to beyond arc radius
         val extR = arcR * 1.15f
@@ -1194,9 +1196,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         // Arc
         val oval = android.graphics.RectF(vx-arcR, vy-arcR, vx+arcR, vy+arcR)
-        canvas.drawArc(oval, a1Deg, drawSweep, false, p)
+        canvas.drawArc(oval, drawStartDeg, drawSweep, false, p)
 
-        // Arrowheads at arc ends using drawSweep
         val arL = d.arrowSize * resources.displayMetrics.density / scaleFactor
         val arW = arL * 0.4f
         fun arcArrow(atAngleRad: Float, sweepDir: Float) {
@@ -1211,12 +1212,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             path2.lineTo(ax + tx*arL - nx2*arW, ay + ty*arL - ny2*arW)
             path2.close(); canvas.drawPath(path2, fp)
         }
-        val drawSweepSign = if (drawSweep >= 0f) 1f else -1f
+        val drawStartRad = Math.toRadians(drawStartDeg.toDouble()).toFloat()
         val drawSweepRad = Math.toRadians(drawSweep.toDouble()).toFloat()
-        arcArrow(a1, drawSweepSign); arcArrow(a1 + drawSweepRad, -drawSweepSign)
+        val drawSweepSign = if (drawSweep >= 0f) 1f else -1f
+        arcArrow(drawStartRad, drawSweepSign)
+        arcArrow(drawStartRad + drawSweepRad, -drawSweepSign)
 
-        // Label at midpoint of the drawn arc
-        val midAngle = a1 + drawSweepRad / 2f
+        val midAngle = drawStartRad + drawSweepRad / 2f
         val angleIsSmall = absSweep < 15f
         val labelR = if (angleIsSmall) arcR * 2.2f else arcR * 1.25f
         val lx = vx + labelR * kotlin.math.cos(midAngle)
@@ -1250,7 +1252,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             // Orange supplementary handle — sits on the drawn arc midpoint
             val drawSweepRad2 = Math.toRadians(drawSweep.toDouble()).toFloat()
-            val midArcAngle = a1 + drawSweepRad2 / 2f
+            val drawStartRad2 = Math.toRadians(drawStartDeg.toDouble()).toFloat()
+            val midArcAngle = drawStartRad2 + drawSweepRad2 / 2f
             val midArcX = vx + arcR * kotlin.math.cos(midArcAngle)
             val midArcY = vy + arcR * kotlin.math.sin(midArcAngle)
             val hSupFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=android.graphics.Color.parseColor("#FF9500"); style=Paint.Style.FILL }
