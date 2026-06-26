@@ -1218,12 +1218,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         arcArrow(drawStartRad + drawSweepRad, -drawSweepSign)
 
         val midAngle = drawStartRad + drawSweepRad / 2f
+        val displayAngle = if (supplementary) 360f - absSweep else absSweep
+        val labelStr = if (d.label.isNotEmpty()) d.label else "%.1f°".format(displayAngle)
+        val angleIsSmall = displayAngle < 15f
         val labelR = if (angleIsSmall) arcR * 2.2f else arcR * 1.25f
         val lx = vx + labelR * kotlin.math.cos(midAngle)
         val ly = vy + labelR * kotlin.math.sin(midAngle)
-        val displayAngle = if (supplementary) 360f - absSweep else absSweep
-        val labelStr = if (d.label.isNotEmpty()) d.label else "%.1f°".format(displayAngle)
-        val angleIsSmall = displayAngle < 15f        // Leader line for tiny angles
         if (angleIsSmall) {
             val arcMidX = vx + arcR * 1.05f * kotlin.math.cos(midAngle)
             val arcMidY = vy + arcR * 1.05f * kotlin.math.sin(midAngle)
