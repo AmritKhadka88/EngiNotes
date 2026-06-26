@@ -1172,21 +1172,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val arcR = (d.offset.takeIf { it > 0f } ?: minOf(arm1Len, arm2Len) * 0.4f)
 
         val a1Deg = Math.toDegrees(a1.toDouble()).toFloat()
-        val a2Deg = Math.toDegrees(a2.toDouble()).toFloat()
-        var sweep = a2Deg - a1Deg
-        if (sweep > 180f) sweep -= 360f; if (sweep < -180f) sweep += 360f
-        if (supplementary) { sweep = if (sweep > 0f) sweep - 360f else sweep + 360f }
+        // innerSweep: the SHORT angle between the two arms (-180 to +180)
+        var innerSweep = (Math.toDegrees(a2.toDouble()) - Math.toDegrees(a1.toDouble())).toFloat()
+        if (innerSweep > 180f) innerSweep -= 360f; if (innerSweep < -180f) innerSweep += 360f
+        val absSweep = kotlin.math.abs(innerSweep)
+        if (absSweep < 1f) return  // nearly parallel
 
-        // Skip near-zero / 180° edge cases
-        val absSweep = kotlin.math.abs(sweep)
-        if (absSweep < 1f) return  // nearly parallel — don't draw
-        // Note: 180° case handled by returning without drawing arc
-
-        // Inner arc: starts a1, sweeps 'sweep' (the measured angle between arms)
-        // Exterior arc: starts a1, sweeps in the OPPOSITE direction for (360 - absSweep)
-        val exteriorSweep = if (sweep >= 0f) -(360f - absSweep) else (360f - absSweep)
-        val drawSweep = if (supplementary) exteriorSweep else sweep
-        val drawStartDeg = a1Deg  // always start from arm1
+        // drawSweep: inner = the arc between the two arms
+        //            supplementary = the arc on the OTHER side (negate = reverse direction = other side)
+        val drawSweep = if (supplementary) -innerSweep else innerSweep
+        val drawStartDeg = a1Deg
 
         // Extension lines from vertex to beyond arc radius
         val extR = arcR * 1.15f
