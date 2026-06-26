@@ -1182,12 +1182,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (absSweep < 1f) return  // nearly parallel — don't draw
         // Note: 180° case handled by returning without drawing arc
 
-        // drawSweep: normal = inner arc. supplementary = outer arc (same endpoints, other side)
-        // Outer arc starts at a2 and sweeps back the long way around
-        val innerSweepRad = Math.toRadians(sweep.toDouble()).toFloat()
-        val outerSweep = if (sweep >= 0f) sweep - 360f else sweep + 360f
-        val drawSweep = if (supplementary) outerSweep else sweep
-        val drawStartDeg = if (supplementary) a1Deg + sweep else a1Deg
+        // Inner arc: starts a1, sweeps 'sweep' (the measured angle between arms)
+        // Exterior arc: starts a1, sweeps in the OPPOSITE direction for (360 - absSweep)
+        val exteriorSweep = if (sweep >= 0f) -(360f - absSweep) else (360f - absSweep)
+        val drawSweep = if (supplementary) exteriorSweep else sweep
+        val drawStartDeg = a1Deg  // always start from arm1
 
         // Extension lines from vertex to beyond arc radius
         val extR = arcR * 1.15f
@@ -1219,13 +1218,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         arcArrow(drawStartRad + drawSweepRad, -drawSweepSign)
 
         val midAngle = drawStartRad + drawSweepRad / 2f
-        val angleIsSmall = absSweep < 15f
         val labelR = if (angleIsSmall) arcR * 2.2f else arcR * 1.25f
         val lx = vx + labelR * kotlin.math.cos(midAngle)
         val ly = vy + labelR * kotlin.math.sin(midAngle)
         val displayAngle = if (supplementary) 360f - absSweep else absSweep
         val labelStr = if (d.label.isNotEmpty()) d.label else "%.1f°".format(displayAngle)
-        // Leader line for tiny angles
+        val angleIsSmall = displayAngle < 15f        // Leader line for tiny angles
         if (angleIsSmall) {
             val arcMidX = vx + arcR * 1.05f * kotlin.math.cos(midAngle)
             val arcMidY = vy + arcR * 1.05f * kotlin.math.sin(midAngle)
