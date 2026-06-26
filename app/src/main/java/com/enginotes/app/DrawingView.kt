@@ -1209,8 +1209,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val drawStartRad = Math.toRadians(drawStartDeg.toDouble()).toFloat()
         val drawSweepRad = Math.toRadians(drawSweep.toDouble()).toFloat()
         val drawSweepSign = if (drawSweep >= 0f) 1f else -1f
-        arcArrow(drawStartRad, drawSweepSign)
-        arcArrow(drawStartRad + drawSweepRad, -drawSweepSign)
+        // Arrow at start points AGAINST sweep direction (inward), at end points WITH sweep (outward)
+        arcArrow(drawStartRad, -drawSweepSign)
+        arcArrow(drawStartRad + drawSweepRad, drawSweepSign)
 
         val midAngle = drawStartRad + drawSweepRad / 2f
         val displayAngle = if (supplementary) 360f - absSweep else absSweep
