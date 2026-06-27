@@ -529,13 +529,12 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnUndo).setOnClickListener { closeInlineEditor(true); drawingView.undo() }
         findViewById<ImageButton>(R.id.btnRedo).setOnClickListener { closeInlineEditor(true); drawingView.redo() }
         findViewById<ImageButton>(R.id.btnDraw).setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.PEN) }
-        findViewById<ImageButton>(R.id.btnDraw).setOnLongClickListener { showPenOptionsPanel(); true }
-        findViewById<ImageButton>(R.id.btnQuickEraser).setOnClickListener { btn ->
+        // (long-press pen and eraser set below with full closeInlineEditor)        findViewById<ImageButton>(R.id.btnQuickEraser).setOnClickListener { btn ->
             closeInlineEditor(true)
             if (drawingView.currentTool == Tool.ERASER) showEraserModePopup(btn)
             else setActiveTool(btn as ImageButton, Tool.ERASER)
         }
-        findViewById<ImageButton>(R.id.btnQuickEraser).setOnLongClickListener { showEraserOptionsPanel(); true }
+        // eraser long-press set below
         findViewById<ImageButton?>(R.id.btnSelect)?.setOnClickListener { btn ->
             closeInlineEditor(true)
             if (drawingView.currentTool == Tool.SELECT) showSelectModePopup(btn)
@@ -604,17 +603,14 @@ class MainActivity : AppCompatActivity() {
         btnExpand.visibility = View.GONE // no longer needed
 
         // Old secondary bar buttons wired below via rebuildContextBar
-        findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.HIGHLIGHTER) }
-        findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnLongClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.HIGHLIGHTER); true }
-        findViewById<ImageButton?>(R.id.btnBrush)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.BRUSH) }
-        findViewById<ImageButton?>(R.id.btnBrush)?.setOnLongClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.BRUSH); true }
+        findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.HIGHLIGHTER); showHighlighterOptionsPanel() }
+        findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnLongClickListener { showHighlighterOptionsPanel(); true }
+        findViewById<ImageButton?>(R.id.btnBrush)?.setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.BRUSH); showBrushOptionsPanel() }
+        findViewById<ImageButton?>(R.id.btnBrush)?.setOnLongClickListener { showBrushOptionsPanel(); true }
         findViewById<ImageButton?>(R.id.btnQuickFill)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.FILL) }
         findViewById<ImageButton?>(R.id.btnQuickFill)?.setOnLongClickListener { showHatchPicker(); true }
-        // Long-press on draw/eraser now just activates the tool and shows context bar (no floating panel)
         findViewById<ImageButton>(R.id.btnDraw).setOnLongClickListener { closeInlineEditor(true); showPenOptionsPanel(); true }
         findViewById<ImageButton>(R.id.btnQuickEraser).setOnLongClickListener { showEraserOptionsPanel(); true }
-        findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnLongClickListener { showHighlighterOptionsPanel(); true }
-        findViewById<ImageButton?>(R.id.btnBrush)?.setOnLongClickListener { showBrushOptionsPanel(); true }
 
         val btnMenuView = findViewById<ImageButton?>(R.id.btnMenu)
         btnMenuView?.setOnClickListener { onMenuClick(it) }
