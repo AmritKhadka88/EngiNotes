@@ -691,7 +691,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val TABLE_DOUBLE_TAP_MS = 300L
 
     var onTextEditRequest: ((TextItem?, Float, Float, Float, Float) -> Unit)? = null
-    var onTextSelectRequest: ((TextItem, Float, Float) -> Unit)? = null
+    var onTextSelectRequest: ((TextItem, Float, Float, Float, Float) -> Unit)? = null  // item, screenX, screenY, initialRawX, initialRawY
+    var onTextEditOptions: ((TextItem) -> Unit)? = null  // show text options in context bar
     var onTextDeselectRequest: (() -> Unit)? = null
     var onTableCellEditRequest: ((TableItem, Int, Int, Float, Float) -> Unit)? = null
     var onAudioItemTap: ((AudioItem) -> Unit)? = null
@@ -795,11 +796,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean = true
 
-        // onSingleTapUp: links always navigate immediately on finger-up.
-        // Text selection is now triggered on ACTION_DOWN so drag works immediately.
+        // onSingleTapUp: links navigate on single tap (no hold).
+        // Non-link text: selection box shown on finger-up (single tap confirmed via onSingleTapConfirmed).
         override fun onSingleTapUp(e: MotionEvent): Boolean {
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
             val hit = findTextItemAt(wx, wy)
+            // Links: single tap navigates
             if (hit != null && hit.linkTarget != null) { onLinkTap?.invoke(hit.linkTarget!!); return true }
             return false
         }
@@ -834,15 +836,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 Tool.SELECT -> {
                     val hit = findTextItemAt(wx, wy)
-                    // Text hits are handled immediately in onSingleTapUp - skip here to avoid double-fire
-                    if (hit != null) return true
+                    if (hit != null && hit.linkTarget == null) {
+                        // Single tap on normal text: show selection box
+                        selectedItem = hit
+                        onTextSelectRequest?.invoke(hit, e.x, e.y, e.rawX, e.rawY)
+                        invalidate()
+                        return true
+                    }
                     val tableHit = actions.reversed().filterIsInstance<TableItem>().firstOrNull { t -> val b = getBounds(t); b != null && wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3] }
                     when {
                         tableHit != null -> { /* let handleTable manage this */ }
                         else -> {
-                            // Only clear/emit emptyAreaTap if nothing is selected.
-                            // handleSelect ACTION_DOWN already set selectedItem = findItemAt(),
-                            // so if a shape was tapped it will be non-null here — don't deselect it.
                             if (selectedItem == null || selectedItem is TextItem) {
                                 if (selectedItem is TextItem) { selectedItem = null; onTextDeselectRequest?.invoke() }
                                 onEmptyAreaTap?.invoke()
@@ -874,6 +878,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             val hit = findTextItemAt(wx, wy)
             if (hit != null) {
+                if (hit.linkTarget != null) {
+                    // Double-tap on link after holding to select: show text options (size/font)
+                    selectedItem = hit; invalidate()
+                    onTextEditOptions?.invoke(hit)
+                    return true
+                }
+                // Normal text: open inline editor
                 selectedItem = null
                 hit.isEditing = true; invalidate()
                 onTextEditRequest?.invoke(hit, e.x, e.y, wx, wy)
@@ -2330,16 +2341,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // intercept touches directly before they'd reach here) - running this generic
                 // drag/resize/rotate hit-test for text too was redundant and could fight with the
                 // overlay box's own touch handling.
-                if (item is TextItem) {
-                    // Text is managed by MainActivity's moveSurface — don't run generic drag logic.
-                    // But we DO need to re-select if a different text item was tapped.
-                    val newHit = findTextItemAt(wx, wy)
-                    if (newHit != null && newHit !== item) {
-                        selectedItem = newHit
-                        onTextSelectRequest?.invoke(newHit, event.x, event.y)
-                    }
-                    invalidate(); return
-                }
+                if (item is TextItem) { if (!handled) { activeHandle = HandleType.NONE; selectedItem = findItemAt(wx, wy) }; invalidate(); return }
                 if (item != null) {
                     val b = getBounds(item)
                     if (b != null) {
@@ -3033,21 +3035,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             gestureDetector.onTouchEvent(event); return true
         }
-        if (currentTool == Tool.SELECT) {
-            // Fire text selection on ACTION_DOWN so moveSurface is ready before ACTION_MOVE.
-            // This means tap-and-drag works in a single gesture without needing to lift finger.
-            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                val wx2 = screenToWorldX(event.x); val wy2 = screenToWorldY(event.y)
-                val textHit = findTextItemAt(wx2, wy2)
-                if (textHit != null && textHit.linkTarget == null) {
-                    selectedItem = textHit
-                    onTextSelectRequest?.invoke(textHit, event.x, event.y)
-                    invalidate()
-                    return true // moveSurface will own subsequent MOVE/UP events
-                }
-            }
-            gestureDetector.onTouchEvent(event); handleSelect(event); return true
-        }
+        if (currentTool == Tool.SELECT) { gestureDetector.onTouchEvent(event); handleSelect(event); return true }
         if (currentTool == Tool.ARC) { handleArc(event); return true }
         if (currentTool == Tool.AUTOSELECT) { gestureDetector.onTouchEvent(event); handleAutoSelect(event); return true }
         if (currentTool == Tool.LASSO) { handleLasso(event); return true }
