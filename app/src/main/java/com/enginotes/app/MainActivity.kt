@@ -44,6 +44,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnLayoutToggle: ImageButton
 
     private var currentFileName: String? = null
+    private var hwrAutoEnabled = false  // real-time handwriting-to-text toggle
     private var lastSavedContent: String = ""
     private val PT_TO_PX = 1.333f
     private var isConvenientLayout = true
@@ -458,7 +459,9 @@ class MainActivity : AppCompatActivity() {
                     if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
                         findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.let { v -> v.visibility = View.VISIBLE; v.startAnimation(anim) }
                     }
-                }, 300) // slight delay so bars don't flicker on quick strokes
+                }, 300)
+                // Auto handwriting-to-text if toggle is on
+                if (hwrAutoEnabled) android.os.Handler(mainLooper).postDelayed({ convertHandwritingInPlace() }, 600)
             }
         }
         drawingView.onItemSelected          = { item ->
@@ -524,6 +527,15 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnText).setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.TEXT) }
         findViewById<ImageButton>(R.id.btnText).setOnLongClickListener { showTextOptionsPanel(); true }
         findViewById<ImageButton>(R.id.btnInsert).setOnClickListener { showInsertMenu() }
+
+        // Handwriting-to-text realtime toggle
+        val btnHwr = findViewById<ImageButton?>(R.id.btnHwr)
+        btnHwr?.setOnClickListener {
+            hwrAutoEnabled = !hwrAutoEnabled
+            btnHwr.alpha = if (hwrAutoEnabled) 1f else 0.35f
+            btnHwr.imageTintList = android.content.res.ColorStateList.valueOf(if (hwrAutoEnabled) Color.parseColor("#1565C0") else Color.parseColor("#1C1C1E"))
+            Toast.makeText(this, if (hwrAutoEnabled) "Auto handwriting-to-text ON" else "Auto handwriting-to-text OFF", Toast.LENGTH_SHORT).show()
+        }
         findViewById<ImageButton>(R.id.btnTools).setOnClickListener { showShapesPicker(it as ImageButton) }
 
         // Touch/Pan toggle
@@ -544,7 +556,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Page scroll thumb — touch and drag on right edge moves canvas
-        val scrollThumb = resources.getIdentifier("pageScrollThumb","id",packageName).takeIf{it!=0}?.let{findViewById<View?>(it)}
+        val scrollThumb = findViewById<View?>(R.id.pageScrollThumb)
         scrollThumb?.let { thumb ->
             var dragStartRawY = 0f; var dragStartThumbY = 0f
             thumb.setOnTouchListener { _, ev ->
@@ -980,7 +992,7 @@ class MainActivity : AppCompatActivity() {
                 opacityButton(drawingView.eraserOpacity) { drawingView.eraserOpacity = it; drawingView.invalidate() }
             }
             Tool.FILL -> {
-                eightColors(drawingView.fillColor) { c -> drawingView.fillColor = c }
+                eightColors(drawingView.fillColor) { c -> drawingView.fillColor = c; drawingView.pendingHatchPattern = null }
             }
             Tool.TEXT -> {
                 // Show 3 recently used fonts (no scrollable row — just 3 chips)
@@ -1198,8 +1210,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun showLinkNotePickerDialog(bookName: String) {
         val folder = File(File(filesDir, "books"), bookName)
-        val notes = folder.listFiles()?.filter { it.extension == "eng" }?.map { it.nameWithoutExtension }?.sorted() ?: emptyList()
-        if (notes.isEmpty()) { Toast.makeText(this, "No notes in $bookName yet", Toast.LENGTH_SHORT).show(); return }
+        val currentFile = currentFileName  // e.g. "MyNote" — the current open note
+        val notes = folder.listFiles()?.filter { it.extension == "eng" && it.nameWithoutExtension != currentFile }
+            ?.map { it.nameWithoutExtension }?.sorted() ?: emptyList()
+        if (notes.isEmpty()) { Toast.makeText(this, "No other notes in $bookName to link to", Toast.LENGTH_SHORT).show(); return }
         AlertDialog.Builder(this).setTitle("Link to Note in $bookName")
             .setItems(notes.toTypedArray()) { _, i ->
                 val noteName = notes[i]
@@ -1299,7 +1313,7 @@ class MainActivity : AppCompatActivity() {
     private fun showInsertMenu() {
         closeInlineEditor(true)
         AlertDialog.Builder(this).setTitle("Insert")
-            .setItems(arrayOf("Image from Gallery","Take Photo","Table","Record Audio","Snip from PDF","Extract Text (OCR)","Dimension Tool")) { _, i ->
+            .setItems(arrayOf("Image from Gallery","Take Photo","Table","Record Audio","Snip from PDF","Dimension Tool")) { _, i ->
                 setActiveTool(null, Tool.SELECT)
                 when(i) {
                     0 -> pickImageLauncher.launch("image/*")
@@ -1307,8 +1321,7 @@ class MainActivity : AppCompatActivity() {
                     2 -> showTableInsertDialog()
                     3 -> checkAndRecordAudio()
                     4 -> pickPdfLauncher.launch("application/pdf")
-                    5 -> showOcrSourceDialog()
-                    6 -> showDimensionModeDialog()
+                    5 -> showDimensionModeDialog()
                 }
             }.show()
     }
