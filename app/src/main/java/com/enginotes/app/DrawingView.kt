@@ -793,19 +793,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         override fun onDown(e: MotionEvent): Boolean = true
 
         // onSingleTapUp fires immediately on finger-up with no 300ms delay.
-        // We use it ONLY for text selection in SELECT tool so it feels instant.
-        // Everything else stays in onSingleTapConfirmed to avoid double-firing.
+        // For links: single tap always navigates immediately regardless of current tool.
+        // For normal text in SELECT tool: select it instantly.
         override fun onSingleTapUp(e: MotionEvent): Boolean {
-            if (currentTool != Tool.SELECT) return false
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
             val hit = findTextItemAt(wx, wy)
             if (hit != null) {
-                // Link: single tap navigates, double tap selects for moving
+                // Links always navigate on single tap — long press is how you select them
                 if (hit.linkTarget != null) { onLinkTap?.invoke(hit.linkTarget!!); return true }
-                selectedItem = hit
-                onTextSelectRequest?.invoke(hit, e.x, e.y)
-                invalidate()
-                return true
+                // Normal text in SELECT tool: select immediately
+                if (currentTool == Tool.SELECT) {
+                    selectedItem = hit
+                    onTextSelectRequest?.invoke(hit, e.x, e.y)
+                    invalidate()
+                    return true
+                }
             }
             return false
         }
@@ -863,11 +865,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         override fun onDoubleTap(e: MotionEvent): Boolean {
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
-            // Double-tap on a link = select it (to move/edit)
-            if (currentTool == Tool.SELECT) {
-                val hitLink = findTextItemAt(wx, wy)
-                if (hitLink?.linkTarget != null) { selectedItem = hitLink; onTextSelectRequest?.invoke(hitLink, e.x, e.y); invalidate(); return true }
-            }
             // Double-tap on a DimensionItem → edit it
             if (currentTool == Tool.DIMENSION || currentTool == Tool.SELECT) {
                 val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
@@ -938,6 +935,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
             val hit = findTextItemAt(wx, wy)
             if (hit != null) {
+                // Long press selects any text item — including links (so you can move/edit them)
                 selectedItem = hit; invalidate()
                 onTextSelectRequest?.invoke(hit, e.x, e.y)
                 return
@@ -3624,7 +3622,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     line.startsWith("TEXT\u0001") -> {
                         val p = line.split("\u0001"); if (p.size >= 7) {
                             val item = TextItem("", p[1].toFloat(), p[2].toFloat(), p[3].toInt(), p[4].toFloat(), p[5].toFloat())
-                            if (p.size >= 9) {
+                            // Detect old format: p[6] is "true"/"false" (bold flag), p[7] is "true"/"false" (italic flag)
+                            // New format: p[6] is spans string (e.g. "0,5,S,1" or blank), p[7] is text
+                            val isOldFormat = p.size >= 9 && (p[6] == "true" || p[6] == "false") && (p[7] == "true" || p[7] == "false")
+                            if (isOldFormat) {
                                 val bold = p[6].toBoolean(); val italic = p[7].toBoolean()
                                 item.text = p[8].replace("\u0002", "\n")
                                 val style = if (bold && italic) Typeface.BOLD_ITALIC else if (bold) Typeface.BOLD else if (italic) Typeface.ITALIC else -1
