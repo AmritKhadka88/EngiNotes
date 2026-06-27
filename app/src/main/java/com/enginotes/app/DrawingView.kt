@@ -106,7 +106,10 @@ val BBOX_RESIZE_SHAPES = setOf(
     Tool.RING, Tool.BLOCK_ARROW_RIGHT, Tool.BLOCK_ARROW_LEFT, Tool.BLOCK_ARROW_UP, Tool.BLOCK_ARROW_DOWN,
     Tool.SQUARE_ROUNDED_SMALL, Tool.BURST, Tool.FRAME, Tool.PLAQUE, Tool.FIVE_POINT_BURST
 )
+// Shapes resized by moving their two endpoints (fine reshaping of start/end point)
 val ENDPOINT_RESIZE_SHAPES = setOf(Tool.LINE, Tool.CIRCLE, Tool.ARROW, Tool.CURVE, Tool.PEN)
+// Shapes that also get bbox (8-handle) scaling — for uniform scale of all points
+val STROKE_SCALE_SHAPES = setOf(Tool.LINE, Tool.ARROW, Tool.CURVE, Tool.PEN)
 
 data class TextSpanData(val start: Int, val end: Int, val type: Char, val value: Int)
 
@@ -792,21 +795,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean = true
 
-        // onSingleTapUp fires immediately on finger-up with no 300ms delay.
-        // Links always navigate on single tap regardless of tool.
-        // Normal text in SELECT tool: select immediately.
+        // onSingleTapUp: links always navigate immediately on finger-up.
+        // Text selection is now triggered on ACTION_DOWN so drag works immediately.
         override fun onSingleTapUp(e: MotionEvent): Boolean {
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
             val hit = findTextItemAt(wx, wy)
-            if (hit != null) {
-                if (hit.linkTarget != null) { onLinkTap?.invoke(hit.linkTarget!!); return true }
-                if (currentTool == Tool.SELECT) {
-                    selectedItem = hit
-                    onTextSelectRequest?.invoke(hit, e.x, e.y)
-                    invalidate()
-                    return true
-                }
-            }
+            if (hit != null && hit.linkTarget != null) { onLinkTap?.invoke(hit.linkTarget!!); return true }
             return false
         }
 
@@ -846,8 +840,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     when {
                         tableHit != null -> { /* let handleTable manage this */ }
                         else -> {
-                            if (selectedItem is TextItem) { selectedItem = null; onTextDeselectRequest?.invoke() }
-                            onEmptyAreaTap?.invoke()
+                            // Only clear/emit emptyAreaTap if nothing is selected.
+                            // handleSelect ACTION_DOWN already set selectedItem = findItemAt(),
+                            // so if a shape was tapped it will be non-null here — don't deselect it.
+                            if (selectedItem == null || selectedItem is TextItem) {
+                                if (selectedItem is TextItem) { selectedItem = null; onTextDeselectRequest?.invoke() }
+                                onEmptyAreaTap?.invoke()
+                            }
                             invalidate()
                         }
                     }
@@ -1898,7 +1897,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val hStroke = Paint(); hStroke.style = Paint.Style.STROKE
         hStroke.color = Color.parseColor("#2196F3"); hStroke.strokeWidth = 2f / scaleFactor
         val isBbox = item is ImageItem || item is TextItem || item is AudioItem ||
-            (item is StrokeItem && BBOX_RESIZE_SHAPES.contains(item.data.type))
+            (item is StrokeItem && (BBOX_RESIZE_SHAPES.contains(item.data.type) || STROKE_SCALE_SHAPES.contains(item.data.type)))
         val isEndpoint = item is StrokeItem && ENDPOINT_RESIZE_SHAPES.contains(item.data.type)
         if (isBbox) {
             for ((_, pos) in bboxHandlePositions(bounds)) {
@@ -1906,7 +1905,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 canvas.drawCircle(pos.first, pos.second, hr, hFill)
                 canvas.drawCircle(pos.first, pos.second, hr, hStroke)
             }
-        } else if (isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
+        }
+        // Endpoint handles drawn ON TOP of bbox handles for endpoint shapes so both work
+        if (isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
             hFill.color = Color.WHITE
             val p0x = item.data.points[0]; val p0y = item.data.points[1]
             // For PEN (multi-point), use last point; for 2-point shapes use points[2,3]
@@ -2036,7 +2037,27 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 item.x = newCx - newW / 2f; item.y = newCy - newH / 2f; item.w = newW; item.h = newH
             }
             is StrokeItem -> {
-                if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
+                if (STROKE_SCALE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
+                    // Uniform scale: compute bbox of all points, scale each point from centroid
+                    val pts = item.data.points
+                    var minX = pts[0]; var minY = pts[1]; var maxX = pts[0]; var maxY = pts[1]
+                    var i2 = 0; while (i2 + 1 < pts.size) { minX = minOf(minX, pts[i2]); minY = minOf(minY, pts[i2+1]); maxX = maxOf(maxX, pts[i2]); maxY = maxOf(maxY, pts[i2+1]); i2 += 2 }
+                    val cx = (minX + maxX) / 2f; val cy = (minY + maxY) / 2f
+                    val oldW = (maxX - minX).coerceAtLeast(1f); val oldH = (maxY - minY).coerceAtLeast(1f)
+                    // Compute new bbox from handle drag (same logic as BBOX_RESIZE_SHAPES)
+                    var nl = minX - cx; var nt = minY - cy; var nr = maxX - cx; var nb = maxY - cy
+                    val dragX = wx - cx; val dragY = wy - cy; val min = 15f
+                    when (handle) { HandleType.TL -> { nl = dragX; nt = dragY }; HandleType.TM -> { nt = dragY }; HandleType.TR -> { nr = dragX; nt = dragY }; HandleType.ML -> { nl = dragX }; HandleType.MR -> { nr = dragX }; HandleType.BL -> { nl = dragX; nb = dragY }; HandleType.BM -> { nb = dragY }; HandleType.BR -> { nr = dragX; nb = dragY }; else -> return }
+                    if (nr - nl < min) { if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) nl = nr - min else nr = nl + min }
+                    if (nb - nt < min) { if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) nt = nb - min else nb = nt + min }
+                    val newW = (nr - nl).coerceAtLeast(min); val newH = (nb - nt).coerceAtLeast(min)
+                    val scaleX = newW / oldW; val scaleY = newH / oldH
+                    // New centroid: shift based on which corner is fixed
+                    val newCx = when (handle) { HandleType.TL, HandleType.ML, HandleType.BL -> cx + (newW - oldW); HandleType.TR, HandleType.MR, HandleType.BR -> cx; else -> cx - (newW - oldW) / 2f }
+                    val newCy = when (handle) { HandleType.TL, HandleType.TM, HandleType.TR -> cy + (newH - oldH); HandleType.BL, HandleType.BM, HandleType.BR -> cy; else -> cy - (newH - oldH) / 2f }
+                    var j = 0; while (j + 1 < pts.size) { pts[j] = newCx + (pts[j] - cx) * scaleX; pts[j+1] = newCy + (pts[j+1] - cy) * scaleY; j += 2 }
+                    item.path = item.data.buildPath()
+                } else if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
                     val rot = Math.toRadians(item.data.rotation.toDouble())
                     val cos = kotlin.math.cos(rot).toFloat(); val sin = kotlin.math.sin(rot).toFloat()
                     val l = minOf(item.data.points[0], item.data.points[2]); val t = minOf(item.data.points[1], item.data.points[3])
@@ -2309,7 +2330,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // intercept touches directly before they'd reach here) - running this generic
                 // drag/resize/rotate hit-test for text too was redundant and could fight with the
                 // overlay box's own touch handling.
-                if (item is TextItem) { if (!handled) { activeHandle = HandleType.NONE; selectedItem = findItemAt(wx, wy) }; invalidate(); return }
+                if (item is TextItem) {
+                    // Text is managed by MainActivity's moveSurface — don't run generic drag logic.
+                    // But we DO need to re-select if a different text item was tapped.
+                    val newHit = findTextItemAt(wx, wy)
+                    if (newHit != null && newHit !== item) {
+                        selectedItem = newHit
+                        onTextSelectRequest?.invoke(newHit, event.x, event.y)
+                    }
+                    invalidate(); return
+                }
                 if (item != null) {
                     val b = getBounds(item)
                     if (b != null) {
@@ -2323,7 +2353,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             val cx = (b[0] + b[2]) / 2f; val ry = b[1] - 60f / scaleFactor
                             if (distance(lx, ly, cx, ry) <= hit) { activeHandle = HandleType.ROTATE; dragStartAngle = computeAngle(item, wx, wy); dragStartRotation = rot; handled = true }
                         }
-                        val isBbox = item is ImageItem || item is TextItem || item is AudioItem || (item is StrokeItem && BBOX_RESIZE_SHAPES.contains(item.data.type))
+                        val isBbox = item is ImageItem || item is TextItem || item is AudioItem || (item is StrokeItem && (BBOX_RESIZE_SHAPES.contains(item.data.type) || STROKE_SCALE_SHAPES.contains(item.data.type)))
                         val isEndpoint = item is StrokeItem && ENDPOINT_RESIZE_SHAPES.contains(item.data.type)
                         if (!handled && isBbox) {
                             for ((type, pos) in bboxHandlePositions(b)) {
@@ -3003,7 +3033,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             gestureDetector.onTouchEvent(event); return true
         }
-        if (currentTool == Tool.SELECT) { gestureDetector.onTouchEvent(event); handleSelect(event); return true }
+        if (currentTool == Tool.SELECT) {
+            // Fire text selection on ACTION_DOWN so moveSurface is ready before ACTION_MOVE.
+            // This means tap-and-drag works in a single gesture without needing to lift finger.
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                val wx2 = screenToWorldX(event.x); val wy2 = screenToWorldY(event.y)
+                val textHit = findTextItemAt(wx2, wy2)
+                if (textHit != null && textHit.linkTarget == null) {
+                    selectedItem = textHit
+                    onTextSelectRequest?.invoke(textHit, event.x, event.y)
+                    invalidate()
+                    return true // moveSurface will own subsequent MOVE/UP events
+                }
+            }
+            gestureDetector.onTouchEvent(event); handleSelect(event); return true
+        }
         if (currentTool == Tool.ARC) { handleArc(event); return true }
         if (currentTool == Tool.AUTOSELECT) { gestureDetector.onTouchEvent(event); handleAutoSelect(event); return true }
         if (currentTool == Tool.LASSO) { handleLasso(event); return true }
