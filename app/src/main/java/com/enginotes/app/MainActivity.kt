@@ -528,7 +528,7 @@ class MainActivity : AppCompatActivity() {
 
         // Touch/Pan toggle
         var touchModeIsPan = false
-        val btnTouchToggle = resources.getIdentifier("btnTouchToggle","id",packageName).takeIf{it!=0}?.let{findViewById<ImageButton?>(it)}
+        val btnTouchToggle = findViewById<ImageButton?>(R.id.btnTouchToggle)
         btnTouchToggle?.setImageResource(R.drawable.ic_finger)
         btnTouchToggle?.alpha = 0.35f
         btnTouchToggle?.setOnClickListener {
