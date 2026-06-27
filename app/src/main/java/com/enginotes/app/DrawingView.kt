@@ -1480,23 +1480,48 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 } else canvas.drawPath(item.path, bp())
             }
             BrushStyle.INK -> {
-                // Method 2: Geometry mesh ribbon — perfect taper, no jagged edges
-                if (item.data.widths.size >= 2 && points.size >= 2) {
-                    val ribbon = item.data.buildFountainRibbonPath()
-                    canvas.drawPath(ribbon, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.FILL; alpha=op })
-                } else {
-                    // Fallback: circle stamp taper
-                    val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.FILL; alpha=op }
-                    val n = points.size
-                    points.forEachIndexed { i, pt ->
-                        if (i > 0) {
-                            val t = i.toFloat()/n; val taper = if(t<0.1f) t*10f else if(t>0.9f)(1f-t)*10f else 1f
-                            val r = (sw*taper.coerceIn(0.1f,1f))/2f
-                            val dx=pt.x-points[i-1].x; val dy=pt.y-points[i-1].y
-                            val dist=kotlin.math.hypot(dx.toDouble(),dy.toDouble()).toFloat().coerceAtLeast(0.01f)
-                            var s=0f; while(s<dist){canvas.drawCircle(points[i-1].x+dx*s/dist,points[i-1].y+dy*s/dist,r,p);s+=1f}
-                        }
+                if (points.size < 2) return
+                val leftPts = ArrayList<android.graphics.PointF>()
+                val rightPts = ArrayList<android.graphics.PointF>()
+                val fillP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; this.style=Paint.Style.FILL; alpha=op }
+
+                for (i in 1 until points.size) {
+                    val p1=points[i-1]; val p2=points[i]
+                    val w1=if(i-1<item.data.widths.size) item.data.widths[i-1] else sw
+                    val w2=if(i<item.data.widths.size) item.data.widths[i] else sw
+                    val dx=p2.x-p1.x; val dy=p2.y-p1.y
+                    val dist=kotlin.math.hypot(dx.toDouble(),dy.toDouble()).toFloat()
+                    if (dist==0f) continue
+                    val nx=-dy/dist; val ny=dx/dist
+                    val h1=w1/2f
+                    leftPts.add(android.graphics.PointF(p1.x+nx*h1, p1.y+ny*h1))
+                    rightPts.add(android.graphics.PointF(p1.x-nx*h1, p1.y-ny*h1))
+                    if (i==points.size-1) {
+                        val h2=w2/2f
+                        leftPts.add(android.graphics.PointF(p2.x+nx*h2, p2.y+ny*h2))
+                        rightPts.add(android.graphics.PointF(p2.x-nx*h2, p2.y-ny*h2))
                     }
+                }
+
+                if (leftPts.isNotEmpty() && rightPts.isNotEmpty()) {
+                    val meshPath = android.graphics.Path()
+                    meshPath.moveTo(leftPts[0].x, leftPts[0].y)
+                    // Left side — smooth quad bezier
+                    for (i in 1 until leftPts.size) {
+                        val mx=(leftPts[i-1].x+leftPts[i].x)/2f; val my=(leftPts[i-1].y+leftPts[i].y)/2f
+                        meshPath.quadTo(leftPts[i-1].x, leftPts[i-1].y, mx, my)
+                    }
+                    meshPath.lineTo(leftPts.last().x, leftPts.last().y)
+                    // Connect to right side
+                    meshPath.lineTo(rightPts.last().x, rightPts.last().y)
+                    // Right side — smooth quad bezier back
+                    for (i in rightPts.size-2 downTo 0) {
+                        val mx=(rightPts[i+1].x+rightPts[i].x)/2f; val my=(rightPts[i+1].y+rightPts[i].y)/2f
+                        meshPath.quadTo(rightPts[i+1].x, rightPts[i+1].y, mx, my)
+                    }
+                    meshPath.lineTo(rightPts[0].x, rightPts[0].y)
+                    meshPath.close()
+                    canvas.drawPath(meshPath, fillP)
                 }
             }
             BrushStyle.WATERCOLOR -> {
@@ -3024,6 +3049,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 if (currentTool == Tool.PEN && currentPenStyle == PenStyle.FOUNTAIN) data.widths.add(currentStrokeWidth)
                 if (currentTool == Tool.PEN && currentPenStyle == PenStyle.PENCIL) data.widths.add(1f)
+                if (currentTool == Tool.BRUSH && (currentBrushStyle == BrushStyle.INK || currentBrushStyle == BrushStyle.ROUND)) data.widths.add(brushThickness * pressure)
                 lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
                 currentItem = StrokeItem(data, data.buildPath(), data.toPaint()); invalidate()
                 onDrawingStarted?.invoke()
@@ -3046,11 +3072,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             val speed = dist / dt * 1000f
                             if (currentPenStyle == PenStyle.FOUNTAIN) {
                                 val targetWidth = (currentStrokeWidth * (0.55f + (1f - (speed / 2200f).coerceIn(0f, 0.7f)) * 0.9f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
-                                item.data.widths.add((item.data.widths.lastOrNull() ?: currentStrokeWidth) * 0.6f + targetWidth * 0.4f)
+                                item.data.widths.add((item.data.widths.lastOrNull() ?: currentStrokeWidth) * 0.8f + targetWidth * 0.2f)
                             } else {
                                 val targetIntensity = (1f - (speed / 1800f).coerceIn(0f, 0.75f)).coerceIn(0.25f, 1f)
-                                item.data.widths.add((item.data.widths.lastOrNull() ?: 1f) * 0.5f + targetIntensity * 0.5f)
+                                item.data.widths.add((item.data.widths.lastOrNull() ?: 1f) * 0.7f + targetIntensity * 0.3f)
                             }
+                            lastMoveTime = event.getHistoricalEventTime(h); lastMoveX = hx; lastMoveY = hy
+                        }
+                        if (currentTool == Tool.BRUSH && (currentBrushStyle == BrushStyle.INK || currentBrushStyle == BrushStyle.ROUND)) {
+                            val dt = (event.getHistoricalEventTime(h) - lastMoveTime).coerceAtLeast(1L)
+                            val dist = distance(hx, hy, lastMoveX, lastMoveY)
+                            val speed = dist / dt * 1000f
+                            val targetWidth = (brushThickness * (0.5f + (1f - (speed / 2000f).coerceIn(0f, 0.65f)) * 1.0f)).coerceIn(brushThickness * 0.3f, brushThickness * 1.8f)
+                            item.data.widths.add((item.data.widths.lastOrNull() ?: brushThickness) * 0.8f + targetWidth * 0.2f)
                             lastMoveTime = event.getHistoricalEventTime(h); lastMoveX = hx; lastMoveY = hy
                         }
                     }
@@ -3061,11 +3095,28 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val speed = dist / dt * 1000f
                         if (currentPenStyle == PenStyle.FOUNTAIN) {
                             val targetWidth = (currentStrokeWidth * (0.55f + (1f - (speed / 2200f).coerceIn(0f, 0.7f)) * 0.9f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
-                            item.data.widths.add((item.data.widths.lastOrNull() ?: currentStrokeWidth) * 0.6f + targetWidth * 0.4f)
+                            // 0.8/0.2 heavy smoothing to eliminate digitizer jitter
+                            item.data.widths.add((item.data.widths.lastOrNull() ?: currentStrokeWidth) * 0.8f + targetWidth * 0.2f)
                         } else {
                             val targetIntensity = (1f - (speed / 1800f).coerceIn(0f, 0.75f)).coerceIn(0.25f, 1f)
-                            item.data.widths.add((item.data.widths.lastOrNull() ?: 1f) * 0.5f + targetIntensity * 0.5f)
+                            item.data.widths.add((item.data.widths.lastOrNull() ?: 1f) * 0.7f + targetIntensity * 0.3f)
                         }
+                        lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
+                    }
+                    if (currentTool == Tool.BRUSH && currentBrushStyle == BrushStyle.INK) {
+                        val dt = (event.eventTime - lastMoveTime).coerceAtLeast(1L)
+                        val dist = distance(wx, wy, lastMoveX, lastMoveY)
+                        val speed = dist / dt * 1000f
+                        val targetWidth = (brushThickness * (0.5f + (1f - (speed / 2000f).coerceIn(0f, 0.65f)) * 1.0f)).coerceIn(brushThickness * 0.3f, brushThickness * 1.8f)
+                        item.data.widths.add((item.data.widths.lastOrNull() ?: brushThickness) * 0.8f + targetWidth * 0.2f)
+                        lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
+                    }
+                    if (currentTool == Tool.BRUSH && currentBrushStyle == BrushStyle.ROUND) {
+                        val dt = (event.eventTime - lastMoveTime).coerceAtLeast(1L)
+                        val dist = distance(wx, wy, lastMoveX, lastMoveY)
+                        val speed = dist / dt * 1000f
+                        val targetWidth = (brushThickness * (0.7f + (1f - (speed / 2000f).coerceIn(0f, 0.5f)) * 0.6f)).coerceIn(brushThickness * 0.5f, brushThickness * 1.4f)
+                        item.data.widths.add((item.data.widths.lastOrNull() ?: brushThickness) * 0.8f + targetWidth * 0.2f)
                         lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
                     }
                 }
