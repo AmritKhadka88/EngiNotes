@@ -618,15 +618,8 @@ class MainActivity : AppCompatActivity() {
 
         val btnMenuView = findViewById<ImageButton?>(R.id.btnMenu)
         btnMenuView?.setOnClickListener { onMenuClick(it) }
-        // Use three vertical dots (⋮) — falls back gracefully if ic_more_vert drawable not found
-        try { btnMenuView?.setImageResource(R.drawable.ic_more_vert) } catch (e: Exception) {
-            // Draw three dots programmatically
-            val bmp = android.graphics.Bitmap.createBitmap(dp(24), dp(24), android.graphics.Bitmap.Config.ARGB_8888)
-            val cv = android.graphics.Canvas(bmp); val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#1C1C1E"); style = android.graphics.Paint.Style.FILL }
-            val cx = dp(12).toFloat(); val r = dp(2).toFloat()
-            cv.drawCircle(cx, dp(4).toFloat(), r, p); cv.drawCircle(cx, dp(12).toFloat(), r, p); cv.drawCircle(cx, dp(20).toFloat(), r, p)
-            btnMenuView?.setImageBitmap(bmp)
-        }
+        // Override with three vertical dots using built-in Android icon
+        btnMenuView?.setImageResource(android.R.drawable.ic_menu_more)
         findViewById<ImageButton?>(R.id.btnLink)?.setOnClickListener { closeInlineEditor(true); showLinkPickerDialog() }
         findViewById<ImageButton?>(R.id.btnBack)?.setOnClickListener { confirmThenExit() }
         btnLayoutToggle.setOnClickListener { showLayoutMenu(it) }
