@@ -495,17 +495,6 @@ class StrokeData(
                 // Particle brushes handled separately in drawActionItem
                 else -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
             }
-                    p.strokeWidth = strokeWidth * 0.7f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.85f).toInt()
-                    // Crosshatch texture: two dash effects composed together give a woven look
-                    val spacing = (strokeWidth * 1.2f).coerceAtLeast(4f)
-                    val dash = android.graphics.DashPathEffect(floatArrayOf(strokeWidth * 0.4f, spacing), 0f)
-                    val dash2 = android.graphics.DashPathEffect(floatArrayOf(strokeWidth * 0.2f, spacing * 1.5f), spacing * 0.6f)
-                    p.pathEffect = android.graphics.ComposePathEffect(dash, dash2)
-                }
-                BrushStyle.NEON -> { p.strokeWidth = strokeWidth * 1.5f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = opacity; p.maskFilter = android.graphics.BlurMaskFilter(strokeWidth * 1.2f, android.graphics.BlurMaskFilter.Blur.NORMAL) }
-                // Particle brushes handled separately in drawActionItem
-                else -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
-            }
             return p
         }
         when (penStyle) {
@@ -1466,14 +1455,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun drawBrushStroke(canvas: Canvas, item: StrokeItem) {
         val pts = item.data.points; if (pts.size < 2) return
         val sw = item.data.strokeWidth; val col = item.data.color; val op = item.data.opacity
-        val style = item.data.brushStyle
+        val bStyle = item.data.brushStyle
         val rand = java.util.Random((pts[0] + pts[1] * 31).toLong())
 
         // Build point pairs for iteration
         data class Pt(val x: Float, val y: Float)
         val points = (0 until pts.size / 2).map { Pt(pts[it*2], pts[it*2+1]) }
 
-        when (style) {
+        when (bStyle) {
             BrushStyle.ROUND -> canvas.drawPath(item.path, item.paint)
             BrushStyle.FLAT -> {
                 // Flat: rectangular strokes, width varies with direction
