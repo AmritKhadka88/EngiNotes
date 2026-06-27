@@ -529,7 +529,8 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnUndo).setOnClickListener { closeInlineEditor(true); drawingView.undo() }
         findViewById<ImageButton>(R.id.btnRedo).setOnClickListener { closeInlineEditor(true); drawingView.redo() }
         findViewById<ImageButton>(R.id.btnDraw).setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.PEN) }
-        // (long-press pen and eraser set below with full closeInlineEditor)        findViewById<ImageButton>(R.id.btnQuickEraser).setOnClickListener { btn ->
+        // (long-press pen and eraser set below with full closeInlineEditor)
+        findViewById<ImageButton>(R.id.btnQuickEraser).setOnClickListener { btn ->
             closeInlineEditor(true)
             if (drawingView.currentTool == Tool.ERASER) showEraserModePopup(btn)
             else setActiveTool(btn as ImageButton, Tool.ERASER)
