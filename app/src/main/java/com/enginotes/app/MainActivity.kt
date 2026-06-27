@@ -528,13 +528,25 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnText).setOnLongClickListener { showTextOptionsPanel(); true }
         findViewById<ImageButton>(R.id.btnInsert).setOnClickListener { showInsertMenu() }
 
-        // Handwriting-to-text realtime toggle
-        val btnHwr = findViewById<ImageButton?>(R.id.btnHwr)
-        btnHwr?.setOnClickListener {
-            hwrAutoEnabled = !hwrAutoEnabled
-            btnHwr.alpha = if (hwrAutoEnabled) 1f else 0.35f
-            btnHwr.imageTintList = android.content.res.ColorStateList.valueOf(if (hwrAutoEnabled) Color.parseColor("#1565C0") else Color.parseColor("#1C1C1E"))
-            Toast.makeText(this, if (hwrAutoEnabled) "Auto handwriting-to-text ON" else "Auto handwriting-to-text OFF", Toast.LENGTH_SHORT).show()
+        // Handwriting-to-text realtime toggle — add programmatically to primary toolbar
+        val primaryBar = findViewById<LinearLayout?>(R.id.primaryToolbar) ?: findViewById<ViewGroup?>(R.id.primaryToolbarScroll)?.let {
+            (it as? HorizontalScrollView)?.getChildAt(0) as? LinearLayout
+        }
+        if (primaryBar != null) {
+            val btnHwr = ImageButton(this).apply {
+                setImageResource(android.R.drawable.ic_menu_edit)
+                background = null; alpha = 0.35f
+                val s = dp(44); layoutParams = LinearLayout.LayoutParams(s, s)
+                contentDescription = "Auto Handwriting to Text"
+                setColorFilter(Color.parseColor("#1C1C1E"))
+                setOnClickListener {
+                    hwrAutoEnabled = !hwrAutoEnabled
+                    alpha = if (hwrAutoEnabled) 1f else 0.35f
+                    imageTintList = android.content.res.ColorStateList.valueOf(if (hwrAutoEnabled) Color.parseColor("#1565C0") else Color.parseColor("#1C1C1E"))
+                    Toast.makeText(this@MainActivity, if (hwrAutoEnabled) "Auto handwriting-to-text ON" else "OFF", Toast.LENGTH_SHORT).show()
+                }
+            }
+            primaryBar.addView(btnHwr)
         }
         findViewById<ImageButton>(R.id.btnTools).setOnClickListener { showShapesPicker(it as ImageButton) }
 
