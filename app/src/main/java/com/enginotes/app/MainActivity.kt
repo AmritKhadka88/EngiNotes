@@ -1530,13 +1530,41 @@ class MainActivity : AppCompatActivity() {
 
     private fun showOcrSourceDialog() {
         AlertDialog.Builder(this).setTitle("Extract Text From")
-            .setItems(arrayOf("Photo (camera)", "Image from Gallery", "Snip from PDF")) { _, i ->
+            .setItems(arrayOf("Snip from Canvas", "Photo (camera)", "Image from Gallery", "Snip from PDF")) { _, i ->
                 when (i) {
-                    0 -> launchCameraForOcr()
-                    1 -> pickImageForOcrLauncher.launch("image/*")
-                    2 -> pickPdfForOcrLauncher.launch("application/pdf")
+                    0 -> ocrFromCanvas()
+                    1 -> launchCameraForOcr()
+                    2 -> pickImageForOcrLauncher.launch("image/*")
+                    3 -> pickPdfForOcrLauncher.launch("application/pdf")
                 }
             }.show()
+    }
+
+    // Captures the current visible canvas as a bitmap and runs OCR on it directly —
+    // no snipping required, reads whatever text is visible on screen right now.
+    private fun ocrFromCanvas() {
+        val bmp = drawingView.exportBitmap()
+        val progress = android.app.ProgressDialog(this).apply {
+            setMessage("Reading text from canvas..."); setCancelable(false); show()
+        }
+        try {
+            val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bmp, 0)
+            val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(
+                com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS
+            )
+            recognizer.process(image)
+                .addOnSuccessListener { result ->
+                    progress.dismiss()
+                    placeOcrResultOnCanvas(result)
+                }
+                .addOnFailureListener { e ->
+                    progress.dismiss()
+                    Toast.makeText(this, "OCR failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+        } catch (e: Exception) {
+            progress.dismiss()
+            Toast.makeText(this, "OCR failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun showAboutDialog() {
