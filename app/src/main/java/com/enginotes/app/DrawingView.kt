@@ -31,7 +31,11 @@ import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 enum class PenStyle { FOUNTAIN, BALL, PENCIL, CALLIGRAPHY, MARKER }
-enum class BrushStyle { ROUND, FLAT, TEXTURE, INK, WATERCOLOR, CRAYON, CHARCOAL, AIRBRUSH, SPRAY, STIPPLE, SPLATTER, NEON }
+enum class BrushStyle {
+    ROUND, FLAT, TEXTURE, INK, WATERCOLOR, CRAYON, CHARCOAL, AIRBRUSH, SPRAY, STIPPLE, SPLATTER, NEON,
+    MARKER, DRY_BRUSH, SCATTER, FUR, GRASS, SMOKE, PATTERN_BRUSH,
+    FILL_SPRAY, GLITTER, CONFETTI, FIRE, LIGHTNING
+}
 enum class EraserShape { ROUND, SQUARE }
 
 enum class Tool {
@@ -478,7 +482,19 @@ class StrokeData(
             when (brushStyle) {
                 BrushStyle.ROUND -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
                 BrushStyle.FLAT -> { p.strokeWidth = strokeWidth * 1.4f; p.strokeJoin = Paint.Join.MITER; p.strokeCap = Paint.Cap.SQUARE }
-                BrushStyle.TEXTURE -> {
+                BrushStyle.TEXTURE -> { p.strokeWidth = strokeWidth * 1.2f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.75f).toInt(); p.maskFilter = android.graphics.BlurMaskFilter(strokeWidth * 0.08f, android.graphics.BlurMaskFilter.Blur.NORMAL) }
+                BrushStyle.INK -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = opacity }
+                BrushStyle.WATERCOLOR -> { p.strokeWidth = strokeWidth * 2.2f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.22f).toInt(); p.maskFilter = android.graphics.BlurMaskFilter(strokeWidth * 0.6f, android.graphics.BlurMaskFilter.Blur.NORMAL) }
+                BrushStyle.CRAYON -> { p.strokeWidth = strokeWidth * 1.1f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.80f).toInt(); p.pathEffect = android.graphics.DashPathEffect(floatArrayOf(strokeWidth * 0.6f, strokeWidth * 0.15f), 0f) }
+                BrushStyle.CHARCOAL -> { p.strokeWidth = strokeWidth * 1.4f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.55f).toInt(); p.maskFilter = android.graphics.BlurMaskFilter(strokeWidth * 0.3f, android.graphics.BlurMaskFilter.Blur.NORMAL); p.pathEffect = android.graphics.ComposePathEffect(android.graphics.DashPathEffect(floatArrayOf(strokeWidth * 0.4f, strokeWidth * 0.2f), 0f), android.graphics.DiscretePathEffect(strokeWidth * 0.15f, strokeWidth * 0.08f)) }
+                BrushStyle.AIRBRUSH -> { p.strokeWidth = strokeWidth * 2.5f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.18f).toInt(); p.maskFilter = android.graphics.BlurMaskFilter(strokeWidth * 1.2f, android.graphics.BlurMaskFilter.Blur.NORMAL) }
+                BrushStyle.MARKER -> { p.strokeWidth = strokeWidth * 1.8f; p.strokeJoin = Paint.Join.MITER; p.strokeCap = Paint.Cap.SQUARE; p.alpha = (opacity * 0.95f).toInt() }
+                BrushStyle.NEON -> { p.strokeWidth = strokeWidth * 1.5f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = opacity; p.maskFilter = android.graphics.BlurMaskFilter(strokeWidth * 1.2f, android.graphics.BlurMaskFilter.Blur.NORMAL) }
+                BrushStyle.DRY_BRUSH -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.7f).toInt(); p.pathEffect = android.graphics.ComposePathEffect(android.graphics.DashPathEffect(floatArrayOf(strokeWidth * 0.3f, strokeWidth * 0.25f), 0f), android.graphics.DiscretePathEffect(strokeWidth * 0.4f, strokeWidth * 0.2f)) }
+                BrushStyle.LIGHTNING -> { p.strokeWidth = strokeWidth * 0.5f; p.strokeJoin = Paint.Join.MITER; p.strokeCap = Paint.Cap.BUTT; p.alpha = (opacity * 0.9f).toInt(); p.pathEffect = android.graphics.DiscretePathEffect(strokeWidth * 2f, strokeWidth * 1.5f) }
+                // Particle brushes handled separately in drawActionItem
+                else -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
+            }
                     p.strokeWidth = strokeWidth * 0.7f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.85f).toInt()
                     // Crosshatch texture: two dash effects composed together give a woven look
                     val spacing = (strokeWidth * 1.2f).coerceAtLeast(4f)
@@ -486,15 +502,9 @@ class StrokeData(
                     val dash2 = android.graphics.DashPathEffect(floatArrayOf(strokeWidth * 0.2f, spacing * 1.5f), spacing * 0.6f)
                     p.pathEffect = android.graphics.ComposePathEffect(dash, dash2)
                 }
-                BrushStyle.INK -> { p.strokeWidth = strokeWidth * 1.6f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
-                BrushStyle.WATERCOLOR -> { p.strokeWidth = strokeWidth * 1.8f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.45f).toInt() }
-                BrushStyle.CRAYON -> { p.strokeWidth = strokeWidth * 1.2f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.85f).toInt(); p.pathEffect = android.graphics.DashPathEffect(floatArrayOf(3.5f, 1f), 0f) }
-                BrushStyle.CHARCOAL -> { p.strokeWidth = strokeWidth * 1.3f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.6f).toInt(); p.pathEffect = android.graphics.DashPathEffect(floatArrayOf(1.5f, 0.8f), 0f) }
-                BrushStyle.AIRBRUSH -> { p.strokeWidth = strokeWidth * 2.0f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.3f).toInt(); p.maskFilter = android.graphics.BlurMaskFilter(strokeWidth * 0.5f, android.graphics.BlurMaskFilter.Blur.NORMAL) }
-                BrushStyle.SPRAY -> { p.strokeWidth = 1f; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.7f).toInt() }
-                BrushStyle.STIPPLE -> { p.strokeWidth = strokeWidth * 0.4f; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.8f).toInt() }
-                BrushStyle.SPLATTER -> { p.strokeWidth = strokeWidth * 0.6f; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.6f).toInt(); p.maskFilter = android.graphics.BlurMaskFilter(strokeWidth * 0.2f, android.graphics.BlurMaskFilter.Blur.NORMAL) }
                 BrushStyle.NEON -> { p.strokeWidth = strokeWidth * 1.5f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = opacity; p.maskFilter = android.graphics.BlurMaskFilter(strokeWidth * 1.2f, android.graphics.BlurMaskFilter.Blur.NORMAL) }
+                // Particle brushes handled separately in drawActionItem
+                else -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
             }
             return p
         }
@@ -1036,9 +1046,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 canvas.drawBitmap(bmp, null, RectF(action.x, action.y, action.x + action.w, action.y + action.h), null)
             }
             is StrokeItem -> {
-                // Special particle brushes — draw scattered dots along path
-                if (action.data.type == Tool.BRUSH && action.data.brushStyle in listOf(BrushStyle.SPRAY, BrushStyle.STIPPLE, BrushStyle.SPLATTER)) {
-                    drawParticleBrush(canvas, action); return
+                // All brush strokes go through the dedicated brush renderer
+                if (action.data.type == Tool.BRUSH) {
+                    drawBrushStroke(canvas, action); return
                 }
                 val isCalligraphyPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.CALLIGRAPHY
                 val isFountainPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.FOUNTAIN && action.data.widths.size >= 2
@@ -1450,6 +1460,230 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             HatchPattern.DRYWALL -> {
                 var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s*3f}; var x=l; while(x<r){canvas.drawLine(x,t,x,b,p);x+=s*4f}
             }
+        }
+    }
+
+    private fun drawBrushStroke(canvas: Canvas, item: StrokeItem) {
+        val pts = item.data.points; if (pts.size < 2) return
+        val sw = item.data.strokeWidth; val col = item.data.color; val op = item.data.opacity
+        val style = item.data.brushStyle
+        val rand = java.util.Random((pts[0] + pts[1] * 31).toLong())
+
+        // Build point pairs for iteration
+        data class Pt(val x: Float, val y: Float)
+        val points = (0 until pts.size / 2).map { Pt(pts[it*2], pts[it*2+1]) }
+
+        when (style) {
+            BrushStyle.ROUND -> canvas.drawPath(item.path, item.paint)
+            BrushStyle.FLAT -> {
+                // Flat: rectangular strokes, width varies with direction
+                val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.STROKE; strokeWidth=sw*1.4f; strokeJoin=Paint.Join.MITER; strokeCap=Paint.Cap.SQUARE; alpha=op }
+                canvas.drawPath(item.path, p)
+            }
+            BrushStyle.INK -> {
+                // Ink: smooth with slight width taper at start/end
+                val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.STROKE; strokeJoin=Paint.Join.ROUND; strokeCap=Paint.Cap.ROUND; alpha=op }
+                val n = points.size
+                points.forEachIndexed { i, pt ->
+                    val taper = if (i < 3) (i+1)/3f else if (i > n-4) (n-i)/3f else 1f
+                    p.strokeWidth = sw * taper.coerceIn(0.1f, 1f)
+                    if (i > 0) canvas.drawLine(points[i-1].x, points[i-1].y, pt.x, pt.y, p)
+                }
+            }
+            BrushStyle.WATERCOLOR -> {
+                // Watercolor: multiple semi-transparent passes with blur + edge bleed
+                val blurR = (sw * 0.8f).coerceAtLeast(2f)
+                for (pass in 0..2) {
+                    val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.STROKE; strokeWidth=sw*(1.5f+pass*0.4f); strokeJoin=Paint.Join.ROUND; strokeCap=Paint.Cap.ROUND; alpha=(op*0.12f).toInt(); maskFilter=android.graphics.BlurMaskFilter(blurR*(1+pass*0.5f), android.graphics.BlurMaskFilter.Blur.NORMAL) }
+                    canvas.drawPath(item.path, p)
+                }
+                // Slight dry edge
+                val edgeP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.STROKE; strokeWidth=sw*0.15f; strokeJoin=Paint.Join.ROUND; strokeCap=Paint.Cap.ROUND; alpha=(op*0.25f).toInt() }
+                canvas.drawPath(item.path, edgeP)
+            }
+            BrushStyle.CHARCOAL -> {
+                // Charcoal: powdery with rough grain — multiple offset passes
+                val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { style=Paint.Style.STROKE; strokeJoin=Paint.Join.ROUND; strokeCap=Paint.Cap.ROUND }
+                repeat(5) { pass ->
+                    val dx = (rand.nextFloat()-0.5f)*sw*0.4f; val dy = (rand.nextFloat()-0.5f)*sw*0.4f
+                    p.color=col; p.strokeWidth=sw*(0.6f+rand.nextFloat()*0.5f); p.alpha=(op*0.18f).toInt()
+                    p.maskFilter=android.graphics.BlurMaskFilter(sw*0.25f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                    canvas.save(); canvas.translate(dx, dy); canvas.drawPath(item.path, p); canvas.restore()
+                }
+                // Grain overlay — dark specks
+                val sp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.FILL; alpha=(op*0.3f).toInt() }
+                val r2 = java.util.Random((pts[0]*7+pts[1]).toLong())
+                points.forEach { pt ->
+                    if (r2.nextFloat() < 0.4f) { val gr=sw*0.06f+r2.nextFloat()*sw*0.08f; canvas.drawCircle(pt.x+(r2.nextFloat()-0.5f)*sw*0.8f, pt.y+(r2.nextFloat()-0.5f)*sw*0.8f, gr, sp) }
+                }
+            }
+            BrushStyle.CRAYON -> {
+                // Crayon: waxy uneven fill with grain — broken strokes
+                val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.STROKE; strokeWidth=sw; strokeJoin=Paint.Join.ROUND; strokeCap=Paint.Cap.ROUND; alpha=(op*0.75f).toInt(); pathEffect=android.graphics.DashPathEffect(floatArrayOf(sw*0.7f, sw*0.15f), rand.nextFloat()*sw) }
+                canvas.drawPath(item.path, p)
+                // Grain texture — sparse fill dots
+                val gp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.FILL; alpha=(op*0.25f).toInt() }
+                val r2 = java.util.Random((pts[0]+pts[1]).toLong())
+                points.forEach { pt ->
+                    repeat(3) { canvas.drawCircle(pt.x+(r2.nextFloat()-0.5f)*sw*1.1f, pt.y+(r2.nextFloat()-0.5f)*sw*0.9f, sw*0.07f+r2.nextFloat()*sw*0.1f, gp) }
+                }
+            }
+            BrushStyle.AIRBRUSH -> {
+                // Airbrush: Gaussian soft spray — very blurry, low opacity, builds up
+                repeat(3) { pass ->
+                    val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.STROKE; strokeWidth=sw*(1.5f+pass); strokeJoin=Paint.Join.ROUND; strokeCap=Paint.Cap.ROUND; alpha=(op*0.08f).toInt(); maskFilter=android.graphics.BlurMaskFilter(sw*(0.8f+pass*0.6f), android.graphics.BlurMaskFilter.Blur.NORMAL) }
+                    canvas.drawPath(item.path, p)
+                }
+            }
+            BrushStyle.SPRAY, BrushStyle.STIPPLE, BrushStyle.SPLATTER -> drawParticleBrush(canvas, item)
+            BrushStyle.MARKER -> {
+                // Marker: opaque flat fill, slightly darker edges
+                val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.STROKE; strokeWidth=sw*2f; strokeJoin=Paint.Join.MITER; strokeCap=Paint.Cap.SQUARE; alpha=(op*0.92f).toInt() }
+                canvas.drawPath(item.path, p)
+                // Darker edge lines
+                val ep = Paint(p).apply { strokeWidth=sw*2.1f; alpha=(op*0.35f).toInt(); style=Paint.Style.STROKE }
+                canvas.drawPath(item.path, ep)
+            }
+            BrushStyle.NEON -> {
+                // Neon: bright core + large glow
+                val glowP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.STROKE; strokeWidth=sw*4f; strokeJoin=Paint.Join.ROUND; strokeCap=Paint.Cap.ROUND; alpha=(op*0.3f).toInt(); maskFilter=android.graphics.BlurMaskFilter(sw*2.5f, android.graphics.BlurMaskFilter.Blur.NORMAL) }
+                val coreP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=android.graphics.Color.WHITE; style=Paint.Style.STROKE; strokeWidth=sw*0.5f; strokeJoin=Paint.Join.ROUND; strokeCap=Paint.Cap.ROUND; alpha=(op*0.9f).toInt() }
+                canvas.drawPath(item.path, glowP); canvas.drawPath(item.path, coreP)
+            }
+            BrushStyle.DRY_BRUSH -> {
+                // Dry brush: broken bristle effect — multiple thin offset lines
+                val r2 = java.util.Random((pts[0]+pts[1]).toLong())
+                repeat(8) {
+                    val offset = (r2.nextFloat()-0.5f)*sw*0.7f
+                    val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.STROKE; strokeWidth=sw*0.12f+r2.nextFloat()*sw*0.1f; strokeJoin=Paint.Join.ROUND; strokeCap=Paint.Cap.ROUND; alpha=(op*(0.3f+r2.nextFloat()*0.4f)).toInt() }
+                    canvas.save(); canvas.translate(offset, offset*0.3f); canvas.drawPath(item.path, p); canvas.restore()
+                }
+            }
+            BrushStyle.TEXTURE -> {
+                // Texture: continuous with procedural noise grain
+                val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.STROKE; strokeWidth=sw*1.3f; strokeJoin=Paint.Join.ROUND; strokeCap=Paint.Cap.ROUND; alpha=(op*0.85f).toInt() }
+                canvas.drawPath(item.path, p)
+                // Grain overlay
+                val gp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.FILL; alpha=(op*0.2f).toInt() }
+                val r2 = java.util.Random((pts[0]+pts[1]).toLong())
+                points.forEach { pt ->
+                    repeat(4) { canvas.drawRect(pt.x+(r2.nextFloat()-0.5f)*sw*1.2f, pt.y+(r2.nextFloat()-0.5f)*sw*0.9f, pt.x+(r2.nextFloat()-0.5f)*sw*1.2f+sw*0.1f, pt.y+(r2.nextFloat()-0.5f)*sw*0.9f+sw*0.1f, gp) }
+                }
+            }
+            BrushStyle.FUR -> {
+                // Fur: many thin tapered lines radiating at slight angles
+                val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.STROKE; strokeWidth=sw*0.06f; strokeCap=Paint.Cap.ROUND; alpha=(op*0.7f).toInt() }
+                val r2 = java.util.Random((pts[0]+pts[1]).toLong())
+                points.forEachIndexed { i, pt ->
+                    if (i % 2 == 0) {
+                        val len = sw*(0.8f+r2.nextFloat()*0.6f)
+                        val ang = (r2.nextFloat()-0.5f)*0.8f
+                        canvas.drawLine(pt.x, pt.y, pt.x+kotlin.math.cos(ang)*len, pt.y+kotlin.math.sin(ang)*len, p)
+                    }
+                }
+            }
+            BrushStyle.GRASS -> {
+                // Grass: upward curved blades from the path
+                val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.STROKE; strokeWidth=sw*0.08f; strokeCap=Paint.Cap.ROUND; alpha=(op*0.85f).toInt() }
+                val r2 = java.util.Random((pts[0]+pts[1]).toLong())
+                points.forEachIndexed { i, pt ->
+                    if (i % 3 == 0) {
+                        val h = sw*(1.2f+r2.nextFloat()*0.8f)
+                        val lean = (r2.nextFloat()-0.5f)*sw*0.5f
+                        val path2 = android.graphics.Path(); path2.moveTo(pt.x, pt.y)
+                        path2.quadTo(pt.x+lean*0.5f, pt.y-h*0.6f, pt.x+lean, pt.y-h)
+                        canvas.drawPath(path2, p)
+                    }
+                }
+            }
+            BrushStyle.SCATTER -> {
+                // Scatter: random ovals/shapes at varied scale+rotation
+                val fp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.FILL; alpha=(op*0.75f).toInt() }
+                val r2 = java.util.Random((pts[0]+pts[1]).toLong())
+                points.forEachIndexed { i, pt ->
+                    if (i % 2 == 0) {
+                        canvas.save()
+                        canvas.translate(pt.x+(r2.nextFloat()-0.5f)*sw*0.8f, pt.y+(r2.nextFloat()-0.5f)*sw*0.8f)
+                        canvas.rotate(r2.nextFloat()*360f)
+                        val rx = sw*(0.2f+r2.nextFloat()*0.4f); val ry = rx*(0.4f+r2.nextFloat()*0.6f)
+                        canvas.drawOval(android.graphics.RectF(-rx,-ry,rx,ry), fp)
+                        canvas.restore()
+                    }
+                }
+            }
+            BrushStyle.SMOKE -> {
+                // Smoke: large soft overlapping blobs
+                val r2 = java.util.Random((pts[0]+pts[1]).toLong())
+                val sp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.FILL; alpha=(op*0.06f).toInt(); maskFilter=android.graphics.BlurMaskFilter(sw*1.5f, android.graphics.BlurMaskFilter.Blur.NORMAL) }
+                points.forEachIndexed { i, pt ->
+                    if (i % 4 == 0) {
+                        val r3 = sw*(0.8f+r2.nextFloat()*0.7f)
+                        canvas.drawCircle(pt.x+(r2.nextFloat()-0.5f)*sw*0.5f, pt.y+(r2.nextFloat()-0.5f)*sw*0.5f, r3, sp)
+                    }
+                }
+            }
+            BrushStyle.FILL_SPRAY -> {
+                // Fill spray: dense gaussian dots, builds up naturally
+                val fp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.FILL; alpha=(op*0.6f).toInt() }
+                val r2 = java.util.Random((pts[0]+pts[1]).toLong())
+                val spread = sw*1.5f; val dotR = sw*0.05f
+                points.forEachIndexed { i, pt ->
+                    repeat(60) {
+                        val a = r2.nextFloat()*Math.PI.toFloat()*2f
+                        val dist = r2.nextGaussian().toFloat().coerceIn(-2f,2f)*spread*0.4f
+                        canvas.drawCircle(pt.x+kotlin.math.cos(a)*dist, pt.y+kotlin.math.sin(a)*dist, dotR+r2.nextFloat()*dotR, fp)
+                    }
+                }
+            }
+            BrushStyle.GLITTER -> {
+                // Glitter: tiny bright specks with occasional stars
+                val gp = Paint(Paint.ANTI_ALIAS_FLAG).apply { style=Paint.Style.FILL }
+                val r2 = java.util.Random((pts[0]+pts[1]).toLong())
+                val colors2 = intArrayOf(col, android.graphics.Color.WHITE, android.graphics.Color.YELLOW, android.graphics.Color.CYAN)
+                points.forEachIndexed { i, pt ->
+                    repeat(8) {
+                        gp.color = colors2[r2.nextInt(colors2.size)]; gp.alpha = (op*(0.5f+r2.nextFloat()*0.5f)).toInt()
+                        val gx=pt.x+(r2.nextFloat()-0.5f)*sw*1.2f; val gy=pt.y+(r2.nextFloat()-0.5f)*sw*1.2f
+                        canvas.drawCircle(gx, gy, sw*0.04f+r2.nextFloat()*sw*0.08f, gp)
+                    }
+                }
+            }
+            BrushStyle.CONFETTI -> {
+                // Confetti: colorful random rectangles
+                val cp = Paint(Paint.ANTI_ALIAS_FLAG).apply { style=Paint.Style.FILL }
+                val r2 = java.util.Random((pts[0]+pts[1]).toLong())
+                val cols = intArrayOf(android.graphics.Color.RED, android.graphics.Color.BLUE, android.graphics.Color.GREEN, android.graphics.Color.YELLOW, android.graphics.Color.MAGENTA, col)
+                points.forEachIndexed { i, pt ->
+                    if (i % 2 == 0) {
+                        cp.color = cols[r2.nextInt(cols.size)]; cp.alpha = (op*0.85f).toInt()
+                        canvas.save(); canvas.translate(pt.x+(r2.nextFloat()-0.5f)*sw, pt.y+(r2.nextFloat()-0.5f)*sw); canvas.rotate(r2.nextFloat()*360f)
+                        val w=sw*0.2f+r2.nextFloat()*sw*0.2f; val h=sw*0.08f+r2.nextFloat()*sw*0.1f
+                        canvas.drawRect(-w,-h,w,h,cp); canvas.restore()
+                    }
+                }
+            }
+            BrushStyle.FIRE -> {
+                // Fire: upward flickering orange-red shapes
+                val r2 = java.util.Random((pts[0]+pts[1]).toLong())
+                points.forEachIndexed { i, pt ->
+                    if (i % 3 == 0) {
+                        val fireCol = if (r2.nextFloat() > 0.5f) android.graphics.Color.argb(op, 255, (80+r2.nextInt(120)), 0) else android.graphics.Color.argb(op, 255, (180+r2.nextInt(75)), 0)
+                        val fp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=fireCol; style=Paint.Style.FILL; maskFilter=android.graphics.BlurMaskFilter(sw*0.4f, android.graphics.BlurMaskFilter.Blur.NORMAL) }
+                        val h2 = sw*(0.8f+r2.nextFloat()*1.2f); val lean = (r2.nextFloat()-0.5f)*sw*0.6f
+                        val path2 = android.graphics.Path()
+                        path2.moveTo(pt.x-sw*0.3f, pt.y); path2.quadTo(pt.x+lean, pt.y-h2*0.5f, pt.x, pt.y-h2); path2.quadTo(pt.x-lean*0.5f, pt.y-h2*0.5f, pt.x+sw*0.3f, pt.y); path2.close()
+                        canvas.drawPath(path2, fp)
+                    }
+                }
+            }
+            BrushStyle.LIGHTNING -> {
+                // Lightning: jagged bolts with glow
+                val lp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color=col; style=Paint.Style.STROKE; strokeWidth=sw*0.4f; strokeCap=Paint.Cap.ROUND; alpha=op; pathEffect=android.graphics.DiscretePathEffect(sw*1.5f, sw*1.2f) }
+                val gp = Paint(lp).apply { strokeWidth=sw*2f; alpha=(op*0.3f).toInt(); maskFilter=android.graphics.BlurMaskFilter(sw, android.graphics.BlurMaskFilter.Blur.NORMAL); pathEffect=android.graphics.DiscretePathEffect(sw*1.5f, sw*1.2f) }
+                canvas.drawPath(item.path, gp); canvas.drawPath(item.path, lp)
+            }
+            BrushStyle.PATTERN_BRUSH -> canvas.drawPath(item.path, item.paint)
+            else -> canvas.drawPath(item.path, item.paint)
         }
     }
 

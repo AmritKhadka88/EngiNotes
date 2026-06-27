@@ -931,7 +931,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val allPenTypes = listOf("Fountain" to PenStyle.FOUNTAIN, "Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
-        val allBrushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH, "Spray" to BrushStyle.SPRAY, "Stipple" to BrushStyle.STIPPLE, "Splatter" to BrushStyle.SPLATTER, "Neon" to BrushStyle.NEON)
+        val allBrushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH, "Spray" to BrushStyle.SPRAY, "Stipple" to BrushStyle.STIPPLE, "Splatter" to BrushStyle.SPLATTER, "Neon" to BrushStyle.NEON, "Marker" to BrushStyle.MARKER, "Dry Brush" to BrushStyle.DRY_BRUSH, "Scatter" to BrushStyle.SCATTER, "Fur" to BrushStyle.FUR, "Grass" to BrushStyle.GRASS, "Smoke" to BrushStyle.SMOKE, "Fill Spray" to BrushStyle.FILL_SPRAY, "Glitter" to BrushStyle.GLITTER, "Confetti" to BrushStyle.CONFETTI, "Fire" to BrushStyle.FIRE, "Lightning" to BrushStyle.LIGHTNING)
         val allFontFamilies = listOf("Default" to "sans-serif", "Serif" to "serif", "Mono" to "monospace", "Cursive" to "cursive", "Fantasy" to "fantasy")
 
         when (drawingView.currentTool) {
