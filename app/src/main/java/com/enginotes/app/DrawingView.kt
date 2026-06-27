@@ -2631,13 +2631,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
-    private fun pageWidthPx(): Float {
+    fun pageWidthPx(): Float {
         if (canvasMode == CanvasMode.CONVENIENT) return if (convenientPageW > 0) convenientPageW else width.toFloat()
         val m = 3.7795f
         return if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
     }
 
-    private fun pageHeightPx(): Float {
+    fun pageHeightPx(): Float {
         // Convenient = one screen-height page (tall, comfortable reading/writing)
         if (canvasMode == CanvasMode.CONVENIENT) return if (convenientPageH > 0) convenientPageH else height.toFloat()
         val m = 3.7795f
