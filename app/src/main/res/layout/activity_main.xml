@@ -44,7 +44,7 @@
             android:id="@+id/btnLayoutToggle"
             android:layout_width="40dp"
             android:layout_height="40dp"
-            android:src="@drawable/ic_size"
+            android:src="@drawable/ic_paper"
             android:scaleType="centerInside"
             android:padding="9dp"
             android:background="?attr/selectableItemBackgroundBorderless"
@@ -59,6 +59,16 @@
             android:padding="9dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="Insert Link" />
+
+        <ImageButton
+            android:id="@+id/btnTouchToggle"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:src="@drawable/ic_finger"
+            android:scaleType="centerInside"
+            android:padding="9dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Touch/Pan Toggle" />
 
         <ImageButton
             android:id="@+id/btnMenu"
