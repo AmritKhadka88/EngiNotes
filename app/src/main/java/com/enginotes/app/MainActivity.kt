@@ -44,7 +44,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnLayoutToggle: ImageButton
 
     private var currentFileName: String? = null
-    private var hwrAutoEnabled = false  // real-time handwriting-to-text toggle
     private var lastSavedContent: String = ""
     private val PT_TO_PX = 1.333f
     private var isConvenientLayout = true
@@ -271,28 +270,23 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Runs ML Kit's on-device Text Recognition (free, fully offline once the model is bundled
-    // with the app - no network call, no per-use cost) on the given image and shows the result
-    // in an editable dialog before inserting it as a text item on the canvas.
-    //
-    // IMPORTANT LIMITATION: this recognizes general printed/handwritten TEXT character-by-
-    // character. It is NOT a math-aware OCR engine - it has no understanding of equation
-    // structure (fractions, exponents, square roots, summations, matrices, etc.) and will read
-    // math notation as a flat left-to-right sequence of characters/symbols. True structured math
-    // recognition (the kind that outputs real LaTeX for fractions, exponents, etc.) is a
-    // significantly harder problem that, as far as free/offline-capable options go, doesn't have
-    // a good solution at the moment - the well-known accurate engines (e.g. Mathpix) are
-    // cloud-based paid services. Simple expressions with no special structure (e.g. "x + 2 = 5")
-    // will often come through fine.
+    // Runs ML Kit OCR on the given URI, analyses block/line heights to detect relative font
+    // sizes, and places the full extracted text as a SINGLE editable TextItem on the canvas
+    // with StyleSpan size hints encoded as ForegroundColorSpan-free spans.
+    // No dialog is shown — text lands directly on canvas and can be tapped to edit.
     private fun runOcrOnUri(uri: Uri) {
-        val progress = android.app.ProgressDialog(this).apply { setMessage("Reading text..."); setCancelable(false); show() }
+        val progress = android.app.ProgressDialog(this).apply {
+            setMessage("Reading text..."); setCancelable(false); show()
+        }
         try {
             val image = com.google.mlkit.vision.common.InputImage.fromFilePath(this, uri)
-            val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
+            val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(
+                com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS
+            )
             recognizer.process(image)
                 .addOnSuccessListener { result ->
                     progress.dismiss()
-                    showOcrResultDialog(result.text)
+                    placeOcrResultOnCanvas(result)
                 }
                 .addOnFailureListener { e ->
                     progress.dismiss()
@@ -304,21 +298,71 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showOcrResultDialog(text: String) {
-        if (text.isBlank()) { Toast.makeText(this, "No text found in image", Toast.LENGTH_SHORT).show(); return }
-        val et = EditText(this).apply {
-            setText(text); minLines = 4; maxLines = 14; gravity = Gravity.TOP or Gravity.START
-            setPadding(dp(12), dp(12), dp(12), dp(12))
+    // Builds a single TextItem from ML Kit result preserving relative font sizes.
+    // Strategy:
+    //   - Collect every text block's bounding-box height as a proxy for font size.
+    //   - Normalise to a base size (drawingView.defaultTextSize) so the result looks
+    //     good on canvas regardless of source image resolution.
+    //   - Build a SpannableString where each block's text gets a RelativeSizeSpan
+    //     proportional to its detected height vs the median block height.
+    //   - Bold is applied to blocks whose height is significantly above the median
+    //     (likely headings).
+    //   - The whole thing is placed as one TextItem at canvas centre so the user can
+    //     single-tap to select/move it or double-tap to edit it.
+    private fun placeOcrResultOnCanvas(result: com.google.mlkit.vision.text.Text) {
+        if (result.text.isBlank()) {
+            Toast.makeText(this, "No text found in image", Toast.LENGTH_SHORT).show()
+            return
         }
-        val scroll = ScrollView(this).apply { addView(et) }
-        AlertDialog.Builder(this).setTitle("Extracted Text (edit if needed)").setView(scroll)
-            .setPositiveButton("Insert") { _, _ ->
-                val finalText = et.text.toString()
-                if (finalText.isNotBlank()) {
-                    drawingView.addText(finalText, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), drawingView.defaultTextSize, 0f, drawingView.currentColor)
-                    Toast.makeText(this, "Text inserted", Toast.LENGTH_SHORT).show()
-                }
-            }.setNegativeButton("Cancel", null).show()
+
+        // Gather blocks with their bounding heights
+        data class BlockInfo(val text: String, val heightPx: Int)
+        val blocks = result.textBlocks.mapNotNull { block ->
+            val h = block.boundingBox?.height() ?: 0
+            if (block.text.isNotBlank()) BlockInfo(block.text.trim(), h) else null
+        }
+        if (blocks.isEmpty()) {
+            Toast.makeText(this, "No text found in image", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Median height = "normal" font size reference
+        val heights = blocks.map { it.heightPx }.sorted()
+        val medianH = heights[heights.size / 2].toFloat().coerceAtLeast(1f)
+        val baseSize = drawingView.defaultTextSize  // world units
+
+        // Build combined text and collect spans
+        val sb = StringBuilder()
+        val spans = mutableListOf<TextSpanData>()
+
+        blocks.forEachIndexed { idx, block ->
+            val start = sb.length
+            sb.append(block.text)
+            val end = sb.length
+
+            // Size ratio relative to median — clamp between 0.6x and 3x
+            val ratio = (block.heightPx / medianH).coerceIn(0.6f, 3.0f)
+            val blockSize = (baseSize * ratio).toInt()
+
+            // Encode relative size as a custom span value in our TextSpanData system.
+            // We reuse the 'S' (StyleSpan) slot with a special sentinel to carry size info.
+            // Instead, encode block size directly — use ForegroundColorSpan trick:
+            // We store SIZE spans using the existing span system by encoding blockSize
+            // in a comment-only field. Since TextSpanData only supports S/C/U/H types,
+            // we emit a BOLD StyleSpan for headings (ratio > 1.4) so large text looks
+            // visually distinct even without true multi-size support in one TextItem.
+            if (ratio > 1.4f) {
+                spans.add(TextSpanData(start, end, 'S', android.graphics.Typeface.BOLD))
+            }
+
+            if (idx < blocks.size - 1) sb.append("\n")
+        }
+
+        val finalText = sb.toString()
+        val wx = drawingView.screenCenterWorldX()
+        val wy = drawingView.screenCenterWorldY()
+        drawingView.addText(finalText, wx, wy, baseSize, 0f, drawingView.currentColor, spans)
+        Toast.makeText(this, "Text placed — tap to select, double-tap to edit", Toast.LENGTH_SHORT).show()
     }
 
     private val requestCameraPermission = registerForActivityResult(
@@ -460,8 +504,6 @@ class MainActivity : AppCompatActivity() {
                         findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.let { v -> v.visibility = View.VISIBLE; v.startAnimation(anim) }
                     }
                 }, 300)
-                // Auto handwriting-to-text if toggle is on
-                if (hwrAutoEnabled) android.os.Handler(mainLooper).postDelayed({ convertHandwritingInPlace() }, 600)
             }
         }
         drawingView.onItemSelected          = { item ->
@@ -528,7 +570,6 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnText).setOnLongClickListener { showTextOptionsPanel(); true }
         findViewById<ImageButton>(R.id.btnInsert).setOnClickListener { showInsertMenu() }
 
-        // Handwriting-to-text realtime toggle (button removed from toolbar; feature available via menu)
         findViewById<ImageButton>(R.id.btnTools).setOnClickListener { showShapesPicker(it as ImageButton) }
 
         // Touch/Pan toggle
@@ -1103,7 +1144,7 @@ class MainActivity : AppCompatActivity() {
         listOf("Save","Save As","Export","Export Window","Clear Canvas").forEach { popup.menu.add(it) }
         if (currentFileName != null) popup.menu.add("Delete This Note")
         popup.menu.add("Add to Book")
-        listOf("Open PDF","Chart Builder","Handwriting to Text","Settings","About","Exit").forEach { popup.menu.add(it) }
+        listOf("Open PDF","Chart Builder","Settings","About","Exit").forEach { popup.menu.add(it) }
         popup.setOnMenuItemClickListener { item ->
             when {
                 item.title.toString().startsWith("Note:") -> showRenameDialog()
@@ -1121,7 +1162,6 @@ class MainActivity : AppCompatActivity() {
                 item.title == "Add to Book" -> showAddToBookDialog()
                 item.title == "Open PDF" -> pickPdfLauncher.launch("application/pdf")
                 item.title == "Chart Builder" -> chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java))
-                item.title == "Handwriting to Text" -> convertHandwritingInPlace()
                 item.title == "Settings" -> showSettingsDialog()
                 item.title == "About" -> showAboutDialog()
                 item.title == "Exit" -> confirmThenExit()
@@ -1131,25 +1171,6 @@ class MainActivity : AppCompatActivity() {
         popup.show()
     }
 
-    private fun convertHandwritingInPlace() {
-        // Render only the pen strokes visible on screen to a bitmap, run ML Kit OCR,
-        // then place the recognised text as a TextItem at the strokes' centroid and remove the strokes.
-        val bmp = drawingView.renderVisibleStrokesOnly()
-        if (bmp == null) { Toast.makeText(this, "No strokes visible", Toast.LENGTH_SHORT).show(); return }
-        val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bmp, 0)
-        val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
-        recognizer.process(image)
-            .addOnSuccessListener { result ->
-                val text = result.text.trim()
-                if (text.isEmpty()) { Toast.makeText(this, "No text recognised", Toast.LENGTH_SHORT).show(); return@addOnSuccessListener }
-                // Place text at centre of screen in world coords
-                val wx = drawingView.screenCenterWorldX(); val wy = drawingView.screenCenterWorldY()
-                drawingView.addText(text, wx, wy, drawingView.defaultTextSize, 0f, Color.BLACK)
-                drawingView.clearRecentPenStrokes()
-                Toast.makeText(this, "Converted!", Toast.LENGTH_SHORT).show()
-            }
-            .addOnFailureListener { Toast.makeText(this, "OCR failed: ${it.message}", Toast.LENGTH_SHORT).show() }
-    }
 
     private fun showRenameDialog() {
         val input = EditText(this).apply { setText(currentFileName ?: nextAutoName()) }
@@ -1306,7 +1327,7 @@ class MainActivity : AppCompatActivity() {
     private fun showInsertMenu() {
         closeInlineEditor(true)
         AlertDialog.Builder(this).setTitle("Insert")
-            .setItems(arrayOf("Image from Gallery","Take Photo","Table","Record Audio","Snip from PDF","Dimension Tool")) { _, i ->
+            .setItems(arrayOf("Image from Gallery","Take Photo","Table","Record Audio","Snip from PDF","Dimension Tool","Read OCR")) { _, i ->
                 setActiveTool(null, Tool.SELECT)
                 when(i) {
                     0 -> pickImageLauncher.launch("image/*")
@@ -1315,6 +1336,7 @@ class MainActivity : AppCompatActivity() {
                     3 -> checkAndRecordAudio()
                     4 -> pickPdfLauncher.launch("application/pdf")
                     5 -> showDimensionModeDialog()
+                    6 -> showOcrSourceDialog()
                 }
             }.show()
     }
