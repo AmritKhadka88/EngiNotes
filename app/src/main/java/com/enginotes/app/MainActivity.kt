@@ -1444,7 +1444,20 @@ class MainActivity : AppCompatActivity() {
         dimColors.forEach { c -> textColorRow.addView(View(this).apply { val lp2=LinearLayout.LayoutParams(dp(30),dp(30));lp2.setMargins(0,0,dp(8),0);layoutParams=lp2; background=android.graphics.drawable.GradientDrawable().apply{shape=android.graphics.drawable.GradientDrawable.OVAL;setColor(c);setStroke(if(c==dim.textColor)dp(3) else dp(1),Color.parseColor("#333333"))}; setOnClickListener{dim.textColor=c;drawingView.invalidate()} }) }
         panel.addView(textColorRow)
 
-        seekRow("Font Size: ${dim.fontSize.toInt()}sp", 40, dim.fontSize.toInt().coerceIn(6,40)) { dim.fontSize=it.coerceAtLeast(6).toFloat() }
+        // For angular dims: flip supplementary + arc radius
+        if (dim.isAngular) {
+            panel.addView(TextView(this).apply { text="↔ Flip to supplementary angle"; textSize=14f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(10),0,dp(4))
+                setOnClickListener {
+                    val parts = dim.unit.split(",").toMutableList()
+                    val cur = parts.getOrNull(2)?.toBooleanStrictOrNull() ?: false
+                    while (parts.size < 3) parts.add("false")
+                    parts[2] = (!cur).toString()
+                    dim.unit = parts.joinToString(",")
+                    drawingView.invalidate()
+                }
+            })
+            seekRow("Arc Radius", 200, dim.offset.toInt().coerceIn(0,200)) { dim.offset = it.toFloat() }
+        }
         seekRow("Arrow Size: ${dim.arrowSize.toInt()}", 40, dim.arrowSize.toInt().coerceIn(4,40)) { dim.arrowSize=it.coerceAtLeast(4).toFloat() }
         seekRow("Line Thickness: ${dim.strokeW.toInt()}", 12, dim.strokeW.toInt().coerceIn(1,12)) { dim.strokeW=it.coerceAtLeast(1).toFloat() }
 
@@ -2784,23 +2797,6 @@ class MainActivity : AppCompatActivity() {
         ibtn(R.drawable.ic_text_bold){btn-> if(et.selectionStart!=et.selectionEnd) toggleStyleOnSelection(et,Typeface.BOLD) else{ pendingBold=!pendingBold; setToggleStateIcon(btn,pendingBold) } }
         ibtn(R.drawable.ic_text_italic){btn-> if(et.selectionStart!=et.selectionEnd) toggleStyleOnSelection(et,Typeface.ITALIC) else{ pendingItalic=!pendingItalic; setToggleStateIcon(btn,pendingItalic) } }
         ibtn(R.drawable.ic_text_underline){btn-> if(et.selectionStart!=et.selectionEnd) toggleUnderlineOnSelection(et) else{ pendingUnderline=!pendingUnderline; setToggleStateIcon(btn,pendingUnderline) } }
-        ibtn(R.drawable.ic_text_highlight){btn-> showColorGridDialog{ color-> if(et.selectionStart!=et.selectionEnd) applyHighlightToSelection(et,color) else{ pendingHighlight=color;btn.setColorFilter(color) } } }
-        ibtn(R.drawable.ic_text_color){btn-> showColorGridDialog{ color->applyColorToSelection(et,color); editColor=color; btn.setColorFilter(color) } }
-        val ptSize=(editSize/PT_TO_PX).toInt().coerceIn(1,144)
-        tbtnText(ptSize.toString()){btn-> AlertDialog.Builder(this).setTitle("Font Size (pt)").setItems((1..144).map{it.toString()}.toTypedArray()){ _,idx-> val pt=idx+1;editSize=pt*PT_TO_PX; val nss=(if(useActualSize) editSize else editSize*drawingView.getScaleFactor())*convenientBoost; et.textSize=(nss/density).coerceAtLeast(8f); btn.text=pt.toString() }.show() }
-        ibtn(R.drawable.ic_text_font){ showFontPickerDialog(et) }
-        ibtn(R.drawable.ic_text_opacity){
-            val seek = SeekBar(this).apply { max = 100; progress = editOpacity * 100 / 255 }
-            val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(10), dp(20), dp(0)); addView(seek) }
-            seek.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { val vv = v.coerceAtLeast(5); editOpacity = vv * 255 / 100; et.alpha = editOpacity / 255f }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
-            AlertDialog.Builder(this).setTitle("Opacity").setView(wrap).setPositiveButton("Done", null).show()
-        }
-        ibtn(R.drawable.ic_text_rotate_ccw){ editRotation-=15f;if(!useActualSize) et.rotation=editRotation }
-        ibtn(R.drawable.ic_text_rotate_cw){ editRotation+=15f;if(!useActualSize) et.rotation=editRotation }
         ibtn(R.drawable.ic_text_check){ closeInlineEditor(true) }
         ibtn(R.drawable.ic_text_delete){ closeInlineEditor(false,delete=true) }
 
