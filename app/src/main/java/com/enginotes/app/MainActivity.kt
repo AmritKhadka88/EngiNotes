@@ -466,7 +466,8 @@ class MainActivity : AppCompatActivity() {
         applyConvenientLayout()
 
         drawingView.onTextEditRequest       = { item, sx, sy, wx, wy -> showInlineTextEditor(item,sx,sy,wx,wy) }
-        drawingView.onTextSelectRequest     = { item, sx, sy -> showTextSelectionBox(item, sx, sy) }
+        drawingView.onTextSelectRequest     = { item, sx, sy, rawX, rawY -> showTextSelectionBox(item, sx, sy, rawX, rawY) }
+        drawingView.onTextEditOptions        = { item -> showTextEditOptionsPanel(item) }
         drawingView.onTextDeselectRequest   = { dismissTextSelectionBox() }
         drawingView.onEmptyAreaTap          = {
             // Tapping genuinely empty canvas is the "I'm done" signal: commit and close whatever
@@ -1567,6 +1568,50 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Shows font/size/color options panel for a link text item (triggered by double-tap after hold-select)
+    private fun showTextEditOptionsPanel(item: TextItem) {
+        dismissTextSelectionBox()
+        // Reuse the existing inline editor but commit immediately on close (no keyboard)
+        // Show the floating text options overlay positioned above the link
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.WHITE); cornerRadius = dp(12).toFloat()
+                setStroke(dp(1), Color.parseColor("#DDDDDD"))
+            }
+            elevation = dp(6).toFloat()
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+        }
+        fun makeLabel(text: String) = TextView(this).apply {
+            this.text = text; textSize = 13f; setTextColor(Color.parseColor("#666666"))
+            setPadding(dp(6), 0, dp(4), 0); gravity = Gravity.CENTER_VERTICAL
+        }
+        // Size stepper
+        panel.addView(makeLabel("Size:"))
+        val sizeBtn = TextView(this).apply {
+            text = item.size.toInt().toString(); textSize = 14f; gravity = Gravity.CENTER
+            setTextColor(Color.BLACK)
+            val lp = LinearLayout.LayoutParams(dp(48), dp(36)); layoutParams = lp
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#F5F5F5")); cornerRadius = dp(6).toFloat() }
+        }
+        val sizeDown = TextView(this).apply { text = "−"; textSize = 18f; gravity = Gravity.CENTER; val lp = LinearLayout.LayoutParams(dp(32), dp(36)); layoutParams = lp }
+        val sizeUp = TextView(this).apply { text = "+"; textSize = 18f; gravity = Gravity.CENTER; val lp = LinearLayout.LayoutParams(dp(32), dp(36)); layoutParams = lp }
+        sizeDown.setOnClickListener { item.size = (item.size - 4f).coerceAtLeast(8f); sizeBtn.text = item.size.toInt().toString(); drawingView.invalidate() }
+        sizeUp.setOnClickListener { item.size = (item.size + 4f).coerceAtMost(400f); sizeBtn.text = item.size.toInt().toString(); drawingView.invalidate() }
+        panel.addView(sizeDown); panel.addView(sizeBtn); panel.addView(sizeUp)
+        // Done button
+        panel.addView(TextView(this).apply {
+            text = "✓"; textSize = 16f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#388E3C"))
+            val lp = LinearLayout.LayoutParams(dp(36), dp(36)); lp.setMargins(dp(8), 0, 0, 0); layoutParams = lp
+            setOnClickListener { canvasContainer.removeView(panel); drawingView.selectedItem = null; drawingView.invalidate() }
+        })
+        val sx = drawingView.worldToScreenX(item.x).toInt().coerceIn(dp(4), canvasContainer.width - dp(240))
+        val sy = (drawingView.worldToScreenY(item.y) - dp(60)).coerceAtLeast(dp(4).toFloat()).toInt()
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        lp.leftMargin = sx; lp.topMargin = sy; panel.layoutParams = lp
+        canvasContainer.addView(panel)
+    }
+
     private fun showAboutDialog() {
         val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(16), dp(24), dp(8)); gravity = Gravity.CENTER_HORIZONTAL }
         try {
@@ -2569,7 +2614,7 @@ class MainActivity : AppCompatActivity() {
         return Pair(boxW, boxH)
     }
 
-    private fun showTextSelectionBox(item: TextItem, screenX: Float, screenY: Float) {
+    private fun showTextSelectionBox(item: TextItem, screenX: Float, screenY: Float, initialRawX: Float = -1f, initialRawY: Float = -1f) {
         if (textSelectionItem === item) return
         dismissTextSelectionBox()
         closeInlineEditor(true)
@@ -2650,6 +2695,12 @@ class MainActivity : AppCompatActivity() {
         surfaceLp.topMargin = (anchorScreenY - boxH).toInt().coerceAtLeast(0)
         moveSurface.layoutParams = surfaceLp
         canvasContainer.addView(moveSurface)
+        // Pre-seed drag: if selection was triggered by a hold-gesture, the ACTION_DOWN
+        // coords are passed in so the very next ACTION_MOVE already starts the drag.
+        if (initialRawX >= 0f) {
+            moveStartRawX = initialRawX; moveStartRawY = initialRawY
+            moveStartLeft = surfaceLp.leftMargin; moveStartTop = surfaceLp.topMargin
+        }
 
         // Floating toolbar: Delete | Done
         val toolbar = LinearLayout(this).apply {
@@ -2694,7 +2745,11 @@ class MainActivity : AppCompatActivity() {
         if (activeEditText != null) { isSwitchingTextEditor=true; closeInlineEditor(true); isSwitchingTextEditor=false; drawingView.post{ showInlineTextEditor(item,screenX,screenY,worldX,worldY) }; return }
         dismissCellEditor()
         dismissAllFloatingPanels()
+        // Hide the canvas text immediately so only the editor box is visible (no duplicate text)
+        item?.isEditing = true; drawingView.invalidate()
         drawingView.isTextEditorOpen = true
+        // Show text formatting options in the context bar while editing
+        drawingView.currentTool = Tool.TEXT; rebuildContextBar()
         pendingBold=false; pendingItalic=false; pendingUnderline=false; pendingHighlight=null
         // Default font size: 50pt in Convenient layout (large, comfortable writing feel),
         // 12pt in Print/Infinite layouts (true-to-scale, matches standard document text).
@@ -2911,7 +2966,11 @@ class MainActivity : AppCompatActivity() {
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
-        if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
+        if (!isSwitchingTextEditor) {
+            drawingView.isTextEditorOpen = false
+            // Tap outside to finish editing → go back to SELECT tool
+            setActiveTool(null, Tool.SELECT)
+        }
     }
 
     private fun launchCamera() {

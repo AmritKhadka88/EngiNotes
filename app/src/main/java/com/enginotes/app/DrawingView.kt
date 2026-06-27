@@ -944,7 +944,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val hit = findTextItemAt(wx, wy)
             if (hit != null) {
                 selectedItem = hit; invalidate()
-                onTextSelectRequest?.invoke(hit, e.x, e.y)
+                onTextSelectRequest?.invoke(hit, e.x, e.y, e.rawX, e.rawY)
                 return
             }
         }
@@ -3017,7 +3017,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 // Post to run AFTER current touch sequence ends
                                 // so the touchSurface isn't added mid-sequence
                                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                    onTextSelectRequest?.invoke(capturedHit, lx, ly)
+                                    onTextSelectRequest?.invoke(capturedHit, lx, ly, lx, ly)
                                 }, 50L)
                             }
                             longPressHandler.postDelayed(longPressRunnable!!, 450L)
