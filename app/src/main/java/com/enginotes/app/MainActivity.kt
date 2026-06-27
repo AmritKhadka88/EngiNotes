@@ -528,7 +528,7 @@ class MainActivity : AppCompatActivity() {
 
         // Touch/Pan toggle
         var touchModeIsPan = false
-        val btnTouchToggle = resources.getIdentifier("btnTouchToggle","id",packageName).takeIf{it!=0}?.let{findViewById<ImageButton?>(it)}
+        val btnTouchToggle = findViewById<ImageButton?>(R.id.btnTouchToggle)
         btnTouchToggle?.setImageResource(R.drawable.ic_finger)
         btnTouchToggle?.alpha = 0.35f
         btnTouchToggle?.setOnClickListener {
@@ -544,7 +544,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Page scroll thumb — touch and drag on right edge moves canvas
-        val scrollThumb = resources.getIdentifier("pageScrollThumb","id",packageName).takeIf{it!=0}?.let{findViewById<View?>(it)}
+        val scrollThumb = findViewById<View?>(R.id.pageScrollThumb)
         scrollThumb?.let { thumb ->
             var dragStartRawY = 0f; var dragStartThumbY = 0f
             thumb.setOnTouchListener { _, ev ->
@@ -575,8 +575,8 @@ class MainActivity : AppCompatActivity() {
         val contextBar = findViewById<HorizontalScrollView>(R.id.toolbarScroll)
         contextBar.visibility = View.VISIBLE // always visible now
 
-        // Context bar: keep existing XML buttons (brush, highlighter, fill, color, size)
-        // rebuildContextBar adds tool-specific chips/colors dynamically
+        // Remove old secondary bar buttons - context bar is rebuilt dynamically
+        (contextBar.getChildAt(0) as? LinearLayout)?.removeAllViews()
 
         val btnExpand = findViewById<ImageButton>(R.id.btnExpand)
         btnExpand.visibility = View.GONE // no longer needed
@@ -594,9 +594,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnLongClickListener { showHighlighterOptionsPanel(); true }
         findViewById<ImageButton?>(R.id.btnBrush)?.setOnLongClickListener { showBrushOptionsPanel(); true }
 
-        val btnMenuView = findViewById<ImageButton?>(R.id.btnMenu)
-        btnMenuView?.setOnClickListener { onMenuClick(it) }
-        btnMenuView?.setImageResource(android.R.drawable.ic_menu_more)
+        findViewById<ImageButton?>(R.id.btnMenu)?.setOnClickListener { onMenuClick(it) }
         findViewById<ImageButton?>(R.id.btnLink)?.setOnClickListener { closeInlineEditor(true); showLinkPickerDialog() }
         findViewById<ImageButton?>(R.id.btnBack)?.setOnClickListener { confirmThenExit() }
         btnLayoutToggle.setOnClickListener { showLayoutMenu(it) }
@@ -657,14 +655,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun rebuildContextBar() {
         val contextBar = findViewById<HorizontalScrollView>(R.id.toolbarScroll) ?: return
-        val outerRow = (contextBar.getChildAt(0) as? LinearLayout) ?: LinearLayout(this).also {
+        val row = (contextBar.getChildAt(0) as? LinearLayout) ?: LinearLayout(this).also {
             it.orientation = LinearLayout.HORIZONTAL; it.gravity = Gravity.CENTER_VERTICAL
             it.setPadding(dp(8), 0, dp(8), 0); contextBar.addView(it)
-        }
-        // Use a dedicated dynamic child so we don't wipe the static XML buttons
-        val row = outerRow.findViewWithTag<LinearLayout>("dynamicContextRow") ?: LinearLayout(this).also {
-            it.tag = "dynamicContextRow"; it.orientation = LinearLayout.HORIZONTAL; it.gravity = Gravity.CENTER_VERTICAL
-            outerRow.addView(it)
         }
         row.removeAllViews()
         val BAR_H = dp(38)
@@ -1205,9 +1198,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun showLinkNotePickerDialog(bookName: String) {
         val folder = File(File(filesDir, "books"), bookName)
-        val notes = folder.listFiles()?.filter { it.extension == "eng" && it.nameWithoutExtension != currentFileName }
-            ?.map { it.nameWithoutExtension }?.sorted() ?: emptyList()
-        if (notes.isEmpty()) { Toast.makeText(this, "No other notes in $bookName to link to", Toast.LENGTH_SHORT).show(); return }
+        val notes = folder.listFiles()?.filter { it.extension == "eng" }?.map { it.nameWithoutExtension }?.sorted() ?: emptyList()
+        if (notes.isEmpty()) { Toast.makeText(this, "No notes in $bookName yet", Toast.LENGTH_SHORT).show(); return }
         AlertDialog.Builder(this).setTitle("Link to Note in $bookName")
             .setItems(notes.toTypedArray()) { _, i ->
                 val noteName = notes[i]
@@ -1227,15 +1219,10 @@ class MainActivity : AppCompatActivity() {
             drawingView.invalidate()
             Toast.makeText(this, "Linked to $displayName", Toast.LENGTH_SHORT).show()
         } else {
-            val t2 = target; val n2 = displayName
-            drawingView.post {
-                val wx = if (drawingView.width > 0) drawingView.screenCenterWorldX() else drawingView.pageWidthPx() / 2f
-                val wy = if (drawingView.height > 0) drawingView.screenCenterWorldY() else drawingView.pageHeightPx() / 2f
-                val item = TextItem(n2, wx, wy, Color.parseColor("#1565C0"), drawingView.defaultTextSize, 0f)
-                item.linkTarget = t2
-                drawingView.addLinkText(item)
-                Toast.makeText(this, "Link inserted", Toast.LENGTH_SHORT).show()
-            }
+            val item = TextItem(displayName, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), Color.parseColor("#1565C0"), drawingView.defaultTextSize, 0f)
+            item.linkTarget = target
+            drawingView.addLinkText(item)
+            Toast.makeText(this, "Link inserted", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -1278,11 +1265,7 @@ class MainActivity : AppCompatActivity() {
         // Inject shapes into context bar instead of floating overlay
         setActiveTool(anchor, Tool.RECTANGLE) // default shape
         val contextBar = findViewById<HorizontalScrollView>(R.id.toolbarScroll) ?: return
-        val outerRow = contextBar.getChildAt(0) as? LinearLayout ?: return
-        val row = outerRow.findViewWithTag<LinearLayout>("dynamicContextRow") ?: LinearLayout(this).also {
-            it.tag = "dynamicContextRow"; it.orientation = LinearLayout.HORIZONTAL; it.gravity = Gravity.CENTER_VERTICAL
-            outerRow.addView(it)
-        }
+        val row = contextBar.getChildAt(0) as? LinearLayout ?: return
         row.removeAllViews()
         for ((iconRes, tool) in shapeEntries) {
             row.addView(ImageView(this).apply {
