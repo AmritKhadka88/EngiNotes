@@ -467,8 +467,19 @@ class MainActivity : AppCompatActivity() {
 
         drawingView.onTextEditRequest       = { item, sx, sy, wx, wy -> showInlineTextEditor(item,sx,sy,wx,wy) }
         drawingView.onTextSelectRequest     = { item, sx, sy, rawX, rawY -> showTextSelectionBox(item, sx, sy, rawX, rawY) }
+        drawingView.onTextHoldDragMove      = { item, rawX, rawY -> onHoldDragMove(item, rawX, rawY) }
         drawingView.onTextEditOptions        = { item -> showTextEditOptionsPanel(item) }
         drawingView.onTextDeselectRequest   = { dismissTextSelectionBox() }
+        drawingView.onOcrSnipSelected       = { bmp ->
+            val progress = android.app.ProgressDialog(this).apply { setMessage("Reading text..."); setCancelable(false); show() }
+            try {
+                val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bmp, 0)
+                val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
+                recognizer.process(image)
+                    .addOnSuccessListener { result -> progress.dismiss(); placeOcrResultOnCanvas(result) }
+                    .addOnFailureListener { e -> progress.dismiss(); Toast.makeText(this, "OCR failed: ${e.message}", Toast.LENGTH_LONG).show() }
+            } catch (e: Exception) { progress.dismiss(); Toast.makeText(this, "OCR failed: ${e.message}", Toast.LENGTH_LONG).show() }
+        }
         drawingView.onEmptyAreaTap          = {
             // Tapping genuinely empty canvas is the "I'm done" signal: commit and close whatever
             // editor is open (text or table cell), and bring the bottom toolbar back if a table
@@ -1541,31 +1552,10 @@ class MainActivity : AppCompatActivity() {
             }.show()
     }
 
-    // Captures the current visible canvas as a bitmap and runs OCR on it directly —
-    // no snipping required, reads whatever text is visible on screen right now.
+    // Enter snip mode: user draws a box on canvas, that region is OCR'd
     private fun ocrFromCanvas() {
-        val bmp = drawingView.exportBitmap()
-        val progress = android.app.ProgressDialog(this).apply {
-            setMessage("Reading text from canvas..."); setCancelable(false); show()
-        }
-        try {
-            val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bmp, 0)
-            val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(
-                com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS
-            )
-            recognizer.process(image)
-                .addOnSuccessListener { result ->
-                    progress.dismiss()
-                    placeOcrResultOnCanvas(result)
-                }
-                .addOnFailureListener { e ->
-                    progress.dismiss()
-                    Toast.makeText(this, "OCR failed: ${e.message}", Toast.LENGTH_LONG).show()
-                }
-        } catch (e: Exception) {
-            progress.dismiss()
-            Toast.makeText(this, "OCR failed: ${e.message}", Toast.LENGTH_LONG).show()
-        }
+        Toast.makeText(this, "Draw a box around the text to read", Toast.LENGTH_SHORT).show()
+        setActiveTool(null, Tool.OCR_SNIP)
     }
 
     // Shows font/size/color options panel for a link text item (triggered by double-tap after hold-select)
@@ -2566,6 +2556,7 @@ class MainActivity : AppCompatActivity() {
         textSelectionBox = null; textSelectionItem = null
         drawingView.isTextSelected = false
         drawingView.selectedItem = null; drawingView.invalidate()
+        holdDragLastRawX = -1f; holdDragLastRawY = -1f  // reset hold+drag state
     }
 
     // Lightweight selection box for a single tap on text: shows the same border + move/resize/
@@ -2614,7 +2605,28 @@ class MainActivity : AppCompatActivity() {
         return Pair(boxW, boxH)
     }
 
+    // Called on every ACTION_MOVE during a hold+drag before moveSurface takes over.
+    // Directly moves the text item in world coords and repositions the selection box.
+    private var holdDragLastRawX = -1f; private var holdDragLastRawY = -1f
+    private fun onHoldDragMove(item: TextItem, rawX: Float, rawY: Float) {
+        if (holdDragLastRawX < 0f) { holdDragLastRawX = rawX; holdDragLastRawY = rawY; return }
+        val dxPx = rawX - holdDragLastRawX; val dyPx = rawY - holdDragLastRawY
+        holdDragLastRawX = rawX; holdDragLastRawY = rawY
+        val scale = drawingView.getScaleFactor()
+        item.x += dxPx / scale; item.y += dyPx / scale
+        drawingView.invalidate()
+        // Also shift the selection box if it exists
+        val box = textSelectionBox
+        if (box != null) {
+            val lp = box.layoutParams as? FrameLayout.LayoutParams ?: return
+            lp.leftMargin = (lp.leftMargin + dxPx).toInt()
+            lp.topMargin = (lp.topMargin + dyPx).toInt()
+            box.layoutParams = lp
+        }
+    }
+
     private fun showTextSelectionBox(item: TextItem, screenX: Float, screenY: Float, initialRawX: Float = -1f, initialRawY: Float = -1f) {
+        holdDragLastRawX = initialRawX; holdDragLastRawY = initialRawY  // seed for onHoldDragMove
         if (textSelectionItem === item) return
         dismissTextSelectionBox()
         closeInlineEditor(true)

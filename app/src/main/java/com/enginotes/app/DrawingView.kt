@@ -40,7 +40,7 @@ enum class EraserShape { ROUND, SQUARE }
 
 enum class Tool {
     SELECT, FILL, PEN, BRUSH, ERASER, HIGHLIGHTER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
-    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT, AUTOSELECT, LASSO, EXPORT_WINDOW,
+    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT, AUTOSELECT, LASSO, EXPORT_WINDOW, OCR_SNIP,
     HEPTAGON, OCTAGON, NONAGON, DECAGON, TRAPEZOID, PARALLELOGRAM, RIGHT_TRIANGLE, ISOSCELES_TRIANGLE,
     SEMICIRCLE, HALF_ELLIPSE, TEARDROP, HEART, PLUS_THICK, DOUBLE_ARROW, BRACKET_L, BRACKET_R,
     CLOUD, SPEECH_BUBBLE, LIGHTNING, MOON, CHEVRON_RIGHT, CHEVRON_LEFT, CHEVRON_UP, CHEVRON_DOWN,
@@ -611,6 +611,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private val ctx = context
+    private fun dp(v: Int): Float = v * resources.displayMetrics.density
     private val actions = mutableListOf<Any>()
     fun removeDimensionItem(d: DimensionItem) { actions.remove(d); selectedItem = null; redoStack.clear(); invalidate() }
     private val redoStack = mutableListOf<Any>()
@@ -693,6 +694,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var onTextEditRequest: ((TextItem?, Float, Float, Float, Float) -> Unit)? = null
     var onTextSelectRequest: ((TextItem, Float, Float, Float, Float) -> Unit)? = null  // item, screenX, screenY, initialRawX, initialRawY
     var onTextEditOptions: ((TextItem) -> Unit)? = null  // show text options in context bar
+    var onTextHoldDragMove: ((TextItem, Float, Float) -> Unit)? = null  // called when hold+drag moves — rawX, rawY of current finger
     var onTextDeselectRequest: (() -> Unit)? = null
     var onTableCellEditRequest: ((TableItem, Int, Int, Float, Float) -> Unit)? = null
     var onAudioItemTap: ((AudioItem) -> Unit)? = null
@@ -742,6 +744,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var exportWindowStart: Pair<Float, Float>? = null
     private var exportWindowEnd: Pair<Float, Float>? = null
     var onExportWindowSelected: ((Float, Float, Float, Float) -> Unit)? = null
+    var onOcrSnipSelected: ((Bitmap) -> Unit)? = null  // cropped bitmap ready for OCR
 
     private var scaleFactor = 1f
     private var translateX = 0f; private var translateY = 0f
@@ -2195,6 +2198,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val longPressHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var longPressRunnable: Runnable? = null
     private var textLongPressStartX = 0f; private var textLongPressStartY = 0f
+    // Manual hold+drag for SELECT tool text items (including links)
+    private var selectHoldDownX = 0f; private var selectHoldDownY = 0f
+    private var selectHoldRawX = 0f; private var selectHoldRawY = 0f
+    private var selectHoldDownTime = 0L; private var selectHoldItem: TextItem? = null
+    private var selectHoldTriggered = false  // true once hold threshold passed and selection shown
+    private var selectHoldMoved = false      // true if finger moved significantly before hold threshold
     private var dimPhase = DimPhase.IDLE
     private var dimP1wx = 0f; private var dimP1wy = 0f
     private var dimP2wx = 0f; private var dimP2wy = 0f
@@ -3035,11 +3044,76 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             gestureDetector.onTouchEvent(event); return true
         }
-        if (currentTool == Tool.SELECT) { gestureDetector.onTouchEvent(event); handleSelect(event); return true }
+        if (currentTool == Tool.SELECT) {
+            val wx2 = screenToWorldX(event.x); val wy2 = screenToWorldY(event.y)
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    val textHit = findTextItemAt(wx2, wy2)
+                    if (textHit != null) {
+                        // Track the down event for hold detection
+                        selectHoldItem = textHit
+                        selectHoldDownX = event.x; selectHoldDownY = event.y
+                        selectHoldRawX = event.rawX; selectHoldRawY = event.rawY
+                        selectHoldDownTime = System.currentTimeMillis()
+                        selectHoldTriggered = false; selectHoldMoved = false
+                        // Still feed gestureDetector for double-tap and single-tap-confirmed
+                        gestureDetector.onTouchEvent(event)
+                        return true
+                    } else {
+                        selectHoldItem = null; selectHoldTriggered = false
+                    }
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val holdItem = selectHoldItem
+                    if (holdItem != null) {
+                        val dx = event.x - selectHoldDownX; val dy = event.y - selectHoldDownY
+                        val moved = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+                        if (moved > dp(8)) selectHoldMoved = true
+                        val heldMs = System.currentTimeMillis() - selectHoldDownTime
+                        if (!selectHoldTriggered && heldMs >= 400L) {
+                            // Hold threshold reached — select and immediately start drag
+                            selectHoldTriggered = true
+                            selectedItem = holdItem; invalidate()
+                            onTextSelectRequest?.invoke(holdItem, selectHoldDownX, selectHoldDownY, selectHoldRawX, selectHoldRawY)
+                        }
+                        if (selectHoldTriggered) {
+                            // Forward current finger position so moveSurface can update position
+                            onTextHoldDragMove?.invoke(holdItem, event.rawX, event.rawY)
+                            return true
+                        }
+                        gestureDetector.onTouchEvent(event)
+                        return true
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    val holdItem = selectHoldItem
+                    if (holdItem != null) {
+                        val heldMs = System.currentTimeMillis() - selectHoldDownTime
+                        if (!selectHoldTriggered && !selectHoldMoved) {
+                            if (holdItem.linkTarget != null && heldMs < 300L) {
+                                // Short tap on link → navigate
+                                onLinkTap?.invoke(holdItem.linkTarget!!)
+                                selectHoldItem = null
+                                gestureDetector.onTouchEvent(event)
+                                return true
+                            }
+                            if (holdItem.linkTarget == null) {
+                                // Short tap on normal text → select (single tap confirmed)
+                                // gestureDetector will fire onSingleTapConfirmed which handles this
+                            }
+                        }
+                        selectHoldItem = null; selectHoldTriggered = false
+                        gestureDetector.onTouchEvent(event); handleSelect(event); return true
+                    }
+                }
+            }
+            gestureDetector.onTouchEvent(event); handleSelect(event); return true
+        }
         if (currentTool == Tool.ARC) { handleArc(event); return true }
         if (currentTool == Tool.AUTOSELECT) { gestureDetector.onTouchEvent(event); handleAutoSelect(event); return true }
         if (currentTool == Tool.LASSO) { handleLasso(event); return true }
         if (currentTool == Tool.EXPORT_WINDOW) { handleExportWindow(event); return true }
+        if (currentTool == Tool.OCR_SNIP) { handleOcrSnip(event); return true }
         if (canvasMode == CanvasMode.INFINITE && currentItem == null && event.actionMasked == MotionEvent.ACTION_MOVE && isFinger) gestureDetector.onTouchEvent(event)
         handleDrawing(event); return true
     }
@@ -3054,6 +3128,23 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val left = minOf(s.first, e.first); val top = minOf(s.second, e.second); val right = maxOf(s.first, e.first); val bottom = maxOf(s.second, e.second)
                 if (right - left > 20f && bottom - top > 20f) onExportWindowSelected?.invoke(left, top, right, bottom)
                 exportWindowStart = null; exportWindowEnd = null; currentTool = Tool.SELECT; invalidate()
+            }
+        }
+    }
+
+    private fun handleOcrSnip(event: MotionEvent) {
+        val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { exportWindowStart = Pair(wx, wy); exportWindowEnd = Pair(wx, wy); invalidate() }
+            MotionEvent.ACTION_MOVE -> { exportWindowEnd = Pair(wx, wy); invalidate() }
+            MotionEvent.ACTION_UP -> {
+                val s = exportWindowStart ?: return; val e = exportWindowEnd ?: return
+                val left = minOf(s.first, e.first); val top = minOf(s.second, e.second); val right = maxOf(s.first, e.first); val bottom = maxOf(s.second, e.second)
+                exportWindowStart = null; exportWindowEnd = null; currentTool = Tool.SELECT; invalidate()
+                if (right - left > 20f && bottom - top > 20f) {
+                    val bmp = exportWindow(left, top, right, bottom)
+                    onOcrSnipSelected?.invoke(bmp)
+                }
             }
         }
     }
