@@ -528,14 +528,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnText).setOnLongClickListener { showTextOptionsPanel(); true }
         findViewById<ImageButton>(R.id.btnInsert).setOnClickListener { showInsertMenu() }
 
-        // Handwriting-to-text realtime toggle
-        val btnHwr = findViewById<ImageButton?>(R.id.btnHwr)
-        btnHwr?.setOnClickListener {
-            hwrAutoEnabled = !hwrAutoEnabled
-            btnHwr.alpha = if (hwrAutoEnabled) 1f else 0.35f
-            btnHwr.imageTintList = android.content.res.ColorStateList.valueOf(if (hwrAutoEnabled) Color.parseColor("#1565C0") else Color.parseColor("#1C1C1E"))
-            Toast.makeText(this, if (hwrAutoEnabled) "Auto handwriting-to-text ON" else "Auto handwriting-to-text OFF", Toast.LENGTH_SHORT).show()
-        }
+        // Handwriting-to-text realtime toggle (button removed from toolbar; feature available via menu)
         findViewById<ImageButton>(R.id.btnTools).setOnClickListener { showShapesPicker(it as ImageButton) }
 
         // Touch/Pan toggle
