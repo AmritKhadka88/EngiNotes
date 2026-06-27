@@ -528,7 +528,7 @@ class MainActivity : AppCompatActivity() {
 
         // Touch/Pan toggle
         var touchModeIsPan = false
-        val btnTouchToggle = findViewById<ImageButton?>(R.id.btnTouchToggle)
+        val btnTouchToggle = resources.getIdentifier("btnTouchToggle","id",packageName).takeIf{it!=0}?.let{findViewById<ImageButton?>(it)}
         btnTouchToggle?.setImageResource(R.drawable.ic_finger)
         btnTouchToggle?.alpha = 0.35f
         btnTouchToggle?.setOnClickListener {
@@ -544,7 +544,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Page scroll thumb — touch and drag on right edge moves canvas
-        val scrollThumb = findViewById<View?>(R.id.pageScrollThumb)
+        val scrollThumb = resources.getIdentifier("pageScrollThumb","id",packageName).takeIf{it!=0}?.let{findViewById<View?>(it)}
         scrollThumb?.let { thumb ->
             var dragStartRawY = 0f; var dragStartThumbY = 0f
             thumb.setOnTouchListener { _, ev ->
