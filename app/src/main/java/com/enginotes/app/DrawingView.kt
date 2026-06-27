@@ -800,6 +800,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
             val hit = findTextItemAt(wx, wy)
             if (hit != null) {
+                // Link: single tap navigates, double tap selects for moving
+                if (hit.linkTarget != null) { onLinkTap?.invoke(hit.linkTarget!!); return true }
                 selectedItem = hit
                 onTextSelectRequest?.invoke(hit, e.x, e.y)
                 invalidate()
@@ -861,6 +863,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         override fun onDoubleTap(e: MotionEvent): Boolean {
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
+            // Double-tap on a link = select it (to move/edit)
+            if (currentTool == Tool.SELECT) {
+                val hitLink = findTextItemAt(wx, wy)
+                if (hitLink?.linkTarget != null) { selectedItem = hitLink; onTextSelectRequest?.invoke(hitLink, e.x, e.y); invalidate(); return true }
+            }
             // Double-tap on a DimensionItem → edit it
             if (currentTool == Tool.DIMENSION || currentTool == Tool.SELECT) {
                 val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
@@ -931,7 +938,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
             val hit = findTextItemAt(wx, wy)
             if (hit != null) {
-                if (hit.linkTarget != null && currentTool == Tool.SELECT) { onLinkTap?.invoke(hit.linkTarget!!); return }
                 selectedItem = hit; invalidate()
                 onTextSelectRequest?.invoke(hit, e.x, e.y)
                 return
@@ -3553,7 +3559,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val wx1 = screenToWorldX((minX + cw) / scale); val wy1 = screenToWorldY((minY + ch) / scale)
                 post {
                     val fi = FillItem(outFile.absolutePath, wx0, wy0, wx1 - wx0, wy1 - wy0)
-                    if (pendingHatchPattern != null) { fi.hatchPattern = pendingHatchPattern; fi.hatchColor = pendingHatchColor; pendingHatchPattern = null }
+                    if (pendingHatchPattern != null) { fi.hatchPattern = pendingHatchPattern; fi.hatchColor = pendingHatchColor }
+                    // pendingHatchPattern stays set so repeated taps keep using the same hatch
                     // Pre-attach the bitmap so it draws immediately without async blink
                     fi.bitmap = fb
                     // Remove any existing FillItem that covers the same tap point (same area)
