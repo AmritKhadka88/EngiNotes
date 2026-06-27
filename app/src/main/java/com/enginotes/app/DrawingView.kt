@@ -2631,13 +2631,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
-    private fun pageWidthPx(): Float {
+    fun pageWidthPx(): Float {
         if (canvasMode == CanvasMode.CONVENIENT) return if (convenientPageW > 0) convenientPageW else width.toFloat()
         val m = 3.7795f
         return if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
     }
 
-    private fun pageHeightPx(): Float {
+    fun pageHeightPx(): Float {
         // Convenient = one screen-height page (tall, comfortable reading/writing)
         if (canvasMode == CanvasMode.CONVENIENT) return if (convenientPageH > 0) convenientPageH else height.toFloat()
         val m = 3.7795f
@@ -3624,22 +3624,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     line.startsWith("TEXT\u0001") -> {
                         val p = line.split("\u0001"); if (p.size >= 7) {
                             val item = TextItem("", p[1].toFloat(), p[2].toFloat(), p[3].toInt(), p[4].toFloat(), p[5].toFloat())
-                            if (p.size >= 9 && (p[6] == "true" || p[6] == "false")) {
-                                // Old legacy format: spans field contains "true"/"false" (bold/italic)
+                            if (p.size >= 9) {
                                 val bold = p[6].toBoolean(); val italic = p[7].toBoolean()
-                                item.text = if (p.size > 8) p[8].replace("\u0002", "\n") else ""
+                                item.text = p[8].replace("\u0002", "\n")
                                 val style = if (bold && italic) Typeface.BOLD_ITALIC else if (bold) Typeface.BOLD else if (italic) Typeface.ITALIC else -1
                                 if (style >= 0) item.spans.add(TextSpanData(0, item.text.length, 'S', style))
                             } else {
-                                // Current format: TEXT\u0001x\u0001y\u0001color\u0001size\u0001rotation\u0001spans\u0001text\u0001maxWidth\u0001fontFamily\u0001opacity\u0001linkTarget
-                                if (p[6].isNotBlank()) for (t in p[6].split(";")) { val sp = t.split(","); if (sp.size == 4) try { item.spans.add(TextSpanData(sp[0].toInt(), sp[1].toInt(), sp[2][0], sp[3].toInt())) } catch (e: Exception) {} }
+                                if (p[6].isNotBlank()) for (t in p[6].split(";")) { val sp = t.split(","); if (sp.size == 4) item.spans.add(TextSpanData(sp[0].toInt(), sp[1].toInt(), sp[2][0], sp[3].toInt())) }
                                 item.text = if (p.size > 7) p[7].replace("\u0002", "\n") else ""
-                                if (p.size >= 9) item.maxWidth = p[8].toFloatOrNull() ?: 0f
-                                if (p.size >= 10) item.fontFamily = p[9]
-                                if (p.size >= 11) item.opacity = p[10].toIntOrNull() ?: 255
-                                // p[11] = linkTarget (index 11 = 12th field)
-                                if (p.size >= 12 && p[11].isNotBlank()) item.linkTarget = p[11]
                             }
+                            if (p.size >= 10) item.maxWidth = p[9].toFloatOrNull() ?: 0f
+                            if (p.size >= 11) item.fontFamily = p[10]
+                            if (p.size >= 12) item.opacity = p[11].toIntOrNull() ?: 255
+                            if (p.size >= 13 && p[12].isNotBlank()) item.linkTarget = p[12]
                             actions.add(item)
                         }
                         i++
