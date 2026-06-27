@@ -3625,20 +3625,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val p = line.split("\u0001"); if (p.size >= 7) {
                             val item = TextItem("", p[1].toFloat(), p[2].toFloat(), p[3].toInt(), p[4].toFloat(), p[5].toFloat())
                             if (p.size >= 9 && (p[6] == "true" || p[6] == "false")) {
-                                // Old format: bold\u0001italic\u0001text
+                                // Old legacy format: spans field contains "true"/"false" (bold/italic)
                                 val bold = p[6].toBoolean(); val italic = p[7].toBoolean()
-                                item.text = p[8].replace("\u0002", "\n")
+                                item.text = if (p.size > 8) p[8].replace("\u0002", "\n") else ""
                                 val style = if (bold && italic) Typeface.BOLD_ITALIC else if (bold) Typeface.BOLD else if (italic) Typeface.ITALIC else -1
                                 if (style >= 0) item.spans.add(TextSpanData(0, item.text.length, 'S', style))
-                                // Old format has no linkTarget
                             } else {
-                                // New format: spans\u0001text\u0001maxWidth\u0001fontFamily\u0001opacity\u0001linkTarget
-                                if (p[6].isNotBlank()) for (t in p[6].split(";")) { val sp = t.split(","); if (sp.size == 4) item.spans.add(TextSpanData(sp[0].toInt(), sp[1].toInt(), sp[2][0], sp[3].toInt())) }
+                                // Current format: TEXT\u0001x\u0001y\u0001color\u0001size\u0001rotation\u0001spans\u0001text\u0001maxWidth\u0001fontFamily\u0001opacity\u0001linkTarget
+                                if (p[6].isNotBlank()) for (t in p[6].split(";")) { val sp = t.split(","); if (sp.size == 4) try { item.spans.add(TextSpanData(sp[0].toInt(), sp[1].toInt(), sp[2][0], sp[3].toInt())) } catch (e: Exception) {} }
                                 item.text = if (p.size > 7) p[7].replace("\u0002", "\n") else ""
-                                if (p.size >= 10) item.maxWidth = p[9].toFloatOrNull() ?: 0f
-                                if (p.size >= 11) item.fontFamily = p[10]
-                                if (p.size >= 12) item.opacity = p[11].toIntOrNull() ?: 255
-                                if (p.size >= 13 && p[12].isNotBlank()) item.linkTarget = p[12]
+                                if (p.size >= 9) item.maxWidth = p[8].toFloatOrNull() ?: 0f
+                                if (p.size >= 10) item.fontFamily = p[9]
+                                if (p.size >= 11) item.opacity = p[10].toIntOrNull() ?: 255
+                                // p[11] = linkTarget (index 11 = 12th field)
+                                if (p.size >= 12 && p[11].isNotBlank()) item.linkTarget = p[11]
                             }
                             actions.add(item)
                         }
