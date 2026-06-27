@@ -529,9 +529,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnInsert).setOnClickListener { showInsertMenu() }
 
         // Handwriting-to-text realtime toggle — add programmatically to primary toolbar
-        val primaryBar = findViewById<LinearLayout?>(R.id.primaryToolbar) ?: findViewById<ViewGroup?>(R.id.primaryToolbarScroll)?.let {
-            (it as? HorizontalScrollView)?.getChildAt(0) as? LinearLayout
-        }
+        val primaryBar = (findViewById<HorizontalScrollView?>(R.id.primaryToolbarScroll)?.getChildAt(0) as? LinearLayout)
         if (primaryBar != null) {
             val btnHwr = ImageButton(this).apply {
                 setImageResource(android.R.drawable.ic_menu_edit)
