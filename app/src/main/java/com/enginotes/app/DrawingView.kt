@@ -106,7 +106,7 @@ val BBOX_RESIZE_SHAPES = setOf(
     Tool.RING, Tool.BLOCK_ARROW_RIGHT, Tool.BLOCK_ARROW_LEFT, Tool.BLOCK_ARROW_UP, Tool.BLOCK_ARROW_DOWN,
     Tool.SQUARE_ROUNDED_SMALL, Tool.BURST, Tool.FRAME, Tool.PLAQUE, Tool.FIVE_POINT_BURST
 )
-val ENDPOINT_RESIZE_SHAPES = setOf(Tool.LINE, Tool.CIRCLE, Tool.ARROW, Tool.CURVE)
+val ENDPOINT_RESIZE_SHAPES = setOf(Tool.LINE, Tool.CIRCLE, Tool.ARROW, Tool.CURVE, Tool.PEN)
 
 data class TextSpanData(val start: Int, val end: Int, val type: Char, val value: Int)
 
@@ -793,15 +793,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         override fun onDown(e: MotionEvent): Boolean = true
 
         // onSingleTapUp fires immediately on finger-up with no 300ms delay.
-        // For links: single tap always navigates immediately regardless of current tool.
-        // For normal text in SELECT tool: select it instantly.
+        // Links always navigate on single tap regardless of tool.
+        // Normal text in SELECT tool: select immediately.
         override fun onSingleTapUp(e: MotionEvent): Boolean {
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
             val hit = findTextItemAt(wx, wy)
             if (hit != null) {
-                // Links always navigate on single tap — long press is how you select them
                 if (hit.linkTarget != null) { onLinkTap?.invoke(hit.linkTarget!!); return true }
-                // Normal text in SELECT tool: select immediately
                 if (currentTool == Tool.SELECT) {
                     selectedItem = hit
                     onTextSelectRequest?.invoke(hit, e.x, e.y)
@@ -935,7 +933,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
             val hit = findTextItemAt(wx, wy)
             if (hit != null) {
-                // Long press selects any text item — including links (so you can move/edit them)
                 selectedItem = hit; invalidate()
                 onTextSelectRequest?.invoke(hit, e.x, e.y)
                 return
@@ -1912,7 +1909,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         } else if (isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
             hFill.color = Color.WHITE
             val p0x = item.data.points[0]; val p0y = item.data.points[1]
-            val p1x = item.data.points[2]; val p1y = item.data.points[3]
+            // For PEN (multi-point), use last point; for 2-point shapes use points[2,3]
+            val lastIdx = item.data.points.size - 2
+            val p1x = item.data.points[lastIdx]; val p1y = item.data.points[lastIdx + 1]
             canvas.drawCircle(p0x, p0y, hr, hFill); canvas.drawCircle(p0x, p0y, hr, hStroke)
             canvas.drawCircle(p1x, p1y, hr, hFill); canvas.drawCircle(p1x, p1y, hr, hStroke)
         }
@@ -2068,7 +2067,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val cx = (b[0] + b[2]) / 2f; val cy = (b[1] + b[3]) / 2f
                         rotatePoint(wx, wy, cx, cy, -rot)
                     } else Pair(wx, wy)
-                    when (handle) { HandleType.TL -> { item.data.points[0] = ux; item.data.points[1] = uy }; HandleType.BR -> { item.data.points[2] = ux; item.data.points[3] = uy }; else -> {} }
+                    when (handle) {
+                        HandleType.TL -> { item.data.points[0] = ux; item.data.points[1] = uy }
+                        HandleType.BR -> {
+                            // For PEN (multi-point), move the last point; for 2-point shapes move points[2,3]
+                            val lastIdx3 = item.data.points.size - 2
+                            item.data.points[lastIdx3] = ux; item.data.points[lastIdx3 + 1] = uy
+                        }
+                        else -> {}
+                    }
                     item.path = item.data.buildPath()
                 }
             }
@@ -2324,7 +2331,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             }
                         }
                         if (!handled && isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
-                            val p0x = item.data.points[0]; val p0y = item.data.points[1]; val p1x = item.data.points[2]; val p1y = item.data.points[3]
+                            val p0x = item.data.points[0]; val p0y = item.data.points[1]
+                            val lastIdx2 = item.data.points.size - 2
+                            val p1x = item.data.points[lastIdx2]; val p1y = item.data.points[lastIdx2 + 1]
                             if (distance(lx, ly, p0x, p0y) <= hit) { activeHandle = HandleType.TL; resizePrevWorldX = wx; resizePrevWorldY = wy; handled = true }
                             else if (distance(lx, ly, p1x, p1y) <= hit) { activeHandle = HandleType.BR; resizePrevWorldX = wx; resizePrevWorldY = wy; handled = true }
                         }
@@ -3622,8 +3631,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     line.startsWith("TEXT\u0001") -> {
                         val p = line.split("\u0001"); if (p.size >= 7) {
                             val item = TextItem("", p[1].toFloat(), p[2].toFloat(), p[3].toInt(), p[4].toFloat(), p[5].toFloat())
-                            // Detect old format: p[6] is "true"/"false" (bold flag), p[7] is "true"/"false" (italic flag)
-                            // New format: p[6] is spans string (e.g. "0,5,S,1" or blank), p[7] is text
                             val isOldFormat = p.size >= 9 && (p[6] == "true" || p[6] == "false") && (p[7] == "true" || p[7] == "false")
                             if (isOldFormat) {
                                 val bold = p[6].toBoolean(); val italic = p[7].toBoolean()

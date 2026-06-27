@@ -2591,6 +2591,7 @@ class MainActivity : AppCompatActivity() {
         val moveSurface = View(this)
         var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
         var isDraggingRotate = false; var rotStartRawX2 = 0f; var rotStartRotation2 = 0f
+        var lastTapTimeMs = 0L; var lastTapRawX = 0f; var lastTapRawY = 0f
         moveSurface.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
@@ -2604,6 +2605,18 @@ class MainActivity : AppCompatActivity() {
                         moveStartRawX = ev.rawX; moveStartRawY = ev.rawY
                         val lp = moveSurface.layoutParams as FrameLayout.LayoutParams
                         moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
+                        // Double-tap detection: two taps within 300ms and 40px — open editor (links excluded)
+                        val now = System.currentTimeMillis()
+                        val dx2 = ev.rawX - lastTapRawX; val dy2 = ev.rawY - lastTapRawY
+                        val moved = kotlin.math.hypot(dx2.toDouble(), dy2.toDouble()).toFloat()
+                        if (now - lastTapTimeMs < 300L && moved < dp(40) && item.linkTarget == null) {
+                            dismissTextSelectionBox()
+                            drawingView.post { showInlineTextEditor(item, ev.x, ev.y,
+                                drawingView.screenToWorldX(ev.x), drawingView.screenToWorldY(ev.y)) }
+                            lastTapTimeMs = 0L
+                            return@setOnTouchListener true
+                        }
+                        lastTapTimeMs = now; lastTapRawX = ev.rawX; lastTapRawY = ev.rawY
                     }
                     true // ALWAYS true — never drop the touch sequence
                 }
@@ -2620,6 +2633,9 @@ class MainActivity : AppCompatActivity() {
                         item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat())
                         item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + boxH)
                         drawingView.invalidate()
+                        // Cancel double-tap if finger moves significantly
+                        val dx3 = ev.rawX - lastTapRawX; val dy3 = ev.rawY - lastTapRawY
+                        if (kotlin.math.hypot(dx3.toDouble(), dy3.toDouble()) > dp(20)) lastTapTimeMs = 0L
                     }
                     true
                 }
