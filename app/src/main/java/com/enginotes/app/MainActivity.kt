@@ -44,7 +44,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnLayoutToggle: ImageButton
 
     private var currentFileName: String? = null
-    private var hwrAutoEnabled = false  // real-time handwriting-to-text toggle
     private var lastSavedContent: String = ""
     private val PT_TO_PX = 1.333f
     private var isConvenientLayout = true
@@ -292,8 +291,7 @@ class MainActivity : AppCompatActivity() {
             recognizer.process(image)
                 .addOnSuccessListener { result ->
                     progress.dismiss()
-                    if (result.text.isBlank()) { Toast.makeText(this, "No text found", Toast.LENGTH_SHORT).show(); return@addOnSuccessListener }
-                    placeOcrResultOnCanvas(result)
+                    showOcrResultDialog(result.text)
                 }
                 .addOnFailureListener { e ->
                     progress.dismiss()
@@ -305,38 +303,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun placeOcrResultOnCanvas(result: com.google.mlkit.vision.text.Text) {
-        // Get the bounding box of all text to compute scale/offset
-        val allBlocks = result.textBlocks; if (allBlocks.isEmpty()) return
-        val imgLeft = allBlocks.mapNotNull { it.boundingBox?.left }.minOrNull()?.toFloat() ?: 0f
-        val imgTop = allBlocks.mapNotNull { it.boundingBox?.top }.minOrNull()?.toFloat() ?: 0f
-        val imgRight = allBlocks.mapNotNull { it.boundingBox?.right }.maxOrNull()?.toFloat() ?: 1f
-        val imgBottom = allBlocks.mapNotNull { it.boundingBox?.bottom }.maxOrNull()?.toFloat() ?: 1f
-        val imgW = (imgRight - imgLeft).coerceAtLeast(1f)
-        val imgH = (imgBottom - imgTop).coerceAtLeast(1f)
-
-        // Map OCR image coords → canvas world coords
-        // Place starting at screen center, scale to fit ~60% of screen width
-        val canvasW = drawingView.pageWidthPx()
-        val targetW = canvasW * 0.6f
-        val scale = targetW / imgW
-        val originX = drawingView.screenCenterWorldX() - targetW / 2f
-        val originY = drawingView.screenToWorldY(drawingView.height * 0.2f)
-
-        for (block in allBlocks) {
-            for (line in block.lines) {
-                val box = line.boundingBox ?: continue
-                val wx = originX + (box.left - imgLeft) * scale
-                val wy = originY + (box.top - imgTop) * scale
-                val lineH = box.height() * scale
-                val fontSize = (lineH * 0.75f).coerceIn(8f, 120f)  // 75% of line height as font size
-                val lineText = line.elements.joinToString(" ") { it.text }
-                if (lineText.isNotBlank()) {
-                    drawingView.addText(lineText, wx, wy, fontSize, 0f, drawingView.currentColor)
-                }
-            }
+    private fun showOcrResultDialog(text: String) {
+        if (text.isBlank()) { Toast.makeText(this, "No text found in image", Toast.LENGTH_SHORT).show(); return }
+        val et = EditText(this).apply {
+            setText(text); minLines = 4; maxLines = 14; gravity = Gravity.TOP or Gravity.START
+            setPadding(dp(12), dp(12), dp(12), dp(12))
         }
-        Toast.makeText(this, "Text placed on canvas", Toast.LENGTH_SHORT).show()
+        val scroll = ScrollView(this).apply { addView(et) }
+        AlertDialog.Builder(this).setTitle("Extracted Text (edit if needed)").setView(scroll)
+            .setPositiveButton("Insert") { _, _ ->
+                val finalText = et.text.toString()
+                if (finalText.isNotBlank()) {
+                    drawingView.addText(finalText, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), drawingView.defaultTextSize, 0f, drawingView.currentColor)
+                    Toast.makeText(this, "Text inserted", Toast.LENGTH_SHORT).show()
+                }
+            }.setNegativeButton("Cancel", null).show()
     }
 
     private val requestCameraPermission = registerForActivityResult(
@@ -477,8 +458,7 @@ class MainActivity : AppCompatActivity() {
                     if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
                         findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.let { v -> v.visibility = View.VISIBLE; v.startAnimation(anim) }
                     }
-                }, 300)
-                // Auto handwriting-to-text disabled (use menu > Handwriting to Text)
+                }, 300) // slight delay so bars don't flicker on quick strokes
             }
         }
         drawingView.onItemSelected          = { item ->
@@ -529,13 +509,13 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnUndo).setOnClickListener { closeInlineEditor(true); drawingView.undo() }
         findViewById<ImageButton>(R.id.btnRedo).setOnClickListener { closeInlineEditor(true); drawingView.redo() }
         findViewById<ImageButton>(R.id.btnDraw).setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.PEN) }
-        // (long-press pen and eraser set below with full closeInlineEditor)
+        findViewById<ImageButton>(R.id.btnDraw).setOnLongClickListener { showPenOptionsPanel(); true }
         findViewById<ImageButton>(R.id.btnQuickEraser).setOnClickListener { btn ->
             closeInlineEditor(true)
             if (drawingView.currentTool == Tool.ERASER) showEraserModePopup(btn)
             else setActiveTool(btn as ImageButton, Tool.ERASER)
         }
-        // eraser long-press set below
+        findViewById<ImageButton>(R.id.btnQuickEraser).setOnLongClickListener { showEraserOptionsPanel(); true }
         findViewById<ImageButton?>(R.id.btnSelect)?.setOnClickListener { btn ->
             closeInlineEditor(true)
             if (drawingView.currentTool == Tool.SELECT) showSelectModePopup(btn)
@@ -544,8 +524,6 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnText).setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.TEXT) }
         findViewById<ImageButton>(R.id.btnText).setOnLongClickListener { showTextOptionsPanel(); true }
         findViewById<ImageButton>(R.id.btnInsert).setOnClickListener { showInsertMenu() }
-
-        // (HWR auto-convert removed — use menu > Handwriting to Text instead)
         findViewById<ImageButton>(R.id.btnTools).setOnClickListener { showShapesPicker(it as ImageButton) }
 
         // Touch/Pan toggle
@@ -597,25 +575,27 @@ class MainActivity : AppCompatActivity() {
         val contextBar = findViewById<HorizontalScrollView>(R.id.toolbarScroll)
         contextBar.visibility = View.VISIBLE // always visible now
 
-        // Remove old secondary bar buttons - context bar is rebuilt dynamically
-        (contextBar.getChildAt(0) as? LinearLayout)?.removeAllViews()
+        // Context bar: keep existing XML buttons (brush, highlighter, fill, color, size)
+        // rebuildContextBar adds tool-specific chips/colors dynamically
 
         val btnExpand = findViewById<ImageButton>(R.id.btnExpand)
         btnExpand.visibility = View.GONE // no longer needed
 
         // Old secondary bar buttons wired below via rebuildContextBar
-        findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.HIGHLIGHTER); showHighlighterOptionsPanel() }
-        findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnLongClickListener { showHighlighterOptionsPanel(); true }
-        findViewById<ImageButton?>(R.id.btnBrush)?.setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.BRUSH); showBrushOptionsPanel() }
-        findViewById<ImageButton?>(R.id.btnBrush)?.setOnLongClickListener { showBrushOptionsPanel(); true }
+        findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.HIGHLIGHTER) }
+        findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnLongClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.HIGHLIGHTER); true }
+        findViewById<ImageButton?>(R.id.btnBrush)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.BRUSH) }
+        findViewById<ImageButton?>(R.id.btnBrush)?.setOnLongClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.BRUSH); true }
         findViewById<ImageButton?>(R.id.btnQuickFill)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.FILL) }
         findViewById<ImageButton?>(R.id.btnQuickFill)?.setOnLongClickListener { showHatchPicker(); true }
+        // Long-press on draw/eraser now just activates the tool and shows context bar (no floating panel)
         findViewById<ImageButton>(R.id.btnDraw).setOnLongClickListener { closeInlineEditor(true); showPenOptionsPanel(); true }
         findViewById<ImageButton>(R.id.btnQuickEraser).setOnLongClickListener { showEraserOptionsPanel(); true }
+        findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnLongClickListener { showHighlighterOptionsPanel(); true }
+        findViewById<ImageButton?>(R.id.btnBrush)?.setOnLongClickListener { showBrushOptionsPanel(); true }
 
         val btnMenuView = findViewById<ImageButton?>(R.id.btnMenu)
         btnMenuView?.setOnClickListener { onMenuClick(it) }
-        // Override with three vertical dots using built-in Android icon
         btnMenuView?.setImageResource(android.R.drawable.ic_menu_more)
         findViewById<ImageButton?>(R.id.btnLink)?.setOnClickListener { closeInlineEditor(true); showLinkPickerDialog() }
         findViewById<ImageButton?>(R.id.btnBack)?.setOnClickListener { confirmThenExit() }
@@ -677,9 +657,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun rebuildContextBar() {
         val contextBar = findViewById<HorizontalScrollView>(R.id.toolbarScroll) ?: return
-        val row = (contextBar.getChildAt(0) as? LinearLayout) ?: LinearLayout(this).also {
+        val outerRow = (contextBar.getChildAt(0) as? LinearLayout) ?: LinearLayout(this).also {
             it.orientation = LinearLayout.HORIZONTAL; it.gravity = Gravity.CENTER_VERTICAL
             it.setPadding(dp(8), 0, dp(8), 0); contextBar.addView(it)
+        }
+        // Use a dedicated dynamic child so we don't wipe the static XML buttons
+        val row = outerRow.findViewWithTag<LinearLayout>("dynamicContextRow") ?: LinearLayout(this).also {
+            it.tag = "dynamicContextRow"; it.orientation = LinearLayout.HORIZONTAL; it.gravity = Gravity.CENTER_VERTICAL
+            outerRow.addView(it)
         }
         row.removeAllViews()
         val BAR_H = dp(38)
@@ -1002,7 +987,7 @@ class MainActivity : AppCompatActivity() {
                 opacityButton(drawingView.eraserOpacity) { drawingView.eraserOpacity = it; drawingView.invalidate() }
             }
             Tool.FILL -> {
-                eightColors(drawingView.fillColor) { c -> drawingView.fillColor = c; drawingView.pendingHatchPattern = null }
+                eightColors(drawingView.fillColor) { c -> drawingView.fillColor = c }
             }
             Tool.TEXT -> {
                 // Show 3 recently used fonts (no scrollable row — just 3 chips)
@@ -1149,15 +1134,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun convertHandwritingInPlace() {
+        // Render only the pen strokes visible on screen to a bitmap, run ML Kit OCR,
+        // then place the recognised text as a TextItem at the strokes' centroid and remove the strokes.
         val bmp = drawingView.renderVisibleStrokesOnly()
         if (bmp == null) { Toast.makeText(this, "No strokes visible", Toast.LENGTH_SHORT).show(); return }
         val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bmp, 0)
         val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
         recognizer.process(image)
             .addOnSuccessListener { result ->
-                if (result.text.isBlank()) { Toast.makeText(this, "No text recognised", Toast.LENGTH_SHORT).show(); return@addOnSuccessListener }
-                placeOcrResultOnCanvas(result)
+                val text = result.text.trim()
+                if (text.isEmpty()) { Toast.makeText(this, "No text recognised", Toast.LENGTH_SHORT).show(); return@addOnSuccessListener }
+                // Place text at centre of screen in world coords
+                val wx = drawingView.screenCenterWorldX(); val wy = drawingView.screenCenterWorldY()
+                drawingView.addText(text, wx, wy, drawingView.defaultTextSize, 0f, Color.BLACK)
                 drawingView.clearRecentPenStrokes()
+                Toast.makeText(this, "Converted!", Toast.LENGTH_SHORT).show()
             }
             .addOnFailureListener { Toast.makeText(this, "OCR failed: ${it.message}", Toast.LENGTH_SHORT).show() }
     }
@@ -1214,8 +1205,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showLinkNotePickerDialog(bookName: String) {
         val folder = File(File(filesDir, "books"), bookName)
-        val currentFile = currentFileName  // e.g. "MyNote" — the current open note
-        val notes = folder.listFiles()?.filter { it.extension == "eng" && it.nameWithoutExtension != currentFile }
+        val notes = folder.listFiles()?.filter { it.extension == "eng" && it.nameWithoutExtension != currentFileName }
             ?.map { it.nameWithoutExtension }?.sorted() ?: emptyList()
         if (notes.isEmpty()) { Toast.makeText(this, "No other notes in $bookName to link to", Toast.LENGTH_SHORT).show(); return }
         AlertDialog.Builder(this).setTitle("Link to Note in $bookName")
@@ -1237,12 +1227,12 @@ class MainActivity : AppCompatActivity() {
             drawingView.invalidate()
             Toast.makeText(this, "Linked to $displayName", Toast.LENGTH_SHORT).show()
         } else {
-            val target2 = target; val name2 = displayName
+            val t2 = target; val n2 = displayName
             drawingView.post {
                 val wx = if (drawingView.width > 0) drawingView.screenCenterWorldX() else drawingView.pageWidthPx() / 2f
                 val wy = if (drawingView.height > 0) drawingView.screenCenterWorldY() else drawingView.pageHeightPx() / 2f
-                val item = TextItem(name2, wx, wy, Color.parseColor("#1565C0"), drawingView.defaultTextSize, 0f)
-                item.linkTarget = target2
+                val item = TextItem(n2, wx, wy, Color.parseColor("#1565C0"), drawingView.defaultTextSize, 0f)
+                item.linkTarget = t2
                 drawingView.addLinkText(item)
                 Toast.makeText(this, "Link inserted", Toast.LENGTH_SHORT).show()
             }
@@ -1288,7 +1278,11 @@ class MainActivity : AppCompatActivity() {
         // Inject shapes into context bar instead of floating overlay
         setActiveTool(anchor, Tool.RECTANGLE) // default shape
         val contextBar = findViewById<HorizontalScrollView>(R.id.toolbarScroll) ?: return
-        val row = contextBar.getChildAt(0) as? LinearLayout ?: return
+        val outerRow = contextBar.getChildAt(0) as? LinearLayout ?: return
+        val row = outerRow.findViewWithTag<LinearLayout>("dynamicContextRow") ?: LinearLayout(this).also {
+            it.tag = "dynamicContextRow"; it.orientation = LinearLayout.HORIZONTAL; it.gravity = Gravity.CENTER_VERTICAL
+            outerRow.addView(it)
+        }
         row.removeAllViews()
         for ((iconRes, tool) in shapeEntries) {
             row.addView(ImageView(this).apply {
@@ -1525,21 +1519,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun showOcrSourceDialog() {
         AlertDialog.Builder(this).setTitle("Extract Text From")
-            .setItems(arrayOf("Take Photo", "Image from Gallery", "Snip from PDF", "Current Screen (Snip)")) { _, i ->
+            .setItems(arrayOf("Photo (camera)", "Image from Gallery", "Snip from PDF")) { _, i ->
                 when (i) {
                     0 -> launchCameraForOcr()
                     1 -> pickImageForOcrLauncher.launch("image/*")
                     2 -> pickPdfForOcrLauncher.launch("application/pdf")
-                    3 -> {
-                        // Render current canvas to bitmap and run OCR directly
-                        val bmp = drawingView.renderVisibleStrokesOnly()
-                        if (bmp != null) {
-                            val progress = android.app.ProgressDialog(this).apply { setMessage("Reading text..."); setCancelable(false); show() }
-                            val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bmp, 0)
-                            val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
-                            recognizer.process(image).addOnSuccessListener { result -> progress.dismiss(); placeOcrResultOnCanvas(result) }.addOnFailureListener { e -> progress.dismiss(); Toast.makeText(this, "OCR failed: ${e.message}", Toast.LENGTH_SHORT).show() }
-                        } else Toast.makeText(this, "Nothing visible on screen", Toast.LENGTH_SHORT).show()
-                    }
                 }
             }.show()
     }
