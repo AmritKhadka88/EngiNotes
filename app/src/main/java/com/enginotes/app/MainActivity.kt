@@ -165,17 +165,37 @@ class MainActivity : AppCompatActivity() {
     private val fontFileLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) return@registerForActivityResult
         try {
-            val name = uri.lastPathSegment?.substringAfterLast("/")?.substringAfterLast("%2F") ?: "font_${System.currentTimeMillis()}.ttf"
-            if (name.substringAfterLast(".").lowercase() !in listOf("ttf", "otf", "ttc")) {
-                Toast.makeText(this, "Only .ttf, .otf, .ttc files supported", Toast.LENGTH_SHORT).show(); return@registerForActivityResult
+            // Get the real filename from content resolver metadata (lastPathSegment gives a numeric ID for content:// URIs)
+            var name = "font_${System.currentTimeMillis()}.ttf"
+            contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) name = cursor.getString(idx) ?: name
+                }
+            }
+            val ext = name.substringAfterLast(".", "").lowercase()
+            if (ext !in listOf("ttf", "otf", "ttc")) {
+                // Try to load it anyway — some pickers strip the extension; trust the file content
+                // Copy to a temp file with .ttf extension and try loading it
+                val tempName = name.substringBeforeLast(".").ifEmpty { name } + ".ttf"
+                val temp = File(customFontDir, tempName)
+                contentResolver.openInputStream(uri)?.use { it.copyTo(temp.outputStream()) }
+                return@registerForActivityResult try {
+                    val tf = android.graphics.Typeface.createFromFile(temp)
+                    if (tf == android.graphics.Typeface.DEFAULT) { temp.delete(); Toast.makeText(this, "Not a valid font file", Toast.LENGTH_SHORT).show() }
+                    else { loadCustomFonts(); Toast.makeText(this, "Font imported: ${temp.nameWithoutExtension}", Toast.LENGTH_SHORT).show(); activeEditText?.let { showFontPickerDialog(it) } }
+                } catch (e: Exception) { temp.delete(); Toast.makeText(this, "Only .ttf, .otf, .ttc font files are supported", Toast.LENGTH_LONG).show() }
             }
             val dest = File(customFontDir, name)
             contentResolver.openInputStream(uri)?.use { it.copyTo(dest.outputStream()) }
-            if (android.graphics.Typeface.createFromFile(dest) == null) {
-                dest.delete(); Toast.makeText(this, "Invalid font file", Toast.LENGTH_SHORT).show(); return@registerForActivityResult
+            // Verify by actually loading — createFromFile throws on truly broken files
+            try {
+                android.graphics.Typeface.createFromFile(dest)
+            } catch (e: Exception) {
+                dest.delete(); Toast.makeText(this, "Invalid font file: ${e.message}", Toast.LENGTH_LONG).show(); return@registerForActivityResult
             }
             loadCustomFonts()
-            Toast.makeText(this, "Font imported: ${dest.nameWithoutExtension}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Font "${dest.nameWithoutExtension}" imported!", Toast.LENGTH_SHORT).show()
             activeEditText?.let { showFontPickerDialog(it) }
         } catch (e: Exception) { Toast.makeText(this, "Import failed: ${e.message}", Toast.LENGTH_LONG).show() }
     }
@@ -243,7 +263,7 @@ class MainActivity : AppCompatActivity() {
             text = "+ Import Font  (.ttf / .otf / .ttc)"; textSize = 15f
             setTextColor(Color.parseColor("#1565C0")); gravity = Gravity.CENTER
             setPadding(dp(20), dp(16), dp(20), dp(16))
-            setOnClickListener { dialog.dismiss(); fontFileLauncher.launch("*/*") }
+            setOnClickListener { dialog.dismiss(); fontFileLauncher.launch("*/*") }  // */* needed: no standard font MIME type
         })
         scroll.addView(container)
         dialog = AlertDialog.Builder(this).setTitle("Choose Font").setView(scroll).setNegativeButton("Cancel", null).create()
