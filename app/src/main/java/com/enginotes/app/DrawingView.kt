@@ -2375,25 +2375,39 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         resizePrevWorldX = wx; resizePrevWorldY = wy
     }
 
+    // Sample a Path using PathMeasure and check if point (x,y) is within radius r of any sampled point.
+    // Uses the already-cached item.path — no buildPath() call needed.
+    private fun pathHitTest(path: Path, x: Float, y: Float, r: Float): Boolean {
+        val pm = android.graphics.PathMeasure(path, false)
+        val pos = FloatArray(2)
+        val r2 = r * r
+        do {
+            val len = pm.length; if (len <= 0f) continue
+            // Step size: never more than r/2 so we don't skip over the finger contact
+            val step = (r * 0.5f).coerceAtLeast(1f)
+            var d = 0f
+            while (d <= len) {
+                pm.getPosTan(d, pos, null)
+                val dx = pos[0] - x; val dy = pos[1] - y
+                if (dx * dx + dy * dy <= r2) return true
+                d += step
+            }
+        } while (pm.nextContour())
+        return false
+    }
+
     private fun findItemAt(x: Float, y: Float): Any? {
-        // Finger-friendly hit radius: ~28 screen pixels in world units, minimum 8 world units.
+        // Finger-friendly hit radius: 28 screen pixels in world units, min 8 world units
         val pad = (28f / scaleFactor).coerceAtLeast(8f)
 
-        // StrokeItems: test SEGMENTS directly (both PEN and shape outlines).
-        // This lets you tap through the empty interior of a large shape to hit a smaller one.
+        // StrokeItems: use pathHitTest on item.path — correctly handles curves, circles,
+        // ellipses, beziers, arcs. item.path is already built and cached on StrokeItem.
         for (a in actions.reversed()) {
             if (a !is StrokeItem) continue
-            val pts = a.data.points
             val effectiveR = pad + a.data.strokeWidth * 0.5f
-            if (pts.size == 2) { if (distance(x, y, pts[0], pts[1]) <= effectiveR) return a; continue }
-            var hit = false
-            var i = 0; while (i + 3 < pts.size) {
-                if (distToSeg(x, y, pts[i], pts[i+1], pts[i+2], pts[i+3]) <= effectiveR) { hit = true; break }
-                i += 2
-            }
-            if (hit) return a
+            if (pathHitTest(a.path, x, y, effectiveR)) return a
         }
-        // Non-stroke items use bbox / radius.
+        // Non-stroke items: bbox / radius
         for (a in actions.reversed()) {
             when (a) {
                 is FillItem -> continue
@@ -2739,7 +2753,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // the rect but whose interior contains the rect would incorrectly be selected.
                 // Test: any of the item's actual line segments cross any edge of the selection rect.
                 if (action is StrokeItem) {
-                    outlineIntersectsRect(action.data, rl, rt, rr, rb)
+                    pathIntersectsRect(action.path, rl, rt, rr, rb)
                 } else {
                     // Non-stroke: use bbox intersection (images, tables etc. have solid bboxes)
                     b[0] <= rr && b[2] >= rl && b[1] <= rb && b[3] >= rt
@@ -2751,37 +2765,31 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         selectedGroup = if (group.isNotEmpty()) group.toMutableList() else null
     }
 
-    // Returns true if any segment of the stroke outline intersects or touches the given rect.
-    // Also returns true if any corner of the rect is ON the stroke (rect is inside the outline
-    // ring but not the interior — treated as crossing since the border is touched).
-    private fun outlineIntersectsRect(data: StrokeData, rl: Float, rt: Float, rr: Float, rb: Float): Boolean {
-        val pts = data.points; if (pts.size < 4) return false
-        // Check each segment of the shape against each edge of the selection rect
-        val rectSegs = listOf(
-            floatArrayOf(rl, rt, rr, rt),  // top
-            floatArrayOf(rr, rt, rr, rb),  // right
-            floatArrayOf(rr, rb, rl, rb),  // bottom
-            floatArrayOf(rl, rb, rl, rt)   // left
-        )
-        var i = 0
-        while (i + 3 < pts.size) {
-            val ax = pts[i]; val ay = pts[i+1]; val bx = pts[i+2]; val by = pts[i+3]
-            for (rs in rectSegs) {
-                if (segmentsIntersect(ax, ay, bx, by, rs[0], rs[1], rs[2], rs[3])) return true
+    // Returns true if the stroke's actual rendered path intersects or touches the selection rect.
+    // Uses PathMeasure sampling on item.path — correctly handles curves, circles, beziers.
+    private fun pathIntersectsRect(path: Path, rl: Float, rt: Float, rr: Float, rb: Float): Boolean {
+        val pm = android.graphics.PathMeasure(path, false)
+        val pos = FloatArray(2)
+        do {
+            val len = pm.length; if (len <= 0f) continue
+            // Step size balances accuracy vs performance
+            val step = ((rr - rl).coerceAtLeast(rb - rt) * 0.05f).coerceIn(1f, 20f)
+            var d = 0f
+            while (d <= len) {
+                pm.getPosTan(d, pos, null)
+                if (pos[0] in rl..rr && pos[1] in rt..rb) return true
+                d += step
             }
-            // Also: if segment endpoint is inside the rect, it's a crossing
-            if (ax in rl..rr && ay in rt..rb) return true
-            i += 2
-        }
+        } while (pm.nextContour())
         return false
     }
 
-    // Segment AB intersects segment CD?
+    // Segment AB intersects segment CD — kept for potential future use
     private fun segmentsIntersect(ax: Float, ay: Float, bx: Float, by: Float,
                                    cx: Float, cy: Float, dx: Float, dy: Float): Boolean {
         val d1x = bx - ax; val d1y = by - ay; val d2x = dx - cx; val d2y = dy - cy
         val denom = d1x * d2y - d1y * d2x
-        if (kotlin.math.abs(denom) < 0.0001f) return false  // parallel
+        if (kotlin.math.abs(denom) < 0.0001f) return false
         val t = ((cx - ax) * d2y - (cy - ay) * d2x) / denom
         val u = ((cx - ax) * d1y - (cy - ay) * d1x) / denom
         return t in 0f..1f && u in 0f..1f
