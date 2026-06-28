@@ -108,6 +108,8 @@ class MainActivity : AppCompatActivity() {
     private var activeEditText: EditText? = null
     private var activeToolbar: View? = null
     private var activeEditBox: View? = null
+    private var activeEditorKeyboardListener: android.view.ViewTreeObserver.OnGlobalLayoutListener? = null
+    private var activeEditorKeyboardObserver: android.view.ViewTreeObserver? = null
     private var activeEditorHandles: List<View> = emptyList()
     private var editingItem: TextItem? = null
     private var editWorldX = 0f; private var editWorldY = 0f
@@ -2815,6 +2817,43 @@ class MainActivity : AppCompatActivity() {
         params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0); params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(boxContainer,params)
 
+        // ── Keyboard scroll-into-view ─────────────────────────────────────────────
+        // When the keyboard opens, scroll the canvas up so the editor box stays visible.
+        // Restore the original position when the keyboard closes.
+        var savedTranslateY: Float? = null
+        val keyboardListener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
+            val visibleFrame = android.graphics.Rect()
+            canvasContainer.getWindowVisibleDisplayFrame(visibleFrame)
+            val keyboardHeight = canvasContainer.rootView.height - visibleFrame.bottom
+            val editorBottom = (boxContainer.layoutParams as? FrameLayout.LayoutParams)
+                ?.let { it.topMargin + boxContainer.height } ?: 0
+            val toolbar = findViewById<View?>(R.id.primaryToolbarScroll)
+            val toolbarH = if (toolbar?.visibility == View.VISIBLE) toolbar.height else 0
+            val availableHeight = visibleFrame.bottom - toolbarH
+
+            if (keyboardHeight > dp(100)) {
+                // Keyboard is open — check if editor is behind it
+                if (savedTranslateY == null) savedTranslateY = drawingView.getTranslateY()
+                val hiddenBy = editorBottom - availableHeight + dp(16)
+                if (hiddenBy > 0) {
+                    val currentY = drawingView.getTranslateY()
+                    val target = (savedTranslateY ?: 0f) - hiddenBy
+                    drawingView.shiftCanvasVertically(target - currentY)
+                }
+            } else {
+                // Keyboard closed — restore original canvas position
+                savedTranslateY?.let {
+                    val currentY = drawingView.getTranslateY()
+                    drawingView.shiftCanvasVertically(it - currentY)
+                    savedTranslateY = null
+                }
+            }
+        }
+        canvasContainer.viewTreeObserver.addOnGlobalLayoutListener(keyboardListener)
+        activeEditorKeyboardListener = keyboardListener
+        activeEditorKeyboardObserver = canvasContainer.viewTreeObserver
+        // ─────────────────────────────────────────────────────────────────────────
+
         // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
         // the whole box (and the underlying text item's world position) without needing to leave
         // the editor or tap elsewhere - works both while actively typing and after.
@@ -2987,6 +3026,11 @@ class MainActivity : AppCompatActivity() {
             else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
+        // Remove keyboard scroll listener
+        activeEditorKeyboardListener?.let { listener ->
+            try { activeEditorKeyboardObserver?.removeOnGlobalLayoutListener(listener) } catch (e: Exception) {}
+        }
+        activeEditorKeyboardListener = null; activeEditorKeyboardObserver = null
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
     }
