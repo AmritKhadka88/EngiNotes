@@ -637,7 +637,60 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val ctx = context
     private fun dp(v: Int): Float = v * resources.displayMetrics.density
     private val actions = mutableListOf<Any>()
-    fun removeDimensionItem(d: DimensionItem) { actions.remove(d); selectedItem = null; redoStack.clear(); invalidate() }
+
+    // ── Spatial index for fast viewport culling and eraser hit-testing ────────
+    private val GRID_CELL = 400f
+    private val spatialGrid = HashMap<Long, MutableList<Any>>(256)
+    private var spatialDirty = true
+
+    private fun cellKey(cx: Int, cy: Int): Long = cx.toLong().shl(32) or cy.toLong().and(0xFFFFFFFFL)
+
+    private fun boundsToGridCells(minX: Float, minY: Float, maxX: Float, maxY: Float): List<Long> {
+        val x0 = kotlin.math.floor(minX / GRID_CELL).toInt()
+        val y0 = kotlin.math.floor(minY / GRID_CELL).toInt()
+        val x1 = kotlin.math.floor(maxX / GRID_CELL).toInt()
+        val y1 = kotlin.math.floor(maxY / GRID_CELL).toInt()
+        val cells = mutableListOf<Long>()
+        for (cx in x0..x1) for (cy in y0..y1) cells.add(cellKey(cx, cy))
+        return cells
+    }
+
+    private fun rebuildSpatialIndex() {
+        spatialGrid.clear()
+        for (a in actions) {
+            val b = getBounds(a) ?: continue
+            for (key in boundsToGridCells(b[0] - 10f, b[1] - 10f, b[2] + 10f, b[3] + 10f)) {
+                spatialGrid.getOrPut(key) { mutableListOf() }.add(a)
+            }
+        }
+        spatialDirty = false
+    }
+
+    private fun markSpatialDirty() { spatialDirty = true }
+
+    private fun itemsNear(x: Float, y: Float, r: Float): List<Any> {
+        if (spatialDirty) rebuildSpatialIndex()
+        val wx = x - r; val wy = y - r; val wx2 = x + r; val wy2 = y + r
+        val seen = HashSet<Any>(); val result = mutableListOf<Any>()
+        for (key in boundsToGridCells(wx, wy, wx2, wy2)) {
+            spatialGrid[key]?.forEach { a -> if (seen.add(a)) result.add(a) }
+        }
+        return result
+    }
+
+    private fun itemsInViewport(): List<Any> {
+        if (spatialDirty) rebuildSpatialIndex()
+        val vl = -translateX / scaleFactor; val vt = -translateY / scaleFactor
+        val vr = vl + width / scaleFactor; val vb = vt + height / scaleFactor
+        val seen = HashSet<Any>(); val result = mutableListOf<Any>()
+        for (key in boundsToGridCells(vl, vt, vr, vb)) {
+            spatialGrid[key]?.forEach { a -> if (seen.add(a)) result.add(a) }
+        }
+        // Always include TextItems and TableItems (cheap to draw, complex bounds)
+        for (a in actions) { if ((a is TextItem || a is TableItem || a is AudioItem || a is DimensionItem) && seen.add(a)) result.add(a) }
+        return result
+    }
+    fun removeDimensionItem(d: DimensionItem) { actions.remove(d); selectedItem = null; redoStack.clear(); markSpatialDirty(); invalidate() }
     private val redoStack = mutableListOf<Any>()
     private var currentItem: StrokeItem? = null
     // Velocity tracking for the Fountain pen's speed-sensitive width (fast = thin, slow = thick)
@@ -1499,7 +1552,28 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // The bitmap is drawn via drawBitmap(bmp, srcRect, dstRect) where dstRect is the world bbox —
     // so the already-transformed canvas scales it correctly at any zoom level WITHOUT re-rendering.
     // Cache is NEVER invalidated by zoom/pan — only when stroke data actually changes.
-    private val CACHE_SCALE = 2f  // world units → bitmap pixels (2px per world unit = good quality)
+    private val CACHE_SCALE = 2f
+    private val MAX_CACHE_BYTES = 64L * 1024 * 1024  // 64 MB max total brush cache
+    private fun pruneBrushCache() {
+        var totalBytes = 0L
+        val cached = actions.filterIsInstance<StrokeItem>().filter { it.cacheValid && it.cachedBitmap != null }
+        for (s in cached) totalBytes += (s.cachedBitmap!!.byteCount).toLong()
+        if (totalBytes > MAX_CACHE_BYTES) {
+            // Free oldest caches (those furthest from viewport)
+            val vl = -translateX / scaleFactor; val vt = -translateY / scaleFactor
+            val vr = vl + width / scaleFactor; val vb = vt + height / scaleFactor
+            val sorted = cached.sortedByDescending { s ->
+                val b = getBounds(s); if (b == null) Float.MAX_VALUE
+                else maxOf(b[0] - vr, vl - b[2], 0f) + maxOf(b[1] - vb, vt - b[3], 0f)
+            }
+            var freed = 0L
+            for (s in sorted) {
+                if (totalBytes - freed <= MAX_CACHE_BYTES * 3 / 4) break
+                freed += s.cachedBitmap!!.byteCount.toLong()
+                s.invalidateCache()
+            }
+        }
+    }
     private fun drawBrushStrokeWithCache(canvas: Canvas, item: StrokeItem) {
         if (!CACHED_BRUSH_STYLES.contains(item.data.brushStyle)) {
             drawBrushStroke(canvas, item); return
@@ -1511,6 +1585,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val wr = bounds[2] + pad; val wb = bounds[3] + pad
             val bmpW = ((wr - wl) * CACHE_SCALE).toInt().coerceIn(1, 4096)
             val bmpH = ((wb - wt) * CACHE_SCALE).toInt().coerceIn(1, 4096)
+            // Skip caching if bitmap would exceed 16 MB — fall back to direct render
+            if (bmpW.toLong() * bmpH * 4 > 16L * 1024 * 1024) { drawBrushStroke(canvas, item); return }
             item.cachedBitmap?.recycle()
             try {
                 val bmp = android.graphics.Bitmap.createBitmap(bmpW, bmpH, android.graphics.Bitmap.Config.ARGB_8888)
@@ -1760,14 +1836,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
+    private var drawCount = 0
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        if (++drawCount % 60 == 0) pruneBrushCache()
         canvas.drawColor(Color.WHITE)
         canvas.save()
         canvas.translate(translateX, translateY)
         canvas.scale(scaleFactor, scaleFactor)
         drawBackground(canvas)
-        for (action in actions) drawActionItem(canvas, action, true)
+        // Only draw items visible in current viewport — massive speedup for large notes
+        val visibleItems = itemsInViewport()
+        for (action in visibleItems) drawActionItem(canvas, action, true)
         currentItem?.let {
             val isCalligraphyPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.CALLIGRAPHY
             val isFountainPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.FOUNTAIN && it.data.widths.size >= 2
@@ -3472,20 +3552,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun eraseAt(x: Float, y: Float) {
         val r = eraserSize / 2f
         if (eraserMode == EraserMode.OBJECT) {
-            val it = actions.iterator()
-            while (it.hasNext()) {
-                val a = it.next()
+            // Only test items whose bounding box overlaps eraser circle — skips distant strokes
+            val candidates = itemsNear(x, y, r * 3f)
+            val toRemove = HashSet<Any>()
+            for (a in candidates) {
                 val hit = when (a) {
-                    is StrokeItem -> strokeHitTest(a.data, x, y, r); is TextItem -> distance(x, y, a.x, a.y) <= r + a.size
+                    is StrokeItem -> strokeHitTest(a.data, x, y, r)
+                    is TextItem -> distance(x, y, a.x, a.y) <= r + a.size
                     is ImageItem -> distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) <= r + maxOf(a.w, a.h) / 2f
                     is FillItem -> distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) <= r + maxOf(a.w, a.h) / 2f
                     is AudioItem -> distance(x, y, a.x, a.y) <= r + a.radius; else -> false
                 }
-                if (hit) it.remove()
+                if (hit) toRemove.add(a)
             }
+            if (toRemove.isNotEmpty()) { actions.removeAll(toRemove); markSpatialDirty() }
         } else {
+            val candidates = itemsNear(x, y, r * 3f).toHashSet()
             val newActions = mutableListOf<Any>()
             for (a in actions) {
+                // Items far from eraser pass through unchanged — no processing needed
+                if (a !in candidates) { newActions.add(a); continue }
                 when (a) {
                     is StrokeItem -> {
                         if (a.data.type == Tool.PEN || a.data.type == Tool.ERASER || a.data.type == Tool.ARC || a.data.type == Tool.HIGHLIGHTER || a.data.type == Tool.BRUSH) {
@@ -3512,7 +3598,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     else -> newActions.add(a)
                 }
             }
-            actions.clear(); actions.addAll(newActions)
+            actions.clear(); actions.addAll(newActions); markSpatialDirty()
         }
     }
 
@@ -3641,7 +3727,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (text.isBlank()) return
         val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPage(x, y) else Pair(x, y)
         val item = TextItem(text, cx, cy, color, size, rotation); item.spans = spans; item.fontFamily = fontFamily; item.opacity = opacity
-        actions.add(item); redoStack.clear(); invalidate()
+        actions.add(item); redoStack.clear(); markSpatialDirty(); invalidate()
     }
 
     // Inserts a fully pre-built TextItem (used for link creation, where linkTarget is already
@@ -3650,13 +3736,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (item.text.isBlank()) return
         val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPage(item.x, item.y) else Pair(item.x, item.y)
         item.x = cx; item.y = cy
-        actions.add(item); redoStack.clear(); invalidate()
+        actions.add(item); redoStack.clear(); markSpatialDirty(); invalidate()
     }
 
-    fun removeTextItem(item: TextItem) { actions.remove(item); invalidate() }
+    fun removeTextItem(item: TextItem) { actions.remove(item); markSpatialDirty(); invalidate() }
 
     fun bringToFront(item: Any) {
-        if (actions.remove(item)) { actions.add(item); redoStack.clear(); invalidate() }
+        if (actions.remove(item)) { actions.add(item); redoStack.clear(); markSpatialDirty(); invalidate() }
     }
 
     /** Renders only pen strokes currently visible on screen — used for inline handwriting OCR */
@@ -3703,7 +3789,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     fun addAudioItem(filePath: String, title: String, durationMs: Long) {
         val item = AudioItem(filePath, title, screenCenterWorldX(), screenCenterWorldY(), durationMs)
-        actions.add(item); redoStack.clear(); invalidate()
+        actions.add(item); redoStack.clear(); markSpatialDirty(); invalidate()
     }
 
     fun addTable(rows: Int, cols: Int, wx: Float, wy: Float, screenWidth: Float) {
@@ -3735,7 +3821,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (last is FillToggleAction) {
             last.item.data.fill = last.wasFilled; last.item.data.fillColorVal = last.wasColor; last.item.paint = last.item.data.toPaint()
         }
-        redoStack.add(last); invalidate()
+        redoStack.add(last); markSpatialDirty(); invalidate()
     }
     fun redo() {
         if (redoStack.isEmpty()) return
@@ -3743,9 +3829,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (next is FillToggleAction) {
             next.item.data.fill = !next.wasFilled; next.item.data.fillColorVal = next.newColor; next.item.paint = next.item.data.toPaint()
         }
-        actions.add(next); invalidate()
+        actions.add(next); markSpatialDirty(); invalidate()
     }
-    fun clearAll() { actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null; invalidate() }
+    fun clearAll() { actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null; markSpatialDirty(); invalidate() }
     fun hasContent(): Boolean = actions.isNotEmpty()
     fun exportBitmap(): Bitmap { val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888); draw(Canvas(bmp)); return bmp }
 
@@ -3848,7 +3934,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val alpha = (existBmp.getPixel(bx, by) ushr 24) and 0xFF
                         alpha > 25  // non-transparent = tap was inside this fill region
                     }
-                    actions.add(fi); redoStack.clear(); invalidate()
+                    actions.add(fi); redoStack.clear(); markSpatialDirty(); invalidate()
                 }
             }
         }
@@ -3871,7 +3957,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     fun loadFromString(content: String) {
-        actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null
+        actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null; markSpatialDirty()
         val lines = content.lines(); var i = 0
         while (i < lines.size) {
             val line = lines[i]; if (line.isBlank()) { i++; continue }
