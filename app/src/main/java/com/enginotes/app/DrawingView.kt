@@ -2052,25 +2052,49 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             is StrokeItem -> {
                 if (STROKE_SCALE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    // Uniform scale: compute bbox of all points, scale each point from centroid
+                    // Uniform scale from centroid using delta-drag (not absolute position).
+                    // We compare finger distance from centroid NOW vs at the point the handle was grabbed.
+                    // The ratio of those distances = the scale factor. This makes small drags = small changes.
                     val pts = item.data.points
                     var minX = pts[0]; var minY = pts[1]; var maxX = pts[0]; var maxY = pts[1]
                     var i2 = 0; while (i2 + 1 < pts.size) { minX = minOf(minX, pts[i2]); minY = minOf(minY, pts[i2+1]); maxX = maxOf(maxX, pts[i2]); maxY = maxOf(maxY, pts[i2+1]); i2 += 2 }
                     val cx = (minX + maxX) / 2f; val cy = (minY + maxY) / 2f
                     val oldW = (maxX - minX).coerceAtLeast(1f); val oldH = (maxY - minY).coerceAtLeast(1f)
-                    // Compute new bbox from handle drag (same logic as BBOX_RESIZE_SHAPES)
-                    var nl = minX - cx; var nt = minY - cy; var nr = maxX - cx; var nb = maxY - cy
-                    val dragX = wx - cx; val dragY = wy - cy; val min = 15f
-                    when (handle) { HandleType.TL -> { nl = dragX; nt = dragY }; HandleType.TM -> { nt = dragY }; HandleType.TR -> { nr = dragX; nt = dragY }; HandleType.ML -> { nl = dragX }; HandleType.MR -> { nr = dragX }; HandleType.BL -> { nl = dragX; nb = dragY }; HandleType.BM -> { nb = dragY }; HandleType.BR -> { nr = dragX; nb = dragY }; else -> return }
-                    if (nr - nl < min) { if (handle == HandleType.TL || handle == HandleType.ML || handle == HandleType.BL) nl = nr - min else nr = nl + min }
-                    if (nb - nt < min) { if (handle == HandleType.TL || handle == HandleType.TM || handle == HandleType.TR) nt = nb - min else nb = nt + min }
-                    val newW = (nr - nl).coerceAtLeast(min); val newH = (nb - nt).coerceAtLeast(min)
-                    val scaleX = newW / oldW; val scaleY = newH / oldH
-                    // New centroid: shift based on which corner is fixed
-                    val newCx = when (handle) { HandleType.TL, HandleType.ML, HandleType.BL -> cx + (newW - oldW); HandleType.TR, HandleType.MR, HandleType.BR -> cx; else -> cx - (newW - oldW) / 2f }
-                    val newCy = when (handle) { HandleType.TL, HandleType.TM, HandleType.TR -> cy + (newH - oldH); HandleType.BL, HandleType.BM, HandleType.BR -> cy; else -> cy - (newH - oldH) / 2f }
-                    var j = 0; while (j + 1 < pts.size) { pts[j] = newCx + (pts[j] - cx) * scaleX; pts[j+1] = newCy + (pts[j+1] - cy) * scaleY; j += 2 }
-                    item.path = item.data.buildPath()
+                    val halfW = oldW / 2f; val halfH = oldH / 2f
+                    // Finger offset from centroid
+                    val fx = wx - cx; val fy = wy - cy
+                    // For each handle, the "fixed" opposite corner stays, and the dragged edge follows finger.
+                    // Scale = finger_dist / original_half_size. Use only the relevant axis per handle.
+                    val scaleX = when (handle) {
+                        HandleType.ML -> if (halfW > 1f) (-fx / halfW).coerceIn(0.05f, 20f) else 1f
+                        HandleType.MR -> if (halfW > 1f) (fx / halfW).coerceIn(0.05f, 20f) else 1f
+                        HandleType.TL, HandleType.BL -> if (halfW > 1f) (-fx / halfW).coerceIn(0.05f, 20f) else 1f
+                        HandleType.TR, HandleType.BR -> if (halfW > 1f) (fx / halfW).coerceIn(0.05f, 20f) else 1f
+                        else -> 1f
+                    }
+                    val scaleY = when (handle) {
+                        HandleType.TM -> if (halfH > 1f) (-fy / halfH).coerceIn(0.05f, 20f) else 1f
+                        HandleType.BM -> if (halfH > 1f) (fy / halfH).coerceIn(0.05f, 20f) else 1f
+                        HandleType.TL, HandleType.TR -> if (halfH > 1f) (-fy / halfH).coerceIn(0.05f, 20f) else 1f
+                        HandleType.BL, HandleType.BR -> if (halfH > 1f) (fy / halfH).coerceIn(0.05f, 20f) else 1f
+                        else -> 1f
+                    }
+                    val newHalfW = halfW * scaleX; val newHalfH = halfH * scaleY
+                    // Shift centroid: the opposite (fixed) side stays put
+                    val newCx = when (handle) {
+                        HandleType.TL, HandleType.ML, HandleType.BL -> maxX - newHalfW  // right edge fixed
+                        HandleType.TR, HandleType.MR, HandleType.BR -> minX + newHalfW  // left edge fixed
+                        else -> cx
+                    }
+                    val newCy = when (handle) {
+                        HandleType.TL, HandleType.TM, HandleType.TR -> maxY - newHalfH  // bottom edge fixed
+                        HandleType.BL, HandleType.BM, HandleType.BR -> minY + newHalfH  // top edge fixed
+                        else -> cy
+                    }
+                    if (newHalfW > 0.5f && newHalfH > 0.5f) {
+                        var j = 0; while (j + 1 < pts.size) { pts[j] = newCx + (pts[j] - cx) * scaleX; pts[j+1] = newCy + (pts[j+1] - cy) * scaleY; j += 2 }
+                        item.path = item.data.buildPath()
+                    }
                 } else if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
                     val rot = Math.toRadians(item.data.rotation.toDouble())
                     val cos = kotlin.math.cos(rot).toFloat(); val sin = kotlin.math.sin(rot).toFloat()

@@ -1558,48 +1558,89 @@ class MainActivity : AppCompatActivity() {
         setActiveTool(null, Tool.OCR_SNIP)
     }
 
-    // Shows font/size/color options panel for a link text item (triggered by double-tap after hold-select)
+    // Shows font/size/color options panel for a link text item
+    private var linkOptionsPanel: android.view.View? = null
     private fun showTextEditOptionsPanel(item: TextItem) {
-        dismissTextSelectionBox()
-        // Reuse the existing inline editor but commit immediately on close (no keyboard)
-        // Show the floating text options overlay positioned above the link
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+        linkOptionsPanel?.let { canvasContainer.removeView(it) }; linkOptionsPanel = null
+        val scroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
             background = android.graphics.drawable.GradientDrawable().apply {
                 setColor(Color.WHITE); cornerRadius = dp(12).toFloat()
                 setStroke(dp(1), Color.parseColor("#DDDDDD"))
             }
-            elevation = dp(6).toFloat()
-            setPadding(dp(8), dp(6), dp(8), dp(6))
+            elevation = dp(8).toFloat()
         }
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        scroll.addView(panel)
         fun makeLabel(text: String) = TextView(this).apply {
-            this.text = text; textSize = 13f; setTextColor(Color.parseColor("#666666"))
-            setPadding(dp(6), 0, dp(4), 0); gravity = Gravity.CENTER_VERTICAL
+            this.text = text; textSize = 12f; setTextColor(Color.parseColor("#666666"))
+            setPadding(dp(4), 0, dp(2), 0); gravity = Gravity.CENTER_VERTICAL
         }
         // Size stepper
         panel.addView(makeLabel("Size:"))
         val sizeBtn = TextView(this).apply {
-            text = item.size.toInt().toString(); textSize = 14f; gravity = Gravity.CENTER
-            setTextColor(Color.BLACK)
-            val lp = LinearLayout.LayoutParams(dp(48), dp(36)); layoutParams = lp
+            text = item.size.toInt().toString(); textSize = 13f; gravity = Gravity.CENTER
+            setTextColor(Color.BLACK); setPadding(dp(4), 0, dp(4), 0)
+            minWidth = dp(36)
             background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#F5F5F5")); cornerRadius = dp(6).toFloat() }
         }
-        val sizeDown = TextView(this).apply { text = "−"; textSize = 18f; gravity = Gravity.CENTER; val lp = LinearLayout.LayoutParams(dp(32), dp(36)); layoutParams = lp }
-        val sizeUp = TextView(this).apply { text = "+"; textSize = 18f; gravity = Gravity.CENTER; val lp = LinearLayout.LayoutParams(dp(32), dp(36)); layoutParams = lp }
-        sizeDown.setOnClickListener { item.size = (item.size - 4f).coerceAtLeast(8f); sizeBtn.text = item.size.toInt().toString(); drawingView.invalidate() }
-        sizeUp.setOnClickListener { item.size = (item.size + 4f).coerceAtMost(400f); sizeBtn.text = item.size.toInt().toString(); drawingView.invalidate() }
-        panel.addView(sizeDown); panel.addView(sizeBtn); panel.addView(sizeUp)
-        // Done button
+        fun sizeBtn(label: String, delta: Float) = TextView(this).apply {
+            text = label; textSize = 17f; gravity = Gravity.CENTER
+            val lp = LinearLayout.LayoutParams(dp(30), dp(34)); layoutParams = lp
+            setOnClickListener { item.size = (item.size + delta).coerceIn(8f, 400f); sizeBtn.text = item.size.toInt().toString(); drawingView.invalidate() }
+        }
+        panel.addView(sizeBtn("−", -4f)); panel.addView(sizeBtn); panel.addView(sizeBtn("+", 4f))
+        // Divider
+        panel.addView(View(this).apply { val lp = LinearLayout.LayoutParams(dp(1), dp(22)); lp.setMargins(dp(6),0,dp(6),0); layoutParams = lp; setBackgroundColor(Color.parseColor("#DDD")) })
+        // Color swatches
+        panel.addView(makeLabel("Color:"))
+        val linkColors = listOf(
+            Color.parseColor("#1565C0"), // default link blue
+            Color.parseColor("#C62828"), // red
+            Color.parseColor("#2E7D32"), // green
+            Color.parseColor("#6A1B9A"), // purple
+            Color.parseColor("#E65100"), // orange
+            Color.BLACK
+        )
+        for (c in linkColors) {
+            val swatch = View(this).apply {
+                val lp = LinearLayout.LayoutParams(dp(24), dp(24)); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(c)
+                    if (c == item.color) setStroke(dp(2), Color.BLACK)
+                }
+                setOnClickListener {
+                    item.color = c; drawingView.invalidate()
+                    // Refresh swatch borders
+                    linkOptionsPanel?.let { canvasContainer.removeView(it) }
+                    showTextEditOptionsPanel(item)
+                }
+            }
+            panel.addView(swatch)
+        }
+        // Divider
+        panel.addView(View(this).apply { val lp = LinearLayout.LayoutParams(dp(1), dp(22)); lp.setMargins(dp(6),0,dp(6),0); layoutParams = lp; setBackgroundColor(Color.parseColor("#DDD")) })
+        // Done
         panel.addView(TextView(this).apply {
             text = "✓"; textSize = 16f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#388E3C"))
-            val lp = LinearLayout.LayoutParams(dp(36), dp(36)); lp.setMargins(dp(8), 0, 0, 0); layoutParams = lp
-            setOnClickListener { canvasContainer.removeView(panel); drawingView.selectedItem = null; drawingView.invalidate() }
+            val lp = LinearLayout.LayoutParams(dp(34), dp(34)); layoutParams = lp
+            setOnClickListener {
+                linkOptionsPanel?.let { canvasContainer.removeView(it) }; linkOptionsPanel = null
+                drawingView.selectedItem = null; drawingView.invalidate()
+                autoSave()
+            }
         })
-        val sx = drawingView.worldToScreenX(item.x).toInt().coerceIn(dp(4), canvasContainer.width - dp(240))
-        val sy = (drawingView.worldToScreenY(item.y) - dp(60)).coerceAtLeast(dp(4).toFloat()).toInt()
-        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        lp.leftMargin = sx; lp.topMargin = sy; panel.layoutParams = lp
-        canvasContainer.addView(panel)
+        val sx = drawingView.worldToScreenX(item.x).toInt().coerceIn(dp(4), (canvasContainer.width - dp(320)).coerceAtLeast(dp(4)))
+        val sy = (drawingView.worldToScreenY(item.y) - dp(56)).coerceAtLeast(dp(4).toFloat()).toInt()
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, dp(46))
+        lp.leftMargin = sx; lp.topMargin = sy; scroll.layoutParams = lp
+        canvasContainer.addView(scroll)
+        linkOptionsPanel = scroll
     }
 
     private fun showAboutDialog() {
@@ -2557,6 +2598,7 @@ class MainActivity : AppCompatActivity() {
         drawingView.isTextSelected = false
         drawingView.selectedItem = null; drawingView.invalidate()
         holdDragLastRawX = -1f; holdDragLastRawY = -1f  // reset hold+drag state
+        linkOptionsPanel?.let { canvasContainer.removeView(it) }; linkOptionsPanel = null
     }
 
     // Lightweight selection box for a single tap on text: shows the same border + move/resize/
@@ -2752,6 +2794,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showInlineTextEditor(item: TextItem?, screenX: Float, screenY: Float, worldX: Float, worldY: Float) {
+        // Never open inline editor on link items — links have their own options panel
+        if (item?.linkTarget != null) { showTextEditOptionsPanel(item); return }
         dismissTextSelectionBox()
         if (activeEditText != null && editingItem === item) return
         if (activeEditText != null) { isSwitchingTextEditor=true; closeInlineEditor(true); isSwitchingTextEditor=false; drawingView.post{ showInlineTextEditor(item,screenX,screenY,worldX,worldY) }; return }
@@ -2971,7 +3015,10 @@ class MainActivity : AppCompatActivity() {
         if(tb!=null) canvasContainer.removeView(tb)
         activeEditorHandles.forEach { canvasContainer.removeView(it) }; activeEditorHandles = emptyList()
         val item=editingItem
-        if(commit&&!delete&&text.isNotBlank()){
+        if (item?.linkTarget != null) {
+            // Link item accidentally opened in editor — just restore it, never commit changes
+            item.isEditing = false; drawingView.invalidate()
+        } else if(commit&&!delete&&text.isNotBlank()){
             drawingView.defaultTextSize=editSize
             if(item!=null){ item.text=text;item.color=editColor;item.size=editSize;item.rotation=editRotation;item.spans=spans;item.isEditing=false;item.fontFamily=pendingFontFamily;item.opacity=editOpacity; drawingView.clampTextItemToPage(item) }
             else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
