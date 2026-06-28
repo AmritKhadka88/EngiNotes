@@ -544,10 +544,29 @@ class StrokeData(
 }
 
 class StrokeItem(val data: StrokeData, var path: Path, var paint: Paint) {
-    var cachedBitmap: android.graphics.Bitmap? = null  // cached render for expensive brushes
-    var cacheValid: Boolean = false                     // false = needs re-render
+    var cachedBitmap: android.graphics.Bitmap? = null
+    var cacheValid: Boolean = false
     var cacheLeft = 0f; var cacheTop = 0f; var cacheRight = 0f; var cacheBottom = 0f
-    // Pre-built point list to avoid allocating on every draw call
+    // Sampled path points for fast hit testing — built once from PathMeasure, reused on every tap
+    var sampledPathPts: FloatArray? = null
+
+    fun getOrBuildSampledPath(hitRadius: Float): FloatArray {
+        return sampledPathPts ?: buildSampledPath(hitRadius)
+    }
+    private fun buildSampledPath(hitRadius: Float): FloatArray {
+        val pm = android.graphics.PathMeasure(path, false)
+        val result = mutableListOf<Float>()
+        val pos = FloatArray(2)
+        do {
+            val len = pm.length; if (len <= 0f) continue
+            val step = (hitRadius * 0.4f).coerceIn(1f, 15f)
+            var d = 0f
+            while (d <= len) { pm.getPosTan(d, pos, null); result.add(pos[0]); result.add(pos[1]); d += step }
+        } while (pm.nextContour())
+        val arr = result.toFloatArray()
+        sampledPathPts = arr; return arr
+    }
+    // Pre-built PointF list for brush rendering
     var cachedPoints: List<android.graphics.PointF>? = null
     fun getPoints(): List<android.graphics.PointF> {
         return cachedPoints ?: run {
@@ -558,7 +577,8 @@ class StrokeItem(val data: StrokeData, var path: Path, var paint: Paint) {
         }
     }
     fun invalidateCache() {
-        cachedBitmap?.recycle(); cachedBitmap = null; cacheValid = false; cachedPoints = null
+        cachedBitmap?.recycle(); cachedBitmap = null; cacheValid = false
+        sampledPathPts = null; cachedPoints = null  // path changed — resample next hit test
     }
 }
 
@@ -2375,42 +2395,36 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         resizePrevWorldX = wx; resizePrevWorldY = wy
     }
 
-    // Sample a Path using PathMeasure and check if point (x,y) is within radius r of any sampled point.
-    // Uses the already-cached item.path — no buildPath() call needed.
-    private fun pathHitTest(path: Path, x: Float, y: Float, r: Float): Boolean {
-        val pm = android.graphics.PathMeasure(path, false)
-        val pos = FloatArray(2)
+    // Hit test using pre-sampled path points cached on StrokeItem.
+    // First call per stroke builds the sample array via PathMeasure; subsequent calls are O(n) float scan.
+    private fun pathHitTest(item: StrokeItem, x: Float, y: Float, r: Float): Boolean {
         val r2 = r * r
-        do {
-            val len = pm.length; if (len <= 0f) continue
-            // Step size: never more than r/2 so we don't skip over the finger contact
-            val step = (r * 0.5f).coerceAtLeast(1f)
-            var d = 0f
-            while (d <= len) {
-                pm.getPosTan(d, pos, null)
-                val dx = pos[0] - x; val dy = pos[1] - y
-                if (dx * dx + dy * dy <= r2) return true
-                d += step
-            }
-        } while (pm.nextContour())
+        val pts = item.getOrBuildSampledPath(r)
+        var i = 0; while (i + 1 < pts.size) {
+            val dx = pts[i] - x; val dy = pts[i+1] - y
+            if (dx * dx + dy * dy <= r2) return true
+            i += 2
+        }
         return false
     }
 
     private fun findItemAt(x: Float, y: Float): Any? {
-        // Finger-friendly hit radius: 28 screen pixels in world units, min 8 world units
         val pad = (28f / scaleFactor).coerceAtLeast(8f)
-
-        // StrokeItems: use pathHitTest on item.path — correctly handles curves, circles,
-        // ellipses, beziers, arcs. item.path is already built and cached on StrokeItem.
-        for (a in actions.reversed()) {
+        // Spatial index gives only nearby candidates — O(1) lookup instead of O(n) scan
+        val candidates = itemsNear(x, y, pad * 6f)
+        if (candidates.isEmpty()) return null
+        // Build order map once for efficient sorting (avoid O(n) indexOf per candidate)
+        val orderMap = HashMap<Any, Int>(candidates.size * 2)
+        for (i in actions.indices) orderMap[actions[i]] = i
+        // Test strokes top-to-bottom (highest index = drawn last = on top)
+        for (a in candidates.sortedByDescending { orderMap[it] ?: -1 }) {
             if (a !is StrokeItem) continue
-            val effectiveR = pad + a.data.strokeWidth * 0.5f
-            if (pathHitTest(a.path, x, y, effectiveR)) return a
+            if (pathHitTest(a, x, y, pad + a.data.strokeWidth * 0.5f)) return a
         }
-        // Non-stroke items: bbox / radius
-        for (a in actions.reversed()) {
+        // Non-stroke items
+        for (a in candidates.sortedByDescending { orderMap[it] ?: -1 }) {
             when (a) {
-                is FillItem -> continue
+                is StrokeItem, is FillItem -> continue
                 is AudioItem -> { if (distance(x, y, a.x, a.y) <= (a.radius + 12f) / scaleFactor) return a }
                 is TableItem, is TextItem, is ImageItem, is DimensionItem -> {
                     val b = getBounds(a) ?: continue
@@ -2753,7 +2767,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // the rect but whose interior contains the rect would incorrectly be selected.
                 // Test: any of the item's actual line segments cross any edge of the selection rect.
                 if (action is StrokeItem) {
-                    pathIntersectsRect(action.path, rl, rt, rr, rb)
+                    pathIntersectsRect(action, rl, rt, rr, rb)
                 } else {
                     // Non-stroke: use bbox intersection (images, tables etc. have solid bboxes)
                     b[0] <= rr && b[2] >= rl && b[1] <= rb && b[3] >= rt
@@ -2765,22 +2779,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         selectedGroup = if (group.isNotEmpty()) group.toMutableList() else null
     }
 
-    // Returns true if the stroke's actual rendered path intersects or touches the selection rect.
-    // Uses PathMeasure sampling on item.path — correctly handles curves, circles, beziers.
-    private fun pathIntersectsRect(path: Path, rl: Float, rt: Float, rr: Float, rb: Float): Boolean {
-        val pm = android.graphics.PathMeasure(path, false)
-        val pos = FloatArray(2)
-        do {
-            val len = pm.length; if (len <= 0f) continue
-            // Step size balances accuracy vs performance
-            val step = ((rr - rl).coerceAtLeast(rb - rt) * 0.05f).coerceIn(1f, 20f)
-            var d = 0f
-            while (d <= len) {
-                pm.getPosTan(d, pos, null)
-                if (pos[0] in rl..rr && pos[1] in rt..rb) return true
-                d += step
-            }
-        } while (pm.nextContour())
+    // Check if stroke intersects rect using pre-sampled path points (no PathMeasure per call)
+    private fun pathIntersectsRect(item: StrokeItem, rl: Float, rt: Float, rr: Float, rb: Float): Boolean {
+        val step = ((rr - rl).coerceAtLeast(rb - rt) * 0.05f).coerceIn(1f, 20f)
+        val pts = item.getOrBuildSampledPath(step)
+        var i = 0; while (i + 1 < pts.size) {
+            if (pts[i] in rl..rr && pts[i+1] in rt..rb) return true
+            i += 2
+        }
         return false
     }
 
@@ -3629,7 +3635,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val isShapeTool = SHAPE_TOOLS.contains(currentTool)
                     val tooShort = isShapeTool && item.data.points.size >= 4 &&
                         distance(item.data.points[0], item.data.points[1], item.data.points[2], item.data.points[3]) < (8f / scaleFactor)
-                    if (!tooShort) { actions.add(item); redoStack.clear(); markSpatialDirty() }
+                    if (!tooShort) {
+                    // Downsample overly dense PEN strokes (>6000 pts) to keep serialization and
+                    // PathMeasure sampling fast. Visual difference is imperceptible.
+                    if (item.data.type == Tool.PEN && item.data.points.size > 6000) {
+                        val src = item.data.points; val keep = mutableListOf<Float>()
+                        val skip = (src.size / 2) / 3000  // keep every Nth point pair
+                        var ii = 0; while (ii < src.size - 1) { if ((ii/2) % skip == 0 || ii >= src.size - 2) { keep.add(src[ii]); keep.add(src[ii+1]) }; ii += 2 }
+                        src.clear(); src.addAll(keep); item.path = item.data.buildPath(); item.invalidateCache()
+                    }
+                    actions.add(item); redoStack.clear(); markSpatialDirty()
+                }
                 }
                 currentItem = null; invalidate()
                 onDrawingEnded?.invoke()
@@ -3965,7 +3981,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (last is FillToggleAction) {
             last.item.data.fill = last.wasFilled; last.item.data.fillColorVal = last.wasColor; last.item.paint = last.item.data.toPaint()
         }
-        redoStack.add(last); markSpatialDirty(); invalidate()
+        redoStack.add(last); if (redoStack.size > 50) redoStack.removeAt(0); markSpatialDirty(); invalidate()
     }
     fun redo() {
         if (redoStack.isEmpty()) return

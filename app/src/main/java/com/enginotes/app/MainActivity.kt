@@ -460,7 +460,17 @@ class MainActivity : AppCompatActivity() {
         if (fileName != null) {
             currentFileName = fileName; tvTitle.text = fileName
             val file = File(getDrawingsFolder(),"$fileName.eng")
-            if (file.exists()) drawingView.loadFromString(file.readText())
+            if (file.exists()) {
+                // Read file on background thread to avoid blocking main thread for large notes
+                Thread {
+                    try {
+                        val text = file.readText()
+                        runOnUiThread { drawingView.loadFromString(text); lastSavedContent = text }
+                    } catch (e: Exception) {
+                        runOnUiThread { android.widget.Toast.makeText(this, "Load failed: ${e.message}", android.widget.Toast.LENGTH_SHORT).show() }
+                    }
+                }.start()
+            }
         } else { tvTitle.text = "New Note" }
 
         drawingView.migrateOldNotes(filesDir)
@@ -3140,15 +3150,21 @@ class MainActivity : AppCompatActivity() {
         val f=File(File(filesDir,"books"),bookName); if(!f.exists()) f.mkdirs(); return f
     }
 
+    private val saveExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     private fun writeCurrentFile() {
-        val name=currentFileName?:return
-        File(getDrawingsFolder(),"$name.eng").writeText(drawingView.serialize())
-        lastSavedContent=drawingView.serialize()
+        val name = currentFileName ?: return
+        // Serialize on calling thread (fast — just StringBuilder), write on background
+        val serialized = drawingView.serialize()
+        lastSavedContent = serialized
+        saveExecutor.execute {
+            try { File(getDrawingsFolder(), "$name.eng").writeText(serialized) }
+            catch (e: Exception) { runOnUiThread { android.widget.Toast.makeText(this, "Save failed: ${e.message}", android.widget.Toast.LENGTH_SHORT).show() } }
+        }
     }
 
     private fun autoSave() {
-        if(!drawingView.hasContent()) return
-        if(currentFileName==null){ val name=nextAutoName(); currentFileName=name; tvTitle.text=name }
+        if (!drawingView.hasContent()) return
+        if (currentFileName == null) { val name = nextAutoName(); currentFileName = name; tvTitle.text = name }
         writeCurrentFile()
     }
 
