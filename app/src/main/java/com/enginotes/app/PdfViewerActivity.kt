@@ -59,17 +59,25 @@ class PdfViewerActivity : AppCompatActivity() {
         }
 
         val toolButtons = mutableMapOf<PdfTool, TextView>()
+        var activeToolBtn: TextView? = null
         fun iconBtn(emoji: String, tool: PdfTool? = null, action: () -> Unit): TextView {
             return TextView(this).apply {
                 text = emoji; textSize = 18f; setTextColor(Color.parseColor("#4A4A4A"))
                 gravity = Gravity.CENTER
                 val p = LinearLayout.LayoutParams(dp(38), dp(38)); p.setMargins(dp(2), 0, dp(2), 0)
                 layoutParams = p
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    cornerRadius = dp(8).toFloat()
+                }
                 setOnClickListener {
                     action()
-                    // Highlight active tool button
-                    toolButtons.forEach { (_, v) -> v.setBackgroundColor(Color.TRANSPARENT) }
-                    if (tool != null) setBackgroundColor(Color.parseColor("#E3F2FD"))
+                    if (tool != null) {
+                        // Clear previous active, highlight this one
+                        activeToolBtn?.setBackgroundColor(Color.TRANSPARENT)
+                        setBackgroundColor(Color.parseColor("#E3F2FD"))
+                        activeToolBtn = this
+                    }
+                    // Non-tool buttons (save, close) don't change the active tool highlight
                 }
                 toolbar.addView(this)
                 if (tool != null) toolButtons[tool] = this
@@ -88,11 +96,12 @@ class PdfViewerActivity : AppCompatActivity() {
 
         // Default to SELECT highlighted
         btnSelect.setBackgroundColor(Color.parseColor("#E3F2FD"))
+        activeToolBtn = btnSelect
 
         iconBtn("✂") {
             val entering = !isSnipMode
             setSnipMode(entering, snipOverlay)
-            if (entering) Toast.makeText(this, "Draw a rectangle over the area to snip, then tap Confirm", Toast.LENGTH_LONG).show()
+            if (entering) Toast.makeText(this, "Draw a rectangle to snip, then tap ✓ Confirm", Toast.LENGTH_LONG).show()
         }
 
         iconBtn("💾") { saveCurrentAnnotations(); Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show() }
@@ -218,7 +227,7 @@ class PdfViewerActivity : AppCompatActivity() {
                 // are safe and keep the UI thread free during the (potentially slow, for large or
                 // image-heavy pages) decode + draw work.
                 val page = renderer.openPage(pageToLoad)
-                val renderScale = (canvasWidth.toFloat() / page.width) * 2f
+                val renderScale = (canvasWidth.toFloat() / page.width) * 3f  // 3x for better OCR accuracy
                 val bmpW = (page.width * renderScale).toInt().coerceAtLeast(1)
                 val bmpH = (page.height * renderScale).toInt().coerceAtLeast(1)
                 val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
