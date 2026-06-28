@@ -2832,19 +2832,33 @@ class MainActivity : AppCompatActivity() {
             val availableHeight = visibleFrame.bottom - toolbarH
 
             if (keyboardHeight > dp(100)) {
-                // Keyboard is open — check if editor is behind it
+                // Keyboard is open — scroll canvas AND move editor box up together
                 if (savedTranslateY == null) savedTranslateY = drawingView.getTranslateY()
                 val hiddenBy = editorBottom - availableHeight + dp(16)
                 if (hiddenBy > 0) {
                     val currentY = drawingView.getTranslateY()
                     val target = (savedTranslateY ?: 0f).toFloat() - hiddenBy.toFloat()
-                    drawingView.shiftCanvasVertically(target.toFloat() - currentY.toFloat())
+                    val delta = target.toFloat() - currentY.toFloat()
+                    // Shift canvas
+                    drawingView.shiftCanvasVertically(delta)
+                    // Shift the editor box by the same amount so it stays over the text
+                    val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
+                    if (lp != null) {
+                        lp.topMargin = (lp.topMargin + delta).toInt().coerceAtLeast(0)
+                        boxContainer.layoutParams = lp
+                    }
                 }
             } else {
-                // Keyboard closed — restore original canvas position
-                savedTranslateY?.let {
+                // Keyboard closed — restore canvas and editor box to original positions
+                savedTranslateY?.let { origY ->
                     val currentY = drawingView.getTranslateY()
-                    drawingView.shiftCanvasVertically(it.toFloat() - currentY.toFloat())
+                    val delta = origY.toFloat() - currentY.toFloat()
+                    drawingView.shiftCanvasVertically(delta)
+                    val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
+                    if (lp != null) {
+                        lp.topMargin = (lp.topMargin + delta).toInt().coerceAtLeast(0)
+                        boxContainer.layoutParams = lp
+                    }
                     savedTranslateY = null
                 }
             }
