@@ -249,7 +249,13 @@ class MainActivity : AppCompatActivity() {
     private val ocrSnipLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == RESULT_OK) {
             val path = result.data?.getStringExtra("snip_image_path")
-            if (path != null) runOcrOnUri(Uri.fromFile(File(path)))
+            if (path != null) {
+                val f = File(path)
+                if (f.exists() && f.length() > 0) runOcrOnUri(Uri.fromFile(f))
+                else Toast.makeText(this, "Snip image not found — try snipping again", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "No snip captured — draw a region on the PDF", Toast.LENGTH_SHORT).show()
+            }
         }
     }
     private var ocrCameraFile: File? = null
@@ -311,7 +317,7 @@ class MainActivity : AppCompatActivity() {
     //     single-tap to select/move it or double-tap to edit it.
     private fun placeOcrResultOnCanvas(result: com.google.mlkit.vision.text.Text) {
         if (result.text.isBlank()) {
-            Toast.makeText(this, "No text found in image", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "No text detected — try a clearer image or larger area", Toast.LENGTH_LONG).show()
             return
         }
 

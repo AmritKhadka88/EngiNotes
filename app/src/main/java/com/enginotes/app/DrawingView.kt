@@ -2376,19 +2376,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun findItemAt(x: Float, y: Float): Any? {
-        // Hit radius in world units: large enough to be finger-friendly at any zoom level.
-        // 28dp converted to world units (at least 10 world units minimum).
-        val pad = (28f / scaleFactor).coerceAtLeast(10f)
+        // Finger-friendly hit radius: ~28 screen pixels in world units, minimum 8 world units.
+        val pad = (28f / scaleFactor).coerceAtLeast(8f)
 
-        // Pass 1: StrokeItems — test OUTLINE only (line/shape boundary), not interior.
-        // This allows tapping through the empty interior of a triangle/rect to hit a smaller
-        // shape behind it, rather than being blocked by the outer shape's bbox.
-        // Iterate top-to-bottom (reversed = most recently drawn first).
+        // StrokeItems: test SEGMENTS directly (both PEN and shape outlines).
+        // This lets you tap through the empty interior of a large shape to hit a smaller one.
         for (a in actions.reversed()) {
             if (a !is StrokeItem) continue
-            if (strokeHitTest(a.data, x, y, pad)) return a
+            val pts = a.data.points
+            val effectiveR = pad + a.data.strokeWidth * 0.5f
+            if (pts.size == 2) { if (distance(x, y, pts[0], pts[1]) <= effectiveR) return a; continue }
+            var hit = false
+            var i = 0; while (i + 3 < pts.size) {
+                if (distToSeg(x, y, pts[i], pts[i+1], pts[i+2], pts[i+3]) <= effectiveR) { hit = true; break }
+                i += 2
+            }
+            if (hit) return a
         }
-        // Pass 2: non-stroke items (images, tables, audio, text, dimensions) use bbox/radius.
+        // Non-stroke items use bbox / radius.
         for (a in actions.reversed()) {
             when (a) {
                 is FillItem -> continue
