@@ -1059,7 +1059,7 @@ class MainActivity : AppCompatActivity() {
                     activeEditText?.typeface = try { android.graphics.Typeface.create(fam, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
                     rebuildContextBar()
                 }
-                // "All Fonts" chip — opens full 15-font picker
+                // "All Fonts" chip — opens full font picker
                 row.addView(TextView(this).apply {
                     text = "All Fonts ›"; textSize = 12f
                     setTextColor(Color.parseColor("#1565C0"))
@@ -1068,7 +1068,10 @@ class MainActivity : AppCompatActivity() {
                     val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(34))
                     lp.setMargins(dp(4), 0, 0, 0); layoutParams = lp
                     setOnClickListener {
-                        val et = activeEditText ?: return@setOnClickListener
+                        // Use activeEditText if open, otherwise a dummy that routes through pendingFontFamily
+                        val et = activeEditText ?: android.widget.EditText(this@MainActivity).also { dummy ->
+                            try { dummy.typeface = android.graphics.Typeface.create(pendingFontFamily, android.graphics.Typeface.NORMAL) } catch (e: Exception) {}
+                        }
                         showFontPickerDialog(et)
                     }
                 })
@@ -1850,38 +1853,51 @@ class MainActivity : AppCompatActivity() {
         val closeBtn = TextView(this).apply { text = "✕"; textSize = 18f; setTextColor(Color.parseColor("#8A8580")); gravity = Gravity.CENTER; val lp = LinearLayout.LayoutParams(dp(36), dp(36)); layoutParams = lp; setOnClickListener { dismissTextOptionsPanel() } }
         titleRow.addView(closeBtn); panel.addView(titleRow)
 
-        // Font family
-        panel.addView(TextView(this).apply { text = "Font"; textSize = 13f; setTextColor(Color.parseColor("#8A8580")); setPadding(0, dp(12), 0, dp(6)) })
-        val fontRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val fonts = listOf(
-            "Default" to "sans-serif", "Serif" to "serif", "Monospace" to "monospace",
-            "Condensed" to "sans-serif-condensed", "Light" to "sans-serif-light",
-            "Medium" to "sans-serif-medium", "Black" to "sans-serif-black",
-            "Serif Mono" to "serif-monospace", "Casual" to "casual", "Cursive" to "cursive",
-            "Small Caps" to "sans-serif-smallcaps",
-            "Cond. Light" to "sans-serif-condensed-light",
-            "Cond. Medium" to "sans-serif-condensed-medium"
-        )
-        fun refreshFontChips() {}
-        fonts.forEach { (lbl, fam) ->
-            val chip = TextView(this).apply {
-                text = lbl; textSize = 13f; gravity = Gravity.CENTER
-                typeface = try { android.graphics.Typeface.create(fam, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
-                setPadding(dp(12), dp(8), dp(12), dp(8))
-                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.setMargins(0, 0, dp(8), 0); layoutParams = lp
-                fun updateState() { background = android.graphics.drawable.GradientDrawable().apply { setColor(if (pendingFontFamily == fam) Color.parseColor("#6D4C41") else Color.parseColor("#F0EBE0")); cornerRadius = dp(8).toFloat() }; setTextColor(if (pendingFontFamily == fam) Color.WHITE else Color.parseColor("#4A4A4A")) }
-                updateState()
-                setOnClickListener {
-                    pendingFontFamily = fam
-                    recentFonts.remove(fam); recentFonts.add(0, fam)
-                    for (i in 0 until fontRow.childCount) { (fontRow.getChildAt(i) as? TextView)?.let { tv -> tv.background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#F0EBE0")); cornerRadius = dp(8).toFloat() }; tv.setTextColor(Color.parseColor("#4A4A4A")) } }
-                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#6D4C41")); cornerRadius = dp(8).toFloat() }; setTextColor(Color.WHITE)
-                    rebuildContextBar()
-                }
+        // Font family — scrollable chip row + "All Fonts" button
+        val fontHeaderRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        fontHeaderRow.addView(TextView(this).apply {
+            text = "Font"; textSize = 13f; setTextColor(Color.parseColor("#8A8580"))
+            setPadding(0, dp(12), 0, dp(6))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        fontHeaderRow.addView(TextView(this).apply {
+            text = "All Fonts ›"; textSize = 13f; setTextColor(Color.parseColor("#1565C0"))
+            setPadding(0, dp(12), 0, dp(6))
+            setOnClickListener {
+                // Use a dummy EditText to satisfy signature; changes go through pendingFontFamily
+                val dummy = android.widget.EditText(this@MainActivity)
+                dummy.typeface = try { android.graphics.Typeface.create(pendingFontFamily, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
+                showFontPickerDialog(dummy)
             }
-            fontRow.addView(chip)
+        })
+        panel.addView(fontHeaderRow)
+
+        val fontScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        val fontRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(4), 0, dp(4)) }
+        fontScroll.addView(fontRow)
+
+        fun updateFontChips(row: LinearLayout) {
+            row.removeAllViews()
+            availableFonts.forEach { (lbl, fam) ->
+                row.addView(TextView(this).apply {
+                    text = lbl; textSize = 13f; gravity = Gravity.CENTER
+                    typeface = try { android.graphics.Typeface.create(fam, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
+                    setPadding(dp(12), dp(8), dp(12), dp(8))
+                    val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                    lp.setMargins(0, 0, dp(8), 0); layoutParams = lp
+                    val isSelected = pendingFontFamily == fam
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(if (isSelected) Color.parseColor("#6D4C41") else Color.parseColor("#F0EBE0")); cornerRadius = dp(8).toFloat() }
+                    setTextColor(if (isSelected) Color.WHITE else Color.parseColor("#4A4A4A"))
+                    setOnClickListener {
+                        pendingFontFamily = fam
+                        recentFonts.remove(fam); recentFonts.add(0, fam)
+                        updateFontChips(row); rebuildContextBar()
+                    }
+                })
+            }
         }
-        panel.addView(fontRow)
+        updateFontChips(fontRow)
+        panel.addView(fontScroll)
 
         // Size slider
         panel.addView(TextView(this).apply { text = "Size: ${editSize.toInt()}pt"; textSize = 13f; setTextColor(Color.parseColor("#8A8580")); setPadding(0, dp(12), 0, dp(4)) })
