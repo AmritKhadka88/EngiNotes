@@ -749,7 +749,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var scaleFactor = 1f
     private var translateX = 0f; private var translateY = 0f
     private var twoFingerLastX = 0f; private var twoFingerLastY = 0f
-    private var twoFingerActive = false // true from first 2-finger contact until all fingers lift
+    private var twoFingerActive = false       // true while 2+ fingers are on screen
+    private var twoFingerEverActive = false   // true from first 2-finger contact until next fresh ACTION_DOWN
     private var hoverX: Float? = null; private var hoverY: Float? = null
 
     private var isStylusDown = false
@@ -2838,12 +2839,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             return true
         }
         if (event.pointerCount >= 2) {
-            twoFingerActive = true
+            twoFingerActive = true; twoFingerEverActive = true
             // Cancel any in-progress stroke immediately when second finger touches
             if (currentItem != null) { currentItem = null; invalidate() }
             isStylusDown = false; drawingPointerId = -1
             activeHandle = HandleType.NONE
             longPressRunnable?.let { longPressHandler.removeCallbacks(it) }; longPressRunnable = null
+            selectHoldItem = null; selectHoldTriggered = false  // cancel hold+drag
+            // Cancel the GestureDetector so it doesn't fire onSingleTapConfirmed
+            // after the two-finger gesture ends (which would trigger fill or text placement)
+            val cancel = MotionEvent.obtain(event); cancel.action = MotionEvent.ACTION_CANCEL
+            gestureDetector.onTouchEvent(cancel); cancel.recycle()
             scaleDetector.onTouchEvent(event)
             when (event.actionMasked) {
                 MotionEvent.ACTION_MOVE -> {
@@ -2866,8 +2872,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
             twoFingerLastX = 0f; twoFingerLastY = 0f; twoFingerActive = false
         }
-        // Block all drawing/gestures until fingers fully lifted after a two-finger gesture
+        // Block all drawing/gestures while two fingers are active OR until the next fresh touch
         if (twoFingerActive) return true
+        // Clear twoFingerEverActive only on a brand-new ACTION_DOWN (new gesture starting)
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) twoFingerEverActive = false
+        // Still block if this touch sequence ever had two fingers (GestureDetector cancel may not
+        // have fully suppressed all callbacks — this is the final safety gate)
+        if (twoFingerEverActive) return true
         val toolType = event.getToolType(0)
         val isStylus = toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER
         val isFinger = toolType == MotionEvent.TOOL_TYPE_FINGER || toolType == MotionEvent.TOOL_TYPE_UNKNOWN
