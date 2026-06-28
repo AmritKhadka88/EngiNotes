@@ -106,6 +106,13 @@ val BBOX_RESIZE_SHAPES = setOf(
     Tool.RING, Tool.BLOCK_ARROW_RIGHT, Tool.BLOCK_ARROW_LEFT, Tool.BLOCK_ARROW_UP, Tool.BLOCK_ARROW_DOWN,
     Tool.SQUARE_ROUNDED_SMALL, Tool.BURST, Tool.FRAME, Tool.PLAQUE, Tool.FIVE_POINT_BURST
 )
+// Brush styles that are expensive to render and benefit from bitmap caching
+val CACHED_BRUSH_STYLES = setOf(BrushStyle.SPRAY, BrushStyle.STIPPLE, BrushStyle.SPLATTER,
+    BrushStyle.SCATTER, BrushStyle.FUR, BrushStyle.GRASS, BrushStyle.SMOKE,
+    BrushStyle.FILL_SPRAY, BrushStyle.GLITTER, BrushStyle.CONFETTI, BrushStyle.FIRE,
+    BrushStyle.LIGHTNING, BrushStyle.DRY_BRUSH, BrushStyle.CHARCOAL, BrushStyle.CRAYON,
+    BrushStyle.TEXTURE, BrushStyle.WATERCOLOR)
+
 // Shapes resized by moving their two endpoints (fine reshaping of start/end point)
 val ENDPOINT_RESIZE_SHAPES = setOf(Tool.LINE, Tool.CIRCLE, Tool.ARROW, Tool.CURVE, Tool.PEN)
 // Shapes that also get bbox (8-handle) scaling — for uniform scale of all points
@@ -536,7 +543,11 @@ class StrokeData(
     }
 }
 
-class StrokeItem(val data: StrokeData, var path: Path, var paint: Paint)
+class StrokeItem(val data: StrokeData, var path: Path, var paint: Paint) {
+    var cachedBitmap: android.graphics.Bitmap? = null  // cached render for expensive brushes
+    var cacheValid: Boolean = false                     // false = needs re-render
+    fun invalidateCache() { cachedBitmap?.recycle(); cachedBitmap = null; cacheValid = false }
+}
 
 class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var size: Float, var rotation: Float) {
     var spans: MutableList<TextSpanData> = mutableListOf()
@@ -710,6 +721,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var isTextEditorOpen: Boolean = false
     var isTextSelected: Boolean = false  // true when text selection box is showing — blocks new editor
     var onScaleChanged: ((Float) -> Unit)? = null
+    // Invalidate all stroke caches when zoom changes (pixel dimensions change)
+    private fun invalidateAllStrokeCaches() {
+        actions.filterIsInstance<StrokeItem>().forEach { it.invalidateCache() }
+    }
     var onCanvasTransformed: (() -> Unit)? = null
     var onPageSwipe: ((Int) -> Unit)? = null
     var onScrollPercentChanged: ((Float) -> Unit)? = null
@@ -1050,9 +1065,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 canvas.drawBitmap(bmp, null, RectF(action.x, action.y, action.x + action.w, action.y + action.h), null)
             }
             is StrokeItem -> {
-                // All brush strokes go through the dedicated brush renderer
+                // All brush strokes go through the dedicated brush renderer (with caching for expensive styles)
                 if (action.data.type == Tool.BRUSH) {
-                    drawBrushStroke(canvas, action); return
+                    drawBrushStrokeWithCache(canvas, action); return
                 }
                 val isCalligraphyPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.CALLIGRAPHY
                 val isFountainPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.FOUNTAIN && action.data.widths.size >= 2
@@ -1465,6 +1480,42 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 var y=t; while(y<b){canvas.drawLine(l,y,r,y,p);y+=s*3f}; var x=l; while(x<r){canvas.drawLine(x,t,x,b,p);x+=s*4f}
             }
         }
+    }
+
+    // For expensive brush styles: render to an offscreen bitmap once in WORLD coords, then blit.
+    // The main canvas already has translateX/Y + scaleFactor applied when drawBrushStroke is called,
+    // so we render into a world-space bitmap (no canvas transform) and draw it with drawBitmap
+    // using the same matrix — giving correct position at any zoom level.
+    // Cache is invalidated on zoom change (pixel size changes) and when stroke data changes.
+    private fun drawBrushStrokeWithCache(canvas: Canvas, item: StrokeItem) {
+        if (!CACHED_BRUSH_STYLES.contains(item.data.brushStyle)) {
+            drawBrushStroke(canvas, item); return
+        }
+        val bounds = getBounds(item)
+        if (bounds == null) { drawBrushStroke(canvas, item); return }
+        val pad = item.data.strokeWidth * 2f  // padding so blur/spread isn't clipped
+        val wl = bounds[0] - pad; val wt = bounds[1] - pad
+        val wr = bounds[2] + pad; val wb = bounds[3] + pad
+        val bmpW = ((wr - wl) * scaleFactor).toInt().coerceIn(1, 4096)
+        val bmpH = ((wb - wt) * scaleFactor).toInt().coerceIn(1, 4096)
+        if (!item.cacheValid || item.cachedBitmap == null ||
+            kotlin.math.abs(item.cachedBitmap!!.width - bmpW) > 4 ||
+            kotlin.math.abs(item.cachedBitmap!!.height - bmpH) > 4) {
+            item.cachedBitmap?.recycle()
+            try {
+                val bmp = android.graphics.Bitmap.createBitmap(bmpW, bmpH, android.graphics.Bitmap.Config.ARGB_8888)
+                val bc = Canvas(bmp)
+                // Render in world coords scaled to bitmap resolution — same as main canvas transform
+                bc.translate(-wl * scaleFactor, -wt * scaleFactor)
+                bc.scale(scaleFactor, scaleFactor)
+                drawBrushStroke(bc, item)
+                item.cachedBitmap = bmp; item.cacheValid = true
+            } catch (e: OutOfMemoryError) {
+                drawBrushStroke(canvas, item); return
+            }
+        }
+        // Draw cached bitmap at the correct screen position (canvas is already in world space)
+        item.cachedBitmap?.let { canvas.drawBitmap(it, wl, wt, null) }
     }
 
     private fun drawBrushStroke(canvas: Canvas, item: StrokeItem) {
@@ -2815,7 +2866,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     fun getScaleFactor(): Float = scaleFactor
     fun scrollPage(direction: Int) {
         translateY -= direction * pageHeightPx() * scaleFactor
-        clampTranslation(); onScaleChanged?.invoke(scaleFactor); onCanvasTransformed?.invoke(); invalidate()
+        clampTranslation(); invalidateAllStrokeCaches(); onScaleChanged?.invoke(scaleFactor); onCanvasTransformed?.invoke(); invalidate()
     }
 
     override fun onHoverEvent(event: MotionEvent): Boolean {
@@ -2867,7 +2918,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val fx = (event.getX(0) + event.getX(1)) / 2f; val fy = (event.getY(0) + event.getY(1)) / 2f
                     if (twoFingerLastX != 0f || twoFingerLastY != 0f) {
                         translateX += fx - twoFingerLastX; translateY += fy - twoFingerLastY
-                        clampTranslation(); onScaleChanged?.invoke(scaleFactor); onCanvasTransformed?.invoke(); invalidate()
+                        clampTranslation(); invalidateAllStrokeCaches(); onScaleChanged?.invoke(scaleFactor); onCanvasTransformed?.invoke(); invalidate()
                         val maxScroll = (pageHeightPx() * estimatePageCount().coerceAtLeast(2) * scaleFactor - height).coerceAtLeast(1f)
                         onScrollPercentChanged?.invoke((-translateY / maxScroll).coerceIn(0f, 1f))
                     }

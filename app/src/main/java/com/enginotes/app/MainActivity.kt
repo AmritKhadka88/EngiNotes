@@ -2295,7 +2295,7 @@ class MainActivity : AppCompatActivity() {
         sectionLabel("Brush Type")
         val typeScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val typeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val brushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH)
+        val brushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH, "Spray" to BrushStyle.SPRAY, "Stipple" to BrushStyle.STIPPLE, "Splatter" to BrushStyle.SPLATTER, "Neon" to BrushStyle.NEON, "Marker" to BrushStyle.MARKER, "Dry Brush" to BrushStyle.DRY_BRUSH, "Scatter" to BrushStyle.SCATTER, "Fur" to BrushStyle.FUR, "Grass" to BrushStyle.GRASS, "Smoke" to BrushStyle.SMOKE, "Fill Spray" to BrushStyle.FILL_SPRAY, "Glitter" to BrushStyle.GLITTER, "Confetti" to BrushStyle.CONFETTI, "Fire" to BrushStyle.FIRE, "Lightning" to BrushStyle.LIGHTNING)
         val typeButtons = mutableListOf<TextView>()
         for ((label, style) in brushTypes) {
             val b = TextView(this).apply {
