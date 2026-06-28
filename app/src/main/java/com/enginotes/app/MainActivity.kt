@@ -118,6 +118,23 @@ class MainActivity : AppCompatActivity() {
     private var pendingUnderline = false; private var pendingHighlight: Int? = null
     private var pendingFontFamily: String = "sans-serif"
     private val recentFonts = mutableListOf("sans-serif", "serif", "monospace")
+
+    // Returns a short display name for a font family string (system name or file path)
+    private fun fontDisplayName(family: String): String {
+        if (!family.startsWith("/")) return family  // system font — return as-is
+        // Custom font — extract name from filename
+        return java.io.File(family).nameWithoutExtension.replace("-", " ").replace("_", " ")
+    }
+
+    // Resolves font family to Typeface — handles both system names and file paths
+    private fun typefaceFromFamily(family: String): android.graphics.Typeface {
+        return try {
+            if (family.startsWith("/") && java.io.File(family).exists())
+                android.graphics.Typeface.createFromFile(family)
+            else
+                android.graphics.Typeface.create(family, android.graphics.Typeface.NORMAL)
+        } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
+    }
     private val recentPenStyles = mutableListOf(PenStyle.FOUNTAIN, PenStyle.BALL, PenStyle.PENCIL)
     private val recentBrushStyles = mutableListOf(BrushStyle.ROUND, BrushStyle.SPRAY, BrushStyle.WATERCOLOR)
     private var cameraImageFile: File? = null
@@ -243,7 +260,7 @@ class MainActivity : AppCompatActivity() {
                     pendingFontFamily = family
                     editingItem?.let { it.fontFamily = family }
                     textSelectionItem?.let { it.fontFamily = family; drawingView.invalidate() }
-                    try { et.typeface = tf ?: Typeface.DEFAULT } catch (e: Exception) {}
+                    et.typeface = tf ?: Typeface.DEFAULT
                     recentFonts.remove(family); recentFonts.add(0, family)
                     rebuildContextBar(); dialog.dismiss()
                 }
@@ -1072,12 +1089,12 @@ class MainActivity : AppCompatActivity() {
             Tool.TEXT -> {
                 // Show 3 recently used fonts (no scrollable row — just 3 chips)
                 val recent = recentFonts.take(3)
-                val recentLabels = recent.map { fam -> (allFontFamilies.firstOrNull { it.second == fam }?.first ?: fam) to (pendingFontFamily == fam) }
+                val recentLabels = recent.map { fam -> (allFontFamilies.firstOrNull { it.second == fam }?.first ?: fontDisplayName(fam)) to (pendingFontFamily == fam) }
                 chipScrollRow(recentLabels) { i ->
                     val fam = recent[i]; pendingFontFamily = fam
                     recentFonts.remove(fam); recentFonts.add(0, fam)
                     textSelectionItem?.let { it.fontFamily = fam; drawingView.invalidate() }
-                    activeEditText?.typeface = try { android.graphics.Typeface.create(fam, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
+                    activeEditText?.typeface = typefaceFromFamily(fam)
                     rebuildContextBar()
                 }
                 // "All Fonts" chip — opens full font picker
@@ -1091,7 +1108,7 @@ class MainActivity : AppCompatActivity() {
                     setOnClickListener {
                         // Use activeEditText if open, otherwise a dummy that routes through pendingFontFamily
                         val et = activeEditText ?: android.widget.EditText(this@MainActivity).also { dummy ->
-                            try { dummy.typeface = android.graphics.Typeface.create(pendingFontFamily, android.graphics.Typeface.NORMAL) } catch (e: Exception) {}
+                            dummy.typeface = typefaceFromFamily(pendingFontFamily)
                         }
                         showFontPickerDialog(et)
                     }
@@ -1887,7 +1904,7 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener {
                 // Use a dummy EditText to satisfy signature; changes go through pendingFontFamily
                 val dummy = android.widget.EditText(this@MainActivity)
-                dummy.typeface = try { android.graphics.Typeface.create(pendingFontFamily, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
+                dummy.typeface = typefaceFromFamily(pendingFontFamily)
                 showFontPickerDialog(dummy)
             }
         })
@@ -2775,7 +2792,7 @@ class MainActivity : AppCompatActivity() {
         et.textSize=(screenSizePx/density).coerceAtLeast(8f)
         et.setBackgroundColor(Color.TRANSPARENT)
         et.setPadding(dp(8),dp(8),dp(8),dp(8)); et.minWidth=dp(140); et.maxWidth=maxEditorWidthPx
-        try { et.typeface = Typeface.create(pendingFontFamily, Typeface.NORMAL) } catch (e: Exception) {}
+        et.typeface = typefaceFromFamily(pendingFontFamily)
         if(!useActualSize) et.rotation=editRotation
         et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } } }; override fun afterTextChanged(s:Editable?){} })
 
