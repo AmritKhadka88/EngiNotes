@@ -836,6 +836,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var scaleFactor = 1f
     private var translateX = 0f; private var translateY = 0f
     private var twoFingerLastX = 0f; private var twoFingerLastY = 0f
+    private var twoFingerInitialDist = 0f  // finger distance when second finger touched down
     private var twoFingerActive = false       // true while 2+ fingers are on screen
     private var twoFingerEverActive = false   // true from first 2-finger contact until next fresh ACTION_DOWN
     private var hoverX: Float? = null; private var hoverY: Float? = null
@@ -867,16 +868,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // apply focus-point translation, which was duplicating that pan and compounding the
             // jitter.
             accumulatedScaleFactor *= detector.scaleFactor
-            if (kotlin.math.abs(accumulatedScaleFactor - 1f) < 0.02f) return true
+            // Larger deadzone (8%) so slightly angled pan gestures don't trigger scale.
+            // Panning with two non-parallel fingers naturally creates a tiny pinch signal —
+            // this threshold absorbs that noise without blocking intentional pinch-zoom.
+            if (kotlin.math.abs(accumulatedScaleFactor - 1f) < 0.08f) return true
+            accumulatedScaleFactor = 1f  // reset after applying so next frame starts fresh
 
             val minScale = if (canvasMode != CanvasMode.INFINITE && width > 0 && height > 0) {
                 minOf(width.toFloat() / (pageWidthPx() * 1.5f), height.toFloat() / (pageHeightPx() * 1.5f)).coerceAtLeast(0.05f)
             } else 0.2f
             val newScale = (scaleFactor * detector.scaleFactor).coerceIn(minScale, 6f)
             val factor = newScale / scaleFactor
-            // Zoom to focus point horizontally (natural feel) but NOT vertically —
-            // vertical zoom-to-focus shifts the page up/down which feels like unwanted scrolling.
-            // Instead scale translateY purely (content stays proportionally positioned).
+            // Zoom to focus point horizontally only — no vertical shift (avoids scroll-up on zoom)
             translateX = detector.focusX - (detector.focusX - translateX) * factor
             translateY = translateY * factor
             scaleFactor = newScale
@@ -3032,31 +3035,44 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         if (event.pointerCount >= 2) {
             twoFingerActive = true; twoFingerEverActive = true
-            // Cancel any in-progress stroke immediately when second finger touches
             if (currentItem != null) { currentItem = null; invalidate() }
             isStylusDown = false; drawingPointerId = -1
             activeHandle = HandleType.NONE
             longPressRunnable?.let { longPressHandler.removeCallbacks(it) }; longPressRunnable = null
-            selectHoldItem = null; selectHoldTriggered = false  // cancel hold+drag
-            // Cancel the GestureDetector so it doesn't fire onSingleTapConfirmed
-            // after the two-finger gesture ends (which would trigger fill or text placement)
+            selectHoldItem = null; selectHoldTriggered = false
             val cancel = MotionEvent.obtain(event); cancel.action = MotionEvent.ACTION_CANCEL
             gestureDetector.onTouchEvent(cancel); cancel.recycle()
-            scaleDetector.onTouchEvent(event)
             when (event.actionMasked) {
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    // Record initial finger distance so we can tell pan from pinch
+                    val dx0 = event.getX(0) - event.getX(1); val dy0 = event.getY(0) - event.getY(1)
+                    twoFingerInitialDist = kotlin.math.sqrt((dx0*dx0 + dy0*dy0).toDouble()).toFloat()
+                    twoFingerLastX = 0f; twoFingerLastY = 0f  // reset midpoint
+                    scaleDetector.onTouchEvent(event)
+                }
                 MotionEvent.ACTION_MOVE -> {
-                    val fx = (event.getX(0) + event.getX(1)) / 2f; val fy = (event.getY(0) + event.getY(1)) / 2f
+                    val fx = (event.getX(0) + event.getX(1)) / 2f
+                    val fy = (event.getY(0) + event.getY(1)) / 2f
+                    // Midpoint pan — always applied regardless of angle
                     if (twoFingerLastX != 0f || twoFingerLastY != 0f) {
                         translateX += fx - twoFingerLastX; translateY += fy - twoFingerLastY
-                        clampTranslation(); onScaleChanged?.invoke(scaleFactor); onCanvasTransformed?.invoke(); invalidate()
+                        clampTranslation(); onCanvasTransformed?.invoke(); invalidate()
                         val maxScroll = (pageHeightPx() * estimatePageCount().coerceAtLeast(2) * scaleFactor - height).coerceAtLeast(1f)
                         onScrollPercentChanged?.invoke((-translateY / maxScroll).coerceIn(0f, 1f))
                     }
                     twoFingerLastX = fx; twoFingerLastY = fy
+                    // Only pass to scaleDetector if fingers have meaningfully changed distance (pinch intent)
+                    val dxC = event.getX(0) - event.getX(1); val dyC = event.getY(0) - event.getY(1)
+                    val currentDist = kotlin.math.sqrt((dxC*dxC + dyC*dyC).toDouble()).toFloat()
+                    val distRatio = if (twoFingerInitialDist > 1f) currentDist / twoFingerInitialDist else 1f
+                    // Only engage scale if distance changed by more than 12% — suppresses angled-pan noise
+                    if (kotlin.math.abs(distRatio - 1f) > 0.12f) scaleDetector.onTouchEvent(event)
                 }
                 MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    twoFingerLastX = 0f; twoFingerLastY = 0f
+                    twoFingerLastX = 0f; twoFingerLastY = 0f; twoFingerInitialDist = 0f
+                    scaleDetector.onTouchEvent(event)
                 }
+                else -> scaleDetector.onTouchEvent(event)
             }
             return true
         }
