@@ -2319,7 +2319,7 @@ class MainActivity : AppCompatActivity() {
         sectionLabel("Thickness: ${drawingView.brushThickness.toInt()}")
         val thickLbl = panel.getChildAt(panel.childCount - 1) as TextView
         val thickSeek = SeekBar(this).apply {
-            max = 60; progress = drawingView.brushThickness.toInt().coerceIn(1, 60)
+            max = 200; progress = drawingView.brushThickness.toInt().coerceIn(1, 200)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { val vv = v.coerceAtLeast(1); drawingView.brushThickness = vv.toFloat(); thickLbl.text = "Thickness: $vv" }
                 override fun onStartTrackingTouch(sb: SeekBar?) {}
