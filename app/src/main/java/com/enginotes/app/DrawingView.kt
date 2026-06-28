@@ -2376,26 +2376,28 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun findItemAt(x: Float, y: Float): Any? {
-        val pad = 20f / scaleFactor
-        // Two-pass: first pass finds items whose outline is actually touched (accurate).
-        // Second pass falls back to bbox for items that slipped through (e.g. filled shapes, images).
+        // Hit radius in world units: large enough to be finger-friendly at any zoom level.
+        // 28dp converted to world units (at least 10 world units minimum).
+        val pad = (28f / scaleFactor).coerceAtLeast(10f)
+
+        // Pass 1: StrokeItems — test OUTLINE only (line/shape boundary), not interior.
+        // This allows tapping through the empty interior of a triangle/rect to hit a smaller
+        // shape behind it, rather than being blocked by the outer shape's bbox.
+        // Iterate top-to-bottom (reversed = most recently drawn first).
         for (a in actions.reversed()) {
-            if (a is FillItem || a is AudioItem || a is TableItem || a is TextItem || a is ImageItem || a is DimensionItem) continue
-            if (a is StrokeItem) {
-                if (strokeHitTest(a.data, x, y, pad)) return a
-            }
+            if (a !is StrokeItem) continue
+            if (strokeHitTest(a.data, x, y, pad)) return a
         }
-        // Second pass: non-stroke items and anything using bbox
+        // Pass 2: non-stroke items (images, tables, audio, text, dimensions) use bbox/radius.
         for (a in actions.reversed()) {
-            if (a is FillItem) continue
-            if (a is AudioItem) { if (distance(x, y, a.x, a.y) <= (a.radius + 12f) / scaleFactor) return a; continue }
-            if (a is TableItem) {
-                val b = getBounds(a) ?: continue
-                if (x in (b[0] - pad)..(b[2] + pad) && y in (b[1] - pad)..(b[3] + pad)) return a; continue
+            when (a) {
+                is FillItem -> continue
+                is AudioItem -> { if (distance(x, y, a.x, a.y) <= (a.radius + 12f) / scaleFactor) return a }
+                is TableItem, is TextItem, is ImageItem, is DimensionItem -> {
+                    val b = getBounds(a) ?: continue
+                    if (x in (b[0] - pad)..(b[2] + pad) && y in (b[1] - pad)..(b[3] + pad)) return a
+                }
             }
-            if (a is StrokeItem) continue  // already handled in pass 1
-            val b = getBounds(a) ?: continue
-            if (x in (b[0] - pad)..(b[2] + pad) && y in (b[1] - pad)..(b[3] + pad)) return a
         }
         return null
     }
@@ -2719,20 +2721,65 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // tools already work.
     private fun selectItemsInRegion(region: Region, regionBounds: FloatArray, windowMode: Boolean) {
         val group = mutableListOf<Any>()
+        val rl = regionBounds[0]; val rt = regionBounds[1]; val rr = regionBounds[2]; val rb = regionBounds[3]
         for (action in actions) {
             if (action is FillItem) continue
             val b = getBounds(action) ?: continue
             val matches = if (windowMode) {
                 // Window select (L→R): item's full bbox must be completely inside the rectangle
-                b[0] >= regionBounds[0] && b[1] >= regionBounds[1] && b[2] <= regionBounds[2] && b[3] <= regionBounds[3]
+                b[0] >= rl && b[1] >= rt && b[2] <= rr && b[3] <= rb
             } else {
-                // Crossing select (R→L): any part of item touching the rectangle is selected
-                b[0] <= regionBounds[2] && b[2] >= regionBounds[0] && b[1] <= regionBounds[3] && b[3] >= regionBounds[1]
+                // Crossing select (R→L): the item's OUTLINE must touch/intersect the selection rect.
+                // Pure bbox overlap is NOT enough — a large outer shape whose outline is outside
+                // the rect but whose interior contains the rect would incorrectly be selected.
+                // Test: any of the item's actual line segments cross any edge of the selection rect.
+                if (action is StrokeItem) {
+                    outlineIntersectsRect(action.data, rl, rt, rr, rb)
+                } else {
+                    // Non-stroke: use bbox intersection (images, tables etc. have solid bboxes)
+                    b[0] <= rr && b[2] >= rl && b[1] <= rb && b[3] >= rt
+                }
             }
             if (matches) group.add(action)
         }
-        // Do NOT reorder actions — preserve z-order. Just store the group reference.
+        // Preserve z-order — do not reorder actions list
         selectedGroup = if (group.isNotEmpty()) group.toMutableList() else null
+    }
+
+    // Returns true if any segment of the stroke outline intersects or touches the given rect.
+    // Also returns true if any corner of the rect is ON the stroke (rect is inside the outline
+    // ring but not the interior — treated as crossing since the border is touched).
+    private fun outlineIntersectsRect(data: StrokeData, rl: Float, rt: Float, rr: Float, rb: Float): Boolean {
+        val pts = data.points; if (pts.size < 4) return false
+        // Check each segment of the shape against each edge of the selection rect
+        val rectSegs = listOf(
+            floatArrayOf(rl, rt, rr, rt),  // top
+            floatArrayOf(rr, rt, rr, rb),  // right
+            floatArrayOf(rr, rb, rl, rb),  // bottom
+            floatArrayOf(rl, rb, rl, rt)   // left
+        )
+        var i = 0
+        while (i + 3 < pts.size) {
+            val ax = pts[i]; val ay = pts[i+1]; val bx = pts[i+2]; val by = pts[i+3]
+            for (rs in rectSegs) {
+                if (segmentsIntersect(ax, ay, bx, by, rs[0], rs[1], rs[2], rs[3])) return true
+            }
+            // Also: if segment endpoint is inside the rect, it's a crossing
+            if (ax in rl..rr && ay in rt..rb) return true
+            i += 2
+        }
+        return false
+    }
+
+    // Segment AB intersects segment CD?
+    private fun segmentsIntersect(ax: Float, ay: Float, bx: Float, by: Float,
+                                   cx: Float, cy: Float, dx: Float, dy: Float): Boolean {
+        val d1x = bx - ax; val d1y = by - ay; val d2x = dx - cx; val d2y = dy - cy
+        val denom = d1x * d2y - d1y * d2x
+        if (kotlin.math.abs(denom) < 0.0001f) return false  // parallel
+        val t = ((cx - ax) * d2y - (cy - ay) * d2x) / denom
+        val u = ((cx - ax) * d1y - (cy - ay) * d1x) / denom
+        return t in 0f..1f && u in 0f..1f
     }
 
     private fun handleAutoSelect(event: MotionEvent) {

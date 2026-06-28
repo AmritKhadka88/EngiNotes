@@ -706,7 +706,11 @@ class MainActivity : AppCompatActivity() {
         drawingView.currentTool = tool; setActiveToolbarBtn(btn)
         dismissPenOptionsPanel(); dismissEraserOptionsPanel(); dismissHighlighterOptionsPanel(); dismissBrushOptionsPanel(); dismissShapesPicker()
         contextBarPage = 0
+        // Restore toolbars in case they were hidden by onDrawingStarted and a back gesture
+        // cancelled the stroke before onDrawingEnded could show them again
+        findViewById<View?>(R.id.primaryToolbarScroll)?.visibility = View.VISIBLE
         rebuildContextBar()
+        findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
     }
     private fun setActiveToolbarBtn(btn: ImageButton?) { activeToolbarButton?.isSelected = false; activeToolbarButton = btn; btn?.isSelected = true }
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
