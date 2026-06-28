@@ -1516,6 +1516,8 @@ class MainActivity : AppCompatActivity() {
         canvasContainer.addView(scroll, lp)
     }
 
+    private var selectedHatchColor: Int = Color.BLACK
+
     private fun showHatchPicker() {
         val categories = linkedMapOf(
             "Lines" to listOf("45° Lines" to HatchPattern.HATCH_45, "135° Lines" to HatchPattern.HATCH_135, "Vertical" to HatchPattern.HATCH_90, "Horizontal" to HatchPattern.HATCH_0, "Cross" to HatchPattern.HATCH_CROSS, "Diagonal Cross" to HatchPattern.HATCH_DIAGONAL_CROSS),
@@ -1528,16 +1530,66 @@ class MainActivity : AppCompatActivity() {
         val allItems = mutableListOf<String>(); val allPatterns = mutableListOf<HatchPattern>()
         categories.forEach { (cat, items) -> allItems.add("── $cat ──"); allPatterns.add(HatchPattern.HATCH_45); items.forEach { (name, pat) -> allItems.add("  $name"); allPatterns.add(pat) } }
 
-        AlertDialog.Builder(this).setTitle("Hatch Pattern (long-press area to fill)")
-            .setItems(allItems.toTypedArray()) { _, i ->
-                val selected = allPatterns[i]; val label = allItems[i]
-                if (label.startsWith("──")) return@setItems
-                // Set fill tool with hatch — next tap fills the tapped area with this hatch
-                drawingView.pendingHatchPattern = selected
-                drawingView.pendingHatchColor = drawingView.currentColor
-                setActiveTool(null, Tool.FILL)
-                android.widget.Toast.makeText(this, "Tap area to fill with hatch", android.widget.Toast.LENGTH_SHORT).show()
-            }.show()
+        // Build dialog with a color row at the top
+        val dialogView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        // Color picker row
+        val colorLabel = TextView(this).apply {
+            text = "Hatch Color"; textSize = 13f; setTextColor(Color.parseColor("#666666"))
+            setPadding(dp(16), dp(12), dp(16), dp(4))
+        }
+        dialogView.addView(colorLabel)
+        val colorRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(12), 0, dp(12), dp(8))
+        }
+        val hatchColors = listOf(
+            Color.BLACK, Color.parseColor("#1565C0"), Color.parseColor("#C62828"),
+            Color.parseColor("#2E7D32"), Color.parseColor("#E65100"),
+            Color.parseColor("#6A1B9A"), Color.parseColor("#795548"),
+            Color.parseColor("#546E7A")
+        )
+        val swatchViews = mutableListOf<View>()
+        for (c in hatchColors) {
+            val swatch = View(this).apply {
+                val lp = LinearLayout.LayoutParams(dp(32), dp(32)); lp.setMargins(dp(4), 0, dp(4), 0); layoutParams = lp
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(c)
+                    setStroke(if (c == selectedHatchColor) dp(3) else dp(1),
+                              if (c == selectedHatchColor) Color.parseColor("#1565C0") else Color.parseColor("#AAAAAA"))
+                }
+                setOnClickListener {
+                    selectedHatchColor = c
+                    swatchViews.forEachIndexed { i, v ->
+                        (v.background as? android.graphics.drawable.GradientDrawable)?.setStroke(
+                            if (hatchColors[i] == c) dp(3) else dp(1),
+                            if (hatchColors[i] == c) Color.parseColor("#1565C0") else Color.parseColor("#AAAAAA"))
+                    }
+                }
+            }
+            swatchViews.add(swatch); colorRow.addView(swatch)
+        }
+        dialogView.addView(colorRow)
+
+        // Pattern list in a scrollview
+        val listContainer = android.widget.ListView(this)
+        listContainer.adapter = android.widget.ArrayAdapter(this, android.R.layout.simple_list_item_1, allItems)
+        val listLp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(400))
+        dialogView.addView(listContainer, listLp)
+
+        val dialog = AlertDialog.Builder(this).setTitle("Hatch Pattern").setView(dialogView)
+            .setNegativeButton("Cancel", null).create()
+
+        listContainer.setOnItemClickListener { _, _, i, _ ->
+            val label = allItems[i]; if (label.startsWith("──")) return@setOnItemClickListener
+            drawingView.pendingHatchPattern = allPatterns[i]
+            drawingView.pendingHatchColor = selectedHatchColor
+            setActiveTool(null, Tool.FILL)
+            android.widget.Toast.makeText(this, "Tap area to fill with hatch", android.widget.Toast.LENGTH_SHORT).show()
+            dialog.dismiss()
+        }
+        dialog.show()
     }
 
     private fun showOcrSourceDialog() {

@@ -3841,6 +3841,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     fun undo() {
+        // If dimension tool is mid-placement (point 1 placed, waiting for point 2),
+        // undo cancels the in-progress dimension and resets to IDLE — no action removed.
+        if (dimPhase != DimPhase.IDLE) { dimPhase = DimPhase.IDLE; dimAngPhase = 0; invalidate(); return }
         if (actions.isEmpty()) return
         val last = actions.removeAt(actions.size - 1)
         if (last is FillToggleAction) {
