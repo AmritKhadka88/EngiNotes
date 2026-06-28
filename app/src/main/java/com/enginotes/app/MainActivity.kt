@@ -2818,49 +2818,55 @@ class MainActivity : AppCompatActivity() {
         canvasContainer.addView(boxContainer,params)
 
         // ── Keyboard scroll-into-view ─────────────────────────────────────────────
-        // When the keyboard opens, scroll the canvas up so the editor box stays visible.
-        // Restore the original position when the keyboard closes.
+        // Use screenY (the tap position) as anchor — reliable even before box is measured.
+        // When keyboard opens: shift canvas + box up so the tap point sits above keyboard.
+        // When keyboard closes: restore everything exactly.
         var savedTranslateY: Float? = null
+        var savedBoxTopMargin: Int? = null
+        var keyboardWasOpen = false
+        val tapScreenY = screenY  // capture at editor-open time
+
         val keyboardListener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
             val visibleFrame = android.graphics.Rect()
             canvasContainer.getWindowVisibleDisplayFrame(visibleFrame)
             val keyboardHeight = canvasContainer.rootView.height - visibleFrame.bottom
-            val editorBottom = (boxContainer.layoutParams as? FrameLayout.LayoutParams)
-                ?.let { it.topMargin + boxContainer.height } ?: 0
-            val toolbar = findViewById<View?>(R.id.primaryToolbarScroll)
-            val toolbarH = if (toolbar?.visibility == View.VISIBLE) toolbar.height else 0
-            val availableHeight = visibleFrame.bottom - toolbarH
+            val keyboardOpen = keyboardHeight > dp(150)
 
-            if (keyboardHeight > dp(100)) {
-                // Keyboard is open — scroll canvas AND move editor box up together
-                if (savedTranslateY == null) savedTranslateY = drawingView.getTranslateY()
-                val hiddenBy = editorBottom - availableHeight + dp(16)
-                if (hiddenBy > 0) {
-                    val currentY = drawingView.getTranslateY()
-                    val target = (savedTranslateY ?: 0f).toFloat() - hiddenBy.toFloat()
-                    val delta = target.toFloat() - currentY.toFloat()
-                    // Shift canvas
-                    drawingView.shiftCanvasVertically(delta)
-                    // Shift the editor box by the same amount so it stays over the text
-                    val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
-                    if (lp != null) {
-                        lp.topMargin = (lp.topMargin + delta).toInt().coerceAtLeast(0)
-                        boxContainer.layoutParams = lp
-                    }
-                }
-            } else {
-                // Keyboard closed — restore canvas and editor box to original positions
-                savedTranslateY?.let { origY ->
-                    val currentY = drawingView.getTranslateY()
-                    val delta = origY.toFloat() - currentY.toFloat()
+            if (keyboardOpen && !keyboardWasOpen) {
+                // Keyboard just opened — compute how much to scroll up
+                keyboardWasOpen = true
+                savedTranslateY = drawingView.getTranslateY()
+                val lp0 = boxContainer.layoutParams as? FrameLayout.LayoutParams
+                savedBoxTopMargin = lp0?.topMargin ?: 0
+
+                // Target: tap position should be 40dp above the keyboard top
+                val keyboardTop = visibleFrame.bottom.toFloat()
+                val targetTapY = keyboardTop - dp(100)  // where we want the editor to sit
+                val delta = targetTapY - tapScreenY      // how much to shift upward (negative = up)
+
+                if (delta < 0) {  // only scroll if editor is actually hidden
                     drawingView.shiftCanvasVertically(delta)
                     val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
                     if (lp != null) {
                         lp.topMargin = (lp.topMargin + delta).toInt().coerceAtLeast(0)
                         boxContainer.layoutParams = lp
                     }
-                    savedTranslateY = null
                 }
+
+            } else if (!keyboardOpen && keyboardWasOpen) {
+                // Keyboard just closed — restore everything precisely
+                keyboardWasOpen = false
+                val origY = savedTranslateY
+                val origBox = savedBoxTopMargin
+                if (origY != null) {
+                    val currentY = drawingView.getTranslateY()
+                    drawingView.shiftCanvasVertically(origY - currentY)
+                }
+                if (origBox != null) {
+                    val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
+                    if (lp != null) { lp.topMargin = origBox; boxContainer.layoutParams = lp }
+                }
+                savedTranslateY = null; savedBoxTopMargin = null
             }
         }
         canvasContainer.viewTreeObserver.addOnGlobalLayoutListener(keyboardListener)
