@@ -299,6 +299,7 @@ class MainActivity : AppCompatActivity() {
             val w = drawingView.width / drawingView.getScaleFactor() * 0.85f
             val h = w / ratio
             drawingView.addImage(path, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), w, h)
+            setActiveTool(findViewById(R.id.btnSelect), Tool.SELECT)
             Toast.makeText(this, "Chart added!", Toast.LENGTH_SHORT).show()
         }
     }
@@ -317,7 +318,8 @@ class MainActivity : AppCompatActivity() {
             if (w > maxW) { val s = maxW / w; w *= s; h *= s }
             if (h > maxH) { val s = maxH / h; w *= s; h *= s }
             drawingView.addImage(path, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), w, h)
-            Toast.makeText(this, "PDF snip added - drag corners to resize", Toast.LENGTH_SHORT).show()
+            setActiveTool(findViewById(R.id.btnSelect), Tool.SELECT)
+            Toast.makeText(this, "PDF snip added — use handles to resize/move", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -2774,7 +2776,9 @@ class MainActivity : AppCompatActivity() {
         val layoutDefaultSize = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 50f * PT_TO_PX else 12f * PT_TO_PX
         editingItem=item; editWorldX=item?.x?:worldX; editWorldY=item?.y?:worldY; editRotation=item?.rotation?:0f; editColor=item?.color?:drawingView.currentColor; editSize=item?.size?:layoutDefaultSize
         editOpacity = item?.opacity ?: 255
-        pendingFontFamily = item?.fontFamily ?: pendingFontFamily  // keep last-used font for new text items
+        // For new text: use last-saved font from prefs (most reliable — survives any intermediate resets)
+        // For existing text: load that item's own font
+        pendingFontFamily = item?.fontFamily ?: (getPrefs().getString("last_font", pendingFontFamily) ?: pendingFontFamily)
         val density=resources.displayMetrics.density
         val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
         // Convenient layout gets a generous size boost so typing feels big and comfortable,
@@ -3011,7 +3015,7 @@ class MainActivity : AppCompatActivity() {
             val opts=android.graphics.BitmapFactory.Options().apply{inJustDecodeBounds=true}; android.graphics.BitmapFactory.decodeFile(file.absolutePath,opts)
             val ratio=opts.outWidth.toFloat().coerceAtLeast(1f)/opts.outHeight.toFloat().coerceAtLeast(1f)
             val w=drawingView.width/drawingView.getScaleFactor()*0.85f
-            drawingView.addImage(file.absolutePath,drawingView.screenCenterWorldX(),drawingView.screenCenterWorldY(),w,(w/ratio).coerceAtMost(drawingView.height/drawingView.getScaleFactor()*0.85f))
+            drawingView.addImage(file.absolutePath,drawingView.screenCenterWorldX(),drawingView.screenCenterWorldY(),w,(w/ratio).coerceAtMost(drawingView.height/drawingView.getScaleFactor()*0.85f)); setActiveTool(findViewById(R.id.btnSelect), Tool.SELECT)
         } catch(e:Exception){ Toast.makeText(this,"Photo failed: ${e.message}",Toast.LENGTH_LONG).show() }
     }
 
@@ -3024,7 +3028,7 @@ class MainActivity : AppCompatActivity() {
             val bmp=contentResolver.openInputStream(uri)?.use{ android.graphics.BitmapFactory.decodeStream(it,null,decOpts) }?:return
             val folder=File(filesDir,"images").also{it.mkdirs()}; val out=File(folder,"img_${System.currentTimeMillis()}.jpg"); FileOutputStream(out).use{ bmp.compress(Bitmap.CompressFormat.JPEG,85,it) }; bmp.recycle()
             val w=drawingView.width/drawingView.getScaleFactor()*0.85f
-            drawingView.addImage(out.absolutePath,drawingView.screenCenterWorldX(),drawingView.screenCenterWorldY(),w,(w/ratio).coerceAtMost(drawingView.height/drawingView.getScaleFactor()*0.85f))
+            drawingView.addImage(out.absolutePath,drawingView.screenCenterWorldX(),drawingView.screenCenterWorldY(),w,(w/ratio).coerceAtMost(drawingView.height/drawingView.getScaleFactor()*0.85f)); setActiveTool(findViewById(R.id.btnSelect), Tool.SELECT)
         } catch(e:Exception){ e.printStackTrace(); Toast.makeText(this,"Image failed: ${e.message}",Toast.LENGTH_LONG).show() }
     }
 
