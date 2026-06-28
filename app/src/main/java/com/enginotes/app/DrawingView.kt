@@ -1788,32 +1788,42 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         drawCursor(canvas)
     }
 
+    private var hasInitialLayout = false
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
-        if (width > 0 && height > 0 && changed) {
-            // Convenient page is a comfortable writing column, smaller than screen width (like a notebook page)
+        if (width > 0 && height > 0) {
             convenientPageW = width.toFloat() * 0.82f
             convenientPageH = height.toFloat() * 1.1f
-            when (canvasMode) {
-                CanvasMode.CONVENIENT -> {
-                    val margin = 16f
-                    scaleFactor = ((width.toFloat() - margin * 2f) / pageWidthPx()).coerceAtMost(1f)
-                    translateX = (width - pageWidthPx() * scaleFactor) / 2f
-                    translateY = margin // start near top, let clampTranslation enforce the top bar limit
-                    clampTranslation(); invalidate()
+            // Only reset scale/position on FIRST layout or when canvasMode changes.
+            // Do NOT reset on toolbar show/hide (changed=true but same canvas width) —
+            // that would snap the user back to page 1 mid-drawing.
+            val isFirstLayout = !hasInitialLayout
+            if (isFirstLayout) {
+                hasInitialLayout = true
+                when (canvasMode) {
+                    CanvasMode.CONVENIENT -> {
+                        val margin = 16f
+                        scaleFactor = ((width.toFloat() - margin * 2f) / pageWidthPx()).coerceAtMost(1f)
+                        translateX = (width - pageWidthPx() * scaleFactor) / 2f
+                        translateY = margin
+                        clampTranslation(); invalidate()
+                    }
+                    CanvasMode.INFINITE -> {}
+                    else -> {
+                        val margin = 20f
+                        scaleFactor = (width.toFloat() - margin * 2f) / pageWidthPx()
+                        translateX = margin; translateY = margin
+                        clampTranslation(); invalidate()
+                    }
                 }
-                CanvasMode.INFINITE -> {}
-                else -> {
-                    val margin = 20f
-                    // Print = full real A4 size filling screen width
-                    scaleFactor = (width.toFloat() - margin * 2f) / pageWidthPx()
-                    translateX = margin
-                    translateY = margin
-                    clampTranslation(); invalidate()
-                }
+            } else {
+                // On subsequent layouts (toolbar resize etc.): only re-clamp, never reset position
+                clampTranslation(); invalidate()
             }
         }
     }
+    // Called when canvasMode changes — forces position reset on next layout
+    fun resetLayoutPosition() { hasInitialLayout = false }
 
     // Rearranges text items to wrap and fit within the current page width (used when switching to print)
     fun rearrangeTextForPrint() {

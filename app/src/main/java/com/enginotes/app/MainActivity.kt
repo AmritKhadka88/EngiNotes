@@ -663,20 +663,20 @@ class MainActivity : AppCompatActivity() {
     private fun applyConvenientLayout() {
         isConvenientLayout = true
         drawingView.canvasMode = CanvasMode.CONVENIENT
-        drawingView.invalidate()
+        drawingView.resetLayoutPosition(); drawingView.invalidate()
     }
 
     private fun applyPrintLayout() {
         isConvenientLayout = false
         drawingView.canvasMode = CanvasMode.PAGINATED
         drawingView.paperSize = PaperSizeOption.A4
-        drawingView.invalidate()
+        drawingView.resetLayoutPosition(); drawingView.invalidate()
     }
 
     private fun applyInfiniteLayout() {
         isConvenientLayout = false
         drawingView.canvasMode = CanvasMode.INFINITE
-        drawingView.invalidate()
+        drawingView.resetLayoutPosition(); drawingView.invalidate()
     }
 
     private fun showLayoutMenu(anchor: View) {
@@ -1024,7 +1024,7 @@ class MainActivity : AppCompatActivity() {
                     rebuildContextBar()
                 }
                 divider()
-                sizeButton(drawingView.currentStrokeWidth, 60) { drawingView.currentStrokeWidth = it }
+                sizeButton(drawingView.brushThickness, 200) { drawingView.brushThickness = it }
                 opacityButton(drawingView.brushOpacity) { drawingView.brushOpacity = it; drawingView.invalidate() }
                 divider()
                 eightColors(drawingView.currentColor) { c -> drawingView.currentColor = c }
