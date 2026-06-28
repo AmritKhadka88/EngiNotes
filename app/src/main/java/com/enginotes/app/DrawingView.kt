@@ -1629,27 +1629,38 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val pts = item.data.points; if (pts.size < 2) return
         val p = Paint(item.paint); p.style = Paint.Style.FILL; p.pathEffect = null; p.maskFilter = null
         val sw = item.data.strokeWidth; val style = item.data.brushStyle
-        val density = when(style) { BrushStyle.SPRAY -> 80; BrushStyle.SPLATTER -> 20; else -> 50 }
+        // Density per sampled point — kept low because we batch all dots into one Path
+        val density = when(style) { BrushStyle.SPRAY -> 18; BrushStyle.SPLATTER -> 8; else -> 12 }
         val spread = when(style) { BrushStyle.SPRAY -> sw * 1.8f; BrushStyle.SPLATTER -> sw * 2.5f; else -> sw * 0.6f }
-        val dotR = when(style) { BrushStyle.SPRAY -> sw * 0.08f; BrushStyle.SPLATTER -> sw * 0.25f; else -> sw * 0.12f }
+        val dotR  = when(style) { BrushStyle.SPRAY -> sw * 0.09f; BrushStyle.SPLATTER -> sw * 0.26f; else -> sw * 0.13f }
+        // Minimum spacing between sampled points — avoids redundant dots on slow/stationary strokes
+        val minStep = sw * 0.3f; val minStep2 = minStep * minStep
         val seed = (pts[0] + pts[1]).toLong()
         val rand = java.util.Random(seed)
+        // Batch all circles into a single Path so the GPU issues one draw call instead of N
+        val batchPath = android.graphics.Path()
+        var lastSx = Float.MAX_VALUE; var lastSy = Float.MAX_VALUE
         var i = 0; while (i < pts.size - 2) {
             val cx = pts[i]; val cy = pts[i+1]
-            repeat(density) {
-                // Gaussian spread for natural spray falloff
-                val angle = rand.nextFloat() * 2f * Math.PI.toFloat()
-                val dist = rand.nextGaussian().toFloat().coerceIn(-2f,2f) * spread * 0.5f
-                val dx = kotlin.math.cos(angle) * dist; val dy = kotlin.math.sin(angle) * dist
-                val r = dotR * (0.3f + rand.nextFloat() * 0.7f)
-                if (style == BrushStyle.SPLATTER) {
-                    // Splatter: some elongated drops
-                    if (rand.nextFloat() < 0.3f) { val path2 = android.graphics.Path(); path2.addOval(android.graphics.RectF(cx+dx-r*2, cy+dy-r*0.5f, cx+dx+r*2, cy+dy+r*0.5f), android.graphics.Path.Direction.CW); canvas.drawPath(path2, p) }
-                    else canvas.drawCircle(cx + dx, cy + dy, r, p)
-                } else canvas.drawCircle(cx + dx, cy + dy, r, p)
+            val dx2 = cx - lastSx; val dy2 = cy - lastSy
+            // Skip points too close to the last sampled one
+            if (dx2*dx2 + dy2*dy2 >= minStep2 || lastSx == Float.MAX_VALUE) {
+                lastSx = cx; lastSy = cy
+                repeat(density) {
+                    val angle = rand.nextFloat() * 2f * Math.PI.toFloat()
+                    val dist  = rand.nextGaussian().toFloat().coerceIn(-2f, 2f) * spread * 0.5f
+                    val ox = kotlin.math.cos(angle) * dist; val oy = kotlin.math.sin(angle) * dist
+                    val r = dotR * (0.3f + rand.nextFloat() * 0.7f)
+                    if (style == BrushStyle.SPLATTER && rand.nextFloat() < 0.3f) {
+                        batchPath.addOval(android.graphics.RectF(cx+ox-r*2f, cy+oy-r*0.5f, cx+ox+r*2f, cy+oy+r*0.5f), android.graphics.Path.Direction.CW)
+                    } else {
+                        batchPath.addCircle(cx + ox, cy + oy, r, android.graphics.Path.Direction.CW)
+                    }
+                }
             }
             i += 2
         }
+        canvas.drawPath(batchPath, p)
     }
 
     private fun drawAudioItem(canvas: Canvas, item: AudioItem) {
