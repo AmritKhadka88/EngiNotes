@@ -3788,10 +3788,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 if (p[6].isNotBlank()) for (t in p[6].split(";")) { val sp = t.split(","); if (sp.size == 4) item.spans.add(TextSpanData(sp[0].toInt(), sp[1].toInt(), sp[2][0], sp[3].toInt())) }
                                 item.text = if (p.size > 7) p[7].replace("\u0002", "\n") else ""
                             }
-                            if (p.size >= 10) item.maxWidth = p[9].toFloatOrNull() ?: 0f
-                            if (p.size >= 11) item.fontFamily = p[10]
-                            if (p.size >= 12) item.opacity = p[11].toIntOrNull() ?: 255
-                            if (p.size >= 13 && p[12].isNotBlank()) item.linkTarget = p[12]
+                            if (p.size >= 9)  item.maxWidth  = p[8].toFloatOrNull() ?: 0f
+                            if (p.size >= 10) item.fontFamily = p[9]
+                            if (p.size >= 11) item.opacity   = p[10].toIntOrNull() ?: 255
+                            if (p.size >= 12 && p[11].isNotBlank()) item.linkTarget = p[11]
                             actions.add(item)
                         }
                         i++
