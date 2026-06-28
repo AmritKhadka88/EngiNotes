@@ -476,7 +476,7 @@ class MainActivity : AppCompatActivity() {
         applyConvenientLayout()
 
         drawingView.onTextEditRequest       = { item, sx, sy, wx, wy -> showInlineTextEditor(item,sx,sy,wx,wy) }
-        drawingView.onTextSelectRequest     = { item, sx, sy -> showTextSelectionBox(item, sx, sy) }
+        drawingView.onTextSelectRequest     = { item, sx, sy, rawX, rawY -> showTextSelectionBox(item, sx, sy, rawX, rawY) }
         drawingView.onTextDeselectRequest   = { dismissTextSelectionBox() }
         drawingView.onEmptyAreaTap          = {
             // Tapping genuinely empty canvas is the "I'm done" signal: commit and close whatever
@@ -515,7 +515,6 @@ class MainActivity : AppCompatActivity() {
                     }
                 }, 300)
                 // Auto handwriting-to-text if toggle is on
-                if (hwrAutoEnabled) android.os.Handler(mainLooper).postDelayed({ convertHandwritingInPlace() }, 600)
             }
         }
         drawingView.onItemSelected          = { item ->
@@ -582,14 +581,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnText).setOnLongClickListener { showTextOptionsPanel(); true }
         findViewById<ImageButton>(R.id.btnInsert).setOnClickListener { showInsertMenu() }
 
-        // Handwriting-to-text realtime toggle
-        val btnHwr = findViewById<ImageButton?>(R.id.btnHwr)
-        btnHwr?.setOnClickListener {
-            hwrAutoEnabled = !hwrAutoEnabled
-            btnHwr.alpha = if (hwrAutoEnabled) 1f else 0.35f
-            btnHwr.imageTintList = android.content.res.ColorStateList.valueOf(if (hwrAutoEnabled) Color.parseColor("#1565C0") else Color.parseColor("#1C1C1E"))
-            Toast.makeText(this, if (hwrAutoEnabled) "Auto handwriting-to-text ON" else "Auto handwriting-to-text OFF", Toast.LENGTH_SHORT).show()
-        }
+        // Handwriting-to-text realtime toggle (button removed from toolbar)
         findViewById<ImageButton>(R.id.btnTools).setOnClickListener { showShapesPicker(it as ImageButton) }
 
         // Touch/Pan toggle
@@ -2609,7 +2601,7 @@ class MainActivity : AppCompatActivity() {
         return Pair(boxW, boxH)
     }
 
-    private fun showTextSelectionBox(item: TextItem, screenX: Float, screenY: Float) {
+    private fun showTextSelectionBox(item: TextItem, screenX: Float, screenY: Float, initialRawX: Float = -1f, initialRawY: Float = -1f) {
         if (textSelectionItem === item) return
         dismissTextSelectionBox()
         closeInlineEditor(true)
