@@ -586,7 +586,7 @@ class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var
     var spans: MutableList<TextSpanData> = mutableListOf()
     var isEditing: Boolean = false
     var maxWidth: Float = 0f  // 0 = unbounded (legacy); >0 = wrap to this width
-    var fontFamily: String = "sans-serif"  // Typeface family name
+    var fontFamily: String = "sans-serif"  // system family name OR absolute path to .ttf/.otf file
     var opacity: Int = 255
     // Link target: when non-null, this text renders in blue and is tappable to navigate instead
     // of being editable like normal text. Format: "bookName/noteFileName" - empty bookName means
@@ -656,6 +656,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private val ctx = context
     private fun dp(v: Int): Float = v * resources.displayMetrics.density
+
+    // Resolves a font family string to a Typeface.
+    // Supports both system family names ("sans-serif") and absolute file paths ("/data/.../font.ttf").
+    private val typefaceCache = HashMap<String, android.graphics.Typeface>()
+    fun typefaceFromFamily(family: String): android.graphics.Typeface {
+        return typefaceCache.getOrPut(family) {
+            try {
+                if (family.startsWith("/") && java.io.File(family).exists()) {
+                    android.graphics.Typeface.createFromFile(family)
+                } else {
+                    android.graphics.Typeface.create(family, android.graphics.Typeface.NORMAL)
+                }
+            } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
+        }
+    }
     private val actions = mutableListOf<Any>()
 
     // ── Spatial index for fast viewport culling and eraser hit-testing ────────
@@ -1978,7 +1993,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun drawTextItem(canvas: Canvas, item: TextItem) {
         val isLink = item.linkTarget != null
         val tp = TextPaint(); tp.color = if (isLink) Color.parseColor("#1565C0") else item.color; tp.alpha = item.opacity; tp.textSize = item.size; tp.isAntiAlias = true
-        try { tp.typeface = Typeface.create(item.fontFamily, Typeface.NORMAL) } catch (e: Exception) {}
+        try { tp.typeface = typefaceFromFamily(item.fontFamily) } catch (e: Exception) {}
         val spannable = SpannableString(item.text)
         if (isLink) {
             // Links always render blue + underlined, like a hyperlink, regardless of any manual
@@ -2085,7 +2100,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val item = selectedItem ?: return
         if (item is TextItem) {
             val tp = android.text.TextPaint(); tp.textSize = item.size
-            try { tp.typeface = android.graphics.Typeface.create(item.fontFamily, android.graphics.Typeface.NORMAL) } catch (e: Exception) {}
+            try { tp.typeface = typefaceFromFamily(item.fontFamily) } catch (e: Exception) {}
             val wrapW = textWrapWidth(item)
             val layout = android.text.StaticLayout.Builder.obtain(item.text, 0, item.text.length, tp, wrapW).setIncludePad(true).build()
             val contentW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
@@ -2173,7 +2188,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is AudioItem -> { val r = item.radius; floatArrayOf(item.x - r, item.y - r, item.x + r, item.y + r + 40f) }
             is TextItem -> {
                 val tp = TextPaint(); tp.textSize = item.size; tp.isAntiAlias = true
-                try { tp.typeface = Typeface.create(item.fontFamily, Typeface.NORMAL) } catch (e: Exception) {}
+                try { tp.typeface = typefaceFromFamily(item.fontFamily) } catch (e: Exception) {}
                 val ww = textWrapWidth(item)
                 val layout = StaticLayout.Builder.obtain(item.text, 0, item.text.length, tp, ww).setIncludePad(true).build()
                 val w = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(10f) ?: 10f
@@ -2371,7 +2386,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         // floor) - past that point there's nothing left to rearrange, just like
                         // a shape can't be resized smaller than its minimum content.
                         val tp = TextPaint(); tp.textSize = item.size
-                        try { tp.typeface = Typeface.create(item.fontFamily, Typeface.NORMAL) } catch (e: Exception) {}
+                        try { tp.typeface = typefaceFromFamily(item.fontFamily) } catch (e: Exception) {}
                         val longestWord = item.text.split(Regex("\\s+")).maxOfOrNull { tp.measureText(it) } ?: 40f
                         val compactFloor = (longestWord + 24f).coerceAtLeast(60f)
                         val dx = if (handle == HandleType.MR) (wx - resizePrevWorldX) else (resizePrevWorldX - wx)
@@ -2440,7 +2455,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         for (a in actions.reversed()) {
             if (a is TextItem) {
                 val tp = TextPaint(); tp.textSize = a.size
-                try { tp.typeface = android.graphics.Typeface.create(a.fontFamily, android.graphics.Typeface.NORMAL) } catch (e: Exception) {}
+                try { tp.typeface = typefaceFromFamily(a.fontFamily) } catch (e: Exception) {}
                 val wrapW = textWrapWidth(a)
                 val layout = android.text.StaticLayout.Builder.obtain(a.text, 0, a.text.length, tp, wrapW).setIncludePad(true).build()
                 val cw = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f

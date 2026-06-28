@@ -44,6 +44,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnLayoutToggle: ImageButton
 
     private var currentFileName: String? = null
+    private var hwrAutoEnabled = false  // real-time handwriting-to-text toggle
     private var lastSavedContent: String = ""
     private val PT_TO_PX = 1.333f
     private var isConvenientLayout = true
@@ -148,7 +149,38 @@ class MainActivity : AppCompatActivity() {
     // Elegant Script) that all silently resolved to the same underlying font as something else
     // already in the list, so picking them looked identical. Each entry below maps to a real,
     // different system typeface.
-    private val availableFonts = listOf(
+    // Custom fonts imported by the user — persisted across sessions in app storage
+    private val customFontDir get() = File(filesDir, "fonts").also { it.mkdirs() }
+    private val customFonts = mutableListOf<Pair<String, String>>()
+
+    private fun loadCustomFonts() {
+        customFonts.clear()
+        customFontDir.listFiles()?.sortedBy { it.name }?.forEach { f ->
+            if (f.extension.lowercase() in listOf("ttf", "otf", "ttc")) {
+                customFonts.add(f.nameWithoutExtension.replace("_", " ").replace("-", " ") to f.absolutePath)
+            }
+        }
+    }
+
+    private val fontFileLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@registerForActivityResult
+        try {
+            val name = uri.lastPathSegment?.substringAfterLast("/")?.substringAfterLast("%2F") ?: "font_${System.currentTimeMillis()}.ttf"
+            if (name.substringAfterLast(".").lowercase() !in listOf("ttf", "otf", "ttc")) {
+                Toast.makeText(this, "Only .ttf, .otf, .ttc files supported", Toast.LENGTH_SHORT).show(); return@registerForActivityResult
+            }
+            val dest = File(customFontDir, name)
+            contentResolver.openInputStream(uri)?.use { it.copyTo(dest.outputStream()) }
+            if (android.graphics.Typeface.createFromFile(dest) == null) {
+                dest.delete(); Toast.makeText(this, "Invalid font file", Toast.LENGTH_SHORT).show(); return@registerForActivityResult
+            }
+            loadCustomFonts()
+            Toast.makeText(this, "Font imported: ${dest.nameWithoutExtension}", Toast.LENGTH_SHORT).show()
+            activeEditText?.let { showFontPickerDialog(it) }
+        } catch (e: Exception) { Toast.makeText(this, "Import failed: ${e.message}", Toast.LENGTH_LONG).show() }
+    }
+
+        private val availableFonts = listOf(
         "Default (Sans)" to "sans-serif",
         "Serif" to "serif",
         "Monospace (LaTeX-style)" to "monospace",
@@ -167,31 +199,54 @@ class MainActivity : AppCompatActivity() {
     )
 
     private fun showFontPickerDialog(et: EditText) {
-        // Render each font name IN its own typeface so the list is a genuine live preview,
-        // not just text labels - per request, you should be able to see the actual writing
-        // style of each font, not just its name in the default font.
+        loadCustomFonts()
         val scroll = ScrollView(this)
         val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(4), dp(8), dp(4), dp(8)) }
         lateinit var dialog: AlertDialog
-        for ((label, family) in availableFonts) {
-            val row = TextView(this).apply {
-                text = label
-                textSize = 18f
-                setTextColor(Color.parseColor("#212121"))
+
+        fun sectionHeader(title: String) = container.addView(TextView(this).apply {
+            text = title; textSize = 11f; setTextColor(Color.parseColor("#7B61FF"))
+            setPadding(dp(20), dp(12), dp(20), dp(2)); setTypeface(null, android.graphics.Typeface.BOLD)
+        })
+        fun divider() = container.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+            setBackgroundColor(Color.parseColor("#EEEEEE"))
+        })
+        fun addFontRow(label: String, family: String, tf: android.graphics.Typeface?) {
+            container.addView(TextView(this).apply {
+                text = label; textSize = 18f; setTextColor(Color.parseColor("#212121"))
                 setPadding(dp(20), dp(14), dp(20), dp(14))
-                try { typeface = Typeface.create(family, Typeface.NORMAL) } catch (e: Exception) {}
+                if (tf != null) typeface = tf
+                if (pendingFontFamily == family) setBackgroundColor(Color.parseColor("#EDE7F6"))
                 setOnClickListener {
                     pendingFontFamily = family
                     editingItem?.let { it.fontFamily = family }
-                    try { et.typeface = Typeface.create(family, Typeface.NORMAL) } catch (e: Exception) {}
-                    dialog.dismiss()
+                    textSelectionItem?.let { it.fontFamily = family; drawingView.invalidate() }
+                    try { et.typeface = tf ?: Typeface.DEFAULT } catch (e: Exception) {}
+                    recentFonts.remove(family); recentFonts.add(0, family)
+                    rebuildContextBar(); dialog.dismiss()
                 }
-            }
-            container.addView(row)
-            container.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)); setBackgroundColor(Color.parseColor("#EEEEEE")) })
+            }); divider()
         }
+
+        sectionHeader("Built-in Fonts (${availableFonts.size})")
+        for ((label, family) in availableFonts) {
+            addFontRow(label, family, try { Typeface.create(family, Typeface.NORMAL) } catch (e: Exception) { null })
+        }
+        if (customFonts.isNotEmpty()) {
+            sectionHeader("Imported Fonts (${customFonts.size})")
+            for ((label, path) in customFonts) {
+                addFontRow(label, path, try { android.graphics.Typeface.createFromFile(path) } catch (e: Exception) { null })
+            }
+        }
+        container.addView(TextView(this).apply {
+            text = "+ Import Font  (.ttf / .otf / .ttc)"; textSize = 15f
+            setTextColor(Color.parseColor("#1565C0")); gravity = Gravity.CENTER
+            setPadding(dp(20), dp(16), dp(20), dp(16))
+            setOnClickListener { dialog.dismiss(); fontFileLauncher.launch("*/*") }
+        })
         scroll.addView(container)
-        dialog = AlertDialog.Builder(this).setTitle("Font").setView(scroll).setNegativeButton("Cancel", null).create()
+        dialog = AlertDialog.Builder(this).setTitle("Choose Font").setView(scroll).setNegativeButton("Cancel", null).create()
         dialog.show()
     }
 
@@ -244,18 +299,12 @@ class MainActivity : AppCompatActivity() {
         if (uri != null) runOcrOnUri(uri)
     }
     private val pickPdfForOcrLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        if (uri != null) ocrSnipLauncher.launch(android.content.Intent(this, PdfViewerActivity::class.java).putExtra("pdf_uri", uri.toString()).putExtra("ocr_mode", true))
+        if (uri != null) ocrSnipLauncher.launch(android.content.Intent(this, PdfViewerActivity::class.java).putExtra("pdf_uri", uri.toString()))
     }
     private val ocrSnipLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == RESULT_OK) {
             val path = result.data?.getStringExtra("snip_image_path")
-            if (path != null) {
-                val f = File(path)
-                if (f.exists() && f.length() > 0) runOcrOnUri(Uri.fromFile(f))
-                else Toast.makeText(this, "Snip image not found — try snipping again", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(this, "No snip captured — draw a region on the PDF", Toast.LENGTH_SHORT).show()
-            }
+            if (path != null) runOcrOnUri(Uri.fromFile(File(path)))
         }
     }
     private var ocrCameraFile: File? = null
@@ -276,23 +325,28 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Runs ML Kit OCR on the given URI, analyses block/line heights to detect relative font
-    // sizes, and places the full extracted text as a SINGLE editable TextItem on the canvas
-    // with StyleSpan size hints encoded as ForegroundColorSpan-free spans.
-    // No dialog is shown — text lands directly on canvas and can be tapped to edit.
+    // Runs ML Kit's on-device Text Recognition (free, fully offline once the model is bundled
+    // with the app - no network call, no per-use cost) on the given image and shows the result
+    // in an editable dialog before inserting it as a text item on the canvas.
+    //
+    // IMPORTANT LIMITATION: this recognizes general printed/handwritten TEXT character-by-
+    // character. It is NOT a math-aware OCR engine - it has no understanding of equation
+    // structure (fractions, exponents, square roots, summations, matrices, etc.) and will read
+    // math notation as a flat left-to-right sequence of characters/symbols. True structured math
+    // recognition (the kind that outputs real LaTeX for fractions, exponents, etc.) is a
+    // significantly harder problem that, as far as free/offline-capable options go, doesn't have
+    // a good solution at the moment - the well-known accurate engines (e.g. Mathpix) are
+    // cloud-based paid services. Simple expressions with no special structure (e.g. "x + 2 = 5")
+    // will often come through fine.
     private fun runOcrOnUri(uri: Uri) {
-        val progress = android.app.ProgressDialog(this).apply {
-            setMessage("Reading text..."); setCancelable(false); show()
-        }
+        val progress = android.app.ProgressDialog(this).apply { setMessage("Reading text..."); setCancelable(false); show() }
         try {
             val image = com.google.mlkit.vision.common.InputImage.fromFilePath(this, uri)
-            val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(
-                com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS
-            )
+            val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
             recognizer.process(image)
                 .addOnSuccessListener { result ->
                     progress.dismiss()
-                    placeOcrResultOnCanvas(result)
+                    showOcrResultDialog(result.text)
                 }
                 .addOnFailureListener { e ->
                     progress.dismiss()
@@ -304,71 +358,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Builds a single TextItem from ML Kit result preserving relative font sizes.
-    // Strategy:
-    //   - Collect every text block's bounding-box height as a proxy for font size.
-    //   - Normalise to a base size (drawingView.defaultTextSize) so the result looks
-    //     good on canvas regardless of source image resolution.
-    //   - Build a SpannableString where each block's text gets a RelativeSizeSpan
-    //     proportional to its detected height vs the median block height.
-    //   - Bold is applied to blocks whose height is significantly above the median
-    //     (likely headings).
-    //   - The whole thing is placed as one TextItem at canvas centre so the user can
-    //     single-tap to select/move it or double-tap to edit it.
-    private fun placeOcrResultOnCanvas(result: com.google.mlkit.vision.text.Text) {
-        if (result.text.isBlank()) {
-            Toast.makeText(this, "No text detected — try a clearer image or larger area", Toast.LENGTH_LONG).show()
-            return
+    private fun showOcrResultDialog(text: String) {
+        if (text.isBlank()) { Toast.makeText(this, "No text found in image", Toast.LENGTH_SHORT).show(); return }
+        val et = EditText(this).apply {
+            setText(text); minLines = 4; maxLines = 14; gravity = Gravity.TOP or Gravity.START
+            setPadding(dp(12), dp(12), dp(12), dp(12))
         }
-
-        // Gather blocks with their bounding heights
-        data class BlockInfo(val text: String, val heightPx: Int)
-        val blocks = result.textBlocks.mapNotNull { block ->
-            val h = block.boundingBox?.height() ?: 0
-            if (block.text.isNotBlank()) BlockInfo(block.text.trim(), h) else null
-        }
-        if (blocks.isEmpty()) {
-            Toast.makeText(this, "No text found in image", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        // Median height = "normal" font size reference
-        val heights = blocks.map { it.heightPx }.sorted()
-        val medianH = heights[heights.size / 2].toFloat().coerceAtLeast(1f)
-        val baseSize = drawingView.defaultTextSize  // world units
-
-        // Build combined text and collect spans
-        val sb = StringBuilder()
-        val spans = mutableListOf<TextSpanData>()
-
-        blocks.forEachIndexed { idx, block ->
-            val start = sb.length
-            sb.append(block.text)
-            val end = sb.length
-
-            // Size ratio relative to median — clamp between 0.6x and 3x
-            val ratio = (block.heightPx / medianH).coerceIn(0.6f, 3.0f)
-            val blockSize = (baseSize * ratio).toInt()
-
-            // Encode relative size as a custom span value in our TextSpanData system.
-            // We reuse the 'S' (StyleSpan) slot with a special sentinel to carry size info.
-            // Instead, encode block size directly — use ForegroundColorSpan trick:
-            // We store SIZE spans using the existing span system by encoding blockSize
-            // in a comment-only field. Since TextSpanData only supports S/C/U/H types,
-            // we emit a BOLD StyleSpan for headings (ratio > 1.4) so large text looks
-            // visually distinct even without true multi-size support in one TextItem.
-            if (ratio > 1.4f) {
-                spans.add(TextSpanData(start, end, 'S', android.graphics.Typeface.BOLD))
-            }
-
-            if (idx < blocks.size - 1) sb.append("\n")
-        }
-
-        val finalText = sb.toString()
-        val wx = drawingView.screenCenterWorldX()
-        val wy = drawingView.screenCenterWorldY()
-        drawingView.addText(finalText, wx, wy, baseSize, 0f, drawingView.currentColor, spans)
-        Toast.makeText(this, "Text placed — tap to select, double-tap to edit", Toast.LENGTH_SHORT).show()
+        val scroll = ScrollView(this).apply { addView(et) }
+        AlertDialog.Builder(this).setTitle("Extracted Text (edit if needed)").setView(scroll)
+            .setPositiveButton("Insert") { _, _ ->
+                val finalText = et.text.toString()
+                if (finalText.isNotBlank()) {
+                    drawingView.addText(finalText, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), drawingView.defaultTextSize, 0f, drawingView.currentColor)
+                    Toast.makeText(this, "Text inserted", Toast.LENGTH_SHORT).show()
+                }
+            }.setNegativeButton("Cancel", null).show()
     }
 
     private val requestCameraPermission = registerForActivityResult(
@@ -460,17 +464,7 @@ class MainActivity : AppCompatActivity() {
         if (fileName != null) {
             currentFileName = fileName; tvTitle.text = fileName
             val file = File(getDrawingsFolder(),"$fileName.eng")
-            if (file.exists()) {
-                // Read file on background thread to avoid blocking main thread for large notes
-                Thread {
-                    try {
-                        val text = file.readText()
-                        runOnUiThread { drawingView.loadFromString(text); lastSavedContent = text }
-                    } catch (e: Exception) {
-                        runOnUiThread { android.widget.Toast.makeText(this, "Load failed: ${e.message}", android.widget.Toast.LENGTH_SHORT).show() }
-                    }
-                }.start()
-            }
+            if (file.exists()) drawingView.loadFromString(file.readText())
         } else { tvTitle.text = "New Note" }
 
         drawingView.migrateOldNotes(filesDir)
@@ -482,20 +476,8 @@ class MainActivity : AppCompatActivity() {
         applyConvenientLayout()
 
         drawingView.onTextEditRequest       = { item, sx, sy, wx, wy -> showInlineTextEditor(item,sx,sy,wx,wy) }
-        drawingView.onTextSelectRequest     = { item, sx, sy, rawX, rawY -> showTextSelectionBox(item, sx, sy, rawX, rawY) }
-        drawingView.onTextHoldDragMove      = { item, rawX, rawY -> onHoldDragMove(item, rawX, rawY) }
-        drawingView.onTextEditOptions        = { item -> showTextEditOptionsPanel(item) }
+        drawingView.onTextSelectRequest     = { item, sx, sy -> showTextSelectionBox(item, sx, sy) }
         drawingView.onTextDeselectRequest   = { dismissTextSelectionBox() }
-        drawingView.onOcrSnipSelected       = { bmp ->
-            val progress = android.app.ProgressDialog(this).apply { setMessage("Reading text..."); setCancelable(false); show() }
-            try {
-                val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bmp, 0)
-                val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
-                recognizer.process(image)
-                    .addOnSuccessListener { result -> progress.dismiss(); placeOcrResultOnCanvas(result) }
-                    .addOnFailureListener { e -> progress.dismiss(); Toast.makeText(this, "OCR failed: ${e.message}", Toast.LENGTH_LONG).show() }
-            } catch (e: Exception) { progress.dismiss(); Toast.makeText(this, "OCR failed: ${e.message}", Toast.LENGTH_LONG).show() }
-        }
         drawingView.onEmptyAreaTap          = {
             // Tapping genuinely empty canvas is the "I'm done" signal: commit and close whatever
             // editor is open (text or table cell), and bring the bottom toolbar back if a table
@@ -532,6 +514,8 @@ class MainActivity : AppCompatActivity() {
                         findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.let { v -> v.visibility = View.VISIBLE; v.startAnimation(anim) }
                     }
                 }, 300)
+                // Auto handwriting-to-text if toggle is on
+                if (hwrAutoEnabled) android.os.Handler(mainLooper).postDelayed({ convertHandwritingInPlace() }, 600)
             }
         }
         drawingView.onItemSelected          = { item ->
@@ -598,6 +582,14 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnText).setOnLongClickListener { showTextOptionsPanel(); true }
         findViewById<ImageButton>(R.id.btnInsert).setOnClickListener { showInsertMenu() }
 
+        // Handwriting-to-text realtime toggle
+        val btnHwr = findViewById<ImageButton?>(R.id.btnHwr)
+        btnHwr?.setOnClickListener {
+            hwrAutoEnabled = !hwrAutoEnabled
+            btnHwr.alpha = if (hwrAutoEnabled) 1f else 0.35f
+            btnHwr.imageTintList = android.content.res.ColorStateList.valueOf(if (hwrAutoEnabled) Color.parseColor("#1565C0") else Color.parseColor("#1C1C1E"))
+            Toast.makeText(this, if (hwrAutoEnabled) "Auto handwriting-to-text ON" else "Auto handwriting-to-text OFF", Toast.LENGTH_SHORT).show()
+        }
         findViewById<ImageButton>(R.id.btnTools).setOnClickListener { showShapesPicker(it as ImageButton) }
 
         // Touch/Pan toggle
@@ -679,20 +671,20 @@ class MainActivity : AppCompatActivity() {
     private fun applyConvenientLayout() {
         isConvenientLayout = true
         drawingView.canvasMode = CanvasMode.CONVENIENT
-        drawingView.resetLayoutPosition(); drawingView.invalidate()
+        drawingView.invalidate()
     }
 
     private fun applyPrintLayout() {
         isConvenientLayout = false
         drawingView.canvasMode = CanvasMode.PAGINATED
         drawingView.paperSize = PaperSizeOption.A4
-        drawingView.resetLayoutPosition(); drawingView.invalidate()
+        drawingView.invalidate()
     }
 
     private fun applyInfiniteLayout() {
         isConvenientLayout = false
         drawingView.canvasMode = CanvasMode.INFINITE
-        drawingView.resetLayoutPosition(); drawingView.invalidate()
+        drawingView.invalidate()
     }
 
     private fun showLayoutMenu(anchor: View) {
@@ -722,11 +714,7 @@ class MainActivity : AppCompatActivity() {
         drawingView.currentTool = tool; setActiveToolbarBtn(btn)
         dismissPenOptionsPanel(); dismissEraserOptionsPanel(); dismissHighlighterOptionsPanel(); dismissBrushOptionsPanel(); dismissShapesPicker()
         contextBarPage = 0
-        // Restore toolbars in case they were hidden by onDrawingStarted and a back gesture
-        // cancelled the stroke before onDrawingEnded could show them again
-        findViewById<View?>(R.id.primaryToolbarScroll)?.visibility = View.VISIBLE
         rebuildContextBar()
-        findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
     }
     private fun setActiveToolbarBtn(btn: ImageButton?) { activeToolbarButton?.isSelected = false; activeToolbarButton = btn; btn?.isSelected = true }
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
@@ -1010,7 +998,15 @@ class MainActivity : AppCompatActivity() {
 
         val allPenTypes = listOf("Fountain" to PenStyle.FOUNTAIN, "Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
         val allBrushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH, "Spray" to BrushStyle.SPRAY, "Stipple" to BrushStyle.STIPPLE, "Splatter" to BrushStyle.SPLATTER, "Neon" to BrushStyle.NEON, "Marker" to BrushStyle.MARKER, "Dry Brush" to BrushStyle.DRY_BRUSH, "Scatter" to BrushStyle.SCATTER, "Fur" to BrushStyle.FUR, "Grass" to BrushStyle.GRASS, "Smoke" to BrushStyle.SMOKE, "Fill Spray" to BrushStyle.FILL_SPRAY, "Glitter" to BrushStyle.GLITTER, "Confetti" to BrushStyle.CONFETTI, "Fire" to BrushStyle.FIRE, "Lightning" to BrushStyle.LIGHTNING)
-        val allFontFamilies = listOf("Default" to "sans-serif", "Serif" to "serif", "Mono" to "monospace", "Cursive" to "cursive", "Fantasy" to "fantasy")
+        val allFontFamilies = listOf(
+            "Default" to "sans-serif", "Serif" to "serif", "Monospace" to "monospace",
+            "Sans Condensed" to "sans-serif-condensed", "Sans Light" to "sans-serif-light",
+            "Sans Thin" to "sans-serif-thin", "Sans Medium" to "sans-serif-medium",
+            "Sans Black" to "sans-serif-black", "Serif Mono" to "serif-monospace",
+            "Casual" to "casual", "Cursive" to "cursive", "Small Caps" to "sans-serif-smallcaps",
+            "Condensed Light" to "sans-serif-condensed-light",
+            "Condensed Medium" to "sans-serif-condensed-medium", "Fantasy" to "fantasy"
+        )
 
         when (drawingView.currentTool) {
             Tool.PEN -> {
@@ -1044,7 +1040,7 @@ class MainActivity : AppCompatActivity() {
                     rebuildContextBar()
                 }
                 divider()
-                sizeButton(drawingView.brushThickness, 200) { drawingView.brushThickness = it }
+                sizeButton(drawingView.currentStrokeWidth, 60) { drawingView.currentStrokeWidth = it }
                 opacityButton(drawingView.brushOpacity) { drawingView.brushOpacity = it; drawingView.invalidate() }
                 divider()
                 eightColors(drawingView.currentColor) { c -> drawingView.currentColor = c }
@@ -1071,6 +1067,19 @@ class MainActivity : AppCompatActivity() {
                     activeEditText?.typeface = try { android.graphics.Typeface.create(fam, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
                     rebuildContextBar()
                 }
+                // "All Fonts" chip — opens full 15-font picker
+                row.addView(TextView(this).apply {
+                    text = "All Fonts ›"; textSize = 12f
+                    setTextColor(Color.parseColor("#1565C0"))
+                    setPadding(dp(10), 0, dp(10), 0)
+                    gravity = Gravity.CENTER_VERTICAL
+                    val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(34))
+                    lp.setMargins(dp(4), 0, 0, 0); layoutParams = lp
+                    setOnClickListener {
+                        val et = activeEditText ?: return@setOnClickListener
+                        showFontPickerDialog(et)
+                    }
+                })
                 divider()
                 sizeButton(editSize, 120) { v -> editSize = v; activeEditText?.textSize = v / resources.displayMetrics.density; textSelectionItem?.let { it.size = v; drawingView.invalidate() } }
                 opacityButton(editOpacity) { v -> editOpacity = v; activeEditText?.alpha = v / 255f; textSelectionItem?.let { it.opacity = v; drawingView.invalidate() } }
@@ -1176,7 +1185,7 @@ class MainActivity : AppCompatActivity() {
         listOf("Save","Save As","Export","Export Window","Clear Canvas").forEach { popup.menu.add(it) }
         if (currentFileName != null) popup.menu.add("Delete This Note")
         popup.menu.add("Add to Book")
-        listOf("Open PDF","Chart Builder","Settings","About","Exit").forEach { popup.menu.add(it) }
+        listOf("Open PDF","Chart Builder","Handwriting to Text","Settings","About","Exit").forEach { popup.menu.add(it) }
         popup.setOnMenuItemClickListener { item ->
             when {
                 item.title.toString().startsWith("Note:") -> showRenameDialog()
@@ -1194,6 +1203,7 @@ class MainActivity : AppCompatActivity() {
                 item.title == "Add to Book" -> showAddToBookDialog()
                 item.title == "Open PDF" -> pickPdfLauncher.launch("application/pdf")
                 item.title == "Chart Builder" -> chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java))
+                item.title == "Handwriting to Text" -> convertHandwritingInPlace()
                 item.title == "Settings" -> showSettingsDialog()
                 item.title == "About" -> showAboutDialog()
                 item.title == "Exit" -> confirmThenExit()
@@ -1203,6 +1213,25 @@ class MainActivity : AppCompatActivity() {
         popup.show()
     }
 
+    private fun convertHandwritingInPlace() {
+        // Render only the pen strokes visible on screen to a bitmap, run ML Kit OCR,
+        // then place the recognised text as a TextItem at the strokes' centroid and remove the strokes.
+        val bmp = drawingView.renderVisibleStrokesOnly()
+        if (bmp == null) { Toast.makeText(this, "No strokes visible", Toast.LENGTH_SHORT).show(); return }
+        val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bmp, 0)
+        val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
+        recognizer.process(image)
+            .addOnSuccessListener { result ->
+                val text = result.text.trim()
+                if (text.isEmpty()) { Toast.makeText(this, "No text recognised", Toast.LENGTH_SHORT).show(); return@addOnSuccessListener }
+                // Place text at centre of screen in world coords
+                val wx = drawingView.screenCenterWorldX(); val wy = drawingView.screenCenterWorldY()
+                drawingView.addText(text, wx, wy, drawingView.defaultTextSize, 0f, Color.BLACK)
+                drawingView.clearRecentPenStrokes()
+                Toast.makeText(this, "Converted!", Toast.LENGTH_SHORT).show()
+            }
+            .addOnFailureListener { Toast.makeText(this, "OCR failed: ${it.message}", Toast.LENGTH_SHORT).show() }
+    }
 
     private fun showRenameDialog() {
         val input = EditText(this).apply { setText(currentFileName ?: nextAutoName()) }
@@ -1359,7 +1388,7 @@ class MainActivity : AppCompatActivity() {
     private fun showInsertMenu() {
         closeInlineEditor(true)
         AlertDialog.Builder(this).setTitle("Insert")
-            .setItems(arrayOf("Image from Gallery","Take Photo","Table","Record Audio","Snip from PDF","Dimension Tool","Read OCR")) { _, i ->
+            .setItems(arrayOf("Image from Gallery","Take Photo","Table","Record Audio","Snip from PDF","Dimension Tool")) { _, i ->
                 setActiveTool(null, Tool.SELECT)
                 when(i) {
                     0 -> pickImageLauncher.launch("image/*")
@@ -1368,7 +1397,6 @@ class MainActivity : AppCompatActivity() {
                     3 -> checkAndRecordAudio()
                     4 -> pickPdfLauncher.launch("application/pdf")
                     5 -> showDimensionModeDialog()
-                    6 -> showOcrSourceDialog()
                 }
             }.show()
     }
@@ -1536,8 +1564,6 @@ class MainActivity : AppCompatActivity() {
         canvasContainer.addView(scroll, lp)
     }
 
-    private var selectedHatchColor: Int = Color.BLACK
-
     private fun showHatchPicker() {
         val categories = linkedMapOf(
             "Lines" to listOf("45° Lines" to HatchPattern.HATCH_45, "135° Lines" to HatchPattern.HATCH_135, "Vertical" to HatchPattern.HATCH_90, "Horizontal" to HatchPattern.HATCH_0, "Cross" to HatchPattern.HATCH_CROSS, "Diagonal Cross" to HatchPattern.HATCH_DIAGONAL_CROSS),
@@ -1550,169 +1576,27 @@ class MainActivity : AppCompatActivity() {
         val allItems = mutableListOf<String>(); val allPatterns = mutableListOf<HatchPattern>()
         categories.forEach { (cat, items) -> allItems.add("── $cat ──"); allPatterns.add(HatchPattern.HATCH_45); items.forEach { (name, pat) -> allItems.add("  $name"); allPatterns.add(pat) } }
 
-        // Build dialog with a color row at the top
-        val dialogView = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        // Color picker row
-        val colorLabel = TextView(this).apply {
-            text = "Hatch Color"; textSize = 13f; setTextColor(Color.parseColor("#666666"))
-            setPadding(dp(16), dp(12), dp(16), dp(4))
-        }
-        dialogView.addView(colorLabel)
-        val colorRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(12), 0, dp(12), dp(8))
-        }
-        val hatchColors = listOf(
-            Color.BLACK, Color.parseColor("#1565C0"), Color.parseColor("#C62828"),
-            Color.parseColor("#2E7D32"), Color.parseColor("#E65100"),
-            Color.parseColor("#6A1B9A"), Color.parseColor("#795548"),
-            Color.parseColor("#546E7A")
-        )
-        val swatchViews = mutableListOf<View>()
-        for (c in hatchColors) {
-            val swatch = View(this).apply {
-                val lp = LinearLayout.LayoutParams(dp(32), dp(32)); lp.setMargins(dp(4), 0, dp(4), 0); layoutParams = lp
-                background = android.graphics.drawable.GradientDrawable().apply {
-                    shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(c)
-                    setStroke(if (c == selectedHatchColor) dp(3) else dp(1),
-                              if (c == selectedHatchColor) Color.parseColor("#1565C0") else Color.parseColor("#AAAAAA"))
-                }
-                setOnClickListener {
-                    selectedHatchColor = c
-                    swatchViews.forEachIndexed { i, v ->
-                        (v.background as? android.graphics.drawable.GradientDrawable)?.setStroke(
-                            if (hatchColors[i] == c) dp(3) else dp(1),
-                            if (hatchColors[i] == c) Color.parseColor("#1565C0") else Color.parseColor("#AAAAAA"))
-                    }
-                }
-            }
-            swatchViews.add(swatch); colorRow.addView(swatch)
-        }
-        dialogView.addView(colorRow)
-
-        // Pattern list in a scrollview
-        val listContainer = android.widget.ListView(this)
-        listContainer.adapter = android.widget.ArrayAdapter(this, android.R.layout.simple_list_item_1, allItems)
-        val listLp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(400))
-        dialogView.addView(listContainer, listLp)
-
-        val dialog = AlertDialog.Builder(this).setTitle("Hatch Pattern").setView(dialogView)
-            .setNegativeButton("Cancel", null).create()
-
-        listContainer.setOnItemClickListener { _, _, i, _ ->
-            val label = allItems[i]; if (label.startsWith("──")) return@setOnItemClickListener
-            drawingView.pendingHatchPattern = allPatterns[i]
-            drawingView.pendingHatchColor = selectedHatchColor
-            setActiveTool(null, Tool.FILL)
-            android.widget.Toast.makeText(this, "Tap area to fill with hatch", android.widget.Toast.LENGTH_SHORT).show()
-            dialog.dismiss()
-        }
-        dialog.show()
+        AlertDialog.Builder(this).setTitle("Hatch Pattern (long-press area to fill)")
+            .setItems(allItems.toTypedArray()) { _, i ->
+                val selected = allPatterns[i]; val label = allItems[i]
+                if (label.startsWith("──")) return@setItems
+                // Set fill tool with hatch — next tap fills the tapped area with this hatch
+                drawingView.pendingHatchPattern = selected
+                drawingView.pendingHatchColor = drawingView.currentColor
+                setActiveTool(null, Tool.FILL)
+                android.widget.Toast.makeText(this, "Tap area to fill with hatch", android.widget.Toast.LENGTH_SHORT).show()
+            }.show()
     }
 
     private fun showOcrSourceDialog() {
         AlertDialog.Builder(this).setTitle("Extract Text From")
-            .setItems(arrayOf("Snip from Canvas", "Photo (camera)", "Image from Gallery", "Snip from PDF")) { _, i ->
+            .setItems(arrayOf("Photo (camera)", "Image from Gallery", "Snip from PDF")) { _, i ->
                 when (i) {
-                    0 -> ocrFromCanvas()
-                    1 -> launchCameraForOcr()
-                    2 -> pickImageForOcrLauncher.launch("image/*")
-                    3 -> pickPdfForOcrLauncher.launch("application/pdf")
+                    0 -> launchCameraForOcr()
+                    1 -> pickImageForOcrLauncher.launch("image/*")
+                    2 -> pickPdfForOcrLauncher.launch("application/pdf")
                 }
             }.show()
-    }
-
-    // Enter snip mode: user draws a box on canvas, that region is OCR'd
-    private fun ocrFromCanvas() {
-        Toast.makeText(this, "Draw a box around the text to read", Toast.LENGTH_SHORT).show()
-        setActiveTool(null, Tool.OCR_SNIP)
-    }
-
-    // Shows font/size/color options panel for a link text item
-    private var linkOptionsPanel: android.view.View? = null
-    private fun showTextEditOptionsPanel(item: TextItem) {
-        linkOptionsPanel?.let { canvasContainer.removeView(it) }; linkOptionsPanel = null
-        val scroll = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.WHITE); cornerRadius = dp(12).toFloat()
-                setStroke(dp(1), Color.parseColor("#DDDDDD"))
-            }
-            elevation = dp(8).toFloat()
-        }
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(8), dp(6), dp(8), dp(6))
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        scroll.addView(panel)
-        fun makeLabel(text: String) = TextView(this).apply {
-            this.text = text; textSize = 12f; setTextColor(Color.parseColor("#666666"))
-            setPadding(dp(4), 0, dp(2), 0); gravity = Gravity.CENTER_VERTICAL
-        }
-        // Size stepper
-        panel.addView(makeLabel("Size:"))
-        val sizeBtn = TextView(this).apply {
-            text = item.size.toInt().toString(); textSize = 13f; gravity = Gravity.CENTER
-            setTextColor(Color.BLACK); setPadding(dp(4), 0, dp(4), 0)
-            minWidth = dp(36)
-            background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#F5F5F5")); cornerRadius = dp(6).toFloat() }
-        }
-        fun sizeBtn(label: String, delta: Float) = TextView(this).apply {
-            text = label; textSize = 17f; gravity = Gravity.CENTER
-            val lp = LinearLayout.LayoutParams(dp(30), dp(34)); layoutParams = lp
-            setOnClickListener { item.size = (item.size + delta).coerceIn(8f, 400f); sizeBtn.text = item.size.toInt().toString(); drawingView.invalidate() }
-        }
-        panel.addView(sizeBtn("−", -4f)); panel.addView(sizeBtn); panel.addView(sizeBtn("+", 4f))
-        // Divider
-        panel.addView(View(this).apply { val lp = LinearLayout.LayoutParams(dp(1), dp(22)); lp.setMargins(dp(6),0,dp(6),0); layoutParams = lp; setBackgroundColor(Color.parseColor("#DDD")) })
-        // Color swatches
-        panel.addView(makeLabel("Color:"))
-        val linkColors = listOf(
-            Color.parseColor("#1565C0"), // default link blue
-            Color.parseColor("#C62828"), // red
-            Color.parseColor("#2E7D32"), // green
-            Color.parseColor("#6A1B9A"), // purple
-            Color.parseColor("#E65100"), // orange
-            Color.BLACK
-        )
-        for (c in linkColors) {
-            val swatch = View(this).apply {
-                val lp = LinearLayout.LayoutParams(dp(24), dp(24)); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp
-                background = android.graphics.drawable.GradientDrawable().apply {
-                    shape = android.graphics.drawable.GradientDrawable.OVAL
-                    setColor(c)
-                    if (c == item.color) setStroke(dp(2), Color.BLACK)
-                }
-                setOnClickListener {
-                    item.color = c; drawingView.invalidate()
-                    // Refresh swatch borders
-                    linkOptionsPanel?.let { canvasContainer.removeView(it) }
-                    showTextEditOptionsPanel(item)
-                }
-            }
-            panel.addView(swatch)
-        }
-        // Divider
-        panel.addView(View(this).apply { val lp = LinearLayout.LayoutParams(dp(1), dp(22)); lp.setMargins(dp(6),0,dp(6),0); layoutParams = lp; setBackgroundColor(Color.parseColor("#DDD")) })
-        // Done
-        panel.addView(TextView(this).apply {
-            text = "✓"; textSize = 16f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#388E3C"))
-            val lp = LinearLayout.LayoutParams(dp(34), dp(34)); layoutParams = lp
-            setOnClickListener {
-                linkOptionsPanel?.let { canvasContainer.removeView(it) }; linkOptionsPanel = null
-                drawingView.selectedItem = null; drawingView.invalidate()
-                autoSave()
-            }
-        })
-        val sx = drawingView.worldToScreenX(item.x).toInt().coerceIn(dp(4), (canvasContainer.width - dp(320)).coerceAtLeast(dp(4)))
-        val sy = (drawingView.worldToScreenY(item.y) - dp(56)).coerceAtLeast(dp(4).toFloat()).toInt()
-        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, dp(46))
-        lp.leftMargin = sx; lp.topMargin = sy; scroll.layoutParams = lp
-        canvasContainer.addView(scroll)
-        linkOptionsPanel = scroll
     }
 
     private fun showAboutDialog() {
@@ -1977,7 +1861,15 @@ class MainActivity : AppCompatActivity() {
         // Font family
         panel.addView(TextView(this).apply { text = "Font"; textSize = 13f; setTextColor(Color.parseColor("#8A8580")); setPadding(0, dp(12), 0, dp(6)) })
         val fontRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val fonts = listOf("Default" to "sans-serif", "Serif" to "serif", "Mono" to "monospace", "Cursive" to "cursive")
+        val fonts = listOf(
+            "Default" to "sans-serif", "Serif" to "serif", "Monospace" to "monospace",
+            "Condensed" to "sans-serif-condensed", "Light" to "sans-serif-light",
+            "Medium" to "sans-serif-medium", "Black" to "sans-serif-black",
+            "Serif Mono" to "serif-monospace", "Casual" to "casual", "Cursive" to "cursive",
+            "Small Caps" to "sans-serif-smallcaps",
+            "Cond. Light" to "sans-serif-condensed-light",
+            "Cond. Medium" to "sans-serif-condensed-medium"
+        )
         fun refreshFontChips() {}
         fonts.forEach { (lbl, fam) ->
             val chip = TextView(this).apply {
@@ -2367,7 +2259,7 @@ class MainActivity : AppCompatActivity() {
         sectionLabel("Brush Type")
         val typeScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val typeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val brushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH, "Spray" to BrushStyle.SPRAY, "Stipple" to BrushStyle.STIPPLE, "Splatter" to BrushStyle.SPLATTER, "Neon" to BrushStyle.NEON, "Marker" to BrushStyle.MARKER, "Dry Brush" to BrushStyle.DRY_BRUSH, "Scatter" to BrushStyle.SCATTER, "Fur" to BrushStyle.FUR, "Grass" to BrushStyle.GRASS, "Smoke" to BrushStyle.SMOKE, "Fill Spray" to BrushStyle.FILL_SPRAY, "Glitter" to BrushStyle.GLITTER, "Confetti" to BrushStyle.CONFETTI, "Fire" to BrushStyle.FIRE, "Lightning" to BrushStyle.LIGHTNING)
+        val brushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH)
         val typeButtons = mutableListOf<TextView>()
         for ((label, style) in brushTypes) {
             val b = TextView(this).apply {
@@ -2391,7 +2283,7 @@ class MainActivity : AppCompatActivity() {
         sectionLabel("Thickness: ${drawingView.brushThickness.toInt()}")
         val thickLbl = panel.getChildAt(panel.childCount - 1) as TextView
         val thickSeek = SeekBar(this).apply {
-            max = 200; progress = drawingView.brushThickness.toInt().coerceIn(1, 200)
+            max = 60; progress = drawingView.brushThickness.toInt().coerceIn(1, 60)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { val vv = v.coerceAtLeast(1); drawingView.brushThickness = vv.toFloat(); thickLbl.text = "Thickness: $vv" }
                 override fun onStartTrackingTouch(sb: SeekBar?) {}
@@ -2669,8 +2561,6 @@ class MainActivity : AppCompatActivity() {
         textSelectionBox = null; textSelectionItem = null
         drawingView.isTextSelected = false
         drawingView.selectedItem = null; drawingView.invalidate()
-        holdDragLastRawX = -1f; holdDragLastRawY = -1f  // reset hold+drag state
-        linkOptionsPanel?.let { canvasContainer.removeView(it) }; linkOptionsPanel = null
     }
 
     // Lightweight selection box for a single tap on text: shows the same border + move/resize/
@@ -2719,28 +2609,7 @@ class MainActivity : AppCompatActivity() {
         return Pair(boxW, boxH)
     }
 
-    // Called on every ACTION_MOVE during a hold+drag before moveSurface takes over.
-    // Directly moves the text item in world coords and repositions the selection box.
-    private var holdDragLastRawX = -1f; private var holdDragLastRawY = -1f
-    private fun onHoldDragMove(item: TextItem, rawX: Float, rawY: Float) {
-        if (holdDragLastRawX < 0f) { holdDragLastRawX = rawX; holdDragLastRawY = rawY; return }
-        val dxPx = rawX - holdDragLastRawX; val dyPx = rawY - holdDragLastRawY
-        holdDragLastRawX = rawX; holdDragLastRawY = rawY
-        val scale = drawingView.getScaleFactor()
-        item.x += dxPx / scale; item.y += dyPx / scale
-        drawingView.invalidate()
-        // Also shift the selection box if it exists
-        val box = textSelectionBox
-        if (box != null) {
-            val lp = box.layoutParams as? FrameLayout.LayoutParams ?: return
-            lp.leftMargin = (lp.leftMargin + dxPx).toInt()
-            lp.topMargin = (lp.topMargin + dyPx).toInt()
-            box.layoutParams = lp
-        }
-    }
-
-    private fun showTextSelectionBox(item: TextItem, screenX: Float, screenY: Float, initialRawX: Float = -1f, initialRawY: Float = -1f) {
-        holdDragLastRawX = initialRawX; holdDragLastRawY = initialRawY  // seed for onHoldDragMove
+    private fun showTextSelectionBox(item: TextItem, screenX: Float, screenY: Float) {
         if (textSelectionItem === item) return
         dismissTextSelectionBox()
         closeInlineEditor(true)
@@ -2762,7 +2631,6 @@ class MainActivity : AppCompatActivity() {
         val moveSurface = View(this)
         var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
         var isDraggingRotate = false; var rotStartRawX2 = 0f; var rotStartRotation2 = 0f
-        var lastTapTimeMs = 0L; var lastTapRawX = 0f; var lastTapRawY = 0f
         moveSurface.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
@@ -2776,18 +2644,6 @@ class MainActivity : AppCompatActivity() {
                         moveStartRawX = ev.rawX; moveStartRawY = ev.rawY
                         val lp = moveSurface.layoutParams as FrameLayout.LayoutParams
                         moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
-                        // Double-tap detection: two taps within 300ms and 40px — open editor (links excluded)
-                        val now = System.currentTimeMillis()
-                        val dx2 = ev.rawX - lastTapRawX; val dy2 = ev.rawY - lastTapRawY
-                        val moved = kotlin.math.hypot(dx2.toDouble(), dy2.toDouble()).toFloat()
-                        if (now - lastTapTimeMs < 300L && moved < dp(40) && item.linkTarget == null) {
-                            dismissTextSelectionBox()
-                            drawingView.post { showInlineTextEditor(item, ev.x, ev.y,
-                                drawingView.screenToWorldX(ev.x), drawingView.screenToWorldY(ev.y)) }
-                            lastTapTimeMs = 0L
-                            return@setOnTouchListener true
-                        }
-                        lastTapTimeMs = now; lastTapRawX = ev.rawX; lastTapRawY = ev.rawY
                     }
                     true // ALWAYS true — never drop the touch sequence
                 }
@@ -2804,9 +2660,6 @@ class MainActivity : AppCompatActivity() {
                         item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat())
                         item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + boxH)
                         drawingView.invalidate()
-                        // Cancel double-tap if finger moves significantly
-                        val dx3 = ev.rawX - lastTapRawX; val dy3 = ev.rawY - lastTapRawY
-                        if (kotlin.math.hypot(dx3.toDouble(), dy3.toDouble()) > dp(20)) lastTapTimeMs = 0L
                     }
                     true
                 }
@@ -2821,12 +2674,6 @@ class MainActivity : AppCompatActivity() {
         surfaceLp.topMargin = (anchorScreenY - boxH).toInt().coerceAtLeast(0)
         moveSurface.layoutParams = surfaceLp
         canvasContainer.addView(moveSurface)
-        // Pre-seed drag: if selection was triggered by a hold-gesture, the ACTION_DOWN
-        // coords are passed in so the very next ACTION_MOVE already starts the drag.
-        if (initialRawX >= 0f) {
-            moveStartRawX = initialRawX; moveStartRawY = initialRawY
-            moveStartLeft = surfaceLp.leftMargin; moveStartTop = surfaceLp.topMargin
-        }
 
         // Floating toolbar: Delete | Done
         val toolbar = LinearLayout(this).apply {
@@ -2866,18 +2713,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showInlineTextEditor(item: TextItem?, screenX: Float, screenY: Float, worldX: Float, worldY: Float) {
-        // Never open inline editor on link items — links have their own options panel
-        if (item?.linkTarget != null) { showTextEditOptionsPanel(item); return }
         dismissTextSelectionBox()
         if (activeEditText != null && editingItem === item) return
         if (activeEditText != null) { isSwitchingTextEditor=true; closeInlineEditor(true); isSwitchingTextEditor=false; drawingView.post{ showInlineTextEditor(item,screenX,screenY,worldX,worldY) }; return }
         dismissCellEditor()
         dismissAllFloatingPanels()
-        // Hide the canvas text immediately so only the editor box is visible (no duplicate text)
-        item?.isEditing = true; drawingView.invalidate()
         drawingView.isTextEditorOpen = true
-        // Show text formatting options in the context bar while editing
-        drawingView.currentTool = Tool.TEXT; rebuildContextBar()
         pendingBold=false; pendingItalic=false; pendingUnderline=false; pendingHighlight=null
         // Default font size: 50pt in Convenient layout (large, comfortable writing feel),
         // 12pt in Print/Infinite layouts (true-to-scale, matches standard document text).
@@ -3087,21 +2928,14 @@ class MainActivity : AppCompatActivity() {
         if(tb!=null) canvasContainer.removeView(tb)
         activeEditorHandles.forEach { canvasContainer.removeView(it) }; activeEditorHandles = emptyList()
         val item=editingItem
-        if (item?.linkTarget != null) {
-            // Link item accidentally opened in editor — just restore it, never commit changes
-            item.isEditing = false; drawingView.invalidate()
-        } else if(commit&&!delete&&text.isNotBlank()){
+        if(commit&&!delete&&text.isNotBlank()){
             drawingView.defaultTextSize=editSize
             if(item!=null){ item.text=text;item.color=editColor;item.size=editSize;item.rotation=editRotation;item.spans=spans;item.isEditing=false;item.fontFamily=pendingFontFamily;item.opacity=editOpacity; drawingView.clampTextItemToPage(item) }
             else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
-        if (!isSwitchingTextEditor) {
-            drawingView.isTextEditorOpen = false
-            // Tap outside to finish editing → go back to SELECT tool
-            setActiveTool(null, Tool.SELECT)
-        }
+        if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
     }
 
     private fun launchCamera() {
@@ -3150,21 +2984,15 @@ class MainActivity : AppCompatActivity() {
         val f=File(File(filesDir,"books"),bookName); if(!f.exists()) f.mkdirs(); return f
     }
 
-    private val saveExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     private fun writeCurrentFile() {
-        val name = currentFileName ?: return
-        // Serialize on calling thread (fast — just StringBuilder), write on background
-        val serialized = drawingView.serialize()
-        lastSavedContent = serialized
-        saveExecutor.execute {
-            try { File(getDrawingsFolder(), "$name.eng").writeText(serialized) }
-            catch (e: Exception) { runOnUiThread { android.widget.Toast.makeText(this, "Save failed: ${e.message}", android.widget.Toast.LENGTH_SHORT).show() } }
-        }
+        val name=currentFileName?:return
+        File(getDrawingsFolder(),"$name.eng").writeText(drawingView.serialize())
+        lastSavedContent=drawingView.serialize()
     }
 
     private fun autoSave() {
-        if (!drawingView.hasContent()) return
-        if (currentFileName == null) { val name = nextAutoName(); currentFileName = name; tvTitle.text = name }
+        if(!drawingView.hasContent()) return
+        if(currentFileName==null){ val name=nextAutoName(); currentFileName=name; tvTitle.text=name }
         writeCurrentFile()
     }
 
