@@ -3717,11 +3717,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     // pendingHatchPattern stays set so repeated taps keep using the same hatch
                     // Pre-attach the bitmap so it draws immediately without async blink
                     fi.bitmap = fb
-                    // Remove any existing FillItem that covers the same tap point (same area)
+                    // Remove an existing FillItem only if the new one substantially overlaps it
+                    // (>50% of the SMALLER item's area). This prevents nearby fills from wiping
+                    // each other out while still replacing a fill that was re-applied to the same spot.
                     actions.removeAll { existing ->
-                        existing is FillItem &&
-                        existing.x <= wx0 + fi.w * 0.5f && existing.x + existing.w >= wx0 + fi.w * 0.5f &&
-                        existing.y <= wy0 + fi.h * 0.5f && existing.y + existing.h >= wy0 + fi.h * 0.5f
+                        if (existing !is FillItem) return@removeAll false
+                        val ix0 = maxOf(existing.x, fi.x); val iy0 = maxOf(existing.y, fi.y)
+                        val ix1 = minOf(existing.x + existing.w, fi.x + fi.w)
+                        val iy1 = minOf(existing.y + existing.h, fi.y + fi.h)
+                        if (ix1 <= ix0 || iy1 <= iy0) return@removeAll false  // no overlap
+                        val interArea = (ix1 - ix0) * (iy1 - iy0)
+                        val existArea = existing.w * existing.h
+                        val newArea   = fi.w * fi.h
+                        val smallerArea = minOf(existArea, newArea).coerceAtLeast(1f)
+                        interArea / smallerArea >= 0.5f  // only remove if >50% of smaller item overlaps
                     }
                     actions.add(fi); redoStack.clear(); invalidate()
                 }
