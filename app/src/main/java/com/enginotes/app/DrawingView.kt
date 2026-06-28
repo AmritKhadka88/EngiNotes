@@ -833,6 +833,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var isTextSelected: Boolean = false  // true when text selection box is showing — blocks new editor
     var onScaleChanged: ((Float) -> Unit)? = null
     // Invalidate all stroke caches when zoom changes (pixel dimensions change)
+    fun shiftCanvasVertically(deltaY: Float) {
+        translateY += deltaY
+        clampTranslation()
+        invalidate()
+    }
+
+    fun getTranslateY(): Float = translateY
+
     private fun invalidateAllStrokeCaches() {
         actions.filterIsInstance<StrokeItem>().forEach { it.invalidateCache() }
     }

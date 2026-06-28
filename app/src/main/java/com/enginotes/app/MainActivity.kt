@@ -2837,14 +2837,14 @@ class MainActivity : AppCompatActivity() {
                 val hiddenBy = editorBottom - availableHeight + dp(16)
                 if (hiddenBy > 0) {
                     val currentY = drawingView.getTranslateY()
-                    val target = (savedTranslateY ?: 0f) - hiddenBy
-                    drawingView.shiftCanvasVertically(target - currentY)
+                    val target = (savedTranslateY ?: 0f).toFloat() - hiddenBy.toFloat()
+                    drawingView.shiftCanvasVertically(target.toFloat() - currentY.toFloat())
                 }
             } else {
                 // Keyboard closed — restore original canvas position
                 savedTranslateY?.let {
                     val currentY = drawingView.getTranslateY()
-                    drawingView.shiftCanvasVertically(it - currentY)
+                    drawingView.shiftCanvasVertically(it.toFloat() - currentY.toFloat())
                     savedTranslateY = null
                 }
             }
