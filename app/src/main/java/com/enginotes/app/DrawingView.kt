@@ -3681,6 +3681,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val pixels = IntArray(w * h); bmp.getPixels(pixels, 0, w, 0, 0, w, h)
         fun isWall(x: Int, y: Int): Boolean = ((pixels[y * w + x] ushr 24) and 0xFF) > 25
         if (isWall(px, py)) { invalidate(); return }
+        // Capture world coords now (before any canvas scroll/zoom changes)
+        val tapWorldX = screenToWorldX(screenX); val tapWorldY = screenToWorldY(screenY)
 
         imageLoadExecutor.execute {
             val visited = BooleanArray(w * h); val queue = ArrayDeque<Int>()
@@ -3714,23 +3716,23 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 post {
                     val fi = FillItem(outFile.absolutePath, wx0, wy0, wx1 - wx0, wy1 - wy0)
                     if (pendingHatchPattern != null) { fi.hatchPattern = pendingHatchPattern; fi.hatchColor = pendingHatchColor }
-                    // pendingHatchPattern stays set so repeated taps keep using the same hatch
-                    // Pre-attach the bitmap so it draws immediately without async blink
                     fi.bitmap = fb
-                    // Remove an existing FillItem only if the new one substantially overlaps it
-                    // (>50% of the SMALLER item's area). This prevents nearby fills from wiping
-                    // each other out while still replacing a fill that was re-applied to the same spot.
+                    // Only remove an existing FillItem if the tap pixel lands inside it —
+                    // meaning the user re-tapped the same closed region to replace its fill.
+                    // We check pixel-level: the existing fill bitmap must be non-transparent
+                    // at the tap location. This way adjacent closed regions never erase each other.
+                    val tapWx = tapWorldX; val tapWy = tapWorldY
                     actions.removeAll { existing ->
                         if (existing !is FillItem) return@removeAll false
-                        val ix0 = maxOf(existing.x, fi.x); val iy0 = maxOf(existing.y, fi.y)
-                        val ix1 = minOf(existing.x + existing.w, fi.x + fi.w)
-                        val iy1 = minOf(existing.y + existing.h, fi.y + fi.h)
-                        if (ix1 <= ix0 || iy1 <= iy0) return@removeAll false  // no overlap
-                        val interArea = (ix1 - ix0) * (iy1 - iy0)
-                        val existArea = existing.w * existing.h
-                        val newArea   = fi.w * fi.h
-                        val smallerArea = minOf(existArea, newArea).coerceAtLeast(1f)
-                        interArea / smallerArea >= 0.5f  // only remove if >50% of smaller item overlaps
+                        // Quick bbox check first
+                        if (tapWx < existing.x || tapWx > existing.x + existing.w ||
+                            tapWy < existing.y || tapWy > existing.y + existing.h) return@removeAll false
+                        // Pixel check: is the tap point non-transparent in the existing fill?
+                        val existBmp = existing.bitmap ?: getOrLoadFillBitmap(existing) ?: return@removeAll false
+                        val bx = ((tapWx - existing.x) / existing.w * existBmp.width).toInt().coerceIn(0, existBmp.width - 1)
+                        val by = ((tapWy - existing.y) / existing.h * existBmp.height).toInt().coerceIn(0, existBmp.height - 1)
+                        val alpha = (existBmp.getPixel(bx, by) ushr 24) and 0xFF
+                        alpha > 25  // non-transparent = tap was inside this fill region
                     }
                     actions.add(fi); redoStack.clear(); invalidate()
                 }
