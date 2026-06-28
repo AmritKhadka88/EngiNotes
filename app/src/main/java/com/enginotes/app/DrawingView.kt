@@ -737,6 +737,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var pageOrientation: Orientation = Orientation.PORTRAIT
 
     var selectedGroup: MutableList<Any>? = null
+    var onGroupDelete: (() -> Unit)? = null  // called when group delete handle tapped
+    private var groupRotateStartAngle = 0f
+    private var groupRotateCenterX = 0f; private var groupRotateCenterY = 0f
+    private var groupRotating = false
     private var regionPath: Path? = null
     private var regionStart: Pair<Float, Float>? = null
     private var isWindowSelect: Boolean = true
@@ -2373,6 +2377,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun findItemAt(x: Float, y: Float): Any? {
         val pad = 20f / scaleFactor
+        // Two-pass: first pass finds items whose outline is actually touched (accurate).
+        // Second pass falls back to bbox for items that slipped through (e.g. filled shapes, images).
+        for (a in actions.reversed()) {
+            if (a is FillItem || a is AudioItem || a is TableItem || a is TextItem || a is ImageItem || a is DimensionItem) continue
+            if (a is StrokeItem) {
+                if (strokeHitTest(a.data, x, y, pad)) return a
+            }
+        }
+        // Second pass: non-stroke items and anything using bbox
         for (a in actions.reversed()) {
             if (a is FillItem) continue
             if (a is AudioItem) { if (distance(x, y, a.x, a.y) <= (a.radius + 12f) / scaleFactor) return a; continue }
@@ -2380,6 +2393,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val b = getBounds(a) ?: continue
                 if (x in (b[0] - pad)..(b[2] + pad) && y in (b[1] - pad)..(b[3] + pad)) return a; continue
             }
+            if (a is StrokeItem) continue  // already handled in pass 1
             val b = getBounds(a) ?: continue
             if (x in (b[0] - pad)..(b[2] + pad) && y in (b[1] - pad)..(b[3] + pad)) return a
         }
@@ -2651,6 +2665,28 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
+    private fun rotateItemAroundPoint(item: Any, cx: Float, cy: Float, angleDeg: Float) {
+        val rad = Math.toRadians(angleDeg.toDouble()).toFloat()
+        val cos = kotlin.math.cos(rad); val sin = kotlin.math.sin(rad)
+        fun rotPt(x: Float, y: Float): Pair<Float, Float> {
+            val dx = x - cx; val dy = y - cy
+            return Pair(cx + dx * cos - dy * sin, cy + dx * sin + dy * cos)
+        }
+        when (item) {
+            is StrokeItem -> {
+                val pts = item.data.points; var i = 0
+                while (i + 1 < pts.size) { val (nx, ny) = rotPt(pts[i], pts[i+1]); pts[i] = nx; pts[i+1] = ny; i += 2 }
+                item.path = item.data.buildPath(); item.invalidateCache()
+            }
+            is TextItem -> { val (nx, ny) = rotPt(item.x, item.y); item.x = nx; item.y = ny; item.rotation += angleDeg }
+            is ImageItem -> { val (nx, ny) = rotPt(item.x + item.w/2f, item.y + item.h/2f); item.x = nx - item.w/2f; item.y = ny - item.h/2f; item.rotation += angleDeg }
+            is DimensionItem -> {
+                val (nx1, ny1) = rotPt(item.x1, item.y1); val (nx2, ny2) = rotPt(item.x2, item.y2)
+                item.x1 = nx1; item.y1 = ny1; item.x2 = nx2; item.y2 = ny2
+            }
+        }
+    }
+
     private fun scaleItemInGroup(item: Any, ox: Float, oy: Float, sx: Float, sy: Float) {
         when (item) {
             is StrokeItem -> { var i = 0; while (i + 1 < item.data.points.size) { item.data.points[i] = ox + (item.data.points[i] - ox) * sx; item.data.points[i + 1] = oy + (item.data.points[i + 1] - oy) * sy; i += 2 }; item.path = item.data.buildPath() }
@@ -2682,21 +2718,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // x whole/divided) with a single intuitive gesture, matching how AutoCAD and most CAD/drawing
     // tools already work.
     private fun selectItemsInRegion(region: Region, regionBounds: FloatArray, windowMode: Boolean) {
-        val group = mutableListOf<Any>(); val newActions = mutableListOf<Any>()
+        val group = mutableListOf<Any>()
         for (action in actions) {
-            if (action is FillItem) { newActions.add(action); continue }
-            val b = getBounds(action); if (b == null) { newActions.add(action); continue }
+            if (action is FillItem) continue
+            val b = getBounds(action) ?: continue
             val matches = if (windowMode) {
-                // Window select: item's full bounding box must be inside the drag rectangle
+                // Window select (L→R): item's full bbox must be completely inside the rectangle
                 b[0] >= regionBounds[0] && b[1] >= regionBounds[1] && b[2] <= regionBounds[2] && b[3] <= regionBounds[3]
             } else {
-                // Crossing select: any overlap between item bounds and the drag rectangle counts
+                // Crossing select (R→L): any part of item touching the rectangle is selected
                 b[0] <= regionBounds[2] && b[2] >= regionBounds[0] && b[1] <= regionBounds[3] && b[3] >= regionBounds[1]
             }
-            if (matches) group.add(action) else newActions.add(action)
+            if (matches) group.add(action)
         }
-        newActions.addAll(group); actions.clear(); actions.addAll(newActions); redoStack.clear()
-        selectedGroup = if (group.isNotEmpty()) group else null
+        // Do NOT reorder actions — preserve z-order. Just store the group reference.
+        selectedGroup = if (group.isNotEmpty()) group.toMutableList() else null
     }
 
     private fun handleAutoSelect(event: MotionEvent) {
@@ -2708,9 +2744,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (group != null && group.isNotEmpty()) {
                     val gb = groupBounds(group)
                     if (gb != null) {
-                        val delX = gb[2] + hr * 5f; val delY = gb[1] - hr * 5f
-                        if (distance(wx, wy, delX, delY) <= hit) { for (it in group) actions.remove(it); selectedGroup = null; invalidate(); return }
                         val gcx = (gb[0] + gb[2]) / 2f
+                        val delX = gb[2] + hr * 5f; val delY = gb[1] - hr * 5f
+                        val rotX = gcx; val rotY = gb[1] - hr * 5f
+                        // Delete handle
+                        if (distance(wx, wy, delX, delY) <= hit) { for (it in group) actions.remove(it); selectedGroup = null; markSpatialDirty(); invalidate(); return }
+                        // Rotate handle
+                        if (distance(wx, wy, rotX, rotY) <= hit) {
+                            groupRotating = true; groupRotateCenterX = gcx; groupRotateCenterY = (gb[1] + gb[3]) / 2f
+                            groupRotateStartAngle = kotlin.math.atan2((wy - groupRotateCenterY).toDouble(), (wx - groupRotateCenterX).toDouble()).toFloat()
+                            invalidate(); return
+                        }
                         val gHandles = listOf(gb[0] to gb[1], gcx to gb[1], gb[2] to gb[1], gb[0] to (gb[1]+gb[3])/2f, gb[2] to (gb[1]+gb[3])/2f, gb[0] to gb[3], gcx to gb[3], gb[2] to gb[3])
                         var found = -1
                         for ((hi, hpos) in gHandles.withIndex()) { if (distance(wx, wy, hpos.first, hpos.second) <= hit) { found = hi; break } }
@@ -2724,6 +2768,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_MOVE -> {
                 val group = selectedGroup
                 if (group != null && group.isNotEmpty()) {
+                    if (groupRotating) {
+                        val angle = kotlin.math.atan2((wy - groupRotateCenterY).toDouble(), (wx - groupRotateCenterX).toDouble()).toFloat()
+                        val delta = Math.toDegrees((angle - groupRotateStartAngle).toDouble()).toFloat()
+                        groupRotateStartAngle = angle
+                        for (it in group) rotateItemAroundPoint(it, groupRotateCenterX, groupRotateCenterY, delta)
+                        markSpatialDirty(); invalidate(); return
+                    }
                     if (groupResizeHandle >= 0) {
                         val origW = (groupResizeOrigBounds[2] - groupResizeOrigBounds[0]).coerceAtLeast(1f); val origH = (groupResizeOrigBounds[3] - groupResizeOrigBounds[1]).coerceAtLeast(1f)
                         var nl = groupResizeOrigBounds[0]; var nt = groupResizeOrigBounds[1]; var nr = groupResizeOrigBounds[2]; var nb = groupResizeOrigBounds[3]
@@ -2742,7 +2793,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                groupResizeHandle = -1; val group = selectedGroup; if (group != null && group.isNotEmpty()) return
+                groupResizeHandle = -1; groupRotating = false; val group = selectedGroup; if (group != null && group.isNotEmpty()) return
                 val rp = regionPath; val s = regionStart
                 if (rp != null && s != null) {
                     val bounds = floatArrayOf(minOf(s.first, wx), minOf(s.second, wy), maxOf(s.first, wx), maxOf(s.second, wy))
@@ -2767,7 +2818,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val gb = groupBounds(group)
                     if (gb != null) {
                         val delX = gb[2] + hr * 5f; val delY = gb[1] - hr * 5f
-                        if (distance(wx, wy, delX, delY) <= hit) { for (it in group) actions.remove(it); selectedGroup = null; invalidate(); return }
+                        if (distance(wx, wy, delX, delY) <= hit) { for (it in group) actions.remove(it); selectedGroup = null; markSpatialDirty(); invalidate(); return }
                         val gcx = (gb[0] + gb[2]) / 2f
                         val gHandles = listOf(gb[0] to gb[1], gcx to gb[1], gb[2] to gb[1], gb[0] to (gb[1]+gb[3])/2f, gb[2] to (gb[1]+gb[3])/2f, gb[0] to gb[3], gcx to gb[3], gb[2] to gb[3])
                         var found = -1
@@ -2881,6 +2932,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 val dp = Paint(); dp.color = Color.parseColor("#F44336"); dp.style = Paint.Style.FILL
                 canvas.drawCircle(gb[2] + r * 5f, gb[1] - r * 5f, r * 1.4f, dp)
+                // Rotate handle: blue circle above center of group
+                val rtp = Paint(); rtp.color = Color.parseColor("#2196F3"); rtp.style = Paint.Style.FILL
+                canvas.drawCircle(cx, gb[1] - r * 5f, r * 1.4f, rtp)
+                val rtp2 = Paint(); rtp2.color = Color.WHITE; rtp2.style = Paint.Style.STROKE; rtp2.strokeWidth = 2f / scaleFactor
+                canvas.drawCircle(cx, gb[1] - r * 5f, r * 0.8f, rtp2)
             }
         }
     }
