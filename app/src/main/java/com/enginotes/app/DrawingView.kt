@@ -2621,9 +2621,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     if (b != null) {
                         val rot = getRotation(item); val (px, py) = getPivot(item, b)
                         val (lx, ly) = rotatePoint(wx, wy, px, py, -rot)
-                        val hr = 16f / scaleFactor; val hit = 70f / scaleFactor
+                        val hr = 18f / scaleFactor; val hit = (hr * 4f).coerceAtLeast(50f / scaleFactor)
                         val delX = b[2] + hr * 5f; val delY = b[1] - hr * 5f
-                        if (distance(lx, ly, delX, delY) <= hit * 1.2f) { actions.remove(item); if (item === activeTableItem) { activeTableItem = null; tableIsActive = false }; selectedItem = null; handled = true; invalidate(); return }
+                        if (distance(lx, ly, delX, delY) <= hit) { actions.remove(item); if (item === activeTableItem) { activeTableItem = null; tableIsActive = false }; selectedItem = null; markSpatialDirty(); handled = true; invalidate(); return }
                         val canRot = item is ImageItem || item is TextItem || item is AudioItem || (item is StrokeItem && item.data.type != Tool.PEN && item.data.type != Tool.ARC)
                         if (!handled && canRot) {
                             val cx = (b[0] + b[2]) / 2f; val ry = b[1] - 60f / scaleFactor
@@ -3939,8 +3939,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     fun addImage(path: String, wx: Float, wy: Float, w: Float, h: Float) {
         val item = ImageItem(path, wx - w / 2f, wy - h / 2f, w, h, 0f)
-        actions.add(item); redoStack.clear()
-        loadBitmapAsync(path) { bmp -> item.bitmap = bmp; item.loading = false; invalidate() }
+        actions.add(item); redoStack.clear(); markSpatialDirty()
+        loadBitmapAsync(path) { bmp -> item.bitmap = bmp; item.loading = false; markSpatialDirty(); invalidate() }
         invalidate()
     }
 
