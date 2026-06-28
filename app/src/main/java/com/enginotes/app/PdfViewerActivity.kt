@@ -121,26 +121,54 @@ class PdfViewerActivity : AppCompatActivity() {
         // Snip overlay: confirmed selection -> crop at FULL PDF render resolution for crisp quality,
         // matching the on-screen rectangle's aspect ratio and relative size exactly.
         snipOverlay.onSnipSelected = { rect ->
+            val pageScreenRect = pdfCanvas.getPageScreenRect()
             val pageBmp = pdfCanvas.getPageBitmap()
-            if (pageBmp != null) {
-                val pageScreenRect = pdfCanvas.getPageScreenRect()
-                if (pageScreenRect != null && pageScreenRect.width() > 0 && pageScreenRect.height() > 0) {
-                    // Map screen rect -> normalized page-relative coords -> bitmap pixel coords
-                    val relLeft = ((rect.left - pageScreenRect.left) / pageScreenRect.width()).coerceIn(0f, 1f)
-                    val relTop = ((rect.top - pageScreenRect.top) / pageScreenRect.height()).coerceIn(0f, 1f)
-                    val relRight = ((rect.right - pageScreenRect.left) / pageScreenRect.width()).coerceIn(0f, 1f)
-                    val relBottom = ((rect.bottom - pageScreenRect.top) / pageScreenRect.height()).coerceIn(0f, 1f)
+            if (pageBmp != null && pageScreenRect != null && pageScreenRect.width() > 0 && pageScreenRect.height() > 0) {
+                // Map screen rect to normalized page coords (0..1)
+                val relLeft   = ((rect.left   - pageScreenRect.left) / pageScreenRect.width()).coerceIn(0f, 1f)
+                val relTop    = ((rect.top    - pageScreenRect.top)  / pageScreenRect.height()).coerceIn(0f, 1f)
+                val relRight  = ((rect.right  - pageScreenRect.left) / pageScreenRect.width()).coerceIn(0f, 1f)
+                val relBottom = ((rect.bottom - pageScreenRect.top)  / pageScreenRect.height()).coerceIn(0f, 1f)
 
+                val isOcr = intent.getBooleanExtra("ocr_mode", false)
+                if (isOcr) {
+                    // OCR: re-render only the cropped page region at 3x for ML Kit accuracy.
+                    // Re-rendering just the sub-region is fast because PdfRenderer clips to the
+                    // destination bitmap size — no need to render the full page at 3x.
+                    setSnipMode(false, snipOverlay)
+                    Thread {
+                        try {
+                            val renderer = pdfRenderer ?: return@Thread
+                            val page = renderer.openPage(currentPage)
+                            val cropScale = 3f
+                            val outW = ((relRight - relLeft) * page.width * cropScale).toInt().coerceAtLeast(1)
+                            val outH = ((relBottom - relTop) * page.height * cropScale).toInt().coerceAtLeast(1)
+                            val outBmp = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+                            Canvas(outBmp).drawColor(Color.WHITE)
+                            // Transform matrix: render just the sub-rect of the page into outBmp
+                            val matrix = android.graphics.Matrix()
+                            matrix.setScale(cropScale, cropScale)
+                            matrix.postTranslate(-relLeft * page.width * cropScale, -relTop * page.height * cropScale)
+                            page.render(outBmp, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            page.close()
+                            runOnUiThread { sendSnipToNote(outBmp) }
+                        } catch (e: Exception) {
+                            runOnUiThread { Toast.makeText(this, "Snip failed: ${e.message}", Toast.LENGTH_LONG).show() }
+                        }
+                    }.start()
+                } else {
+                    // Regular snip-to-canvas: use the already-rendered 2x bitmap (instant)
                     val sx = (relLeft * pageBmp.width).toInt().coerceIn(0, pageBmp.width - 1)
                     val sy = (relTop * pageBmp.height).toInt().coerceIn(0, pageBmp.height - 1)
                     val sw = ((relRight - relLeft) * pageBmp.width).toInt().coerceAtLeast(1).coerceAtMost(pageBmp.width - sx)
                     val sh = ((relBottom - relTop) * pageBmp.height).toInt().coerceAtLeast(1).coerceAtMost(pageBmp.height - sy)
-
                     val cropped = Bitmap.createBitmap(pageBmp, sx, sy, sw, sh)
                     sendSnipToNote(cropped)
+                    setSnipMode(false, snipOverlay)
                 }
+            } else {
+                setSnipMode(false, snipOverlay)
             }
-            setSnipMode(false, snipOverlay)
         }
 
         val uriString = intent.getStringExtra("pdf_uri")
@@ -227,7 +255,7 @@ class PdfViewerActivity : AppCompatActivity() {
                 // are safe and keep the UI thread free during the (potentially slow, for large or
                 // image-heavy pages) decode + draw work.
                 val page = renderer.openPage(pageToLoad)
-                val renderScale = (canvasWidth.toFloat() / page.width) * 3f  // 3x for better OCR accuracy
+                val renderScale = (canvasWidth.toFloat() / page.width) * 2f  // 2x: crisp display without excessive memory
                 val bmpW = (page.width * renderScale).toInt().coerceAtLeast(1)
                 val bmpH = (page.height * renderScale).toInt().coerceAtLeast(1)
                 val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
