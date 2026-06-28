@@ -658,8 +658,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun rebuildSpatialIndex() {
         spatialGrid.clear()
         for (a in actions) {
-            val b = getBounds(a) ?: continue
-            for (key in boundsToGridCells(b[0] - 10f, b[1] - 10f, b[2] + 10f, b[3] + 10f)) {
+            val b = getBounds(a)
+            // Use a generous padding (half a cell) so items near cell edges aren't missed
+            val pad = GRID_CELL * 0.6f
+            val bl = (b?.get(0) ?: 0f) - pad; val bt = (b?.get(1) ?: 0f) - pad
+            val br = (b?.get(2) ?: 0f) + pad; val bb = (b?.get(3) ?: 0f) + pad
+            for (key in boundsToGridCells(bl, bt, br, bb)) {
                 spatialGrid.getOrPut(key) { mutableListOf() }.add(a)
             }
         }
@@ -682,11 +686,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (spatialDirty) rebuildSpatialIndex()
         val vl = -translateX / scaleFactor; val vt = -translateY / scaleFactor
         val vr = vl + width / scaleFactor; val vb = vt + height / scaleFactor
+        // Add padding equal to one grid cell so items near the edge are never missed
+        val pad = GRID_CELL
         val seen = HashSet<Any>(); val result = mutableListOf<Any>()
-        for (key in boundsToGridCells(vl, vt, vr, vb)) {
+        for (key in boundsToGridCells(vl - pad, vt - pad, vr + pad, vb + pad)) {
             spatialGrid[key]?.forEach { a -> if (seen.add(a)) result.add(a) }
         }
-        // Always include TextItems and TableItems (cheap to draw, complex bounds)
+        // Always include non-stroke items (cheap, complex bounds)
         for (a in actions) { if ((a is TextItem || a is TableItem || a is AudioItem || a is DimensionItem) && seen.add(a)) result.add(a) }
         return result
     }
@@ -868,8 +874,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             } else 0.2f
             val newScale = (scaleFactor * detector.scaleFactor).coerceIn(minScale, 6f)
             val factor = newScale / scaleFactor
+            // Zoom to focus point horizontally (natural feel) but NOT vertically —
+            // vertical zoom-to-focus shifts the page up/down which feels like unwanted scrolling.
+            // Instead scale translateY purely (content stays proportionally positioned).
             translateX = detector.focusX - (detector.focusX - translateX) * factor
-            translateY = detector.focusY - (detector.focusY - translateY) * factor
+            translateY = translateY * factor
             scaleFactor = newScale
             clampTranslation()
             onScaleChanged?.invoke(scaleFactor)
@@ -3488,7 +3497,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val isShapeTool = SHAPE_TOOLS.contains(currentTool)
                     val tooShort = isShapeTool && item.data.points.size >= 4 &&
                         distance(item.data.points[0], item.data.points[1], item.data.points[2], item.data.points[3]) < (8f / scaleFactor)
-                    if (!tooShort) { actions.add(item); redoStack.clear() }
+                    if (!tooShort) { actions.add(item); redoStack.clear(); markSpatialDirty() }
                 }
                 currentItem = null; invalidate()
                 onDrawingEnded?.invoke()
