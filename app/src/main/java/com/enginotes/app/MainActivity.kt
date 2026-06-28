@@ -262,6 +262,7 @@ class MainActivity : AppCompatActivity() {
                     textSelectionItem?.let { it.fontFamily = family; drawingView.invalidate() }
                     et.typeface = tf ?: Typeface.DEFAULT
                     recentFonts.remove(family); recentFonts.add(0, family)
+                    getPrefs().edit().putString("last_font", family).apply()
                     rebuildContextBar(); dialog.dismiss()
                 }
             }); divider()
@@ -497,6 +498,7 @@ class MainActivity : AppCompatActivity() {
 
         val prefs = getPrefs()
         try { drawingView.paperType = PaperType.valueOf(prefs.getString("default_paper","LINED") ?: "LINED") } catch(e:Exception){}
+        pendingFontFamily = prefs.getString("last_font", "sans-serif") ?: "sans-serif"
 
         val fileName = intent.getStringExtra("filename")
         if (fileName != null) {
@@ -1095,6 +1097,7 @@ class MainActivity : AppCompatActivity() {
                     recentFonts.remove(fam); recentFonts.add(0, fam)
                     textSelectionItem?.let { it.fontFamily = fam; drawingView.invalidate() }
                     activeEditText?.typeface = typefaceFromFamily(fam)
+                    getPrefs().edit().putString("last_font", fam).apply()
                     rebuildContextBar()
                 }
                 // "All Fonts" chip — opens full font picker
@@ -2771,7 +2774,7 @@ class MainActivity : AppCompatActivity() {
         val layoutDefaultSize = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 50f * PT_TO_PX else 12f * PT_TO_PX
         editingItem=item; editWorldX=item?.x?:worldX; editWorldY=item?.y?:worldY; editRotation=item?.rotation?:0f; editColor=item?.color?:drawingView.currentColor; editSize=item?.size?:layoutDefaultSize
         editOpacity = item?.opacity ?: 255
-        pendingFontFamily = item?.fontFamily ?: "sans-serif"
+        pendingFontFamily = item?.fontFamily ?: pendingFontFamily  // keep last-used font for new text items
         val density=resources.displayMetrics.density
         val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
         // Convenient layout gets a generous size boost so typing feels big and comfortable,
