@@ -180,11 +180,12 @@ class MainActivity : AppCompatActivity() {
                 val tempName = name.substringBeforeLast(".").ifEmpty { name } + ".ttf"
                 val temp = File(customFontDir, tempName)
                 contentResolver.openInputStream(uri)?.use { it.copyTo(temp.outputStream()) }
-                return@registerForActivityResult try {
+                try {
                     val tf = android.graphics.Typeface.createFromFile(temp)
                     if (tf == android.graphics.Typeface.DEFAULT) { temp.delete(); Toast.makeText(this, "Not a valid font file", Toast.LENGTH_SHORT).show() }
                     else { loadCustomFonts(); Toast.makeText(this, "Font imported: ${temp.nameWithoutExtension}", Toast.LENGTH_SHORT).show(); activeEditText?.let { showFontPickerDialog(it) } }
                 } catch (e: Exception) { temp.delete(); Toast.makeText(this, "Only .ttf, .otf, .ttc font files are supported", Toast.LENGTH_LONG).show() }
+                return@registerForActivityResult
             }
             val dest = File(customFontDir, name)
             contentResolver.openInputStream(uri)?.use { it.copyTo(dest.outputStream()) }
@@ -195,12 +196,12 @@ class MainActivity : AppCompatActivity() {
                 dest.delete(); Toast.makeText(this, "Invalid font file: ${e.message}", Toast.LENGTH_LONG).show(); return@registerForActivityResult
             }
             loadCustomFonts()
-            Toast.makeText(this, "Font "${dest.nameWithoutExtension}" imported!", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Font ${dest.nameWithoutExtension} imported!", Toast.LENGTH_SHORT).show()
             activeEditText?.let { showFontPickerDialog(it) }
         } catch (e: Exception) { Toast.makeText(this, "Import failed: ${e.message}", Toast.LENGTH_LONG).show() }
     }
 
-        private val availableFonts = listOf(
+    private val availableFonts = listOf(
         "Default (Sans)" to "sans-serif",
         "Serif" to "serif",
         "Monospace (LaTeX-style)" to "monospace",
