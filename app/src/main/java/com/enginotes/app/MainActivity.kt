@@ -2869,11 +2869,10 @@ class MainActivity : AppCompatActivity() {
         val containerLocation = IntArray(2)
         canvasContainer.getLocationOnScreen(containerLocation)
         val visibleBottomInContainer = visibleFrame.bottom - containerLocation[1] - dp(16).toInt()
-        val boxEstimatedHeight = screenSizePx + dp(12).toInt()  // same height as the box
-        val rawTop = (screenY - screenSizePx - dp(6)).toInt().coerceAtLeast(0)
-        // Ensure box bottom (rawTop + boxHeight) doesn't exceed visible area
+        val boxEstimatedHeight = screenSizePx + dp(12).toInt()
+        val rawTop = (screenY.toInt() - screenSizePx - dp(6).toInt()).coerceAtLeast(0)
         val clampedTop = rawTop.coerceAtMost((visibleBottomInContainer - boxEstimatedHeight).coerceAtLeast(0))
-        params.leftMargin = (screenX - dp(6)).toInt().coerceAtLeast(0)
+        params.leftMargin = (screenX.toInt() - dp(6).toInt()).coerceAtLeast(0)
         params.topMargin = clampedTop
         canvasContainer.addView(boxContainer,params)
         // adjustResize (set in manifest) shrinks the canvas when keyboard opens — no extra handling needed
