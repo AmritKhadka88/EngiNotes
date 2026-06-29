@@ -2790,21 +2790,24 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupKeyboardAutoScroll(editingBox: View) {
         val rootView = window.decorView.rootView
-        rootView.setOnApplyWindowInsetsListener { view, insets ->
+        rootView.setOnApplyWindowInsetsListener { _, insets ->
             val keyboardHeight = insets.getInsets(android.view.WindowInsets.Type.ime()).bottom
-            val systemBarsHeight = insets.getInsets(android.view.WindowInsets.Type.systemBars()).bottom
-            val visibleObstructedSpace = keyboardHeight.coerceAtLeast(systemBarsHeight)
             if (keyboardHeight > 0) {
-                val location = IntArray(2)
-                editingBox.getLocationOnScreen(location)
-                val boxBottomY = location[1] + editingBox.height
-                val screenBoundary = rootView.height - visibleObstructedSpace
-                if (boxBottomY > screenBoundary) {
-                    val shift = boxBottomY - screenBoundary + dp(24)
-                    canvasContainer.animate().translationY(-shift.toFloat()).setDuration(150).start()
+                // Use post() so the box is fully laid out and has real dimensions
+                editingBox.post {
+                    val location = IntArray(2)
+                    editingBox.getLocationOnScreen(location)
+                    // Use topMargin + estimated box height if height is still 0
+                    val boxH = editingBox.height.coerceAtLeast(dp(60))
+                    val boxBottomY = location[1] + boxH
+                    val screenBoundary = rootView.height - keyboardHeight - dp(8)
+                    if (boxBottomY > screenBoundary) {
+                        val shift = (boxBottomY - screenBoundary + dp(24)).toFloat()
+                        canvasContainer.animate().translationY(-shift).setDuration(200).start()
+                    }
                 }
             } else {
-                canvasContainer.animate().translationY(0f).setDuration(150).start()
+                canvasContainer.animate().translationY(0f).setDuration(200).start()
             }
             insets
         }
