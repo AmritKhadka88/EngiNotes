@@ -2851,8 +2851,7 @@ class MainActivity : AppCompatActivity() {
                     drawingView.shiftCanvasVertically(delta)
                     val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
                     if (lp != null) { lp.topMargin = (lp.topMargin + delta).toInt().coerceAtLeast(0); boxContainer.layoutParams = lp }
-                    val tlp = toolbar.layoutParams as? FrameLayout.LayoutParams
-                    if (tlp != null) { tlp.topMargin = (tlp.topMargin + delta).toInt().coerceAtLeast(0); toolbar.layoutParams = tlp }
+                    // Note: inline editor toolbar position is handled by onCanvasTransformed
                 }
             } else {
                 // Restore saved positions
