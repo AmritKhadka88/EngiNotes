@@ -108,6 +108,7 @@ class MainActivity : AppCompatActivity() {
     private var activeEditText: EditText? = null
     private var activeToolbar: View? = null
     private var activeEditBox: View? = null
+    private var canvasYBeforeKeyboard: Float = Float.NaN
     private var activeEditorHandles: List<View> = emptyList()
     private var editingItem: TextItem? = null
     private var editWorldX = 0f; private var editWorldY = 0f
@@ -2843,13 +2844,19 @@ class MainActivity : AppCompatActivity() {
         val params=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
         params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0)
         params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
+        params.topMargin = (screenY - screenSizePx - dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(boxContainer,params)
 
-        // Scroll canvas up if tap is where keyboard will appear (bottom ~45% of screen)
-        // adjustNothing means nothing resizes — keyboard overlays, we just scroll canvas up
-        val kbTop = resources.displayMetrics.heightPixels * 0.55f
+        // Scroll canvas up if tap is in keyboard zone, save position to restore on close
+        val screenH = resources.displayMetrics.heightPixels
+        val kbHeight = screenH * 0.42f
+        val kbTop = screenH - kbHeight
         if (screenY > kbTop) {
-            drawingView.shiftCanvasVertically(-(screenY - kbTop + dp(24)))
+            canvasYBeforeKeyboard = drawingView.getTranslateY()
+            val overlap = screenY - kbTop + dp(16)
+            drawingView.shiftCanvasVertically(-overlap)
+        } else {
+            canvasYBeforeKeyboard = Float.NaN
         }
 
         // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
@@ -3012,6 +3019,7 @@ class MainActivity : AppCompatActivity() {
     private fun closeInlineEditor(commit:Boolean, delete:Boolean=false) {
         val et=activeEditText?:return; val tb=activeToolbar; val box=activeEditBox
         val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager; imm.hideSoftInputFromWindow(et.windowToken,0)
+        if (!canvasYBeforeKeyboard.isNaN()) { drawingView.shiftCanvasVertically(canvasYBeforeKeyboard - drawingView.getTranslateY()); canvasYBeforeKeyboard = Float.NaN }
         val text=et.text.toString(); val spans=mutableListOf<TextSpanData>(); val ed=et.text
         for(span in ed.getSpans(0,ed.length,Any::class.java)){ val s=ed.getSpanStart(span);val e=ed.getSpanEnd(span); if(s<0||e<0||s>=e) continue; when(span){ is StyleSpan->spans.add(TextSpanData(s,e,'S',span.style)); is ForegroundColorSpan->spans.add(TextSpanData(s,e,'C',span.foregroundColor)); is UnderlineSpan->spans.add(TextSpanData(s,e,'U',0)); is BackgroundColorSpan->spans.add(TextSpanData(s,e,'H',span.backgroundColor)) } }
         if(box!=null) canvasContainer.removeView(box) else canvasContainer.removeView(et)
