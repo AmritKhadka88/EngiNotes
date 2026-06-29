@@ -2845,32 +2845,6 @@ class MainActivity : AppCompatActivity() {
         params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(boxContainer,params)
 
-        // ── Keyboard scroll: shift canvas so cursor stays visible ──────────────
-        val savedCanvasY = drawingView.getTranslateY()
-        window.decorView.rootView.setOnApplyWindowInsetsListener { _, insets ->
-            val kbHeight = insets.getInsets(android.view.WindowInsets.Type.ime()).bottom
-            if (kbHeight > 0) {
-                // Find cursor screen position using EditText layout
-                et.post {
-                    val cursorLine = et.layout?.getLineForOffset(et.selectionStart) ?: 0
-                    val cursorLineBottom = et.layout?.getLineBottom(cursorLine) ?: 0
-                    val etTopInBox = (et.layoutParams as? FrameLayout.LayoutParams)?.topMargin ?: 0
-                    val boxTop = (boxContainer.layoutParams as? FrameLayout.LayoutParams)?.topMargin ?: 0
-                    val cursorY = cursorLineBottom + etTopInBox + boxTop
-                    val visibleBottom = canvasContainer.height - kbHeight - dp(16)
-                    if (cursorY > visibleBottom) {
-                        val shift = (cursorY - visibleBottom + dp(24)).toFloat()
-                        drawingView.shiftCanvasVertically(-shift)
-                    }
-                }
-            } else {
-                // Keyboard closed — restore canvas to where it was
-                val current = drawingView.getTranslateY()
-                if (current != savedCanvasY) drawingView.shiftCanvasVertically(savedCanvasY - current)
-            }
-            insets
-        }
-        // ───────────────────────────────────────────────────────────────────────
 
         // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
         // the whole box (and the underlying text item's world position) without needing to leave

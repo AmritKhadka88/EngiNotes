@@ -1934,9 +1934,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (width > 0 && height > 0) {
             convenientPageW = width.toFloat() * 0.82f
             convenientPageH = height.toFloat() * 1.1f
-            // Only reset scale/position on FIRST layout or when canvasMode changes.
-            // Do NOT reset on toolbar show/hide (changed=true but same canvas width) —
-            // that would snap the user back to page 1 mid-drawing.
             val isFirstLayout = !hasInitialLayout
             if (isFirstLayout) {
                 hasInitialLayout = true
@@ -1957,7 +1954,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                 }
             } else {
-                // On subsequent layouts (toolbar resize etc.): only re-clamp, never reset position
                 clampTranslation(); invalidate()
             }
         }
