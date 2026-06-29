@@ -108,8 +108,6 @@ class MainActivity : AppCompatActivity() {
     private var activeEditText: EditText? = null
     private var activeToolbar: View? = null
     private var activeEditBox: View? = null
-    private var activeEditorKeyboardListener: android.view.ViewTreeObserver.OnGlobalLayoutListener? = null
-    private var activeEditorKeyboardObserver: android.view.ViewTreeObserver? = null
     private var activeEditorHandles: List<View> = emptyList()
     private var editingItem: TextItem? = null
     private var editWorldX = 0f; private var editWorldY = 0f
@@ -2844,44 +2842,7 @@ class MainActivity : AppCompatActivity() {
         params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0); params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(boxContainer,params)
 
-        // ── Keyboard scroll-into-view ─────────────────────────────────────────────
-        // Immediately scroll canvas + box up when keyboard opens, restore on close.
-        var savedBoxTopKb: Int? = null
-        var kbOpen = false
-        val keyboardListener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
-            val r = android.graphics.Rect()
-            canvasContainer.getWindowVisibleDisplayFrame(r)
-            val kbHeight = canvasContainer.rootView.height - r.bottom
-            val nowOpen = kbHeight > dp(150)
-            if (nowOpen == kbOpen) return@OnGlobalLayoutListener  // no change
-            kbOpen = nowOpen
-            if (nowOpen) {
-                val lp0 = boxContainer.layoutParams as? FrameLayout.LayoutParams ?: return@OnGlobalLayoutListener
-                savedBoxTopKb = lp0.topMargin
-                val boxTop = lp0.topMargin
-                val keyboardTop = r.bottom
-                val margin = dp(24)
-                if (boxTop + margin > keyboardTop) {
-                    // Box is behind keyboard — move ONLY the box up, not the canvas
-                    // (canvas scroll moves the paper but not the box view layer)
-                    val newTop = (keyboardTop - margin).coerceAtLeast(dp(8))
-                    lp0.topMargin = newTop
-                    boxContainer.layoutParams = lp0
-                }
-            } else {
-                // Restore box to original position
-                val origBox = savedBoxTopKb
-                if (origBox != null) {
-                    val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
-                    if (lp != null) { lp.topMargin = origBox; boxContainer.layoutParams = lp }
-                    savedBoxTopKb = null
-                }
-            }
-        }
-        canvasContainer.viewTreeObserver.addOnGlobalLayoutListener(keyboardListener)
-        activeEditorKeyboardListener = keyboardListener
-        activeEditorKeyboardObserver = canvasContainer.viewTreeObserver
-        // ─────────────────────────────────────────────────────────────────────────
+        // adjustResize (set in manifest) shrinks the canvas when keyboard opens — no extra handling needed
 
         // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
         // the whole box (and the underlying text item's world position) without needing to leave
@@ -3055,11 +3016,6 @@ class MainActivity : AppCompatActivity() {
             else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
-        // Remove keyboard scroll listener
-        activeEditorKeyboardListener?.let { listener ->
-            try { activeEditorKeyboardObserver?.removeOnGlobalLayoutListener(listener) } catch (e: Exception) {}
-        }
-        activeEditorKeyboardListener = null; activeEditorKeyboardObserver = null
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
     }
