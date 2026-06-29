@@ -2846,36 +2846,40 @@ class MainActivity : AppCompatActivity() {
         val params=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
         params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0)
         params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
-        params.topMargin = (screenY - screenSizePx - dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(boxContainer,params)
 
-        // When keyboard opens, scroll canvas up by exact overlap between box bottom and keyboard top
-        val rootView = window.decorView
-        val listener = object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
-            var shifted = false
-            override fun onGlobalLayout() {
-                val visible = android.graphics.Rect()
-                rootView.getWindowVisibleDisplayFrame(visible)
-                val boxH = boxContainer.height
-                if (boxH == 0) return@OnGlobalLayoutListener  // not yet measured, skip
-                val loc = IntArray(2)
-                boxContainer.getLocationOnScreen(loc)
-                val boxBottom = loc[1] + boxH
-                val overlap = boxBottom - visible.bottom
-                if (overlap > 0 && !shifted) {
-                    shifted = true
-                    canvasYBeforeKeyboard = drawingView.getTranslateY()
-                    drawingView.shiftCanvasVertically(-overlap.toFloat())
-                } else if (overlap <= 0 && shifted) {
-                    shifted = false
+        // When keyboard opens: measure exact overlap, scroll canvas up by that amount, restore on close
+        var kbOpen = false
+        val listener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
+            val r = android.graphics.Rect()
+            canvasContainer.getWindowVisibleDisplayFrame(r)
+            val kbHeight = canvasContainer.rootView.height - r.bottom
+            val nowOpen = kbHeight > dp(150)
+            if (nowOpen == kbOpen) return@OnGlobalLayoutListener  // only act on transition
+            kbOpen = nowOpen
+            if (nowOpen) {
+                // Keyboard just opened — measure exact overlap and scroll canvas up
+                boxContainer.post {
+                    val loc = IntArray(2)
+                    boxContainer.getLocationOnScreen(loc)
+                    val boxBottom = loc[1] + boxContainer.height
+                    val overlap = boxBottom - r.bottom
+                    if (overlap > 0) {
+                        canvasYBeforeKeyboard = drawingView.getTranslateY()
+                        drawingView.shiftCanvasVertically(-(overlap + dp(16)).toFloat())
+                    }
+                }
+            } else {
+                // Keyboard closed — restore canvas exactly
+                if (!canvasYBeforeKeyboard.isNaN()) {
                     drawingView.shiftCanvasVertically(canvasYBeforeKeyboard - drawingView.getTranslateY())
                     canvasYBeforeKeyboard = Float.NaN
                 }
             }
         }
-        rootView.viewTreeObserver.addOnGlobalLayoutListener(listener)
+        canvasContainer.viewTreeObserver.addOnGlobalLayoutListener(listener)
         activeEditorLayoutListener = listener
-        activeEditorRootView = rootView
+        activeEditorRootView = canvasContainer
 
         // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
         // the whole box (and the underlying text item's world position) without needing to leave
