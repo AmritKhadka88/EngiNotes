@@ -2681,6 +2681,16 @@ class MainActivity : AppCompatActivity() {
         val (measW, measH) = measureTextBoxSize(item, screenSizePx)
         var boxW = measW; var boxH = measH
 
+        // Declare toolbar first so it's in scope for moveSurface touch listener and keyboard listener
+        val toolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.WHITE); cornerRadius = dp(20).toFloat()
+                setStroke(dp(1), Color.parseColor("#DDDDDD"))
+            }
+            elevation = dp(4).toFloat()
+            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        }
         val moveSurface = View(this)
         var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
         var isDraggingRotate = false; var rotStartRawX2 = 0f; var rotStartRotation2 = 0f
@@ -2736,15 +2746,6 @@ class MainActivity : AppCompatActivity() {
         canvasContainer.addView(moveSurface)
 
         // Floating toolbar: Delete | Done
-        val toolbar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.WHITE); cornerRadius = dp(20).toFloat()
-                setStroke(dp(1), Color.parseColor("#DDDDDD"))
-            }
-            elevation = dp(4).toFloat()
-            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        }
         fun tbBtn(label: String, tint: Int? = null) = TextView(this).apply {
             text = label; textSize = 16f; gravity = Gravity.CENTER
             val pad = dp(10); setPadding(pad, dp(8), pad, dp(8))
