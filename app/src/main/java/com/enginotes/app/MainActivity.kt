@@ -2845,6 +2845,12 @@ class MainActivity : AppCompatActivity() {
         params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(boxContainer,params)
 
+        // Scroll canvas up if tap is where keyboard will appear (bottom ~45% of screen)
+        // adjustNothing means nothing resizes — keyboard overlays, we just scroll canvas up
+        val kbTop = resources.displayMetrics.heightPixels * 0.55f
+        if (screenY > kbTop) {
+            drawingView.shiftCanvasVertically(-(screenY - kbTop + dp(24)))
+        }
 
         // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
         // the whole box (and the underlying text item's world position) without needing to leave
