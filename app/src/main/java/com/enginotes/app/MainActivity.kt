@@ -2803,15 +2803,26 @@ class MainActivity : AppCompatActivity() {
                     val boxBottom = lp.topMargin + boxH
                     val visibleBottom = canvasContainer.height - keyboardHeight - dp(8)
                     if (boxBottom > visibleBottom) {
-                        val shift = (boxBottom - visibleBottom + dp(24)).toFloat()
-                        // Save originals
+                        // Shift exactly enough so box bottom sits 16dp above keyboard top
+                        val shift = (boxBottom - visibleBottom + dp(16)).toFloat()
                         kbScrollSavedTranslateY = drawingView.getTranslateY()
                         kbScrollSavedBoxTop = lp.topMargin
-                        // Scroll canvas content up
-                        drawingView.shiftCanvasVertically(-shift)
-                        // Move box up by same amount
-                        lp.topMargin = (lp.topMargin - shift).toInt().coerceAtLeast(0)
-                        editingBox.layoutParams = lp
+                        val savedBoxTop = lp.topMargin
+                        val savedCanvasY = drawingView.getTranslateY()
+                        // Animate smoothly using ValueAnimator
+                        android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+                            duration = 300
+                            interpolator = android.view.animation.DecelerateInterpolator()
+                            addUpdateListener { anim ->
+                                val t = anim.animatedValue as Float
+                                val s = shift * t
+                                drawingView.shiftCanvasVertically(savedCanvasY - s - drawingView.getTranslateY())
+                                val lp2 = editingBox.layoutParams as? FrameLayout.LayoutParams ?: return@addUpdateListener
+                                lp2.topMargin = (savedBoxTop - s).toInt().coerceAtLeast(0)
+                                editingBox.layoutParams = lp2
+                            }
+                            start()
+                        }
                     }
                 }
             } else {
