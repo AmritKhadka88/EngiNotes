@@ -2816,7 +2816,34 @@ class MainActivity : AppCompatActivity() {
         params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0); params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(boxContainer,params)
 
-        // Scroll canvas up if box is hidden behind keyboard, restore when keyboard closes
+        // Move box above keyboard — attach to root view so insets are received
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
+            val imeHeight = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
+            val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
+            if (lp != null) {
+                if (imeHeight > 0) {
+                    if (boxOriginalTop == -1) boxOriginalTop = lp.topMargin
+                    val loc = IntArray(2)
+                    boxContainer.getLocationOnScreen(loc)
+                    val boxBottom = loc[1] + boxContainer.height.coerceAtLeast(dp(50))
+                    val screenH = resources.displayMetrics.heightPixels
+                    val visibleBottom = screenH - imeHeight - dp(8)
+                    val overlap = boxBottom - visibleBottom
+                    if (overlap > 0) {
+                        lp.topMargin = (boxOriginalTop - overlap).coerceAtLeast(dp(4))
+                        boxContainer.layoutParams = lp
+                    }
+                } else {
+                    if (boxOriginalTop != -1) {
+                        lp.topMargin = boxOriginalTop
+                        boxContainer.layoutParams = lp
+                        boxOriginalTop = -1
+                    }
+                }
+            }
+            insets
+        }
+
         // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
         // the whole box (and the underlying text item's world position) without needing to leave
         // the editor or tap elsewhere - works both while actively typing and after.
@@ -2989,7 +3016,7 @@ class MainActivity : AppCompatActivity() {
             else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
-        activeEditBox?.let { androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(it, null) }
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(window.decorView, null)
         boxOriginalTop = -1
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
