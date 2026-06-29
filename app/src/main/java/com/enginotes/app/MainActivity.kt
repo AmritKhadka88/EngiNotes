@@ -2788,6 +2788,28 @@ class MainActivity : AppCompatActivity() {
         drawingView.onCanvasTransformed = { updateToolbarPos() }
     }
 
+    private fun setupKeyboardAutoScroll(editingBox: View) {
+        val rootView = window.decorView.rootView
+        rootView.setOnApplyWindowInsetsListener { view, insets ->
+            val keyboardHeight = insets.getInsets(android.view.WindowInsets.Type.ime()).bottom
+            val systemBarsHeight = insets.getInsets(android.view.WindowInsets.Type.systemBars()).bottom
+            val visibleObstructedSpace = keyboardHeight.coerceAtLeast(systemBarsHeight)
+            if (keyboardHeight > 0) {
+                val location = IntArray(2)
+                editingBox.getLocationOnScreen(location)
+                val boxBottomY = location[1] + editingBox.height
+                val screenBoundary = rootView.height - visibleObstructedSpace
+                if (boxBottomY > screenBoundary) {
+                    val shift = boxBottomY - screenBoundary + dp(24)
+                    canvasContainer.animate().translationY(-shift.toFloat()).setDuration(150).start()
+                }
+            } else {
+                canvasContainer.animate().translationY(0f).setDuration(150).start()
+            }
+            insets
+        }
+    }
+
     private fun showInlineTextEditor(item: TextItem?, screenX: Float, screenY: Float, worldX: Float, worldY: Float) {
         dismissTextSelectionBox()
         if (activeEditText != null && editingItem === item) return
@@ -2841,6 +2863,7 @@ class MainActivity : AppCompatActivity() {
         val params=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
         params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0); params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(boxContainer,params)
+        setupKeyboardAutoScroll(boxContainer)
 
         // adjustResize (set in manifest) shrinks the canvas when keyboard opens — no extra handling needed
 
@@ -3016,6 +3039,9 @@ class MainActivity : AppCompatActivity() {
             else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
+        // Clear keyboard scroll listener and reset canvas position
+        window.decorView.rootView.setOnApplyWindowInsetsListener(null)
+        canvasContainer.animate().translationY(0f).setDuration(150).start()
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
     }
