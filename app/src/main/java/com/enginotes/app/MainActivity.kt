@@ -108,6 +108,9 @@ class MainActivity : AppCompatActivity() {
     private var activeEditText: EditText? = null
     private var activeToolbar: View? = null
     private var activeEditBox: View? = null
+    private var canvasYBeforeKeyboard: Float = Float.NaN
+    private var activeEditorLayoutListener: android.view.ViewTreeObserver.OnGlobalLayoutListener? = null
+    private var activeEditorRootView: View? = null
     private var activeEditorHandles: List<View> = emptyList()
     private var editingItem: TextItem? = null
     private var editWorldX = 0f; private var editWorldY = 0f
@@ -2846,6 +2849,34 @@ class MainActivity : AppCompatActivity() {
         params.topMargin = (screenY - screenSizePx - dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(boxContainer,params)
 
+        // When keyboard opens, scroll canvas up by exact overlap between box bottom and keyboard top
+        val rootView = window.decorView
+        val listener = object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
+            var shifted = false
+            override fun onGlobalLayout() {
+                val visible = android.graphics.Rect()
+                rootView.getWindowVisibleDisplayFrame(visible)
+                val boxH = boxContainer.height
+                if (boxH == 0) return@OnGlobalLayoutListener  // not yet measured, skip
+                val loc = IntArray(2)
+                boxContainer.getLocationOnScreen(loc)
+                val boxBottom = loc[1] + boxH
+                val overlap = boxBottom - visible.bottom
+                if (overlap > 0 && !shifted) {
+                    shifted = true
+                    canvasYBeforeKeyboard = drawingView.getTranslateY()
+                    drawingView.shiftCanvasVertically(-overlap.toFloat())
+                } else if (overlap <= 0 && shifted) {
+                    shifted = false
+                    drawingView.shiftCanvasVertically(canvasYBeforeKeyboard - drawingView.getTranslateY())
+                    canvasYBeforeKeyboard = Float.NaN
+                }
+            }
+        }
+        rootView.viewTreeObserver.addOnGlobalLayoutListener(listener)
+        activeEditorLayoutListener = listener
+        activeEditorRootView = rootView
+
         // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
         // the whole box (and the underlying text item's world position) without needing to leave
         // the editor or tap elsewhere - works both while actively typing and after.
@@ -3018,6 +3049,9 @@ class MainActivity : AppCompatActivity() {
             else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
+        activeEditorLayoutListener?.let { activeEditorRootView?.viewTreeObserver?.removeOnGlobalLayoutListener(it) }
+        activeEditorLayoutListener = null; activeEditorRootView = null
+        if (!canvasYBeforeKeyboard.isNaN()) { drawingView.shiftCanvasVertically(canvasYBeforeKeyboard - drawingView.getTranslateY()); canvasYBeforeKeyboard = Float.NaN }
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
     }
