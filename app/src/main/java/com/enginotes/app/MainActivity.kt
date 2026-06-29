@@ -2868,8 +2868,8 @@ class MainActivity : AppCompatActivity() {
         // Convert to canvasContainer local coords
         val containerLocation = IntArray(2)
         canvasContainer.getLocationOnScreen(containerLocation)
-        val visibleBottomInContainer = visibleFrame.bottom - containerLocation[1] - dp(16)
-        val boxEstimatedHeight = screenSizePx + dp(12)  // same height as the box
+        val visibleBottomInContainer = visibleFrame.bottom - containerLocation[1] - dp(16).toInt()
+        val boxEstimatedHeight = screenSizePx + dp(12).toInt()  // same height as the box
         val rawTop = (screenY - screenSizePx - dp(6)).toInt().coerceAtLeast(0)
         // Ensure box bottom (rawTop + boxHeight) doesn't exceed visible area
         val clampedTop = rawTop.coerceAtMost((visibleBottomInContainer - boxEstimatedHeight).coerceAtLeast(0))
