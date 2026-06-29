@@ -2868,10 +2868,10 @@ class MainActivity : AppCompatActivity() {
         // Convert to canvasContainer local coords
         val containerLocation = IntArray(2)
         canvasContainer.getLocationOnScreen(containerLocation)
-        val visibleBottomInContainer = visibleFrame.bottom - containerLocation[1] - dp(16)
-        val boxEstimatedHeight = screenSizePx + dp(12)
-        val rawTop = (screenY.toInt() - screenSizePx - dp(6)).coerceAtLeast(0)
-        val clampedTop = rawTop.coerceAtMost((visibleBottomInContainer - boxEstimatedHeight).coerceAtLeast(0))
+        val visibleBottomInContainer: Int = visibleFrame.bottom - containerLocation[1] - dp(16)
+        val boxEstimatedHeight: Int = screenSizePx.toInt() + dp(12)
+        val rawTop: Int = (screenY.toInt() - screenSizePx.toInt() - dp(6)).coerceAtLeast(0)
+        val clampedTop: Int = rawTop.coerceAtMost((visibleBottomInContainer - boxEstimatedHeight).coerceAtLeast(0))
         params.leftMargin = (screenX.toInt() - dp(6)).coerceAtLeast(0)
         params.topMargin = clampedTop
         canvasContainer.addView(boxContainer,params)
