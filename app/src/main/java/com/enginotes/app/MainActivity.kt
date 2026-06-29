@@ -2788,26 +2788,42 @@ class MainActivity : AppCompatActivity() {
         drawingView.onCanvasTransformed = { updateToolbarPos() }
     }
 
+    private var kbScrollSavedTranslateY: Float? = null
+    private var kbScrollSavedBoxTop: Int? = null
+
     private fun setupKeyboardAutoScroll(editingBox: View) {
         val rootView = window.decorView.rootView
         rootView.setOnApplyWindowInsetsListener { _, insets ->
             val keyboardHeight = insets.getInsets(android.view.WindowInsets.Type.ime()).bottom
             if (keyboardHeight > 0) {
-                // Use post() so the box is fully laid out and has real dimensions
                 editingBox.post {
-                    val location = IntArray(2)
-                    editingBox.getLocationOnScreen(location)
-                    // Use topMargin + estimated box height if height is still 0
+                    if (kbScrollSavedTranslateY != null) return@post  // already shifted
+                    val lp = editingBox.layoutParams as? FrameLayout.LayoutParams ?: return@post
                     val boxH = editingBox.height.coerceAtLeast(dp(60))
-                    val boxBottomY = location[1] + boxH
-                    val screenBoundary = rootView.height - keyboardHeight - dp(8)
-                    if (boxBottomY > screenBoundary) {
-                        val shift = (boxBottomY - screenBoundary + dp(24)).toFloat()
-                        canvasContainer.animate().translationY(-shift).setDuration(200).start()
+                    val boxBottom = lp.topMargin + boxH
+                    val visibleBottom = canvasContainer.height - keyboardHeight - dp(8)
+                    if (boxBottom > visibleBottom) {
+                        val shift = (boxBottom - visibleBottom + dp(24)).toFloat()
+                        // Save originals
+                        kbScrollSavedTranslateY = drawingView.getTranslateY()
+                        kbScrollSavedBoxTop = lp.topMargin
+                        // Scroll canvas content up
+                        drawingView.shiftCanvasVertically(-shift)
+                        // Move box up by same amount
+                        lp.topMargin = (lp.topMargin - shift).toInt().coerceAtLeast(0)
+                        editingBox.layoutParams = lp
                     }
                 }
             } else {
-                canvasContainer.animate().translationY(0f).setDuration(200).start()
+                // Restore both
+                kbScrollSavedTranslateY?.let { origY ->
+                    drawingView.shiftCanvasVertically(origY - drawingView.getTranslateY())
+                }
+                kbScrollSavedBoxTop?.let { origTop ->
+                    val lp = editingBox.layoutParams as? FrameLayout.LayoutParams
+                    if (lp != null) { lp.topMargin = origTop; editingBox.layoutParams = lp }
+                }
+                kbScrollSavedTranslateY = null; kbScrollSavedBoxTop = null
             }
             insets
         }
@@ -3042,9 +3058,9 @@ class MainActivity : AppCompatActivity() {
             else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
-        // Clear keyboard scroll listener and reset canvas position
+        // Clear keyboard scroll listener
         window.decorView.rootView.setOnApplyWindowInsetsListener(null)
-        canvasContainer.animate().translationY(0f).setDuration(150).start()
+        kbScrollSavedTranslateY = null; kbScrollSavedBoxTop = null
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
     }
