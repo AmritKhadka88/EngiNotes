@@ -2788,53 +2788,26 @@ class MainActivity : AppCompatActivity() {
         drawingView.onCanvasTransformed = { updateToolbarPos() }
     }
 
-    private var kbScrollSavedTranslateY: Float? = null
-    private var kbScrollSavedBoxTop: Int? = null
-
+    private var kbShiftApplied = false
     private fun setupKeyboardAutoScroll(editingBox: View) {
-        val rootView = window.decorView.rootView
-        rootView.setOnApplyWindowInsetsListener { _, insets ->
+        window.decorView.rootView.setOnApplyWindowInsetsListener { _, insets ->
             val keyboardHeight = insets.getInsets(android.view.WindowInsets.Type.ime()).bottom
-            if (keyboardHeight > 0) {
+            if (keyboardHeight > 0 && !kbShiftApplied) {
                 editingBox.post {
-                    if (kbScrollSavedTranslateY != null) return@post  // already shifted
                     val lp = editingBox.layoutParams as? FrameLayout.LayoutParams ?: return@post
-                    val boxH = editingBox.height.coerceAtLeast(dp(60))
-                    val boxBottom = lp.topMargin + boxH
-                    val visibleBottom = canvasContainer.height - keyboardHeight - dp(8)
+                    val boxBottom = lp.topMargin + editingBox.height.coerceAtLeast(dp(50))
+                    val visibleBottom = canvasContainer.height - keyboardHeight - dp(16)
                     if (boxBottom > visibleBottom) {
-                        // Shift exactly enough so box bottom sits 16dp above keyboard top
-                        val shift = (boxBottom - visibleBottom + dp(16)).toFloat()
-                        kbScrollSavedTranslateY = drawingView.getTranslateY()
-                        kbScrollSavedBoxTop = lp.topMargin
-                        val savedBoxTop = lp.topMargin
-                        val savedCanvasY = drawingView.getTranslateY()
-                        // Animate smoothly using ValueAnimator
-                        android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
-                            duration = 300
-                            interpolator = android.view.animation.DecelerateInterpolator()
-                            addUpdateListener { anim ->
-                                val t = anim.animatedValue as Float
-                                val s = shift * t
-                                drawingView.shiftCanvasVertically(savedCanvasY - s - drawingView.getTranslateY())
-                                val lp2 = editingBox.layoutParams as? FrameLayout.LayoutParams ?: return@addUpdateListener
-                                lp2.topMargin = (savedBoxTop - s).toInt().coerceAtLeast(0)
-                                editingBox.layoutParams = lp2
-                            }
-                            start()
-                        }
+                        kbShiftApplied = true
+                        val shift = (boxBottom - visibleBottom).toFloat()
+                        // Scroll canvas up — updateET() (wired to onCanvasTransformed) will
+                        // automatically reposition box, toolbar and handles from world coords
+                        drawingView.shiftCanvasVertically(-shift)
                     }
                 }
-            } else {
-                // Restore both
-                kbScrollSavedTranslateY?.let { origY ->
-                    drawingView.shiftCanvasVertically(origY - drawingView.getTranslateY())
-                }
-                kbScrollSavedBoxTop?.let { origTop ->
-                    val lp = editingBox.layoutParams as? FrameLayout.LayoutParams
-                    if (lp != null) { lp.topMargin = origTop; editingBox.layoutParams = lp }
-                }
-                kbScrollSavedTranslateY = null; kbScrollSavedBoxTop = null
+            } else if (keyboardHeight == 0 && kbShiftApplied) {
+                kbShiftApplied = false
+                // Canvas will restore when user dismisses editor (closeInlineEditor resets)
             }
             insets
         }
@@ -3069,9 +3042,8 @@ class MainActivity : AppCompatActivity() {
             else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
-        // Clear keyboard scroll listener
         window.decorView.rootView.setOnApplyWindowInsetsListener(null)
-        kbScrollSavedTranslateY = null; kbScrollSavedBoxTop = null
+        kbShiftApplied = false
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
     }
