@@ -2788,26 +2788,23 @@ class MainActivity : AppCompatActivity() {
         drawingView.onCanvasTransformed = { updateToolbarPos() }
     }
 
-    private var kbShiftApplied = false
     private fun setupKeyboardAutoScroll(editingBox: View) {
         window.decorView.rootView.setOnApplyWindowInsetsListener { _, insets ->
             val keyboardHeight = insets.getInsets(android.view.WindowInsets.Type.ime()).bottom
-            if (keyboardHeight > 0 && !kbShiftApplied) {
+            if (keyboardHeight > 0) {
                 editingBox.post {
                     val lp = editingBox.layoutParams as? FrameLayout.LayoutParams ?: return@post
-                    val boxBottom = lp.topMargin + editingBox.height.coerceAtLeast(dp(50))
-                    val visibleBottom = canvasContainer.height - keyboardHeight - dp(16)
+                    val toolbarH = findViewById<View?>(R.id.primaryToolbarScroll)?.height ?: 0
+                    // Visible area: canvas height minus keyboard minus bottom toolbar
+                    val visibleBottom = canvasContainer.height - keyboardHeight - toolbarH - dp(8)
+                    val boxH = editingBox.height.coerceAtLeast(dp(50))
+                    val boxBottom = lp.topMargin + boxH
                     if (boxBottom > visibleBottom) {
-                        kbShiftApplied = true
-                        val shift = (boxBottom - visibleBottom).toFloat()
-                        // Scroll canvas up — updateET() (wired to onCanvasTransformed) will
-                        // automatically reposition box, toolbar and handles from world coords
-                        drawingView.shiftCanvasVertically(-shift)
+                        // Move box up so its bottom aligns with the visible area bottom
+                        lp.topMargin = (visibleBottom - boxH - dp(8)).coerceAtLeast(dp(4))
+                        editingBox.layoutParams = lp
                     }
                 }
-            } else if (keyboardHeight == 0 && kbShiftApplied) {
-                kbShiftApplied = false
-                // Canvas will restore when user dismisses editor (closeInlineEditor resets)
             }
             insets
         }
@@ -2864,10 +2861,21 @@ class MainActivity : AppCompatActivity() {
         boxContainer.addView(et, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
 
         val params=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
-        params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0); params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
+        // Measure currently visible height (accounts for keyboard if already open)
+        val visibleFrame = android.graphics.Rect()
+        canvasContainer.getWindowVisibleDisplayFrame(visibleFrame)
+        // visibleFrame.bottom = bottom of visible area above keyboard/navbar
+        // Convert to canvasContainer local coords
+        val containerLocation = IntArray(2)
+        canvasContainer.getLocationOnScreen(containerLocation)
+        val visibleBottomInContainer = visibleFrame.bottom - containerLocation[1] - dp(16)
+        val boxEstimatedHeight = screenSizePx + dp(12)  // same height as the box
+        val rawTop = (screenY - screenSizePx - dp(6)).toInt().coerceAtLeast(0)
+        // Ensure box bottom (rawTop + boxHeight) doesn't exceed visible area
+        val clampedTop = rawTop.coerceAtMost((visibleBottomInContainer - boxEstimatedHeight).coerceAtLeast(0))
+        params.leftMargin = (screenX - dp(6)).toInt().coerceAtLeast(0)
+        params.topMargin = clampedTop
         canvasContainer.addView(boxContainer,params)
-        setupKeyboardAutoScroll(boxContainer)
-
         // adjustResize (set in manifest) shrinks the canvas when keyboard opens — no extra handling needed
 
         // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
@@ -3042,8 +3050,6 @@ class MainActivity : AppCompatActivity() {
             else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
-        window.decorView.rootView.setOnApplyWindowInsetsListener(null)
-        kbShiftApplied = false
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
     }
