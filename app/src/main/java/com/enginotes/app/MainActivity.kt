@@ -2829,7 +2829,6 @@ class MainActivity : AppCompatActivity() {
 
         // ── Keyboard scroll-into-view ─────────────────────────────────────────────
         // Immediately scroll canvas + box up when keyboard opens, restore on close.
-        var savedTranslateYKb: Float? = null
         var savedBoxTopKb: Int? = null
         var kbOpen = false
         val keyboardListener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
@@ -2840,27 +2839,26 @@ class MainActivity : AppCompatActivity() {
             if (nowOpen == kbOpen) return@OnGlobalLayoutListener  // no change
             kbOpen = nowOpen
             if (nowOpen) {
-                savedTranslateYKb = drawingView.getTranslateY()
-                val lp0 = boxContainer.layoutParams as? FrameLayout.LayoutParams
-                savedBoxTopKb = lp0?.topMargin ?: 0
-                // r.bottom = top of keyboard. Box topMargin = where box starts on screen.
-                // If box top is below keyboard top, it's hidden — scroll up by exact overlap.
-                val boxTop = savedBoxTopKb ?: 0
+                val lp0 = boxContainer.layoutParams as? FrameLayout.LayoutParams ?: return@OnGlobalLayoutListener
+                savedBoxTopKb = lp0.topMargin
+                val boxTop = lp0.topMargin
                 val keyboardTop = r.bottom
-                val margin = dp(24)  // padding above keyboard
+                val margin = dp(24)
                 if (boxTop + margin > keyboardTop) {
-                    val delta = (keyboardTop - boxTop - margin).toFloat()  // negative = scroll up
-                    drawingView.shiftCanvasVertically(delta)
-                    val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
-                    if (lp != null) { lp.topMargin = (lp.topMargin + delta).toInt().coerceAtLeast(0); boxContainer.layoutParams = lp }
+                    // Box is behind keyboard — move ONLY the box up, not the canvas
+                    // (canvas scroll moves the paper but not the box view layer)
+                    val newTop = (keyboardTop - margin).coerceAtLeast(dp(8))
+                    lp0.topMargin = newTop
+                    boxContainer.layoutParams = lp0
                 }
-                // If box is already above keyboard top — do nothing, no scroll needed
             } else {
-                val origY = savedTranslateYKb; val origBox = savedBoxTopKb
-                if (origY != null) drawingView.shiftCanvasVertically(origY - drawingView.getTranslateY())
-                val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
-                if (lp != null && origBox != null) { lp.topMargin = origBox; boxContainer.layoutParams = lp }
-                savedTranslateYKb = null; savedBoxTopKb = null
+                // Restore box to original position
+                val origBox = savedBoxTopKb
+                if (origBox != null) {
+                    val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
+                    if (lp != null) { lp.topMargin = origBox; boxContainer.layoutParams = lp }
+                    savedBoxTopKb = null
+                }
             }
         }
         canvasContainer.viewTreeObserver.addOnGlobalLayoutListener(keyboardListener)
