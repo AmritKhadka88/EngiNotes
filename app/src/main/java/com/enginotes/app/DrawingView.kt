@@ -720,7 +720,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun itemsInViewport(): List<Any> {
         if (spatialDirty) rebuildSpatialIndex()
         val vl = -translateX / scaleFactor; val vt = -translateY / scaleFactor
-        val vr = vl + width / scaleFactor; val vb = vt + height / scaleFactor
+        val vr = vl + width / scaleFactor; val vb = vt + (if (stableHeight > 0) stableHeight else height) / scaleFactor
         // Add padding equal to one grid cell so items near the edge are never missed
         val pad = GRID_CELL
         val seen = HashSet<Any>(); val result = mutableListOf<Any>()
@@ -1930,6 +1930,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private var hasInitialLayout = false
     private var lastLayoutWidth = 0
+    private var stableHeight = 0  // height ignoring keyboard resize
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
         if (width > 0 && height > 0) {
@@ -1938,6 +1939,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val isFirstLayout = !hasInitialLayout
             val widthChanged = width != lastLayoutWidth
             lastLayoutWidth = width
+            if (widthChanged || stableHeight == 0) stableHeight = height  // freeze on keyboard-only resize
             if (isFirstLayout) {
                 hasInitialLayout = true
                 when (canvasMode) {
@@ -3062,7 +3064,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawBackground(canvas: Canvas) {
         val vl = -translateX / scaleFactor; val vt = -translateY / scaleFactor
-        val vr = vl + width / scaleFactor; val vb = vt + height / scaleFactor
+        val vr = vl + width / scaleFactor; val vb = vt + (if (stableHeight > 0) stableHeight else height) / scaleFactor
         when (canvasMode) {
             CanvasMode.INFINITE -> {
                 if (paperType == PaperType.BLANK_COLORED) { val p = Paint(); p.color = paperColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, p) }
