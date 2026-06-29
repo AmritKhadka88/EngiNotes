@@ -2840,21 +2840,22 @@ class MainActivity : AppCompatActivity() {
             if (nowOpen == kbOpen) return@OnGlobalLayoutListener  // no change
             kbOpen = nowOpen
             if (nowOpen) {
-                // Save current positions
                 savedTranslateYKb = drawingView.getTranslateY()
-                savedBoxTopKb = (boxContainer.layoutParams as? FrameLayout.LayoutParams)?.topMargin ?: 0
-                // How far is the box bottom below the visible area top of keyboard?
-                val boxBottom = (savedBoxTopKb ?: 0) + boxContainer.height.coerceAtLeast(dp(60))
-                val visibleBottom = r.bottom - dp(16)
-                val delta = (visibleBottom - boxBottom).toFloat()
-                if (delta < 0f) {  // box is hidden — shift up
+                val lp0 = boxContainer.layoutParams as? FrameLayout.LayoutParams
+                savedBoxTopKb = lp0?.topMargin ?: 0
+                // r.bottom = top of keyboard. Box topMargin = where box starts on screen.
+                // If box top is below keyboard top, it's hidden — scroll up by exact overlap.
+                val boxTop = savedBoxTopKb ?: 0
+                val keyboardTop = r.bottom
+                val margin = dp(24)  // padding above keyboard
+                if (boxTop + margin > keyboardTop) {
+                    val delta = (keyboardTop - boxTop - margin).toFloat()  // negative = scroll up
                     drawingView.shiftCanvasVertically(delta)
                     val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
                     if (lp != null) { lp.topMargin = (lp.topMargin + delta).toInt().coerceAtLeast(0); boxContainer.layoutParams = lp }
-                    // Note: inline editor toolbar position is handled by onCanvasTransformed
                 }
+                // If box is already above keyboard top — do nothing, no scroll needed
             } else {
-                // Restore saved positions
                 val origY = savedTranslateYKb; val origBox = savedBoxTopKb
                 if (origY != null) drawingView.shiftCanvasVertically(origY - drawingView.getTranslateY())
                 val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
