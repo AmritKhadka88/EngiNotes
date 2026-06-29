@@ -849,6 +849,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var onScrollPercentChanged: ((Float) -> Unit)? = null
     var onDrawingStarted: (() -> Unit)? = null
     var onDrawingEnded: (() -> Unit)? = null
+    var onShapeCompleted: ((StrokeItem) -> Unit)? = null  // fired after each shape is drawn
     var fingerPanMode: Boolean = false
 
     fun scrollToPercent(pct: Float) {
@@ -3668,6 +3669,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         src.clear(); src.addAll(keep); item.path = item.data.buildPath(); item.invalidateCache()
                     }
                     actions.add(item); redoStack.clear(); markSpatialDirty()
+                    // For shape tools: notify MainActivity to show select handles temporarily
+                    if (isShapeTool) {
+                        selectedItem = item
+                        onShapeCompleted?.invoke(item)
+                    }
                 }
                 }
                 currentItem = null; invalidate()

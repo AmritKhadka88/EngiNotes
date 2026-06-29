@@ -141,6 +141,7 @@ class MainActivity : AppCompatActivity() {
     private val recentBrushStyles = mutableListOf(BrushStyle.ROUND, BrushStyle.SPRAY, BrushStyle.WATERCOLOR)
     private var cameraImageFile: File? = null
     private var activeToolbarButton: ImageButton? = null
+    private var pendingShapeTool: Tool? = null  // shape tool to return to after select-after-draw
     private var isSwitchingTextEditor = false
     private var exportWindowBitmap: Bitmap? = null
     private var pendingExportBitmap: Bitmap? = null
@@ -523,6 +524,15 @@ class MainActivity : AppCompatActivity() {
         drawingView.onTextSelectRequest     = { item, sx, sy, rawX, rawY -> showTextSelectionBox(item, sx, sy, rawX, rawY) }
         drawingView.onTextDeselectRequest   = { dismissTextSelectionBox() }
         drawingView.onEmptyAreaTap          = {
+            // If we're in select-after-shape mode, return to the shape tool
+            val shapeTool = pendingShapeTool
+            val handledByShape = shapeTool != null && drawingView.currentTool == Tool.SELECT && drawingView.selectedItem == null
+            if (handledByShape) {
+                pendingShapeTool = null
+                runOnUiThread { setActiveTool(null, shapeTool!!); rebuildContextBar() }
+            }
+            pendingShapeTool = null
+            if (!handledByShape) {
             // Tapping genuinely empty canvas is the "I'm done" signal: commit and close whatever
             // editor is open (text or table cell), and bring the bottom toolbar back if a table
             // editor had hidden it.
@@ -530,6 +540,7 @@ class MainActivity : AppCompatActivity() {
             if (activeCellEditText != null) dismissCellEditor()
             dismissTextSelectionBox()
             setBottomBarVisible(true)
+            } // end if (!handledByShape)
         }
         drawingView.onLinkTap               = { target -> navigateToLink(target) }
         drawingView.onPageSwipe             = { dir -> drawingView.scrollPage(dir) }
@@ -547,6 +558,12 @@ class MainActivity : AppCompatActivity() {
                     findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
                 }
             }
+        }
+        drawingView.onShapeCompleted        = { item ->
+            // After drawing a shape: briefly enter SELECT mode so user can resize/move/delete.
+            // Tapping outside (onEmptyAreaTap) returns to the shape tool to draw another.
+            pendingShapeTool = drawingView.currentTool
+            runOnUiThread { setActiveTool(null, Tool.SELECT) }
         }
         drawingView.onDrawingEnded          = {
             runOnUiThread {
