@@ -2713,6 +2713,13 @@ class MainActivity : AppCompatActivity() {
                         item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat())
                         item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + boxH)
                         drawingView.invalidate()
+                        // Move toolbar with the text box
+                        val tbLp = toolbar.layoutParams as? FrameLayout.LayoutParams
+                        if (tbLp != null) {
+                            tbLp.leftMargin = lp.leftMargin.coerceIn(dp(4), canvasContainer.width - dp(200))
+                            tbLp.topMargin = (lp.topMargin - dp(56)).coerceAtLeast(dp(4))
+                            toolbar.layoutParams = tbLp
+                        }
                     }
                     true
                 }
@@ -2772,6 +2779,8 @@ class MainActivity : AppCompatActivity() {
         dismissCellEditor()
         dismissAllFloatingPanels()
         drawingView.isTextEditorOpen = true
+        // Switch toolbar to TEXT tool so the correct context bar shows
+        setActiveTool(findViewById(R.id.btnText), Tool.TEXT)
         pendingBold=false; pendingItalic=false; pendingUnderline=false; pendingHighlight=null
         // Default font size: 50pt in Convenient layout (large, comfortable writing feel),
         // 12pt in Print/Infinite layouts (true-to-scale, matches standard document text).
@@ -2818,55 +2827,39 @@ class MainActivity : AppCompatActivity() {
         canvasContainer.addView(boxContainer,params)
 
         // ── Keyboard scroll-into-view ─────────────────────────────────────────────
-        // Use screenY (the tap position) as anchor — reliable even before box is measured.
-        // When keyboard opens: shift canvas + box up so the tap point sits above keyboard.
-        // When keyboard closes: restore everything exactly.
-        var savedTranslateY: Float? = null
-        var savedBoxTopMargin: Int? = null
-        var keyboardWasOpen = false
-        val tapScreenY = screenY  // capture at editor-open time
-
+        // Immediately scroll canvas + box up when keyboard opens, restore on close.
+        var savedTranslateYKb: Float? = null
+        var savedBoxTopKb: Int? = null
+        var kbOpen = false
         val keyboardListener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
-            val visibleFrame = android.graphics.Rect()
-            canvasContainer.getWindowVisibleDisplayFrame(visibleFrame)
-            val keyboardHeight = canvasContainer.rootView.height - visibleFrame.bottom
-            val keyboardOpen = keyboardHeight > dp(150)
-
-            if (keyboardOpen && !keyboardWasOpen) {
-                // Keyboard just opened — compute how much to scroll up
-                keyboardWasOpen = true
-                savedTranslateY = drawingView.getTranslateY()
-                val lp0 = boxContainer.layoutParams as? FrameLayout.LayoutParams
-                savedBoxTopMargin = lp0?.topMargin ?: 0
-
-                // Target: tap position should be 40dp above the keyboard top
-                val keyboardTop = visibleFrame.bottom.toFloat()
-                val targetTapY = keyboardTop - dp(100)  // where we want the editor to sit
-                val delta = targetTapY - tapScreenY      // how much to shift upward (negative = up)
-
-                if (delta < 0) {  // only scroll if editor is actually hidden
+            val r = android.graphics.Rect()
+            canvasContainer.getWindowVisibleDisplayFrame(r)
+            val kbHeight = canvasContainer.rootView.height - r.bottom
+            val nowOpen = kbHeight > dp(150)
+            if (nowOpen == kbOpen) return@OnGlobalLayoutListener  // no change
+            kbOpen = nowOpen
+            if (nowOpen) {
+                // Save current positions
+                savedTranslateYKb = drawingView.getTranslateY()
+                savedBoxTopKb = (boxContainer.layoutParams as? FrameLayout.LayoutParams)?.topMargin ?: 0
+                // How far is the box bottom below the visible area top of keyboard?
+                val boxBottom = (savedBoxTopKb ?: 0) + boxContainer.height.coerceAtLeast(dp(60))
+                val visibleBottom = r.bottom - dp(16)
+                val delta = (visibleBottom - boxBottom).toFloat()
+                if (delta < 0f) {  // box is hidden — shift up
                     drawingView.shiftCanvasVertically(delta)
                     val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
-                    if (lp != null) {
-                        lp.topMargin = (lp.topMargin + delta).toInt().coerceAtLeast(0)
-                        boxContainer.layoutParams = lp
-                    }
+                    if (lp != null) { lp.topMargin = (lp.topMargin + delta).toInt().coerceAtLeast(0); boxContainer.layoutParams = lp }
+                    val tlp = toolbar.layoutParams as? FrameLayout.LayoutParams
+                    if (tlp != null) { tlp.topMargin = (tlp.topMargin + delta).toInt().coerceAtLeast(0); toolbar.layoutParams = tlp }
                 }
-
-            } else if (!keyboardOpen && keyboardWasOpen) {
-                // Keyboard just closed — restore everything precisely
-                keyboardWasOpen = false
-                val origY = savedTranslateY
-                val origBox = savedBoxTopMargin
-                if (origY != null) {
-                    val currentY = drawingView.getTranslateY()
-                    drawingView.shiftCanvasVertically(origY - currentY)
-                }
-                if (origBox != null) {
-                    val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
-                    if (lp != null) { lp.topMargin = origBox; boxContainer.layoutParams = lp }
-                }
-                savedTranslateY = null; savedBoxTopMargin = null
+            } else {
+                // Restore saved positions
+                val origY = savedTranslateYKb; val origBox = savedBoxTopKb
+                if (origY != null) drawingView.shiftCanvasVertically(origY - drawingView.getTranslateY())
+                val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
+                if (lp != null && origBox != null) { lp.topMargin = origBox; boxContainer.layoutParams = lp }
+                savedTranslateYKb = null; savedBoxTopKb = null
             }
         }
         canvasContainer.viewTreeObserver.addOnGlobalLayoutListener(keyboardListener)
