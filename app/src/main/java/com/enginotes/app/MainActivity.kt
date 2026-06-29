@@ -2853,10 +2853,10 @@ class MainActivity : AppCompatActivity() {
                 // Find cursor screen position using EditText layout
                 et.post {
                     val cursorLine = et.layout?.getLineForOffset(et.selectionStart) ?: 0
-                    val cursorY = (et.layout?.getLineBottom(cursorLine) ?: 0) +
-                        (et.layoutParams as? FrameLayout.LayoutParams)?.topMargin?.let {
-                            (boxContainer.layoutParams as? FrameLayout.LayoutParams)?.topMargin?.plus(it) ?: it
-                        } ?: 0
+                    val cursorLineBottom = et.layout?.getLineBottom(cursorLine) ?: 0
+                    val etTopInBox = (et.layoutParams as? FrameLayout.LayoutParams)?.topMargin ?: 0
+                    val boxTop = (boxContainer.layoutParams as? FrameLayout.LayoutParams)?.topMargin ?: 0
+                    val cursorY = cursorLineBottom + etTopInBox + boxTop
                     val visibleBottom = canvasContainer.height - kbHeight - dp(16)
                     if (cursorY > visibleBottom) {
                         val shift = (cursorY - visibleBottom + dp(24)).toFloat()
