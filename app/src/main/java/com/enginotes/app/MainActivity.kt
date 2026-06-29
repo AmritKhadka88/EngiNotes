@@ -2989,7 +2989,7 @@ class MainActivity : AppCompatActivity() {
             else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
-        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(boxContainer, null)
+        activeEditBox?.let { androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(it, null) }
         boxOriginalTop = -1
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
