@@ -108,9 +108,6 @@ class MainActivity : AppCompatActivity() {
     private var activeEditText: EditText? = null
     private var activeToolbar: View? = null
     private var activeEditBox: View? = null
-    private var canvasYBeforeKeyboard: Float = Float.NaN
-    private var activeEditorLayoutListener: android.view.ViewTreeObserver.OnGlobalLayoutListener? = null
-    private var activeEditorRootView: View? = null
     private var activeEditorHandles: List<View> = emptyList()
     private var editingItem: TextItem? = null
     private var editWorldX = 0f; private var editWorldY = 0f
@@ -142,7 +139,6 @@ class MainActivity : AppCompatActivity() {
     private val recentBrushStyles = mutableListOf(BrushStyle.ROUND, BrushStyle.SPRAY, BrushStyle.WATERCOLOR)
     private var cameraImageFile: File? = null
     private var activeToolbarButton: ImageButton? = null
-    private var pendingShapeTool: Tool? = null  // shape tool to return to after select-after-draw
     private var isSwitchingTextEditor = false
     private var exportWindowBitmap: Bitmap? = null
     private var pendingExportBitmap: Bitmap? = null
@@ -525,15 +521,6 @@ class MainActivity : AppCompatActivity() {
         drawingView.onTextSelectRequest     = { item, sx, sy, rawX, rawY -> showTextSelectionBox(item, sx, sy, rawX, rawY) }
         drawingView.onTextDeselectRequest   = { dismissTextSelectionBox() }
         drawingView.onEmptyAreaTap          = {
-            // If we're in select-after-shape mode, return to the shape tool
-            val shapeTool = pendingShapeTool
-            val handledByShape = shapeTool != null && drawingView.currentTool == Tool.SELECT && drawingView.selectedItem == null
-            if (handledByShape) {
-                pendingShapeTool = null
-                runOnUiThread { setActiveTool(null, shapeTool!!); rebuildContextBar() }
-            }
-            pendingShapeTool = null
-            if (!handledByShape) {
             // Tapping genuinely empty canvas is the "I'm done" signal: commit and close whatever
             // editor is open (text or table cell), and bring the bottom toolbar back if a table
             // editor had hidden it.
@@ -541,7 +528,6 @@ class MainActivity : AppCompatActivity() {
             if (activeCellEditText != null) dismissCellEditor()
             dismissTextSelectionBox()
             setBottomBarVisible(true)
-            } // end if (!handledByShape)
         }
         drawingView.onLinkTap               = { target -> navigateToLink(target) }
         drawingView.onPageSwipe             = { dir -> drawingView.scrollPage(dir) }
@@ -559,12 +545,6 @@ class MainActivity : AppCompatActivity() {
                     findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
                 }
             }
-        }
-        drawingView.onShapeCompleted        = { item ->
-            // After drawing a shape: briefly enter SELECT mode so user can resize/move/delete.
-            // Tapping outside (onEmptyAreaTap) returns to the shape tool to draw another.
-            pendingShapeTool = drawingView.currentTool
-            runOnUiThread { setActiveTool(null, Tool.SELECT) }
         }
         drawingView.onDrawingEnded          = {
             runOnUiThread {
@@ -2699,16 +2679,6 @@ class MainActivity : AppCompatActivity() {
         val (measW, measH) = measureTextBoxSize(item, screenSizePx)
         var boxW = measW; var boxH = measH
 
-        // Declare toolbar first so it's in scope for moveSurface touch listener and keyboard listener
-        val toolbar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.WHITE); cornerRadius = dp(20).toFloat()
-                setStroke(dp(1), Color.parseColor("#DDDDDD"))
-            }
-            elevation = dp(4).toFloat()
-            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        }
         val moveSurface = View(this)
         var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
         var isDraggingRotate = false; var rotStartRawX2 = 0f; var rotStartRotation2 = 0f
@@ -2741,13 +2711,6 @@ class MainActivity : AppCompatActivity() {
                         item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat())
                         item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + boxH)
                         drawingView.invalidate()
-                        // Move toolbar with the text box
-                        val tbLp = toolbar.layoutParams as? FrameLayout.LayoutParams
-                        if (tbLp != null) {
-                            tbLp.leftMargin = lp.leftMargin.coerceIn(dp(4), canvasContainer.width - dp(200))
-                            tbLp.topMargin = (lp.topMargin - dp(56)).coerceAtLeast(dp(4))
-                            toolbar.layoutParams = tbLp
-                        }
                     }
                     true
                 }
@@ -2764,6 +2727,15 @@ class MainActivity : AppCompatActivity() {
         canvasContainer.addView(moveSurface)
 
         // Floating toolbar: Delete | Done
+        val toolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.WHITE); cornerRadius = dp(20).toFloat()
+                setStroke(dp(1), Color.parseColor("#DDDDDD"))
+            }
+            elevation = dp(4).toFloat()
+            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        }
         fun tbBtn(label: String, tint: Int? = null) = TextView(this).apply {
             text = label; textSize = 16f; gravity = Gravity.CENTER
             val pad = dp(10); setPadding(pad, dp(8), pad, dp(8))
@@ -2791,8 +2763,6 @@ class MainActivity : AppCompatActivity() {
         drawingView.onCanvasTransformed = { updateToolbarPos() }
     }
 
-
-
     private fun showInlineTextEditor(item: TextItem?, screenX: Float, screenY: Float, worldX: Float, worldY: Float) {
         dismissTextSelectionBox()
         if (activeEditText != null && editingItem === item) return
@@ -2800,8 +2770,6 @@ class MainActivity : AppCompatActivity() {
         dismissCellEditor()
         dismissAllFloatingPanels()
         drawingView.isTextEditorOpen = true
-        // Switch toolbar to TEXT tool so the correct context bar shows
-        setActiveTool(findViewById(R.id.btnText), Tool.TEXT)
         pendingBold=false; pendingItalic=false; pendingUnderline=false; pendingHighlight=null
         // Default font size: 50pt in Convenient layout (large, comfortable writing feel),
         // 12pt in Print/Infinite layouts (true-to-scale, matches standard document text).
@@ -2844,43 +2812,10 @@ class MainActivity : AppCompatActivity() {
         boxContainer.addView(et, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
 
         val params=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
-        params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0)
-        params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
+        params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0); params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(boxContainer,params)
 
-        // When keyboard opens: measure exact overlap, scroll canvas up by that amount, restore on close
-        var kbOpen = false
-        val listener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
-            val r = android.graphics.Rect()
-            canvasContainer.getWindowVisibleDisplayFrame(r)
-            val kbHeight = canvasContainer.rootView.height - r.bottom
-            val nowOpen = kbHeight > dp(150)
-            if (nowOpen == kbOpen) return@OnGlobalLayoutListener  // only act on transition
-            kbOpen = nowOpen
-            if (nowOpen) {
-                // Keyboard just opened — measure exact overlap and scroll canvas up
-                boxContainer.post {
-                    val loc = IntArray(2)
-                    boxContainer.getLocationOnScreen(loc)
-                    val boxBottom = loc[1] + boxContainer.height
-                    val overlap = boxBottom - r.bottom
-                    if (overlap > 0) {
-                        canvasYBeforeKeyboard = drawingView.getTranslateY()
-                        drawingView.shiftCanvasVertically(-(overlap + dp(16)).toFloat())
-                    }
-                }
-            } else {
-                // Keyboard closed — restore canvas exactly
-                if (!canvasYBeforeKeyboard.isNaN()) {
-                    drawingView.shiftCanvasVertically(canvasYBeforeKeyboard - drawingView.getTranslateY())
-                    canvasYBeforeKeyboard = Float.NaN
-                }
-            }
-        }
-        canvasContainer.viewTreeObserver.addOnGlobalLayoutListener(listener)
-        activeEditorLayoutListener = listener
-        activeEditorRootView = canvasContainer
-
+        // Scroll canvas up if box is hidden behind keyboard, restore when keyboard closes
         // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
         // the whole box (and the underlying text item's world position) without needing to leave
         // the editor or tap elsewhere - works both while actively typing and after.
@@ -3053,9 +2988,6 @@ class MainActivity : AppCompatActivity() {
             else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
-        activeEditorLayoutListener?.let { activeEditorRootView?.viewTreeObserver?.removeOnGlobalLayoutListener(it) }
-        activeEditorLayoutListener = null; activeEditorRootView = null
-        if (!canvasYBeforeKeyboard.isNaN()) { drawingView.shiftCanvasVertically(canvasYBeforeKeyboard - drawingView.getTranslateY()); canvasYBeforeKeyboard = Float.NaN }
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
     }
