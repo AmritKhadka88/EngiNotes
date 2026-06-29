@@ -2788,27 +2788,7 @@ class MainActivity : AppCompatActivity() {
         drawingView.onCanvasTransformed = { updateToolbarPos() }
     }
 
-    private fun setupKeyboardAutoScroll(editingBox: View) {
-        window.decorView.rootView.setOnApplyWindowInsetsListener { _, insets ->
-            val keyboardHeight = insets.getInsets(android.view.WindowInsets.Type.ime()).bottom
-            if (keyboardHeight > 0) {
-                editingBox.post {
-                    val lp = editingBox.layoutParams as? FrameLayout.LayoutParams ?: return@post
-                    val toolbarH = findViewById<View?>(R.id.primaryToolbarScroll)?.height ?: 0
-                    // Visible area: canvas height minus keyboard minus bottom toolbar
-                    val visibleBottom = canvasContainer.height - keyboardHeight - toolbarH - dp(8)
-                    val boxH = editingBox.height.coerceAtLeast(dp(50))
-                    val boxBottom = lp.topMargin + boxH
-                    if (boxBottom > visibleBottom) {
-                        // Move box up so its bottom aligns with the visible area bottom
-                        lp.topMargin = (visibleBottom - boxH - dp(8)).coerceAtLeast(dp(4))
-                        editingBox.layoutParams = lp
-                    }
-                }
-            }
-            insets
-        }
-    }
+
 
     private fun showInlineTextEditor(item: TextItem?, screenX: Float, screenY: Float, worldX: Float, worldY: Float) {
         dismissTextSelectionBox()
@@ -2861,21 +2841,36 @@ class MainActivity : AppCompatActivity() {
         boxContainer.addView(et, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
 
         val params=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
-        // Measure currently visible height (accounts for keyboard if already open)
-        val visibleFrame = android.graphics.Rect()
-        canvasContainer.getWindowVisibleDisplayFrame(visibleFrame)
-        // visibleFrame.bottom = bottom of visible area above keyboard/navbar
-        // Convert to canvasContainer local coords
-        val containerLocation = IntArray(2)
-        canvasContainer.getLocationOnScreen(containerLocation)
-        val visibleBottomInContainer: Int = visibleFrame.bottom - containerLocation[1] - dp(16)
-        val boxEstimatedHeight: Int = screenSizePx.toInt() + dp(12)
-        val rawTop: Int = (screenY.toInt() - screenSizePx.toInt() - dp(6)).coerceAtLeast(0)
-        val clampedTop: Int = rawTop.coerceAtMost((visibleBottomInContainer - boxEstimatedHeight).coerceAtLeast(0))
-        params.leftMargin = (screenX.toInt() - dp(6)).coerceAtLeast(0)
-        params.topMargin = clampedTop
+        params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0)
+        params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(boxContainer,params)
-        // adjustResize (set in manifest) shrinks the canvas when keyboard opens — no extra handling needed
+
+        // ── Keyboard scroll: shift canvas so cursor stays visible ──────────────
+        val savedCanvasY = drawingView.getTranslateY()
+        window.decorView.rootView.setOnApplyWindowInsetsListener { _, insets ->
+            val kbHeight = insets.getInsets(android.view.WindowInsets.Type.ime()).bottom
+            if (kbHeight > 0) {
+                // Find cursor screen position using EditText layout
+                et.post {
+                    val cursorLine = et.layout?.getLineForOffset(et.selectionStart) ?: 0
+                    val cursorY = (et.layout?.getLineBottom(cursorLine) ?: 0) +
+                        (et.layoutParams as? FrameLayout.LayoutParams)?.topMargin?.let {
+                            (boxContainer.layoutParams as? FrameLayout.LayoutParams)?.topMargin?.plus(it) ?: it
+                        } ?: 0
+                    val visibleBottom = canvasContainer.height - kbHeight - dp(16)
+                    if (cursorY > visibleBottom) {
+                        val shift = (cursorY - visibleBottom + dp(24)).toFloat()
+                        drawingView.shiftCanvasVertically(-shift)
+                    }
+                }
+            } else {
+                // Keyboard closed — restore canvas to where it was
+                val current = drawingView.getTranslateY()
+                if (current != savedCanvasY) drawingView.shiftCanvasVertically(savedCanvasY - current)
+            }
+            insets
+        }
+        // ───────────────────────────────────────────────────────────────────────
 
         // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
         // the whole box (and the underlying text item's world position) without needing to leave
