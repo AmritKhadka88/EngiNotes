@@ -1929,15 +1929,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private var hasInitialLayout = false
-    private var lastLayoutWidth = 0
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
         if (width > 0 && height > 0) {
             convenientPageW = width.toFloat() * 0.82f
             convenientPageH = height.toFloat() * 1.1f
             val isFirstLayout = !hasInitialLayout
-            val widthChanged = width != lastLayoutWidth
-            lastLayoutWidth = width
             if (isFirstLayout) {
                 hasInitialLayout = true
                 when (canvasMode) {
@@ -1956,8 +1953,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         clampTranslation(); invalidate()
                     }
                 }
-            } else if (widthChanged) {
-                // Only re-clamp on real layout changes (rotation), not keyboard open/close
+            } else {
                 clampTranslation(); invalidate()
             }
         }
