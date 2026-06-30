@@ -837,6 +837,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         translateY += deltaY
         clampTranslation()
         invalidate()
+        onCanvasTransformed?.invoke()
     }
 
     fun getTranslateY(): Float = translateY

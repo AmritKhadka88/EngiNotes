@@ -3063,8 +3063,8 @@ class MainActivity : AppCompatActivity() {
             val scale=drawingView.getScaleFactor();val nsp=editSize*scale*convenientBoost
             et.textSize=(nsp/density).coerceAtLeast(8f)
             val sx=drawingView.worldToScreenX(editWorldX);val sy=drawingView.worldToScreenY(editWorldY)-nsp
-            val lp=boxContainer.layoutParams as FrameLayout.LayoutParams; lp.leftMargin=(sx-dp(6)).toInt().coerceAtLeast(0); lp.topMargin=(sy-dp(6)).toInt().coerceAtLeast(0); boxContainer.layoutParams=lp
-            val tlp=toolbarScroll.layoutParams as FrameLayout.LayoutParams; tlp.leftMargin=lp.leftMargin; tlp.topMargin=(lp.topMargin-toolbarHeightEstimate).coerceAtLeast(0); toolbarScroll.layoutParams=tlp
+            val lp=boxContainer.layoutParams as FrameLayout.LayoutParams; lp.leftMargin=(sx-dp(6)).toInt().coerceAtLeast(0); lp.topMargin=(sy-dp(6)).toInt(); boxContainer.layoutParams=lp
+            val tlp=toolbarScroll.layoutParams as FrameLayout.LayoutParams; tlp.leftMargin=lp.leftMargin; tlp.topMargin=(lp.topMargin-toolbarHeightEstimate); toolbarScroll.layoutParams=tlp
             layoutEditorHandles()
         }
         drawingView.onScaleChanged={ updateET() }; drawingView.onCanvasTransformed={ updateET() }
