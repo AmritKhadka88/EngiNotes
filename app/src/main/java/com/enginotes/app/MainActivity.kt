@@ -503,6 +503,21 @@ class MainActivity : AppCompatActivity() {
         tvTitle.setOnClickListener { showRenameDialog() }
         btnLayoutToggle = findViewById(R.id.btnLayoutToggle)
 
+        // Keep the static bottom toolbars (context row + primary tool dock) above the keyboard.
+        // These are separate from the floating per-edit toolbar handled elsewhere - they're
+        // pinned in activity_main.xml and were getting covered by the IME since adjustNothing
+        // doesn't resize/pan the layout for them.
+        run {
+            val contextBar = findViewById<View?>(R.id.toolbarScroll)
+            val primaryBar = findViewById<View?>(R.id.primaryToolbarScroll)
+            androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { _, insets ->
+                val imeBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom.toFloat()
+                contextBar?.translationY = -imeBottom
+                primaryBar?.translationY = -imeBottom
+                insets
+            }
+        }
+
         val prefs = getPrefs()
         try { drawingView.paperType = PaperType.valueOf(prefs.getString("default_paper","LINED") ?: "LINED") } catch(e:Exception){}
         pendingFontFamily = prefs.getString("last_font", "sans-serif") ?: "sans-serif"
