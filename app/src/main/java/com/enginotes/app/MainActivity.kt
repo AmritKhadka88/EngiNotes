@@ -2873,9 +2873,10 @@ class MainActivity : AppCompatActivity() {
                     val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
                     if (lp != null) { lp.topMargin = origBox; boxContainer.layoutParams = lp }
                 }
-                if (origToolbarTop != null) {
+                val origToolbarTopVal = origToolbarTop
+                if (origToolbarTopVal != null) {
                     val tlp = activeToolbar?.layoutParams as? FrameLayout.LayoutParams
-                    if (tlp != null) { tlp.topMargin = origToolbarTop; activeToolbar?.layoutParams = tlp }
+                    if (tlp != null) { tlp.topMargin = origToolbarTopVal; activeToolbar?.layoutParams = tlp }
                 }
                 savedTranslateY = null; savedBoxTopMargin = null; origToolbarTop = null
             }
