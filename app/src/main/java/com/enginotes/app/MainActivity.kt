@@ -108,9 +108,9 @@ class MainActivity : AppCompatActivity() {
     private var activeEditText: EditText? = null
     private var activeToolbar: View? = null
     private var activeEditBox: View? = null
+    private var activeEditorHandles: List<View> = emptyList()
     private var activeEditorKeyboardListener: android.view.ViewTreeObserver.OnGlobalLayoutListener? = null
     private var activeEditorKeyboardObserver: android.view.ViewTreeObserver? = null
-    private var activeEditorHandles: List<View> = emptyList()
     private var editingItem: TextItem? = null
     private var editWorldX = 0f; private var editWorldY = 0f
     private var editRotation = 0f; private var editColor = Color.BLACK
@@ -120,23 +120,6 @@ class MainActivity : AppCompatActivity() {
     private var pendingUnderline = false; private var pendingHighlight: Int? = null
     private var pendingFontFamily: String = "sans-serif"
     private val recentFonts = mutableListOf("sans-serif", "serif", "monospace")
-
-    // Returns a short display name for a font family string (system name or file path)
-    private fun fontDisplayName(family: String): String {
-        if (!family.startsWith("/")) return family  // system font — return as-is
-        // Custom font — extract name from filename
-        return java.io.File(family).nameWithoutExtension.replace("-", " ").replace("_", " ")
-    }
-
-    // Resolves font family to Typeface — handles both system names and file paths
-    private fun typefaceFromFamily(family: String): android.graphics.Typeface {
-        return try {
-            if (family.startsWith("/") && java.io.File(family).exists())
-                android.graphics.Typeface.createFromFile(family)
-            else
-                android.graphics.Typeface.create(family, android.graphics.Typeface.NORMAL)
-        } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
-    }
     private val recentPenStyles = mutableListOf(PenStyle.FOUNTAIN, PenStyle.BALL, PenStyle.PENCIL)
     private val recentBrushStyles = mutableListOf(BrushStyle.ROUND, BrushStyle.SPRAY, BrushStyle.WATERCOLOR)
     private var cameraImageFile: File? = null
@@ -262,9 +245,8 @@ class MainActivity : AppCompatActivity() {
                     pendingFontFamily = family
                     editingItem?.let { it.fontFamily = family }
                     textSelectionItem?.let { it.fontFamily = family; drawingView.invalidate() }
-                    et.typeface = tf ?: Typeface.DEFAULT
+                    try { et.typeface = tf ?: Typeface.DEFAULT } catch (e: Exception) {}
                     recentFonts.remove(family); recentFonts.add(0, family)
-                    getPrefs().edit().putString("last_font", family).apply()
                     rebuildContextBar(); dialog.dismiss()
                 }
             }); divider()
@@ -301,7 +283,6 @@ class MainActivity : AppCompatActivity() {
             val w = drawingView.width / drawingView.getScaleFactor() * 0.85f
             val h = w / ratio
             drawingView.addImage(path, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), w, h)
-            setActiveTool(findViewById(R.id.btnSelect), Tool.SELECT)
             Toast.makeText(this, "Chart added!", Toast.LENGTH_SHORT).show()
         }
     }
@@ -320,8 +301,7 @@ class MainActivity : AppCompatActivity() {
             if (w > maxW) { val s = maxW / w; w *= s; h *= s }
             if (h > maxH) { val s = maxH / h; w *= s; h *= s }
             drawingView.addImage(path, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), w, h)
-            setActiveTool(findViewById(R.id.btnSelect), Tool.SELECT)
-            Toast.makeText(this, "PDF snip added — use handles to resize/move", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "PDF snip added - drag corners to resize", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -502,7 +482,6 @@ class MainActivity : AppCompatActivity() {
 
         val prefs = getPrefs()
         try { drawingView.paperType = PaperType.valueOf(prefs.getString("default_paper","LINED") ?: "LINED") } catch(e:Exception){}
-        pendingFontFamily = prefs.getString("last_font", "sans-serif") ?: "sans-serif"
 
         val fileName = intent.getStringExtra("filename")
         if (fileName != null) {
@@ -1095,13 +1074,12 @@ class MainActivity : AppCompatActivity() {
             Tool.TEXT -> {
                 // Show 3 recently used fonts (no scrollable row — just 3 chips)
                 val recent = recentFonts.take(3)
-                val recentLabels = recent.map { fam -> (allFontFamilies.firstOrNull { it.second == fam }?.first ?: fontDisplayName(fam)) to (pendingFontFamily == fam) }
+                val recentLabels = recent.map { fam -> (allFontFamilies.firstOrNull { it.second == fam }?.first ?: fam) to (pendingFontFamily == fam) }
                 chipScrollRow(recentLabels) { i ->
                     val fam = recent[i]; pendingFontFamily = fam
                     recentFonts.remove(fam); recentFonts.add(0, fam)
                     textSelectionItem?.let { it.fontFamily = fam; drawingView.invalidate() }
-                    activeEditText?.typeface = typefaceFromFamily(fam)
-                    getPrefs().edit().putString("last_font", fam).apply()
+                    activeEditText?.typeface = try { android.graphics.Typeface.create(fam, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
                     rebuildContextBar()
                 }
                 // "All Fonts" chip — opens full font picker
@@ -1115,7 +1093,7 @@ class MainActivity : AppCompatActivity() {
                     setOnClickListener {
                         // Use activeEditText if open, otherwise a dummy that routes through pendingFontFamily
                         val et = activeEditText ?: android.widget.EditText(this@MainActivity).also { dummy ->
-                            dummy.typeface = typefaceFromFamily(pendingFontFamily)
+                            try { dummy.typeface = android.graphics.Typeface.create(pendingFontFamily, android.graphics.Typeface.NORMAL) } catch (e: Exception) {}
                         }
                         showFontPickerDialog(et)
                     }
@@ -1911,7 +1889,7 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener {
                 // Use a dummy EditText to satisfy signature; changes go through pendingFontFamily
                 val dummy = android.widget.EditText(this@MainActivity)
-                dummy.typeface = typefaceFromFamily(pendingFontFamily)
+                dummy.typeface = try { android.graphics.Typeface.create(pendingFontFamily, android.graphics.Typeface.NORMAL) } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
                 showFontPickerDialog(dummy)
             }
         })
@@ -2778,9 +2756,7 @@ class MainActivity : AppCompatActivity() {
         val layoutDefaultSize = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 50f * PT_TO_PX else 12f * PT_TO_PX
         editingItem=item; editWorldX=item?.x?:worldX; editWorldY=item?.y?:worldY; editRotation=item?.rotation?:0f; editColor=item?.color?:drawingView.currentColor; editSize=item?.size?:layoutDefaultSize
         editOpacity = item?.opacity ?: 255
-        // For new text: use last-saved font from prefs (most reliable — survives any intermediate resets)
-        // For existing text: load that item's own font
-        pendingFontFamily = item?.fontFamily ?: (getPrefs().getString("last_font", pendingFontFamily) ?: pendingFontFamily)
+        pendingFontFamily = item?.fontFamily ?: "sans-serif"
         val density=resources.displayMetrics.density
         val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
         // Convenient layout gets a generous size boost so typing feels big and comfortable,
@@ -2801,7 +2777,7 @@ class MainActivity : AppCompatActivity() {
         et.textSize=(screenSizePx/density).coerceAtLeast(8f)
         et.setBackgroundColor(Color.TRANSPARENT)
         et.setPadding(dp(8),dp(8),dp(8),dp(8)); et.minWidth=dp(140); et.maxWidth=maxEditorWidthPx
-        et.typeface = typefaceFromFamily(pendingFontFamily)
+        try { et.typeface = Typeface.create(pendingFontFamily, Typeface.NORMAL) } catch (e: Exception) {}
         if(!useActualSize) et.rotation=editRotation
         et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } } }; override fun afterTextChanged(s:Editable?){} })
 
@@ -2816,75 +2792,6 @@ class MainActivity : AppCompatActivity() {
         val params=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
         params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0); params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(boxContainer,params)
-
-        // ── Keyboard scroll-into-view ─────────────────────────────────────────────
-        // Use screenY (the tap position) as anchor — reliable even before box is measured.
-        // When keyboard opens: shift canvas + box up so the tap point sits above keyboard.
-        // When keyboard closes: restore everything exactly.
-        var savedTranslateY: Float? = null
-        var savedBoxTopMargin: Int? = null
-        var origToolbarTop: Int? = null
-        var keyboardWasOpen = false
-        val tapScreenY = screenY  // capture at editor-open time
-
-        val keyboardListener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
-            val visibleFrame = android.graphics.Rect()
-            canvasContainer.getWindowVisibleDisplayFrame(visibleFrame)
-            val keyboardHeight = canvasContainer.rootView.height - visibleFrame.bottom
-            val keyboardOpen = keyboardHeight > dp(150)
-
-            if (keyboardOpen && !keyboardWasOpen) {
-                // Keyboard just opened — compute how much to scroll up
-                keyboardWasOpen = true
-                savedTranslateY = drawingView.getTranslateY()
-                val lp0 = boxContainer.layoutParams as? FrameLayout.LayoutParams
-                savedBoxTopMargin = lp0?.topMargin ?: 0
-                origToolbarTop = (activeToolbar?.layoutParams as? FrameLayout.LayoutParams)?.topMargin
-
-                // Target: tap position should be 40dp above the keyboard top
-                val keyboardTop = visibleFrame.bottom.toFloat()
-                val targetTapY = keyboardTop - dp(100)  // where we want the editor to sit
-                val delta = targetTapY - tapScreenY      // how much to shift upward (negative = up)
-
-                if (delta < 0) {  // only scroll if editor is actually hidden
-                    drawingView.shiftCanvasVertically(delta)
-                    val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
-                    if (lp != null) {
-                        lp.topMargin = (lp.topMargin + delta).toInt().coerceAtLeast(0)
-                        boxContainer.layoutParams = lp
-                    }
-                    val tlp = activeToolbar?.layoutParams as? FrameLayout.LayoutParams
-                    if (tlp != null) {
-                        tlp.topMargin = (tlp.topMargin + delta).toInt().coerceAtLeast(0)
-                        activeToolbar?.layoutParams = tlp
-                    }
-                }
-
-            } else if (!keyboardOpen && keyboardWasOpen) {
-                // Keyboard just closed — restore everything precisely
-                keyboardWasOpen = false
-                val origY = savedTranslateY
-                val origBox = savedBoxTopMargin
-                if (origY != null) {
-                    val currentY = drawingView.getTranslateY()
-                    drawingView.shiftCanvasVertically(origY - currentY)
-                }
-                if (origBox != null) {
-                    val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
-                    if (lp != null) { lp.topMargin = origBox; boxContainer.layoutParams = lp }
-                }
-                val origToolbarTopVal = origToolbarTop
-                if (origToolbarTopVal != null) {
-                    val tlp = activeToolbar?.layoutParams as? FrameLayout.LayoutParams
-                    if (tlp != null) { tlp.topMargin = origToolbarTopVal; activeToolbar?.layoutParams = tlp }
-                }
-                savedTranslateY = null; savedBoxTopMargin = null; origToolbarTop = null
-            }
-        }
-        canvasContainer.viewTreeObserver.addOnGlobalLayoutListener(keyboardListener)
-        activeEditorKeyboardListener = keyboardListener
-        activeEditorKeyboardObserver = canvasContainer.viewTreeObserver
-        // ─────────────────────────────────────────────────────────────────────────
 
         // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
         // the whole box (and the underlying text item's world position) without needing to leave
@@ -3028,6 +2935,72 @@ class MainActivity : AppCompatActivity() {
         tp.topMargin = (params.topMargin - toolbarHeightEstimate).coerceAtLeast(0)
         canvasContainer.addView(toolbarScroll,tp)
 
+        // ── Keyboard scroll-into-view ─────────────────────────────────────────────
+        // When keyboard opens: shift canvas + box + toolbar up so the editor sits above keyboard.
+        // When keyboard closes: restore everything exactly.
+        var savedTranslateY: Float? = null
+        var savedBoxTopMargin: Int? = null
+        var savedToolbarTopMargin: Int? = null
+        var keyboardWasOpen = false
+        val tapScreenY = screenY  // capture at editor-open time
+
+        val keyboardListener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
+            val visibleFrame = android.graphics.Rect()
+            canvasContainer.getWindowVisibleDisplayFrame(visibleFrame)
+            val keyboardHeight = canvasContainer.rootView.height - visibleFrame.bottom
+            val keyboardOpen = keyboardHeight > dp(150)
+
+            if (keyboardOpen && !keyboardWasOpen) {
+                keyboardWasOpen = true
+                savedTranslateY = drawingView.getTranslateY()
+                val lp0 = boxContainer.layoutParams as? FrameLayout.LayoutParams
+                savedBoxTopMargin = lp0?.topMargin ?: 0
+                val tlp0 = toolbarScroll.layoutParams as? FrameLayout.LayoutParams
+                savedToolbarTopMargin = tlp0?.topMargin ?: 0
+
+                val keyboardTop = visibleFrame.bottom.toFloat()
+                val targetTapY = keyboardTop - dp(100)
+                val delta = targetTapY - tapScreenY
+
+                if (delta < 0) {
+                    drawingView.shiftCanvasVertically(delta)
+                    val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
+                    if (lp != null) {
+                        lp.topMargin = (lp.topMargin + delta).toInt().coerceAtLeast(0)
+                        boxContainer.layoutParams = lp
+                    }
+                    val tlp = toolbarScroll.layoutParams as? FrameLayout.LayoutParams
+                    if (tlp != null) {
+                        tlp.topMargin = (tlp.topMargin + delta).toInt().coerceAtLeast(0)
+                        toolbarScroll.layoutParams = tlp
+                    }
+                }
+            } else if (!keyboardOpen && keyboardWasOpen) {
+                keyboardWasOpen = false
+                val origY = savedTranslateY
+                val origBox = savedBoxTopMargin
+                val origToolbar = savedToolbarTopMargin
+                if (origY != null) {
+                    val currentY = drawingView.getTranslateY()
+                    drawingView.shiftCanvasVertically(origY - currentY)
+                }
+                if (origBox != null) {
+                    val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
+                    if (lp != null) { lp.topMargin = origBox; boxContainer.layoutParams = lp }
+                }
+                if (origToolbar != null) {
+                    val tlp = toolbarScroll.layoutParams as? FrameLayout.LayoutParams
+                    if (tlp != null) { tlp.topMargin = origToolbar; toolbarScroll.layoutParams = tlp }
+                }
+                savedTranslateY = null; savedBoxTopMargin = null; savedToolbarTopMargin = null
+            }
+        }
+        canvasContainer.viewTreeObserver.addOnGlobalLayoutListener(keyboardListener)
+        activeEditorKeyboardListener = keyboardListener
+        activeEditorKeyboardObserver = canvasContainer.viewTreeObserver
+        // ─────────────────────────────────────────────────────────────────────────
+
+
         fun updateET(){
             val scale=drawingView.getScaleFactor();val nsp=editSize*scale*convenientBoost
             et.textSize=(nsp/density).coerceAtLeast(8f)
@@ -3058,7 +3031,6 @@ class MainActivity : AppCompatActivity() {
             else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
-        // Remove keyboard scroll listener
         activeEditorKeyboardListener?.let { listener ->
             try { activeEditorKeyboardObserver?.removeOnGlobalLayoutListener(listener) } catch (e: Exception) {}
         }
@@ -3091,7 +3063,7 @@ class MainActivity : AppCompatActivity() {
             val opts=android.graphics.BitmapFactory.Options().apply{inJustDecodeBounds=true}; android.graphics.BitmapFactory.decodeFile(file.absolutePath,opts)
             val ratio=opts.outWidth.toFloat().coerceAtLeast(1f)/opts.outHeight.toFloat().coerceAtLeast(1f)
             val w=drawingView.width/drawingView.getScaleFactor()*0.85f
-            drawingView.addImage(file.absolutePath,drawingView.screenCenterWorldX(),drawingView.screenCenterWorldY(),w,(w/ratio).coerceAtMost(drawingView.height/drawingView.getScaleFactor()*0.85f)); setActiveTool(findViewById(R.id.btnSelect), Tool.SELECT)
+            drawingView.addImage(file.absolutePath,drawingView.screenCenterWorldX(),drawingView.screenCenterWorldY(),w,(w/ratio).coerceAtMost(drawingView.height/drawingView.getScaleFactor()*0.85f))
         } catch(e:Exception){ Toast.makeText(this,"Photo failed: ${e.message}",Toast.LENGTH_LONG).show() }
     }
 
@@ -3104,7 +3076,7 @@ class MainActivity : AppCompatActivity() {
             val bmp=contentResolver.openInputStream(uri)?.use{ android.graphics.BitmapFactory.decodeStream(it,null,decOpts) }?:return
             val folder=File(filesDir,"images").also{it.mkdirs()}; val out=File(folder,"img_${System.currentTimeMillis()}.jpg"); FileOutputStream(out).use{ bmp.compress(Bitmap.CompressFormat.JPEG,85,it) }; bmp.recycle()
             val w=drawingView.width/drawingView.getScaleFactor()*0.85f
-            drawingView.addImage(out.absolutePath,drawingView.screenCenterWorldX(),drawingView.screenCenterWorldY(),w,(w/ratio).coerceAtMost(drawingView.height/drawingView.getScaleFactor()*0.85f)); setActiveTool(findViewById(R.id.btnSelect), Tool.SELECT)
+            drawingView.addImage(out.absolutePath,drawingView.screenCenterWorldX(),drawingView.screenCenterWorldY(),w,(w/ratio).coerceAtMost(drawingView.height/drawingView.getScaleFactor()*0.85f))
         } catch(e:Exception){ e.printStackTrace(); Toast.makeText(this,"Image failed: ${e.message}",Toast.LENGTH_LONG).show() }
     }
 
