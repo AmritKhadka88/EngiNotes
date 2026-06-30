@@ -32,6 +32,9 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.PopupMenu
 import androidx.core.content.FileProvider
+import androidx.core.view.OnApplyWindowInsetsListener
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import org.apache.poi.xwpf.usermodel.XWPFDocument
 import java.io.File
 import java.io.FileOutputStream
@@ -109,8 +112,7 @@ class MainActivity : AppCompatActivity() {
     private var activeToolbar: View? = null
     private var activeEditBox: View? = null
     private var activeEditorHandles: List<View> = emptyList()
-    private var activeEditorKeyboardListener: android.view.ViewTreeObserver.OnGlobalLayoutListener? = null
-    private var activeEditorKeyboardObserver: android.view.ViewTreeObserver? = null
+    private var activeEditorKeyboardListener: OnApplyWindowInsetsListener? = null
     private var editingItem: TextItem? = null
     private var editWorldX = 0f; private var editWorldY = 0f
     private var editRotation = 0f; private var editColor = Color.BLACK
@@ -2944,11 +2946,9 @@ class MainActivity : AppCompatActivity() {
         var keyboardWasOpen = false
         val tapScreenY = screenY  // capture at editor-open time
 
-        val keyboardListener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
-            val visibleFrame = android.graphics.Rect()
-            canvasContainer.getWindowVisibleDisplayFrame(visibleFrame)
-            val keyboardHeight = canvasContainer.rootView.height - visibleFrame.bottom
-            val keyboardOpen = keyboardHeight > dp(150)
+        val keyboardListener = OnApplyWindowInsetsListener { _, insets ->
+            val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            val keyboardOpen = imeBottom > dp(150)
 
             if (keyboardOpen && !keyboardWasOpen) {
                 keyboardWasOpen = true
@@ -2958,7 +2958,7 @@ class MainActivity : AppCompatActivity() {
                 val tlp0 = toolbarScroll.layoutParams as? FrameLayout.LayoutParams
                 savedToolbarTopMargin = tlp0?.topMargin ?: 0
 
-                val keyboardTop = visibleFrame.bottom.toFloat()
+                val keyboardTop = (canvasContainer.rootView.height - imeBottom).toFloat()
                 val targetTapY = keyboardTop - dp(100)
                 val delta = targetTapY - tapScreenY
 
@@ -2994,10 +2994,11 @@ class MainActivity : AppCompatActivity() {
                 }
                 savedTranslateY = null; savedBoxTopMargin = null; savedToolbarTopMargin = null
             }
+            insets
         }
-        canvasContainer.viewTreeObserver.addOnGlobalLayoutListener(keyboardListener)
+        ViewCompat.setOnApplyWindowInsetsListener(canvasContainer, keyboardListener)
+        ViewCompat.requestApplyInsets(canvasContainer)
         activeEditorKeyboardListener = keyboardListener
-        activeEditorKeyboardObserver = canvasContainer.viewTreeObserver
         // ─────────────────────────────────────────────────────────────────────────
 
 
@@ -3031,10 +3032,10 @@ class MainActivity : AppCompatActivity() {
             else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
-        activeEditorKeyboardListener?.let { listener ->
-            try { activeEditorKeyboardObserver?.removeOnGlobalLayoutListener(listener) } catch (e: Exception) {}
+        if (activeEditorKeyboardListener != null) {
+            try { ViewCompat.setOnApplyWindowInsetsListener(canvasContainer, null) } catch (e: Exception) {}
         }
-        activeEditorKeyboardListener = null; activeEditorKeyboardObserver = null
+        activeEditorKeyboardListener = null
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
     }
