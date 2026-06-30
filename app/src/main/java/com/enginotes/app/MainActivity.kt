@@ -2823,6 +2823,7 @@ class MainActivity : AppCompatActivity() {
         // When keyboard closes: restore everything exactly.
         var savedTranslateY: Float? = null
         var savedBoxTopMargin: Int? = null
+        var origToolbarTop: Int? = null
         var keyboardWasOpen = false
         val tapScreenY = screenY  // capture at editor-open time
 
@@ -2838,6 +2839,7 @@ class MainActivity : AppCompatActivity() {
                 savedTranslateY = drawingView.getTranslateY()
                 val lp0 = boxContainer.layoutParams as? FrameLayout.LayoutParams
                 savedBoxTopMargin = lp0?.topMargin ?: 0
+                origToolbarTop = (activeToolbar?.layoutParams as? FrameLayout.LayoutParams)?.topMargin
 
                 // Target: tap position should be 40dp above the keyboard top
                 val keyboardTop = visibleFrame.bottom.toFloat()
@@ -2850,6 +2852,11 @@ class MainActivity : AppCompatActivity() {
                     if (lp != null) {
                         lp.topMargin = (lp.topMargin + delta).toInt().coerceAtLeast(0)
                         boxContainer.layoutParams = lp
+                    }
+                    val tlp = activeToolbar?.layoutParams as? FrameLayout.LayoutParams
+                    if (tlp != null) {
+                        tlp.topMargin = (tlp.topMargin + delta).toInt().coerceAtLeast(0)
+                        activeToolbar?.layoutParams = tlp
                     }
                 }
 
@@ -2866,7 +2873,11 @@ class MainActivity : AppCompatActivity() {
                     val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
                     if (lp != null) { lp.topMargin = origBox; boxContainer.layoutParams = lp }
                 }
-                savedTranslateY = null; savedBoxTopMargin = null
+                if (origToolbarTop != null) {
+                    val tlp = activeToolbar?.layoutParams as? FrameLayout.LayoutParams
+                    if (tlp != null) { tlp.topMargin = origToolbarTop; activeToolbar?.layoutParams = tlp }
+                }
+                savedTranslateY = null; savedBoxTopMargin = null; origToolbarTop = null
             }
         }
         canvasContainer.viewTreeObserver.addOnGlobalLayoutListener(keyboardListener)
