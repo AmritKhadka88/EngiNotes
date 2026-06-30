@@ -2997,7 +2997,11 @@ class MainActivity : AppCompatActivity() {
         var savedBoxTopMargin: Int? = null
         var savedToolbarTopMargin: Int? = null
         var keyboardWasOpen = false
-        val tapScreenY = screenY  // capture at editor-open time
+        val tapScreenY = screenY  // capture at editor-open time (absolute screen Y)
+        // Convert tapScreenY to canvasContainer-relative Y so we can compare it with
+        // canvasContainer.height (which is also in canvasContainer's own coordinate space).
+        val canvasOrigin = IntArray(2).also { canvasContainer.getLocationOnScreen(it) }
+        val tapCanvasY = tapScreenY - canvasOrigin[1]  // Y relative to top of canvasContainer
 
         val keyboardListener = OnApplyWindowInsetsListener { _, insets ->
             val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
@@ -3027,40 +3031,24 @@ class MainActivity : AppCompatActivity() {
                     // not just the box. This pushes editing further up the visible page, similar
                     // to where "Hello there" sits in your screenshot, so it's never clipped.
                     val targetTapY = canvasContainer.height - dp(180)  // where we want the editor to sit
-                    val delta = targetTapY - tapScreenY      // how much to shift upward (negative = up)
+                    val delta = targetTapY - tapCanvasY   // how much to shift upward (negative = up)
 
                     if (delta < 0) {  // only scroll if editor is actually hidden
+                        // Only shift the canvas. onCanvasTransformed fires after shiftCanvasVertically
+                        // which calls updateET(), repositioning box and toolbar from world coordinates
+                        // automatically. Don't touch box/toolbar margins here - that fights updateET().
                         drawingView.shiftCanvasVertically(delta)
-                        val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
-                        if (lp != null) {
-                            lp.topMargin = (lp.topMargin + delta).toInt().coerceAtLeast(0)
-                            boxContainer.layoutParams = lp
-                        }
-                        val tlp = toolbarScroll.layoutParams as? FrameLayout.LayoutParams
-                        if (tlp != null) {
-                            tlp.topMargin = (tlp.topMargin + delta).toInt().coerceAtLeast(0)
-                            toolbarScroll.layoutParams = tlp
-                        }
                     }
                 }
 
             } else if (!keyboardOpen && keyboardWasOpen) {
-                // Keyboard just closed — restore everything precisely
+                // Keyboard just closed — restore canvas scroll position precisely
                 keyboardWasOpen = false
                 val origY = savedTranslateY
-                val origBox = savedBoxTopMargin
-                val origToolbar = savedToolbarTopMargin
                 if (origY != null) {
                     val currentY = drawingView.getTranslateY()
                     drawingView.shiftCanvasVertically(origY - currentY)
-                }
-                if (origBox != null) {
-                    val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
-                    if (lp != null) { lp.topMargin = origBox; boxContainer.layoutParams = lp }
-                }
-                if (origToolbar != null) {
-                    val tlp = toolbarScroll.layoutParams as? FrameLayout.LayoutParams
-                    if (tlp != null) { tlp.topMargin = origToolbar; toolbarScroll.layoutParams = tlp }
+                    // updateET() fires via onCanvasTransformed, repositioning box + toolbar
                 }
                 savedTranslateY = null; savedBoxTopMargin = null; savedToolbarTopMargin = null
             }
