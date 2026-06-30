@@ -513,9 +513,15 @@ class MainActivity : AppCompatActivity() {
             val primaryBar = findViewById<View?>(R.id.primaryToolbarScroll)
             androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { _, insets ->
                 val imeBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
+                // root LinearLayout has fitsSystemWindows="true", which already reserves space
+                // for the navigation bar via its own padding. The IME inset on most devices
+                // already includes that nav bar height, so subtract it here to avoid pushing
+                // the toolbar up by the nav bar's height twice (the visible gap above keyboard).
+                val navBarBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars()).bottom
+                val extraForKeyboard = (imeBottom - navBarBottom).coerceAtLeast(0)
                 val lp = primaryBar?.layoutParams as? LinearLayout.LayoutParams
                 if (lp != null) {
-                    lp.bottomMargin = imeBottom
+                    lp.bottomMargin = extraForKeyboard
                     primaryBar.layoutParams = lp
                 }
                 insets
@@ -3006,22 +3012,30 @@ class MainActivity : AppCompatActivity() {
                 val tlp0 = toolbarScroll.layoutParams as? FrameLayout.LayoutParams
                 savedToolbarTopMargin = tlp0?.topMargin ?: 0
 
-                // Target: tap position should be ~40dp above the keyboard top
-                val keyboardTop = (canvasContainer.rootView.height - imeBottom).toFloat()
-                val targetTapY = keyboardTop - dp(100)  // where we want the editor to sit
-                val delta = targetTapY - tapScreenY      // how much to shift upward (negative = up)
+                // Defer until after the layout pass triggered by the bottom-toolbar margin
+                // change (above) has settled, so canvasContainer.height reflects its new,
+                // already-shrunk size rather than a stale pre-shrink value.
+                canvasContainer.post {
+                    // Target: tap position should be ~40dp above the keyboard top
+                    // Use canvasContainer's own current bottom edge (in its local coordinate space)
+                    // rather than computing from rootView height/IME inset directly - canvasContainer
+                    // itself already shrinks correctly above the static bottom toolbars (see onCreate),
+                    // so this stays in sync with that reflow instead of double-accounting for it.
+                    val targetTapY = canvasContainer.height - dp(100)  // where we want the editor to sit
+                    val delta = targetTapY - tapScreenY      // how much to shift upward (negative = up)
 
-                if (delta < 0) {  // only scroll if editor is actually hidden
-                    drawingView.shiftCanvasVertically(delta)
-                    val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
-                    if (lp != null) {
-                        lp.topMargin = (lp.topMargin + delta).toInt().coerceAtLeast(0)
-                        boxContainer.layoutParams = lp
-                    }
-                    val tlp = toolbarScroll.layoutParams as? FrameLayout.LayoutParams
-                    if (tlp != null) {
-                        tlp.topMargin = (tlp.topMargin + delta).toInt().coerceAtLeast(0)
-                        toolbarScroll.layoutParams = tlp
+                    if (delta < 0) {  // only scroll if editor is actually hidden
+                        drawingView.shiftCanvasVertically(delta)
+                        val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
+                        if (lp != null) {
+                            lp.topMargin = (lp.topMargin + delta).toInt().coerceAtLeast(0)
+                            boxContainer.layoutParams = lp
+                        }
+                        val tlp = toolbarScroll.layoutParams as? FrameLayout.LayoutParams
+                        if (tlp != null) {
+                            tlp.topMargin = (tlp.topMargin + delta).toInt().coerceAtLeast(0)
+                            toolbarScroll.layoutParams = tlp
+                        }
                     }
                 }
 
