@@ -493,6 +493,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
 
         drawingView     = findViewById(R.id.drawingView)
         canvasContainer = findViewById(R.id.canvasContainer)
