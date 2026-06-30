@@ -3021,7 +3021,12 @@ class MainActivity : AppCompatActivity() {
                     // rather than computing from rootView height/IME inset directly - canvasContainer
                     // itself already shrinks correctly above the static bottom toolbars (see onCreate),
                     // so this stays in sync with that reflow instead of double-accounting for it.
-                    val targetTapY = canvasContainer.height - dp(100)  // where we want the editor to sit
+                    // Buffer increased from the original 100dp - the floating toolbar sits ABOVE
+                    // the box itself, so the tap point needs enough headroom that the toolbar
+                    // (toolbarHeightEstimate tall) also clears the keyboard/bottom toolbar zone,
+                    // not just the box. This pushes editing further up the visible page, similar
+                    // to where "Hello there" sits in your screenshot, so it's never clipped.
+                    val targetTapY = canvasContainer.height - dp(180)  // where we want the editor to sit
                     val delta = targetTapY - tapScreenY      // how much to shift upward (negative = up)
 
                     if (delta < 0) {  // only scroll if editor is actually hidden
