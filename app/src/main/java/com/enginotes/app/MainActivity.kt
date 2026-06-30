@@ -507,13 +507,17 @@ class MainActivity : AppCompatActivity() {
         // These are separate from the floating per-edit toolbar handled elsewhere - they're
         // pinned in activity_main.xml and were getting covered by the IME since adjustNothing
         // doesn't resize/pan the layout for them.
+        // Uses bottomMargin (not translationY) on the last child so the LinearLayout actually
+        // reflows - canvasContainer (weight=1) shrinks to make room, avoiding a visual gap.
         run {
-            val contextBar = findViewById<View?>(R.id.toolbarScroll)
             val primaryBar = findViewById<View?>(R.id.primaryToolbarScroll)
             androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { _, insets ->
-                val imeBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom.toFloat()
-                contextBar?.translationY = -imeBottom
-                primaryBar?.translationY = -imeBottom
+                val imeBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
+                val lp = primaryBar?.layoutParams as? LinearLayout.LayoutParams
+                if (lp != null) {
+                    lp.bottomMargin = imeBottom
+                    primaryBar.layoutParams = lp
+                }
                 insets
             }
         }
