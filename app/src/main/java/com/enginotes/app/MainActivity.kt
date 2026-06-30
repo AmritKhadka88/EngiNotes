@@ -2816,32 +2816,48 @@ class MainActivity : AppCompatActivity() {
         params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0); params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(boxContainer,params)
 
-        // Move box above keyboard — attach to root view so insets are received
-        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
-            val imeHeight = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
-            val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
-            if (lp != null) {
-                if (imeHeight > 0) {
-                    if (boxOriginalTop == -1) boxOriginalTop = lp.topMargin
-                    val loc = IntArray(2)
-                    boxContainer.getLocationOnScreen(loc)
-                    val boxBottom = loc[1] + boxContainer.height.coerceAtLeast(dp(50))
-                    val screenH = resources.displayMetrics.heightPixels
-                    val visibleBottom = screenH - imeHeight - dp(8)
-                    val overlap = boxBottom - visibleBottom
-                    if (overlap > 0) {
-                        lp.topMargin = (boxOriginalTop - overlap).coerceAtLeast(dp(4))
-                        boxContainer.layoutParams = lp
-                    }
-                } else {
-                    if (boxOriginalTop != -1) {
-                        lp.topMargin = boxOriginalTop
-                        boxContainer.layoutParams = lp
-                        boxOriginalTop = -1
-                    }
+        // Re-check box position against keyboard; called on keyboard open/close AND on text growth
+        fun adjustBoxForKeyboard(imeHeight: Int) {
+            val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams ?: return
+            if (imeHeight > 0) {
+                if (boxOriginalTop == -1) boxOriginalTop = lp.topMargin
+                // Always compute from the box's CURRENT actual bottom on screen (not original),
+                // because the box height itself grows as text wraps — but use the ORIGINAL
+                // top as the anchor we shift away from, recalculating fresh each time.
+                val loc = IntArray(2)
+                boxContainer.getLocationOnScreen(loc)
+                // Current screen top of the box (already shifted, if shifted before)
+                val currentScreenTop = loc[1]
+                val boxHeight = boxContainer.height.coerceAtLeast(dp(50))
+                val boxBottom = currentScreenTop + boxHeight
+                val screenH = resources.displayMetrics.heightPixels
+                val visibleBottom = screenH - imeHeight - dp(8)
+                val overlap = boxBottom - visibleBottom
+                if (overlap > 0) {
+                    // Shift further up by exactly the new overlap (incremental, from current position)
+                    val newTop = (lp.topMargin - overlap).coerceAtLeast(dp(2))
+                    if (newTop != lp.topMargin) { lp.topMargin = newTop; boxContainer.layoutParams = lp }
+                }
+            } else {
+                if (boxOriginalTop != -1) {
+                    lp.topMargin = boxOriginalTop
+                    boxContainer.layoutParams = lp
+                    boxOriginalTop = -1
                 }
             }
+        }
+        var lastImeHeight = 0
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(canvasContainer) { _, insets ->
+            lastImeHeight = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
+            adjustBoxForKeyboard(lastImeHeight)
             insets
+        }
+        // Also re-check whenever the box grows (text wraps to new line) so growing text
+        // doesn't get covered by the keyboard again after the initial shift
+        boxContainer.addOnLayoutChangeListener { _, _, _, _, bottom, _, _, _, oldBottom ->
+            if (bottom != oldBottom && lastImeHeight > 0) {
+                boxContainer.post { adjustBoxForKeyboard(lastImeHeight) }
+            }
         }
 
         // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
@@ -3016,7 +3032,7 @@ class MainActivity : AppCompatActivity() {
             else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
-        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(window.decorView, null)
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(canvasContainer, null)
         boxOriginalTop = -1
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
