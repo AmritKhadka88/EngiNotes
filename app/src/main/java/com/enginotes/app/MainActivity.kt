@@ -108,8 +108,6 @@ class MainActivity : AppCompatActivity() {
     private var activeEditText: EditText? = null
     private var activeToolbar: View? = null
     private var activeEditBox: View? = null
-    private var boxOriginalTop: Int = -1
-    private var currentKbShift: Float = 0f
     private var activeEditorHandles: List<View> = emptyList()
     private var editingItem: TextItem? = null
     private var editWorldX = 0f; private var editWorldY = 0f
@@ -2844,43 +2842,6 @@ class MainActivity : AppCompatActivity() {
         params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0); params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(boxContainer,params)
 
-        // Track the bottom toolbar's own position shift (it follows the keyboard automatically
-        // via Android's default insets behavior) and apply that SAME shift distance to the
-        // canvas/box, so the text editing area moves up exactly as much as the toolbar did.
-        val bottomToolbarForKb = findViewById<View?>(R.id.primaryToolbarScroll)
-        var toolbarOriginalY = -1f
-        var lastKbShift = 0f
-
-        fun applyKbShift(shift: Float) {
-            if (shift == lastKbShift) return
-            val delta = shift - lastKbShift
-            lastKbShift = shift
-            currentKbShift = shift
-            val lp = boxContainer.layoutParams as? FrameLayout.LayoutParams
-            if (lp != null) {
-                if (boxOriginalTop == -1) boxOriginalTop = lp.topMargin
-                lp.topMargin = (lp.topMargin - delta).toInt().coerceAtLeast(dp(2))
-                boxContainer.layoutParams = lp
-            }
-            drawingView.shiftCanvasVertically(-delta)
-        }
-
-        fun checkToolbarKbShift() {
-            val tb = bottomToolbarForKb ?: return
-            val loc = IntArray(2)
-            tb.getLocationOnScreen(loc)
-            if (toolbarOriginalY < 0f) toolbarOriginalY = loc[1].toFloat()
-            val shift = toolbarOriginalY - loc[1]
-            applyKbShift(shift.coerceAtLeast(0f))
-        }
-
-        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(canvasContainer) { _, insets ->
-            canvasContainer.post { checkToolbarKbShift() }
-            insets
-        }
-        bottomToolbarForKb?.addOnLayoutChangeListener { _, _, top, _, _, _, oldTop, _, _ ->
-            if (top != oldTop) checkToolbarKbShift()
-        }
 
         // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
         // the whole box (and the underlying text item's world position) without needing to leave
@@ -3054,10 +3015,6 @@ class MainActivity : AppCompatActivity() {
             else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
-        // Clear keyboard scroll listener and restore canvas position
-        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(canvasContainer, null)
-        if (currentKbShift != 0f) { drawingView.shiftCanvasVertically(currentKbShift); currentKbShift = 0f }
-        boxOriginalTop = -1
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
     }
