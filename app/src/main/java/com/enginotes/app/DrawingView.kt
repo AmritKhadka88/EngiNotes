@@ -31,30 +31,6 @@ import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 enum class PenStyle { FOUNTAIN, BALL, PENCIL, CALLIGRAPHY, MARKER }
-enum class LineType(val label: String, val intervals: FloatArray?, val cap: android.graphics.Paint.Cap = android.graphics.Paint.Cap.BUTT) {
-    CONTINUOUS      ("Continuous",          null),                                          // solid — no effect
-    DASHED          ("Dashed",              floatArrayOf(12f, 6f)),                        // hidden detail
-    DOTTED          ("Dotted",              floatArrayOf(1f, 4f),  android.graphics.Paint.Cap.ROUND),
-    DASH_DOT        ("Dash Dot",            floatArrayOf(12f, 4f, 1f, 4f)),               // centerline
-    DASH_DOT_DOT    ("Dash Dot Dot",        floatArrayOf(12f, 4f, 1f, 4f, 1f, 4f)),      // phantom / chain
-    LONG_DASH       ("Long Dash",           floatArrayOf(24f, 6f)),                        // cutting plane
-    LONG_DASH_DOT   ("Long Dash Dot",       floatArrayOf(24f, 4f, 1f, 4f)),               // alternate position
-    LONG_DASH_2DOT  ("Long Dash 2 Dot",     floatArrayOf(24f, 4f, 1f, 4f, 1f, 4f)),      // chain thick
-    SHORT_DASH      ("Short Dash",          floatArrayOf(4f, 4f)),                         // hidden lines (fine)
-    FINE_DASH_DOT   ("Fine Dash Dot",       floatArrayOf(8f, 3f, 1f, 3f)),               // section/symmetry
-    STITCH          ("Stitch Line",         floatArrayOf(6f, 6f)),                         // equal dashes
-    PHANTOM         ("Phantom",             floatArrayOf(20f, 4f, 4f, 4f, 4f, 4f)),      // 2 short 1 long
-    SPARSE_DOT      ("Sparse Dot",          floatArrayOf(1f, 8f),  android.graphics.Paint.Cap.ROUND),
-    DENSE_DOT       ("Dense Dot",           floatArrayOf(1f, 2f),  android.graphics.Paint.Cap.ROUND),
-    DOUBLE_DASH     ("Double Dash",         floatArrayOf(8f, 4f, 8f, 10f)),               // projection
-    VERY_LONG_DASH  ("Extra Long Dash",     floatArrayOf(36f, 6f)),                        // limits of sections
-    DASH_3DOT       ("Dash 3 Dot",          floatArrayOf(12f, 3f, 1f, 3f, 1f, 3f, 1f, 3f)), // special
-    FENCE           ("Fence Line",          floatArrayOf(2f, 6f, 2f, 6f)),               // fencing
-    TRACK           ("Track / Rail",        floatArrayOf(16f, 2f, 1f, 2f, 1f, 2f)),      // rail centreline
-    IRREGULAR_DASH  ("Irregular Dash",      floatArrayOf(10f, 3f, 6f, 3f, 14f, 3f)),     // varied rhythm
-    ULTRA_FINE      ("Ultra Fine Dot",      floatArrayOf(1f, 12f), android.graphics.Paint.Cap.ROUND),
-    SECTION_PLANE   ("Section Plane",       floatArrayOf(20f, 4f, 1f, 4f, 1f, 4f, 20f, 4f)), // ISO cutting plane
-}
 enum class BrushStyle {
     ROUND, FLAT, TEXTURE, INK, WATERCOLOR, CRAYON, CHARCOAL, AIRBRUSH, SPRAY, STIPPLE, SPLATTER, NEON,
     MARKER, DRY_BRUSH, SCATTER, FUR, GRASS, SMOKE, PATTERN_BRUSH,
@@ -161,8 +137,9 @@ class StrokeData(
     var color: Int, var strokeWidth: Float, var fill: Boolean, var rotation: Float = 0f,
     var fillColorVal: Int = color, var penStyle: PenStyle = PenStyle.FOUNTAIN, var opacity: Int = 255,
     var brushStyle: BrushStyle = BrushStyle.ROUND,
-    var widths: MutableList<Float> = mutableListOf(),
-    var lineType: LineType = LineType.CONTINUOUS
+    // Per-point width samples for velocity-sensitive pens (Fountain). Parallel to points (one
+    // width per x,y pair). Empty for pens that don't use variable width - falls back to strokeWidth.
+    var widths: MutableList<Float> = mutableListOf()
 ) {
     fun buildPath(): Path {
         val path = Path()
@@ -552,14 +529,6 @@ class StrokeData(
             // SEPARATE strokes overlap, which is the correct/expected behavior.
             PenStyle.MARKER -> { p.strokeWidth = strokeWidth * 2.4f; p.strokeJoin = Paint.Join.MITER; p.strokeCap = Paint.Cap.BUTT; p.alpha = (255 * 0.57f).toInt() }
         }
-        // Apply engineering line type — scaled by strokeWidth so dashes look proportional at any thickness.
-        // For PENCIL the texture DashPathEffect is already set; don't override it.
-        if (lineType != LineType.CONTINUOUS && penStyle != PenStyle.PENCIL) {
-            val sw = p.strokeWidth.coerceAtLeast(1f)
-            val scaled = lineType.intervals!!.map { it * sw / 3f }.toFloatArray()
-            p.pathEffect = android.graphics.DashPathEffect(scaled, 0f)
-            if (lineType.cap != android.graphics.Paint.Cap.BUTT) p.strokeCap = lineType.cap
-        }
         return p
     }
 
@@ -781,7 +750,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var currentColor: Int = Color.BLACK
     var currentStrokeWidth: Float = 6f
     var currentPenStyle: PenStyle = PenStyle.FOUNTAIN
-    var currentLineType: LineType = LineType.CONTINUOUS
+    // Snap-to-endpoint: snaps stroke start/end to nearby existing endpoints within snapRadius world units.
+    // snapRadius is in screen pixels and converted to world space on use, so it stays consistent at any zoom.
+    var snapToEndpoints: Boolean = false
+    private val snapScreenRadius = 28f  // screen pixels — feels natural for finger and stylus
+    private var snapTarget: Pair<Float, Float>? = null  // world coords of active snap point (for visual indicator)
     var currentOpacity: Int = 255
     var highlighterThickness: Float = 24f
     var highlighterOpacity: Int = 20
@@ -3078,6 +3051,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             Tool.ERASER -> { p.color = if (eraserMode == EraserMode.OBJECT) Color.DKGRAY else Color.RED; p.style = Paint.Style.STROKE; p.strokeWidth = 2f; val half = eraserSize * scaleFactor / 2f; if (eraserMode == EraserMode.OBJECT) canvas.drawRect(hx - half, hy - half, hx + half, hy + half, p) else canvas.drawCircle(hx, hy, half, p) }
             else -> { p.color = Color.DKGRAY; p.style = Paint.Style.FILL; canvas.drawCircle(hx, hy, 5f, p) }
         }
+        // Snap indicator: when snap is on and a nearby endpoint exists, draw a highlighted ring
+        // at that endpoint in screen space so the user can see what they'll snap to.
+        val snap = snapTarget
+        if (snapToEndpoints && snap != null && currentItem == null) {
+            val sx = worldToScreenX(snap.first); val sy = worldToScreenY(snap.second)
+            val snapP = Paint().apply { isAntiAlias = true; style = Paint.Style.STROKE; strokeWidth = 2.5f; color = Color.parseColor("#2196F3") }
+            canvas.drawCircle(sx, sy, 10f, snapP)
+            snapP.alpha = 80; snapP.style = Paint.Style.FILL
+            canvas.drawCircle(sx, sy, 10f, snapP)
+        }
     }
 
     fun pageWidthPx(): Float {
@@ -3185,8 +3168,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     override fun onHoverEvent(event: MotionEvent): Boolean {
         when (event.action) {
-            MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> { hoverX = event.x; hoverY = event.y; invalidate() }
-            MotionEvent.ACTION_HOVER_EXIT -> { hoverX = null; hoverY = null; invalidate() }
+            MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
+                hoverX = event.x; hoverY = event.y
+                if (snapToEndpoints && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
+                    snapTarget = findNearestEndpoint(screenToWorldX(event.x), screenToWorldY(event.y))
+                }
+                invalidate()
+            }
+            MotionEvent.ACTION_HOVER_EXIT -> { hoverX = null; hoverY = null; snapTarget = null; invalidate() }
         }
         return true
     }
@@ -3600,16 +3589,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 if (currentTool == Tool.ERASER) { eraseAt(wx, wy); invalidate(); return }
+                // Snap start point to nearest existing endpoint if snap is enabled
+                if (snapToEndpoints && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
+                    val snap = findNearestEndpoint(wx, wy)
+                    if (snap != null) { wx = snap.first; wy = snap.second }
+                    snapTarget = null  // clear indicator once stroke starts
+                }
                 val data = when {
                     currentTool == Tool.PEN -> {
                         // Ball pen is strictly uniform - no pressure or speed sensitivity, per spec.
                         val baseW = if (currentPenStyle == PenStyle.BALL) currentStrokeWidth else currentStrokeWidth * pressure
-                        StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, baseW, false, rotation = 0f, penStyle = currentPenStyle, opacity = if (currentPenStyle == PenStyle.BALL) 255 else brushOpacity, lineType = currentLineType)
+                        StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, baseW, false, rotation = 0f, penStyle = currentPenStyle, opacity = if (currentPenStyle == PenStyle.BALL) 255 else brushOpacity)
                     }
                     currentTool == Tool.HIGHLIGHTER -> StrokeData(Tool.HIGHLIGHTER, mutableListOf(wx, wy), currentColor, highlighterThickness, false, rotation = 0f, penStyle = PenStyle.MARKER, opacity = (highlighterOpacity * 255 / 100))
                     currentTool == Tool.BRUSH -> StrokeData(Tool.BRUSH, mutableListOf(wx, wy), currentColor, brushThickness * pressure, false, rotation = 0f, brushStyle = currentBrushStyle, opacity = brushOpacity)
-                    SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, fillShapes, lineType = currentLineType)
-                    else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = brushOpacity, lineType = currentLineType)
+                    SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, fillShapes)
+                    else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = brushOpacity)
                 }
                 if (currentTool == Tool.PEN && currentPenStyle == PenStyle.FOUNTAIN) data.widths.add(currentStrokeWidth)
                 if (currentTool == Tool.PEN && currentPenStyle == PenStyle.PENCIL) data.widths.add(1f)
@@ -3623,6 +3618,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     // Process historical eraser positions too for smooth erasing
                     for (h in 0 until event.historySize) { eraseAt(screenToWorldX(event.getHistoricalX(h)), screenToWorldY(event.getHistoricalY(h))) }
                     eraseAt(wx, wy); invalidate(); return
+                }
+                // Update snap indicator target for live preview while drawing
+                if (snapToEndpoints && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
+                    snapTarget = findNearestEndpoint(wx, wy)
                 }
                 val item = currentItem ?: return
                 if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH) {
@@ -3688,6 +3687,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 item.path = item.data.buildPath(); invalidate()
             }
             MotionEvent.ACTION_UP -> {
+                // Snap end point to nearest existing endpoint if snap is enabled
+                if (snapToEndpoints && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
+                    val snap = findNearestEndpoint(wx, wy)
+                    if (snap != null) {
+                        wx = snap.first; wy = snap.second
+                        val item = currentItem
+                        if (item != null) {
+                            if (SHAPE_TOOLS.contains(currentTool) && item.data.points.size >= 4) {
+                                item.data.points[2] = wx; item.data.points[3] = wy
+                            } else if (item.data.points.size >= 2) {
+                                item.data.points[item.data.points.size - 2] = wx
+                                item.data.points[item.data.points.size - 1] = wy
+                            }
+                            item.path = item.data.buildPath()
+                        }
+                    }
+                    snapTarget = null
+                }
                 currentItem?.let { item ->
                     // For shape/line tools, a tap with no meaningful drag is almost certainly an
                     // accidental touch (e.g. brushing the screen while reaching for a toolbar
@@ -3940,6 +3957,31 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun distance(x1: Float, y1: Float, x2: Float, y2: Float): Float = kotlin.math.hypot((x2 - x1).toDouble(), (y2 - y1).toDouble()).toFloat()
+
+    // Returns the world-space coordinates of the nearest stroke endpoint within snapScreenRadius
+    // screen pixels of (wx, wy), or null if none. Checks both start and end of every committed stroke.
+    // Only active when snapToEndpoints is true and a line/shape/pen tool is being used.
+    private fun findNearestEndpoint(wx: Float, wy: Float): Pair<Float, Float>? {
+        val worldRadius = snapScreenRadius / scaleFactor
+        var bestDist = worldRadius
+        var best: Pair<Float, Float>? = null
+        for (action in actions) {
+            if (action !is StrokeItem) continue
+            val pts = action.data.points
+            if (pts.size < 2) continue
+            // Check start point
+            val sx = pts[0]; val sy = pts[1]
+            val sd = distance(wx, wy, sx, sy)
+            if (sd < bestDist) { bestDist = sd; best = Pair(sx, sy) }
+            // Check end point
+            if (pts.size >= 4) {
+                val ex = pts[pts.size - 2]; val ey = pts[pts.size - 1]
+                val ed = distance(wx, wy, ex, ey)
+                if (ed < bestDist) { bestDist = ed; best = Pair(ex, ey) }
+            }
+        }
+        return best
+    }
 
     private fun distToSeg(px: Float, py: Float, x1: Float, y1: Float, x2: Float, y2: Float): Float {
         val dx = x2 - x1; val dy = y2 - y1

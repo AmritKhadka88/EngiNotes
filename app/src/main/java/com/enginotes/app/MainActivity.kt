@@ -2157,6 +2157,13 @@ class MainActivity : AppCompatActivity() {
         // Line type section
         addLineTypeSection(panel, { sectionLabel(it) }) { lt -> drawingView.currentLineType = lt }
 
+        // Snap to endpoints toggle
+        sectionLabel("Snap to Endpoints")
+        val snapRowS = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(4)) }
+        val snapDescS = TextView(this).apply { text = "Lines snap to nearby endpoints"; textSize = 12f; setTextColor(Color.parseColor("#6A6A6A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
+        val snapSwitchS = android.widget.Switch(this).apply { isChecked = drawingView.snapToEndpoints; setOnCheckedChangeListener { _, on -> drawingView.snapToEndpoints = on } }
+        snapRowS.addView(snapDescS); snapRowS.addView(snapSwitchS); panel.addView(snapRowS)
+
         // Color row
         sectionLabel("Color")
         val colorScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
@@ -2255,6 +2262,13 @@ class MainActivity : AppCompatActivity() {
             })
         }
         panel.addView(opSeek)
+
+        // Snap to endpoints toggle
+        sectionLabel("Snap to Endpoints")
+        val snapRowP = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(4)) }
+        val snapDescP = TextView(this).apply { text = "Lines snap to nearby endpoints"; textSize = 12f; setTextColor(Color.parseColor("#6A6A6A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
+        val snapSwitchP = android.widget.Switch(this).apply { isChecked = drawingView.snapToEndpoints; setOnCheckedChangeListener { _, on -> drawingView.snapToEndpoints = on } }
+        snapRowP.addView(snapDescP); snapRowP.addView(snapSwitchP); panel.addView(snapRowP)
 
         // Line type section
         addLineTypeSection(panel, { sectionLabel(it) }) { lt -> drawingView.currentLineType = lt }
