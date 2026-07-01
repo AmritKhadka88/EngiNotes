@@ -784,8 +784,32 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Snap-to-endpoint: snaps stroke start/end to nearby existing endpoints within snapRadius world units.
     // snapRadius is in screen pixels and converted to world space on use, so it stays consistent at any zoom.
     var snapToEndpoints: Boolean = false
-    private val snapScreenRadius = 28f  // screen pixels — feels natural for finger and stylus
-    private var snapTarget: Pair<Float, Float>? = null  // world coords of active snap point (for visual indicator)
+        get() = snapEnabled
+        set(v) { snapEnabled = v }
+    // ── Snap system ──────────────────────────────────────────────────────────
+    var snapEnabled: Boolean = false
+    var snapEndpoint: Boolean = true
+    var snapMidpoint: Boolean = true
+    var snapIntersection: Boolean = true
+    var snapCenter: Boolean = true
+    var snapNearest: Boolean = true
+    var snapPerpendicular: Boolean = true
+    var snapParallel: Boolean = true
+    var snapGrid: Boolean = true
+    var snapAutoConnect: Boolean = false
+    private val snapScreenRadius = 28f
+    private var snapResult: SnapResult? = null  // current snap target + type for visual indicator
+
+    enum class SnapType(val priority: Int) {
+        ENDPOINT(1), INTERSECTION(2), MIDPOINT(3), CENTER(4),
+        PERPENDICULAR(5), PARALLEL(6), NEAREST(7), GRID(8)
+    }
+    data class SnapResult(val wx: Float, val wy: Float, val type: SnapType)
+
+    // Kept for backward compat — callers that used Pair<Float,Float> snapTarget
+    private var snapTarget: Pair<Float, Float>?
+        get() = snapResult?.let { Pair(it.wx, it.wy) }
+        set(v) { snapResult = v?.let { SnapResult(it.first, it.second, SnapType.ENDPOINT) } }
     var currentOpacity: Int = 255
     var highlighterThickness: Float = 24f
     var highlighterOpacity: Int = 20
@@ -3085,15 +3109,67 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             Tool.ERASER -> { p.color = if (eraserMode == EraserMode.OBJECT) Color.DKGRAY else Color.RED; p.style = Paint.Style.STROKE; p.strokeWidth = 2f; val half = eraserSize * scaleFactor / 2f; if (eraserMode == EraserMode.OBJECT) canvas.drawRect(hx - half, hy - half, hx + half, hy + half, p) else canvas.drawCircle(hx, hy, half, p) }
             else -> { p.color = Color.DKGRAY; p.style = Paint.Style.FILL; canvas.drawCircle(hx, hy, 5f, p) }
         }
-        // Snap indicator: when snap is on and a nearby endpoint exists, draw a highlighted ring
-        // at that endpoint in screen space so the user can see what they'll snap to.
-        val snap = snapTarget
-        if (snapToEndpoints && snap != null && currentItem == null) {
-            val sx = worldToScreenX(snap.first); val sy = worldToScreenY(snap.second)
-            val snapP = Paint().apply { isAntiAlias = true; style = Paint.Style.STROKE; strokeWidth = 2.5f; color = Color.parseColor("#2196F3") }
-            canvas.drawCircle(sx, sy, 10f, snapP)
-            snapP.alpha = 80; snapP.style = Paint.Style.FILL
-            canvas.drawCircle(sx, sy, 10f, snapP)
+        // Snap indicator — type-specific icon drawn in screen space at the snap target
+        val snap = snapResult
+        if (snapEnabled && snap != null && currentItem == null) {
+            val sx = worldToScreenX(snap.wx); val sy = worldToScreenY(snap.wy)
+            val sp = Paint().apply { isAntiAlias = true; strokeWidth = 2.5f }
+            val r = 10f
+            when (snap.type) {
+                SnapType.ENDPOINT -> {
+                    // Filled square
+                    sp.color = Color.parseColor("#2196F3"); sp.style = Paint.Style.FILL
+                    canvas.drawRect(sx-r*0.7f, sy-r*0.7f, sx+r*0.7f, sy+r*0.7f, sp)
+                    sp.color = Color.WHITE; sp.style = Paint.Style.STROKE
+                    canvas.drawRect(sx-r*0.7f, sy-r*0.7f, sx+r*0.7f, sy+r*0.7f, sp)
+                }
+                SnapType.MIDPOINT -> {
+                    // Triangle
+                    sp.color = Color.parseColor("#4CAF50"); sp.style = Paint.Style.FILL
+                    val tri = android.graphics.Path().apply { moveTo(sx, sy-r); lineTo(sx+r, sy+r); lineTo(sx-r, sy+r); close() }
+                    canvas.drawPath(tri, sp)
+                    sp.color = Color.WHITE; sp.style = Paint.Style.STROKE; canvas.drawPath(tri, sp)
+                }
+                SnapType.INTERSECTION -> {
+                    // X cross
+                    sp.color = Color.parseColor("#FF5722"); sp.style = Paint.Style.STROKE
+                    canvas.drawLine(sx-r, sy-r, sx+r, sy+r, sp); canvas.drawLine(sx+r, sy-r, sx-r, sy+r, sp)
+                    sp.color = Color.parseColor("#FF5722"); sp.alpha = 60; sp.style = Paint.Style.FILL
+                    canvas.drawCircle(sx, sy, r*0.4f, sp)
+                }
+                SnapType.CENTER -> {
+                    // Circle with crosshair
+                    sp.color = Color.parseColor("#9C27B0"); sp.style = Paint.Style.STROKE
+                    canvas.drawCircle(sx, sy, r, sp)
+                    canvas.drawLine(sx-r*1.4f, sy, sx+r*1.4f, sy, sp)
+                    canvas.drawLine(sx, sy-r*1.4f, sx, sy+r*1.4f, sp)
+                }
+                SnapType.PERPENDICULAR -> {
+                    // Right-angle corner
+                    sp.color = Color.parseColor("#00BCD4"); sp.style = Paint.Style.STROKE
+                    canvas.drawLine(sx, sy, sx, sy-r*1.2f, sp); canvas.drawLine(sx, sy, sx+r*1.2f, sy, sp)
+                    canvas.drawLine(sx, sy-r*0.5f, sx+r*0.5f, sy-r*0.5f, sp); canvas.drawLine(sx+r*0.5f, sy-r*0.5f, sx+r*0.5f, sy, sp)
+                }
+                SnapType.PARALLEL -> {
+                    // Two parallel lines
+                    sp.color = Color.parseColor("#2196F3"); sp.style = Paint.Style.STROKE
+                    canvas.drawLine(sx-r, sy-r*0.4f, sx+r, sy-r*0.4f, sp)
+                    canvas.drawLine(sx-r, sy+r*0.4f, sx+r, sy+r*0.4f, sp)
+                }
+                SnapType.NEAREST -> {
+                    // Small X mark
+                    sp.color = Color.parseColor("#607D8B"); sp.style = Paint.Style.STROKE
+                    canvas.drawLine(sx-r*0.7f, sy-r*0.7f, sx+r*0.7f, sy+r*0.7f, sp)
+                    canvas.drawLine(sx+r*0.7f, sy-r*0.7f, sx-r*0.7f, sy+r*0.7f, sp)
+                    canvas.drawCircle(sx, sy, r, sp)
+                }
+                SnapType.GRID -> {
+                    // Plus mark
+                    sp.color = Color.parseColor("#9E9E9E"); sp.style = Paint.Style.STROKE
+                    canvas.drawLine(sx-r, sy, sx+r, sy, sp); canvas.drawLine(sx, sy-r, sx, sy+r, sp)
+                    canvas.drawCircle(sx, sy, r*0.25f, sp)
+                }
+            }
         }
     }
 
@@ -3204,12 +3280,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         when (event.action) {
             MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
                 hoverX = event.x; hoverY = event.y
-                if (snapToEndpoints && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
-                    snapTarget = findNearestEndpoint(screenToWorldX(event.x), screenToWorldY(event.y))
+                if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
+                    snapResult = findSnapTarget(screenToWorldX(event.x), screenToWorldY(event.y))
                 }
                 invalidate()
             }
-            MotionEvent.ACTION_HOVER_EXIT -> { hoverX = null; hoverY = null; snapTarget = null; invalidate() }
+            MotionEvent.ACTION_HOVER_EXIT -> { hoverX = null; hoverY = null; snapResult = null; invalidate() }
         }
         return true
     }
@@ -3624,10 +3700,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_DOWN -> {
                 if (currentTool == Tool.ERASER) { eraseAt(wx, wy); invalidate(); return }
                 // Snap start point to nearest existing endpoint if snap is enabled
-                if (snapToEndpoints && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
-                    val snap = findNearestEndpoint(wx, wy)
-                    if (snap != null) { wx = snap.first; wy = snap.second }
-                    snapTarget = null  // clear indicator once stroke starts
+                if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
+                    val snap = findSnapTarget(wx, wy)
+                    if (snap != null) { wx = snap.wx; wy = snap.wy }
+                    snapResult = null  // clear indicator once stroke starts
                 }
                 val data = when {
                     currentTool == Tool.PEN -> {
@@ -3654,8 +3730,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     eraseAt(wx, wy); invalidate(); return
                 }
                 // Update snap indicator target for live preview while drawing
-                if (snapToEndpoints && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
-                    snapTarget = findNearestEndpoint(wx, wy)
+                if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
+                    val pts = currentItem?.data?.points
+                    val sx = if (pts != null && pts.size >= 2) pts[0] else Float.NaN
+                    val sy = if (pts != null && pts.size >= 2) pts[1] else Float.NaN
+                    snapResult = findSnapTarget(wx, wy, sx, sy)
                 }
                 val item = currentItem ?: return
                 if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH) {
@@ -3722,10 +3801,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             MotionEvent.ACTION_UP -> {
                 // Snap end point to nearest existing endpoint if snap is enabled
-                if (snapToEndpoints && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
-                    val snap = findNearestEndpoint(wx, wy)
+                if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
+                    val pts0 = currentItem?.data?.points
+                    val sx0 = if (pts0 != null && pts0.size >= 2) pts0[0] else Float.NaN
+                    val sy0 = if (pts0 != null && pts0.size >= 2) pts0[1] else Float.NaN
+                    val snap = findSnapTarget(wx, wy, sx0, sy0)
                     if (snap != null) {
-                        wx = snap.first; wy = snap.second
+                        wx = snap.wx; wy = snap.wy
                         val item = currentItem
                         if (item != null) {
                             if (SHAPE_TOOLS.contains(currentTool) && item.data.points.size >= 4) {
@@ -3737,7 +3819,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             item.path = item.data.buildPath()
                         }
                     }
-                    snapTarget = null
+                    snapResult = null
                 }
                 currentItem?.let { item ->
                     // For shape/line tools, a tap with no meaningful drag is almost certainly an
@@ -3992,30 +4074,147 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun distance(x1: Float, y1: Float, x2: Float, y2: Float): Float = kotlin.math.hypot((x2 - x1).toDouble(), (y2 - y1).toDouble()).toFloat()
 
-    // Returns the world-space coordinates of the nearest stroke endpoint within snapScreenRadius
-    // screen pixels of (wx, wy), or null if none. Checks both start and end of every committed stroke.
-    // Only active when snapToEndpoints is true and a line/shape/pen tool is being used.
-    private fun findNearestEndpoint(wx: Float, wy: Float): Pair<Float, Float>? {
+    // ── Snap target finder ────────────────────────────────────────────────────
+    // Evaluates all enabled snap types within snapScreenRadius, returning the highest-priority
+    // result. Within same type, returns the closest. Priority: Endpoint>Intersection>Midpoint>
+    // Center>Perpendicular>Parallel>Nearest>Grid.
+    private fun findSnapTarget(wx: Float, wy: Float, strokeStartWx: Float = Float.NaN, strokeStartWy: Float = Float.NaN): SnapResult? {
         val worldRadius = snapScreenRadius / scaleFactor
-        var bestDist = worldRadius
-        var best: Pair<Float, Float>? = null
-        for (action in actions) {
-            if (action !is StrokeItem) continue
-            val pts = action.data.points
+        val candidates = mutableListOf<Pair<SnapResult, Float>>()
+
+        fun add(rx: Float, ry: Float, type: SnapType) {
+            val d = distance(wx, wy, rx, ry)
+            if (d <= worldRadius) candidates.add(Pair(SnapResult(rx, ry, type), d))
+        }
+
+        val strokes = actions.filterIsInstance<StrokeItem>()
+
+        for (item in strokes) {
+            val pts = item.data.points
             if (pts.size < 2) continue
-            // Check start point
-            val sx = pts[0]; val sy = pts[1]
-            val sd = distance(wx, wy, sx, sy)
-            if (sd < bestDist) { bestDist = sd; best = Pair(sx, sy) }
-            // Check end point
-            if (pts.size >= 4) {
-                val ex = pts[pts.size - 2]; val ey = pts[pts.size - 1]
-                val ed = distance(wx, wy, ex, ey)
-                if (ed < bestDist) { bestDist = ed; best = Pair(ex, ey) }
+            val x1 = pts[0]; val y1 = pts[1]
+            val x2 = if (pts.size >= 4) pts[pts.size - 2] else x1
+            val y2 = if (pts.size >= 4) pts[pts.size - 1] else y1
+            val cx = (x1 + x2) / 2f; val cy = (y1 + y2) / 2f
+
+            // Endpoint
+            if (snapEndpoint) {
+                add(x1, y1, SnapType.ENDPOINT)
+                if (pts.size >= 4) add(x2, y2, SnapType.ENDPOINT)
+                if (item.data.type == Tool.PEN && pts.size > 8) {
+                    var i = 4
+                    while (i < pts.size - 4) { add(pts[i], pts[i + 1], SnapType.ENDPOINT); i += 20 }
+                }
+            }
+
+            // Midpoint
+            if (snapMidpoint && pts.size >= 4) {
+                when (item.data.type) {
+                    Tool.LINE, Tool.ARROW, Tool.CURVE -> add(cx, cy, SnapType.MIDPOINT)
+                    Tool.RECTANGLE, Tool.ROUNDED_RECT -> {
+                        val l = minOf(x1,x2); val r = maxOf(x1,x2); val t = minOf(y1,y2); val b = maxOf(y1,y2)
+                        add((l+r)/2f, t, SnapType.MIDPOINT); add((l+r)/2f, b, SnapType.MIDPOINT)
+                        add(l, (t+b)/2f, SnapType.MIDPOINT); add(r, (t+b)/2f, SnapType.MIDPOINT)
+                    }
+                    Tool.PEN -> { val mi = (pts.size / 2) and -2; add(pts[mi], pts[mi+1], SnapType.MIDPOINT) }
+                    else -> add(cx, cy, SnapType.MIDPOINT)
+                }
+            }
+
+            // Center
+            if (snapCenter) {
+                when (item.data.type) {
+                    Tool.CIRCLE -> add(x1, y1, SnapType.CENTER)
+                    Tool.ELLIPSE, Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.DIAMOND,
+                    Tool.TRIANGLE, Tool.ISOSCELES_TRIANGLE, Tool.TRIANGLE_DOWN,
+                    Tool.PENTAGON, Tool.HEXAGON, Tool.HEPTAGON, Tool.OCTAGON,
+                    Tool.NONAGON, Tool.DECAGON, Tool.STAR, Tool.CROSS -> add(cx, cy, SnapType.CENTER)
+                    else -> {}
+                }
+            }
+
+            // Nearest (closest point on the stroke's outline)
+            if (snapNearest && pts.size >= 4) {
+                when (item.data.type) {
+                    Tool.LINE, Tool.ARROW -> {
+                        val dx = x2 - x1; val dy = y2 - y1
+                        val t = (((wx-x1)*dx + (wy-y1)*dy) / (dx*dx + dy*dy).coerceAtLeast(1e-6f)).coerceIn(0f,1f)
+                        add(x1 + t*dx, y1 + t*dy, SnapType.NEAREST)
+                    }
+                    Tool.RECTANGLE, Tool.ROUNDED_RECT -> {
+                        val l = minOf(x1,x2); val r = maxOf(x1,x2); val t = minOf(y1,y2); val b = maxOf(y1,y2)
+                        val cx2 = wx.coerceIn(l,r); val cy2 = wy.coerceIn(t,b)
+                        listOf(Pair(cx2,t),Pair(cx2,b),Pair(l,cy2),Pair(r,cy2))
+                            .minByOrNull { distance(wx,wy,it.first,it.second) }
+                            ?.let { add(it.first, it.second, SnapType.NEAREST) }
+                    }
+                    Tool.PEN -> {
+                        var bDist = Float.MAX_VALUE; var bx = wx; var by = wy
+                        var i = 0
+                        while (i < pts.size - 3) {
+                            val ax=pts[i]; val ay=pts[i+1]; val bx2=pts[i+2]; val by2=pts[i+3]
+                            val dx=bx2-ax; val dy=by2-ay
+                            val t = (((wx-ax)*dx+(wy-ay)*dy)/(dx*dx+dy*dy).coerceAtLeast(1e-6f)).coerceIn(0f,1f)
+                            val nx=ax+t*dx; val ny=ay+t*dy
+                            val d = distance(wx,wy,nx,ny)
+                            if (d < bDist) { bDist=d; bx=nx; by=ny }
+                            i += 2
+                        }
+                        add(bx, by, SnapType.NEAREST)
+                    }
+                    else -> add(cx, cy, SnapType.NEAREST)
+                }
+            }
+
+            // Perpendicular (foot of perp from stroke-start to this line)
+            if (snapPerpendicular && !strokeStartWx.isNaN() && pts.size >= 4 &&
+                (item.data.type == Tool.LINE || item.data.type == Tool.ARROW)) {
+                val dx=x2-x1; val dy=y2-y1
+                val lenSq=(dx*dx+dy*dy).coerceAtLeast(1e-6f)
+                val t=(((strokeStartWx-x1)*dx+(strokeStartWy-y1)*dy)/lenSq).coerceIn(0f,1f)
+                add(x1+t*dx, y1+t*dy, SnapType.PERPENDICULAR)
+            }
+
+            // Parallel (constrain new stroke to be parallel to this line)
+            if (snapParallel && !strokeStartWx.isNaN() && pts.size >= 4 &&
+                (item.data.type == Tool.LINE || item.data.type == Tool.ARROW)) {
+                val dx=x2-x1; val dy=y2-y1
+                val len=kotlin.math.hypot(dx.toDouble(),dy.toDouble()).toFloat().coerceAtLeast(1e-6f)
+                val ux=dx/len; val uy=dy/len
+                val t=(wx-strokeStartWx)*ux+(wy-strokeStartWy)*uy
+                add(strokeStartWx+t*ux, strokeStartWy+t*uy, SnapType.PARALLEL)
             }
         }
-        return best
+
+        // Intersection (all LINE/ARROW pairs)
+        if (snapIntersection) {
+            val lines = strokes.filter { it.data.type == Tool.LINE || it.data.type == Tool.ARROW }
+            for (i in lines.indices) for (j in i+1 until lines.size) {
+                val a=lines[i].data.points; val b=lines[j].data.points
+                if (a.size < 4 || b.size < 4) continue
+                val x1a=a[0]; val y1a=a[1]; val x2a=a[a.size-2]; val y2a=a[a.size-1]
+                val x1b=b[0]; val y1b=b[1]; val x2b=b[b.size-2]; val y2b=b[b.size-1]
+                val denom=(x1a-x2a)*(y1b-y2b)-(y1a-y2a)*(x1b-x2b)
+                if (kotlin.math.abs(denom) < 1e-6f) continue
+                val t=((x1a-x1b)*(y1b-y2b)-(y1a-y1b)*(x1b-x2b))/denom
+                val u=-((x1a-x2a)*(y1a-y1b)-(y1a-y2a)*(x1a-x1b))/denom
+                if (t in 0f..1f && u in 0f..1f) add(x1a+t*(x2a-x1a), y1a+t*(y2a-y1a), SnapType.INTERSECTION)
+            }
+        }
+
+        // Grid
+        if (snapGrid && (paperType == PaperType.GRID || paperType == PaperType.ENGINEERING)) {
+            val gs = gridSpacingPx()
+            add(kotlin.math.round(wx/gs)*gs, kotlin.math.round(wy/gs)*gs, SnapType.GRID)
+        }
+
+        if (candidates.isEmpty()) return null
+        return candidates.sortedWith(compareBy({ it.first.type.priority }, { it.second })).first().first
     }
+
+    // Backward-compat wrapper
+    private fun findNearestEndpoint(wx: Float, wy: Float): Pair<Float, Float>? =
+        findSnapTarget(wx, wy)?.let { Pair(it.wx, it.wy) }
 
     private fun distToSeg(px: Float, py: Float, x1: Float, y1: Float, x2: Float, y2: Float): Float {
         val dx = x2 - x1; val dy = y2 - y1

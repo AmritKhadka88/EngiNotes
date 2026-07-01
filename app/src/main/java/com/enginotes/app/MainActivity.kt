@@ -1486,6 +1486,7 @@ class MainActivity : AppCompatActivity() {
         dismissShapesPicker()
         dismissPenOptionsPanel()
         dismissShapeOptionsPanel()
+        dismissSnapOptionsPanel()
         dismissEraserOptionsPanel()
         dismissHighlighterOptionsPanel()
         dismissBrushOptionsPanel()
@@ -1938,6 +1939,8 @@ class MainActivity : AppCompatActivity() {
 
     private var penOptionsPanel: View? = null
     private var shapeOptionsPanel: View? = null
+    private var snapOptionsPanel: View? = null
+    private var snapOptionsButton: View? = null
     private var eraserOptionsPanel: LinearLayout? = null
     private var contextBarPage = 0 // 0 = default, increments on swipe-up
 
@@ -2066,6 +2069,75 @@ class MainActivity : AppCompatActivity() {
         shapeOptionsPanel?.let { canvasContainer.removeView(it) }; shapeOptionsPanel = null
         findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
     }
+    private fun dismissSnapOptionsPanel() {
+        snapOptionsPanel?.let { canvasContainer.removeView(it) }; snapOptionsPanel = null
+    }
+
+    // Shows/hides the floating "Snap ⚙" button above the bottom toolbar based on snapEnabled
+    private fun updateSnapOptionsButton() {
+        if (drawingView.snapEnabled) {
+            if (snapOptionsButton != null) return  // already showing
+            val btn = TextView(this).apply {
+                text = "Snap ⚙"; textSize = 12f
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.parseColor("#2196F3"))
+                setPadding(dp(10), dp(6), dp(10), dp(6))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(Color.parseColor("#2196F3")); cornerRadius = dp(16).toFloat()
+                }
+                elevation = dp(6).toFloat()
+                setOnClickListener { if (snapOptionsPanel != null) dismissSnapOptionsPanel() else showSnapOptionsPanel() }
+            }
+            val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+            lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
+            lp.bottomMargin = dp(8); lp.leftMargin = dp(12)
+            canvasContainer.addView(btn, lp)
+            snapOptionsButton = btn
+        } else {
+            snapOptionsButton?.let { canvasContainer.removeView(it) }; snapOptionsButton = null
+            dismissSnapOptionsPanel()
+        }
+    }
+
+    private fun showSnapOptionsPanel() {
+        dismissSnapOptionsPanel()
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.WHITE)
+            elevation = dp(12).toFloat()
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.WHITE); cornerRadius = dp(10).toFloat()
+                setStroke(1, Color.parseColor("#E0E0E0"))
+            }
+        }
+
+        data class SnapOption(val label: String, val get: () -> Boolean, val set: (Boolean) -> Unit)
+        val options = listOf(
+            SnapOption("☑ Endpoint",      { drawingView.snapEndpoint },      { drawingView.snapEndpoint = it }),
+            SnapOption("☑ Midpoint",      { drawingView.snapMidpoint },      { drawingView.snapMidpoint = it }),
+            SnapOption("☑ Intersection",  { drawingView.snapIntersection },  { drawingView.snapIntersection = it }),
+            SnapOption("☑ Center",        { drawingView.snapCenter },        { drawingView.snapCenter = it }),
+            SnapOption("☑ Nearest",       { drawingView.snapNearest },       { drawingView.snapNearest = it }),
+            SnapOption("☑ Perpendicular", { drawingView.snapPerpendicular }, { drawingView.snapPerpendicular = it }),
+            SnapOption("☑ Parallel",      { drawingView.snapParallel },      { drawingView.snapParallel = it }),
+            SnapOption("☑ Grid",          { drawingView.snapGrid },          { drawingView.snapGrid = it }),
+            SnapOption("⚡ Auto-connect",  { drawingView.snapAutoConnect },   { drawingView.snapAutoConnect = it }),
+        )
+
+        for (opt in options) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL; setPadding(0, dp(2), 0, dp(2)) }
+            val lbl = TextView(this).apply { text = opt.label.replace("☑ ", "").replace("⚡ ", ""); textSize = 13f; setTextColor(Color.parseColor("#2A2A2A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
+            val cb = android.widget.CheckBox(this).apply { isChecked = opt.get(); setOnCheckedChangeListener { _, v -> opt.set(v) } }
+            row.addView(lbl); row.addView(cb); panel.addView(row)
+        }
+
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
+        lp.bottomMargin = dp(50); lp.leftMargin = dp(12)
+        canvasContainer.addView(panel, lp)
+        snapOptionsPanel = panel
+    }
     private fun dismissEraserOptionsPanel() { eraserOptionsPanel?.let { canvasContainer.removeView(it) }; eraserOptionsPanel = null; findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE }
 
     // Adds a "Line Type" section into an existing panel LinearLayout.
@@ -2187,7 +2259,7 @@ class MainActivity : AppCompatActivity() {
         sectionLabel("Snap to Endpoints")
         val snapRowS = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(4)) }
         val snapDescS = TextView(this).apply { text = "Lines snap to nearby endpoints"; textSize = 12f; setTextColor(Color.parseColor("#6A6A6A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
-        val snapSwitchS = android.widget.Switch(this).apply { isChecked = drawingView.snapToEndpoints; setOnCheckedChangeListener { _, on -> drawingView.snapToEndpoints = on } }
+        val snapSwitchS = android.widget.Switch(this).apply { isChecked = drawingView.snapEnabled; setOnCheckedChangeListener { _, on -> drawingView.snapEnabled = on; updateSnapOptionsButton() } }
         snapRowS.addView(snapDescS); snapRowS.addView(snapSwitchS); panel.addView(snapRowS)
 
         // Color row
@@ -2293,7 +2365,7 @@ class MainActivity : AppCompatActivity() {
         sectionLabel("Snap to Endpoints")
         val snapRowP = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(4)) }
         val snapDescP = TextView(this).apply { text = "Lines snap to nearby endpoints"; textSize = 12f; setTextColor(Color.parseColor("#6A6A6A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
-        val snapSwitchP = android.widget.Switch(this).apply { isChecked = drawingView.snapToEndpoints; setOnCheckedChangeListener { _, on -> drawingView.snapToEndpoints = on } }
+        val snapSwitchP = android.widget.Switch(this).apply { isChecked = drawingView.snapEnabled; setOnCheckedChangeListener { _, on -> drawingView.snapEnabled = on; updateSnapOptionsButton() } }
         snapRowP.addView(snapDescP); snapRowP.addView(snapSwitchP); panel.addView(snapRowP)
 
         // Line type section
