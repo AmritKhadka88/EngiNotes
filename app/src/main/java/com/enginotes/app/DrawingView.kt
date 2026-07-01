@@ -31,6 +31,30 @@ import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 enum class PenStyle { FOUNTAIN, BALL, PENCIL, CALLIGRAPHY, MARKER }
+enum class LineType(val label: String, val intervals: FloatArray?, val cap: android.graphics.Paint.Cap = android.graphics.Paint.Cap.BUTT) {
+    CONTINUOUS      ("Continuous",          null),
+    DASHED          ("Dashed",              floatArrayOf(12f, 6f)),
+    DOTTED          ("Dotted",              floatArrayOf(1f, 4f),  android.graphics.Paint.Cap.ROUND),
+    DASH_DOT        ("Dash Dot",            floatArrayOf(12f, 4f, 1f, 4f)),
+    DASH_DOT_DOT    ("Dash Dot Dot",        floatArrayOf(12f, 4f, 1f, 4f, 1f, 4f)),
+    LONG_DASH       ("Long Dash",           floatArrayOf(24f, 6f)),
+    LONG_DASH_DOT   ("Long Dash Dot",       floatArrayOf(24f, 4f, 1f, 4f)),
+    LONG_DASH_2DOT  ("Long Dash 2 Dot",     floatArrayOf(24f, 4f, 1f, 4f, 1f, 4f)),
+    SHORT_DASH      ("Short Dash",          floatArrayOf(4f, 4f)),
+    FINE_DASH_DOT   ("Fine Dash Dot",       floatArrayOf(8f, 3f, 1f, 3f)),
+    STITCH          ("Stitch Line",         floatArrayOf(6f, 6f)),
+    PHANTOM         ("Phantom",             floatArrayOf(20f, 4f, 4f, 4f, 4f, 4f)),
+    SPARSE_DOT      ("Sparse Dot",          floatArrayOf(1f, 8f),  android.graphics.Paint.Cap.ROUND),
+    DENSE_DOT       ("Dense Dot",           floatArrayOf(1f, 2f),  android.graphics.Paint.Cap.ROUND),
+    DOUBLE_DASH     ("Double Dash",         floatArrayOf(8f, 4f, 8f, 10f)),
+    VERY_LONG_DASH  ("Extra Long Dash",     floatArrayOf(36f, 6f)),
+    DASH_3DOT       ("Dash 3 Dot",          floatArrayOf(12f, 3f, 1f, 3f, 1f, 3f, 1f, 3f)),
+    FENCE           ("Fence Line",          floatArrayOf(2f, 6f, 2f, 6f)),
+    TRACK           ("Track / Rail",        floatArrayOf(16f, 2f, 1f, 2f, 1f, 2f)),
+    IRREGULAR_DASH  ("Irregular Dash",      floatArrayOf(10f, 3f, 6f, 3f, 14f, 3f)),
+    ULTRA_FINE      ("Ultra Fine Dot",      floatArrayOf(1f, 12f), android.graphics.Paint.Cap.ROUND),
+    SECTION_PLANE   ("Section Plane",       floatArrayOf(20f, 4f, 1f, 4f, 1f, 4f, 20f, 4f)),
+}
 enum class BrushStyle {
     ROUND, FLAT, TEXTURE, INK, WATERCOLOR, CRAYON, CHARCOAL, AIRBRUSH, SPRAY, STIPPLE, SPLATTER, NEON,
     MARKER, DRY_BRUSH, SCATTER, FUR, GRASS, SMOKE, PATTERN_BRUSH,
@@ -137,9 +161,8 @@ class StrokeData(
     var color: Int, var strokeWidth: Float, var fill: Boolean, var rotation: Float = 0f,
     var fillColorVal: Int = color, var penStyle: PenStyle = PenStyle.FOUNTAIN, var opacity: Int = 255,
     var brushStyle: BrushStyle = BrushStyle.ROUND,
-    // Per-point width samples for velocity-sensitive pens (Fountain). Parallel to points (one
-    // width per x,y pair). Empty for pens that don't use variable width - falls back to strokeWidth.
-    var widths: MutableList<Float> = mutableListOf()
+    var widths: MutableList<Float> = mutableListOf(),
+    var lineType: LineType = LineType.CONTINUOUS
 ) {
     fun buildPath(): Path {
         val path = Path()
@@ -529,6 +552,12 @@ class StrokeData(
             // SEPARATE strokes overlap, which is the correct/expected behavior.
             PenStyle.MARKER -> { p.strokeWidth = strokeWidth * 2.4f; p.strokeJoin = Paint.Join.MITER; p.strokeCap = Paint.Cap.BUTT; p.alpha = (255 * 0.57f).toInt() }
         }
+        if (lineType != LineType.CONTINUOUS && penStyle != PenStyle.PENCIL && lineType.intervals != null) {
+            val sw = p.strokeWidth.coerceAtLeast(1f)
+            val scaled = lineType.intervals.map { it * sw / 3f }.toFloatArray()
+            p.pathEffect = android.graphics.DashPathEffect(scaled, 0f)
+            if (lineType.cap != android.graphics.Paint.Cap.BUTT) p.strokeCap = lineType.cap
+        }
         return p
     }
 
@@ -750,6 +779,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var currentColor: Int = Color.BLACK
     var currentStrokeWidth: Float = 6f
     var currentPenStyle: PenStyle = PenStyle.FOUNTAIN
+    var currentLineType: LineType = LineType.CONTINUOUS
     // Snap-to-endpoint: snaps stroke start/end to nearby existing endpoints within snapRadius world units.
     // snapRadius is in screen pixels and converted to world space on use, so it stays consistent at any zoom.
     var snapToEndpoints: Boolean = false
@@ -3599,12 +3629,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     currentTool == Tool.PEN -> {
                         // Ball pen is strictly uniform - no pressure or speed sensitivity, per spec.
                         val baseW = if (currentPenStyle == PenStyle.BALL) currentStrokeWidth else currentStrokeWidth * pressure
-                        StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, baseW, false, rotation = 0f, penStyle = currentPenStyle, opacity = if (currentPenStyle == PenStyle.BALL) 255 else brushOpacity)
+                        StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, baseW, false, rotation = 0f, penStyle = currentPenStyle, opacity = if (currentPenStyle == PenStyle.BALL) 255 else brushOpacity, lineType = currentLineType)
                     }
                     currentTool == Tool.HIGHLIGHTER -> StrokeData(Tool.HIGHLIGHTER, mutableListOf(wx, wy), currentColor, highlighterThickness, false, rotation = 0f, penStyle = PenStyle.MARKER, opacity = (highlighterOpacity * 255 / 100))
                     currentTool == Tool.BRUSH -> StrokeData(Tool.BRUSH, mutableListOf(wx, wy), currentColor, brushThickness * pressure, false, rotation = 0f, brushStyle = currentBrushStyle, opacity = brushOpacity)
-                    SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, fillShapes)
-                    else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = brushOpacity)
+                    SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, fillShapes, lineType = currentLineType)
+                    else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = brushOpacity, lineType = currentLineType)
                 }
                 if (currentTool == Tool.PEN && currentPenStyle == PenStyle.FOUNTAIN) data.widths.add(currentStrokeWidth)
                 if (currentTool == Tool.PEN && currentPenStyle == PenStyle.PENCIL) data.widths.add(1f)
