@@ -529,6 +529,30 @@ class MainActivity : AppCompatActivity() {
                 onImeBottomChanged?.invoke(imeBottom)  // notify inline editor keyboard listener
                 insets
             }
+            // WindowInsetsAnimationCallback: fires reliably on Android 11+ with adjustNothing,
+            // even when OnApplyWindowInsetsListener doesn't get called during IME animation.
+            // Ensures onImeBottomChanged fires at the END of keyboard open/close animation.
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                val rootView = window.decorView
+                androidx.core.view.ViewCompat.setWindowInsetsAnimationCallback(
+                    rootView,
+                    object : androidx.core.view.WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
+                        override fun onProgress(
+                            insets: androidx.core.view.WindowInsetsCompat,
+                            runningAnimations: MutableList<androidx.core.view.WindowInsetsAnimationCompat>
+                        ): androidx.core.view.WindowInsetsCompat = insets
+
+                        override fun onEnd(animation: androidx.core.view.WindowInsetsAnimationCompat) {
+                            super.onEnd(animation)
+                            if ((animation.typeMask and androidx.core.view.WindowInsetsCompat.Type.ime()) != 0) {
+                                val imeBottom = androidx.core.view.ViewCompat.getRootWindowInsets(rootView)
+                                    ?.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime())?.bottom ?: 0
+                                onImeBottomChanged?.invoke(imeBottom)
+                            }
+                        }
+                    }
+                )
+            }
         }
 
         val prefs = getPrefs()
