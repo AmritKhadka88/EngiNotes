@@ -4101,6 +4101,46 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (snapEndpoint) {
                 add(x1, y1, SnapType.ENDPOINT)
                 if (pts.size >= 4) add(x2, y2, SnapType.ENDPOINT)
+                // For shapes defined by bounding box (RECT, ELLIPSE, etc.), also add ALL 4 corners
+                // and key polygon vertices — only start+end pts are stored, the rest are computed.
+                if (pts.size >= 4) {
+                    val l = minOf(x1,x2); val r = maxOf(x1,x2); val t = minOf(y1,y2); val b = maxOf(y1,y2)
+                    val cx2 = (l+r)/2f; val cy2 = (t+b)/2f
+                    when (item.data.type) {
+                        Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.ELLIPSE -> {
+                            add(l, t, SnapType.ENDPOINT); add(r, t, SnapType.ENDPOINT)
+                            add(l, b, SnapType.ENDPOINT); add(r, b, SnapType.ENDPOINT)
+                        }
+                        Tool.TRIANGLE, Tool.ISOSCELES_TRIANGLE -> {
+                            add(cx2, t, SnapType.ENDPOINT); add(l, b, SnapType.ENDPOINT); add(r, b, SnapType.ENDPOINT)
+                        }
+                        Tool.TRIANGLE_DOWN -> {
+                            add(l, t, SnapType.ENDPOINT); add(r, t, SnapType.ENDPOINT); add(cx2, b, SnapType.ENDPOINT)
+                        }
+                        Tool.RIGHT_TRIANGLE -> {
+                            add(l, t, SnapType.ENDPOINT); add(l, b, SnapType.ENDPOINT); add(r, b, SnapType.ENDPOINT)
+                        }
+                        Tool.DIAMOND -> {
+                            add(cx2, t, SnapType.ENDPOINT); add(r, cy2, SnapType.ENDPOINT)
+                            add(cx2, b, SnapType.ENDPOINT); add(l, cy2, SnapType.ENDPOINT)
+                        }
+                        Tool.TRAPEZOID -> {
+                            val inset = (r-l)*0.2f
+                            add(l+inset, t, SnapType.ENDPOINT); add(r-inset, t, SnapType.ENDPOINT)
+                            add(l, b, SnapType.ENDPOINT); add(r, b, SnapType.ENDPOINT)
+                        }
+                        Tool.PARALLELOGRAM -> {
+                            val skew = (r-l)*0.2f
+                            add(l+skew, t, SnapType.ENDPOINT); add(r, t, SnapType.ENDPOINT)
+                            add(r-skew, b, SnapType.ENDPOINT); add(l, b, SnapType.ENDPOINT)
+                        }
+                        Tool.CROSS -> {
+                            add(l, cy2, SnapType.ENDPOINT); add(r, cy2, SnapType.ENDPOINT)
+                            add(cx2, t, SnapType.ENDPOINT); add(cx2, b, SnapType.ENDPOINT)
+                        }
+                        else -> {}
+                    }
+                }
                 if (item.data.type == Tool.PEN && pts.size > 8) {
                     var i = 4
                     while (i < pts.size - 4) { add(pts[i], pts[i + 1], SnapType.ENDPOINT); i += 20 }
