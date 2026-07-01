@@ -2866,6 +2866,7 @@ class MainActivity : AppCompatActivity() {
                     moveStartRawX = ev.rawX; moveStartRawY = ev.rawY
                     val lp = boxContainer.layoutParams as FrameLayout.LayoutParams
                     moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
+                    toolbarScroll.visibility = View.INVISIBLE  // hide toolbar while dragging
                     true
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
@@ -2876,6 +2877,10 @@ class MainActivity : AppCompatActivity() {
                     val newScreenX = lp.leftMargin + dp(6); val newScreenY = lp.topMargin + dp(6) + screenSizePx
                     editWorldX = drawingView.screenToWorldX(newScreenX.toFloat()); editWorldY = drawingView.screenToWorldY(newScreenY)
                     onBoxMoved?.invoke()
+                    true
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    toolbarScroll.visibility = View.VISIBLE  // restore toolbar once placed
                     true
                 }
                 else -> true
@@ -2960,7 +2965,7 @@ class MainActivity : AppCompatActivity() {
             if (r - l != or_ - ol || b - t != ob - ot) layoutEditorHandles()
         }
         boxContainer.post { layoutEditorHandles() }
-        onBoxMoved = { layoutEditorHandles() }
+        onBoxMoved = { layoutEditorHandles(); updateET() }
 
         // Options toolbar positioned directly above the editing box (not pinned to screen bottom)
         val toolbar=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(6).toFloat(); setPadding(dp(6),dp(6),dp(6),dp(6)) }
@@ -2981,7 +2986,7 @@ class MainActivity : AppCompatActivity() {
 
         // Position the toolbar's horizontal scroll bar just above the box (falls back to top of screen if no room)
         val toolbarScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(toolbar) }
-        val toolbarHeightEstimate = dp(46)
+        val toolbarHeightEstimate = dp(56)
         val tp=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
         tp.leftMargin = params.leftMargin.coerceAtMost((canvasContainer.width - dp(260)).coerceAtLeast(0))
         tp.topMargin = (params.topMargin - toolbarHeightEstimate).coerceAtLeast(0)
