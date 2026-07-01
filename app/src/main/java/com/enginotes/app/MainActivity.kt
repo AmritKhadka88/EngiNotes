@@ -3002,42 +3002,28 @@ class MainActivity : AppCompatActivity() {
         // Uses WindowInsetsCompat (IME inset) instead of getWindowVisibleDisplayFrame, which is
         // unreliable with windowSoftInputMode="adjustNothing" (set in the manifest for this activity).
         var savedTranslateY: Float? = null
-        var savedBoxTopMargin: Int? = null
-        var savedToolbarTopMargin: Int? = null
         var keyboardWasOpen = false
-        val tapScreenY = screenY  // capture at editor-open time (absolute screen Y)
-        // Convert tapScreenY to canvasContainer-relative Y so we can compare it with
-        // canvasContainer.height (which is also in canvasContainer's own coordinate space).
-        val canvasOrigin = IntArray(2).also { canvasContainer.getLocationOnScreen(it) }
-        val tapCanvasY = tapScreenY - canvasOrigin[1]  // Y relative to top of canvasContainer
+        val tapScreenY = screenY  // absolute screen Y captured at editor-open time
+
 
         val keyboardListener = OnApplyWindowInsetsListener { _, insets ->
             val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
             val keyboardOpen = imeBottom > dp(150)
 
             if (keyboardOpen && !keyboardWasOpen) {
-                // Keyboard just opened — compute how much to scroll up
+                // Keyboard just opened
                 keyboardWasOpen = true
                 savedTranslateY = drawingView.getTranslateY()
-                val lp0 = boxContainer.layoutParams as? FrameLayout.LayoutParams
-                savedBoxTopMargin = lp0?.topMargin ?: 0
-                val tlp0 = toolbarScroll.layoutParams as? FrameLayout.LayoutParams
-                savedToolbarTopMargin = tlp0?.topMargin ?: 0
 
-                // Defer until after the layout pass triggered by the bottom-toolbar margin
-                // change (above) has settled, so canvasContainer.height reflects its new,
-                // already-shrunk size rather than a stale pre-shrink value.
-                canvasContainer.post {
-                    // canvasContainer.height is now the visible canvas height with keyboard open.
-                    // Only scroll if the tap point is actually hidden (below visible canvas).
-                    // When we do scroll, bring the box to ~dp(200) from the top — the upper
-                    // portion of the visible canvas (the "red rectangle" target area).
-                    val visibleCanvasHeight = canvasContainer.height
-                    if (tapCanvasY > visibleCanvasHeight) {
-                        val targetTapY = dp(200).toFloat()
-                        val delta = targetTapY - tapCanvasY  // always negative (scroll up)
-                        drawingView.shiftCanvasVertically(delta)
-                    }
+                // Use absolute screen coordinates — no post{} timing needed.
+                // visibleBoundary = where the keyboard top sits in screen space.
+                // If the tap is below that, scroll canvas up so it lands dp(120) above keyboard.
+                val screenHeight = canvasContainer.rootView.height
+                val visibleBoundary = screenHeight - imeBottom
+                if (tapScreenY > visibleBoundary) {
+                    val extraPadding = dp(120)
+                    val delta = -(tapScreenY - visibleBoundary + extraPadding).toFloat()
+                    drawingView.shiftCanvasVertically(delta)
                 }
 
             } else if (!keyboardOpen && keyboardWasOpen) {
@@ -3049,7 +3035,7 @@ class MainActivity : AppCompatActivity() {
                     drawingView.shiftCanvasVertically(origY - currentY)
                     // updateET() fires via onCanvasTransformed, repositioning box + toolbar
                 }
-                savedTranslateY = null; savedBoxTopMargin = null; savedToolbarTopMargin = null
+                savedTranslateY = null
             }
             insets
         }
