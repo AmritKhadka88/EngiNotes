@@ -112,6 +112,7 @@ class MainActivity : AppCompatActivity() {
     private var activeEditBox: View? = null
     private var activeEditorKeyboardListener: android.view.ViewTreeObserver.OnGlobalLayoutListener? = null
     private var activeEditorKeyboardObserver: android.view.ViewTreeObserver? = null
+    private var onImeBottomChanged: ((Int) -> Unit)? = null  // piggybacked onto the working content-view insets listener
     private var activeEditorHandles: List<View> = emptyList()
     private var editingItem: TextItem? = null
     private var editWorldX = 0f; private var editWorldY = 0f
@@ -525,6 +526,7 @@ class MainActivity : AppCompatActivity() {
                     lp.bottomMargin = extraForKeyboard
                     primaryBar.layoutParams = lp
                 }
+                onImeBottomChanged?.invoke(imeBottom)  // notify inline editor keyboard listener
                 insets
             }
         }
@@ -3168,26 +3170,22 @@ class MainActivity : AppCompatActivity() {
         canvasContainer.addView(toolbarScroll,tp)
 
         // ── Keyboard scroll-into-view ─────────────────────────────────────────────
-        // Uses ViewTreeObserver on decorView + getRootWindowInsets() — more reliable than
-        // setOnApplyWindowInsetsListener on canvasContainer, which can miss IME callbacks
-        // when the root LinearLayout (fitsSystemWindows=true) intercepts the insets dispatch.
+        // Piggybacks on the OnApplyWindowInsetsListener already set on android.R.id.content
+        // in onCreate, which IS reliably called even with adjustNothing. The ViewTreeObserver
+        // approach was broken because adjustNothing prevents global layout changes from firing.
         var savedTranslateY: Float? = null
         var keyboardWasOpen = false
-        val rootView = window.decorView
 
-        val keyboardListener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
-            val rootInsets = ViewCompat.getRootWindowInsets(rootView)
-            val imeBottom = rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
+        onImeBottomChanged = { imeBottom ->
             val keyboardOpen = imeBottom > dp(150)
 
             if (keyboardOpen && !keyboardWasOpen) {
                 keyboardWasOpen = true
                 savedTranslateY = drawingView.getTranslateY()
 
-                // textAbsoluteY: world position → view-local Y → absolute screen Y
                 val canvasTop = IntArray(2).also { canvasContainer.getLocationOnScreen(it) }[1]
                 val textAbsoluteY = drawingView.worldToScreenY(editWorldY) + canvasTop
-                val screenHeight = rootView.height
+                val screenHeight = window.decorView.height
                 val visibleBoundary = screenHeight - imeBottom
 
                 if (textAbsoluteY > visibleBoundary) {
@@ -3205,9 +3203,6 @@ class MainActivity : AppCompatActivity() {
                 savedTranslateY = null
             }
         }
-        rootView.viewTreeObserver.addOnGlobalLayoutListener(keyboardListener)
-        activeEditorKeyboardListener = keyboardListener
-        activeEditorKeyboardObserver = rootView.viewTreeObserver
         // ─────────────────────────────────────────────────────────────────────────
 
         fun updateET(){
@@ -3246,6 +3241,7 @@ class MainActivity : AppCompatActivity() {
             try { activeEditorKeyboardObserver?.removeOnGlobalLayoutListener(activeEditorKeyboardListener) } catch (e: Exception) {}
         }
         activeEditorKeyboardListener = null; activeEditorKeyboardObserver = null
+        onImeBottomChanged = null
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
     }
