@@ -2036,14 +2036,11 @@ class MainActivity : AppCompatActivity() {
         penOptionsPanel?.let { canvasContainer.removeView(it) }; penOptionsPanel = null
         findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
     }
-    private fun dismissPenOptionsPanel() {
-        penOptionsPanel?.let { canvasContainer.removeView(it) }; penOptionsPanel = null
-        findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
-    }
     private fun dismissShapeOptionsPanel() {
         shapeOptionsPanel?.let { canvasContainer.removeView(it) }; shapeOptionsPanel = null
         findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
     }
+    private fun dismissEraserOptionsPanel() { eraserOptionsPanel?.let { canvasContainer.removeView(it) }; eraserOptionsPanel = null; findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE }
 
     // Adds a "Line Type" section into an existing panel LinearLayout.
     // onSelect is called whenever the user picks a type — caller updates drawingView.currentLineType.
