@@ -783,7 +783,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var currentLineType: LineType = LineType.CONTINUOUS
     // Snap-to-endpoint: snaps stroke start/end to nearby existing endpoints within snapRadius world units.
     // snapRadius is in screen pixels and converted to world space on use, so it stays consistent at any zoom.
-    var snapToEndpoints: Boolean = false
+    var snapToEndpoints: Boolean
         get() = snapEnabled
         set(v) { snapEnabled = v }
     // ── Snap system ──────────────────────────────────────────────────────────
