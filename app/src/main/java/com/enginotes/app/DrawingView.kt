@@ -871,8 +871,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Invalidate all stroke caches when zoom changes (pixel dimensions change)
     fun shiftCanvasVertically(deltaY: Float) {
         translateY += deltaY
-        clampTranslation()
+        // Do NOT clamp here — keyboard-avoidance scroll needs to move beyond normal page
+        // boundaries so the text editor stays visible above the keyboard. Clamping eats
+        // the shift when the page already fills the screen, which is the common case.
         invalidate()
+        onCanvasTransformed?.invoke()
     }
 
     fun getTranslateY(): Float = translateY
