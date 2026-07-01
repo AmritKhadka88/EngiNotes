@@ -2860,13 +2860,15 @@ class MainActivity : AppCompatActivity() {
         var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
         // Forward reference: layoutEditorHandles is defined below but called from here
         var onBoxMoved: (() -> Unit)? = null
+        // toolbarScroll is declared later in this function — use a forward ref so we can hide it during drag
+        var editorToolbarRef: View? = null
         moveHandle.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
                     moveStartRawX = ev.rawX; moveStartRawY = ev.rawY
                     val lp = boxContainer.layoutParams as FrameLayout.LayoutParams
                     moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
-                    toolbarScroll.visibility = View.INVISIBLE  // hide toolbar while dragging
+                    editorToolbarRef?.visibility = View.INVISIBLE  // hide toolbar while dragging
                     true
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
@@ -2880,7 +2882,7 @@ class MainActivity : AppCompatActivity() {
                     true
                 }
                 android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
-                    toolbarScroll.visibility = View.VISIBLE  // restore toolbar once placed
+                    editorToolbarRef?.visibility = View.VISIBLE  // restore toolbar once placed
                     true
                 }
                 else -> true
@@ -2965,7 +2967,7 @@ class MainActivity : AppCompatActivity() {
             if (r - l != or_ - ol || b - t != ob - ot) layoutEditorHandles()
         }
         boxContainer.post { layoutEditorHandles() }
-        onBoxMoved = { layoutEditorHandles(); updateET() }
+        // onBoxMoved is assigned after updateET() is defined below
 
         // Options toolbar positioned directly above the editing box (not pinned to screen bottom)
         val toolbar=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(6).toFloat(); setPadding(dp(6),dp(6),dp(6),dp(6)) }
@@ -2986,6 +2988,7 @@ class MainActivity : AppCompatActivity() {
 
         // Position the toolbar's horizontal scroll bar just above the box (falls back to top of screen if no room)
         val toolbarScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(toolbar) }
+        editorToolbarRef = toolbarScroll  // now set the forward ref so move handle can hide/show it
         val toolbarHeightEstimate = dp(56)
         val tp=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
         tp.leftMargin = params.leftMargin.coerceAtMost((canvasContainer.width - dp(260)).coerceAtLeast(0))
@@ -3064,6 +3067,7 @@ class MainActivity : AppCompatActivity() {
             layoutEditorHandles()
         }
         drawingView.onScaleChanged={ updateET() }; drawingView.onCanvasTransformed={ updateET() }
+        onBoxMoved = { layoutEditorHandles(); updateET() }  // assigned here so updateET is in scope
         activeEditText=et; activeToolbar=toolbarScroll; activeEditBox=boxContainer
         activeEditorHandles = listOf(moveHandle, resizeHandle, rotateHandle, deleteHandle)
         et.requestFocus()
