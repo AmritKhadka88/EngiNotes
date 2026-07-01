@@ -666,6 +666,7 @@ class MainActivity : AppCompatActivity() {
 
         // Handwriting-to-text realtime toggle (button removed from toolbar)
         findViewById<ImageButton>(R.id.btnTools).setOnClickListener { showShapesPicker(it as ImageButton) }
+        findViewById<ImageButton>(R.id.btnTools).setOnLongClickListener { closeInlineEditor(true); showShapeOptionsPanel(); true }
 
         // Touch/Pan toggle
         var touchModeIsPan = false
@@ -787,7 +788,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setActiveTool(btn: ImageButton?, tool: Tool) {
         drawingView.currentTool = tool; setActiveToolbarBtn(btn)
-        dismissPenOptionsPanel(); dismissEraserOptionsPanel(); dismissHighlighterOptionsPanel(); dismissBrushOptionsPanel(); dismissShapesPicker()
+        dismissPenOptionsPanel(); dismissEraserOptionsPanel(); dismissHighlighterOptionsPanel(); dismissBrushOptionsPanel(); dismissShapesPicker(); dismissShapeOptionsPanel()
         contextBarPage = 0
         rebuildContextBar()
     }
@@ -1458,6 +1459,7 @@ class MainActivity : AppCompatActivity() {
     private fun dismissAllFloatingPanels() {
         dismissShapesPicker()
         dismissPenOptionsPanel()
+        dismissShapeOptionsPanel()
         dismissEraserOptionsPanel()
         dismissHighlighterOptionsPanel()
         dismissBrushOptionsPanel()
@@ -1909,6 +1911,7 @@ class MainActivity : AppCompatActivity() {
     // ── Pen / Eraser options panels (Notewise-style long-press panels) ──
 
     private var penOptionsPanel: View? = null
+    private var shapeOptionsPanel: View? = null
     private var eraserOptionsPanel: LinearLayout? = null
     private var contextBarPage = 0 // 0 = default, increments on swipe-up
 
@@ -2033,7 +2036,151 @@ class MainActivity : AppCompatActivity() {
         penOptionsPanel?.let { canvasContainer.removeView(it) }; penOptionsPanel = null
         findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
     }
-    private fun dismissEraserOptionsPanel() { eraserOptionsPanel?.let { canvasContainer.removeView(it) }; eraserOptionsPanel = null; findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE }
+    private fun dismissPenOptionsPanel() {
+        penOptionsPanel?.let { canvasContainer.removeView(it) }; penOptionsPanel = null
+        findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
+    }
+    private fun dismissShapeOptionsPanel() {
+        shapeOptionsPanel?.let { canvasContainer.removeView(it) }; shapeOptionsPanel = null
+        findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
+    }
+
+    // Adds a "Line Type" section into an existing panel LinearLayout.
+    // onSelect is called whenever the user picks a type — caller updates drawingView.currentLineType.
+    private fun addLineTypeSection(panel: LinearLayout, sectionLabel: (String) -> Unit, onSelect: (LineType) -> Unit) {
+        sectionLabel("Line Type")
+        val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val lineTypes = LineType.values()
+        val btnRefs = mutableListOf<View>()
+
+        // Render each type as a horizontal row: preview canvas on left, name on right
+        for (lt in lineTypes) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                setPadding(0, dp(3), 0, dp(3))
+                isClickable = true
+                isFocusable = true
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(if (lt == drawingView.currentLineType) Color.parseColor("#EDE0D4") else Color.TRANSPARENT)
+                    cornerRadius = dp(6).toFloat()
+                }
+                setOnClickListener {
+                    onSelect(lt)
+                    btnRefs.forEach { v ->
+                        (v as LinearLayout).background = android.graphics.drawable.GradientDrawable().apply {
+                            setColor(Color.TRANSPARENT); cornerRadius = dp(6).toFloat()
+                        }
+                    }
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        setColor(Color.parseColor("#EDE0D4")); cornerRadius = dp(6).toFloat()
+                    }
+                }
+            }
+            btnRefs.add(row)
+
+            // Mini canvas preview of the line type
+            val preview = object : android.view.View(this) {
+                override fun onDraw(c: android.graphics.Canvas) {
+                    val p = android.graphics.Paint().apply {
+                        color = Color.parseColor("#2A2A2A")
+                        strokeWidth = dp(2).toFloat()
+                        style = android.graphics.Paint.Style.STROKE
+                        isAntiAlias = true
+                        if (lt.intervals != null) {
+                            val scale = dp(2).toFloat() / 3f
+                            val scaled = lt.intervals.map { it * scale }.toFloatArray()
+                            pathEffect = android.graphics.DashPathEffect(scaled, 0f)
+                        }
+                        if (lt.cap != android.graphics.Paint.Cap.BUTT) strokeCap = lt.cap
+                    }
+                    val cy = height / 2f
+                    c.drawLine(dp(4).toFloat(), cy, (width - dp(4)).toFloat(), cy, p)
+                }
+            }
+            val previewLp = LinearLayout.LayoutParams(dp(80), dp(28))
+            previewLp.setMargins(dp(4), 0, dp(8), 0)
+            preview.layoutParams = previewLp
+
+            val label = TextView(this).apply {
+                text = lt.label; textSize = 12f
+                setTextColor(Color.parseColor("#4A4A4A"))
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            row.addView(preview); row.addView(label)
+            grid.addView(row)
+        }
+        panel.addView(grid)
+    }
+
+    private fun showShapeOptionsPanel() {
+        findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
+        if (shapeOptionsPanel != null) { dismissShapeOptionsPanel(); return }
+        dismissAllFloatingPanels()
+
+        val scroll = ScrollView(this)
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.WHITE)
+            elevation = dp(10).toFloat()
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
+
+        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL }
+        header.addView(TextView(this).apply {
+            text = "Shape Options"; textSize = 17f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#2A2A2A"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        header.addView(TextView(this).apply {
+            text = "\u2715"; textSize = 18f; setTextColor(Color.parseColor("#888888")); setPadding(dp(10), dp(6), dp(10), dp(6))
+            setOnClickListener { dismissShapeOptionsPanel() }
+        })
+        panel.addView(header)
+
+        fun sectionLabel(text: String) {
+            panel.addView(TextView(this).apply {
+                this.text = text; textSize = 13f
+                setTextColor(Color.parseColor("#8D6E63")); setPadding(0, dp(14), 0, dp(6))
+            })
+        }
+
+        // Stroke thickness
+        sectionLabel("Thickness: ${drawingView.currentStrokeWidth.toInt()}")
+        val thickLbl = panel.getChildAt(panel.childCount - 1) as TextView
+        panel.addView(SeekBar(this).apply {
+            max = 60; progress = drawingView.currentStrokeWidth.toInt().coerceIn(1, 60)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { val vv = v.coerceAtLeast(1); drawingView.currentStrokeWidth = vv.toFloat(); thickLbl.text = "Thickness: $vv" }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        })
+
+        // Line type section
+        addLineTypeSection(panel, { sectionLabel(it) }) { lt -> drawingView.currentLineType = lt }
+
+        // Color row
+        sectionLabel("Color")
+        val colorScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        val colorRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val quickColors = listOf(Color.BLACK, Color.RED, Color.parseColor("#03A9F4"), Color.parseColor("#4CAF50"), Color.parseColor("#FFC107"), Color.parseColor("#FF9800"), Color.parseColor("#9C27B0"), Color.parseColor("#1A237E"))
+        for (c in quickColors) {
+            val swatch = android.view.View(this).apply {
+                val lp = LinearLayout.LayoutParams(dp(32), dp(32)); lp.setMargins(dp(3), 0, dp(3), 0); layoutParams = lp
+                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(c) }
+                setOnClickListener { drawingView.currentColor = c }
+            }
+            colorRow.addView(swatch)
+        }
+        colorScroll.addView(colorRow); panel.addView(colorScroll)
+
+        scroll.addView(panel)
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        lp.gravity = android.view.Gravity.BOTTOM
+        canvasContainer.addView(scroll, lp)
+        shapeOptionsPanel = scroll
+    }
 
     private fun showPenOptionsPanel() {
         findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
@@ -2111,6 +2258,9 @@ class MainActivity : AppCompatActivity() {
             })
         }
         panel.addView(opSeek)
+
+        // Line type section
+        addLineTypeSection(panel, { sectionLabel(it) }) { lt -> drawingView.currentLineType = lt }
 
         // Color row
         sectionLabel("Color")
