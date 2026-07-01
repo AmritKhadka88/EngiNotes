@@ -32,7 +32,6 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.PopupMenu
 import androidx.core.content.FileProvider
-import androidx.core.view.OnApplyWindowInsetsListener
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import org.apache.poi.xwpf.usermodel.XWPFDocument
@@ -111,7 +110,8 @@ class MainActivity : AppCompatActivity() {
     private var activeEditText: EditText? = null
     private var activeToolbar: View? = null
     private var activeEditBox: View? = null
-    private var activeEditorKeyboardListener: OnApplyWindowInsetsListener? = null
+    private var activeEditorKeyboardListener: android.view.ViewTreeObserver.OnGlobalLayoutListener? = null
+    private var activeEditorKeyboardObserver: android.view.ViewTreeObserver? = null
     private var activeEditorHandles: List<View> = emptyList()
     private var editingItem: TextItem? = null
     private var editWorldX = 0f; private var editWorldY = 0f
@@ -2828,7 +2828,7 @@ class MainActivity : AppCompatActivity() {
         et.setTextColor(editColor); et.alpha = editOpacity / 255f
         et.textSize=(screenSizePx/density).coerceAtLeast(8f)
         et.setBackgroundColor(Color.TRANSPARENT)
-        et.setPadding(dp(8),dp(8),dp(8),dp(8)); et.minWidth=dp(140); et.maxWidth=maxEditorWidthPx
+        et.setPadding(dp(8),dp(8),dp(8),dp(8)); et.minWidth=dp(140); et.maxWidth=maxEditorWidthPx; et.minHeight=dp(48)
         et.typeface = typefaceFromFamily(pendingFontFamily)
         if(!useActualSize) et.rotation=editRotation
         et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } } }; override fun afterTextChanged(s:Editable?){} })
@@ -2996,52 +2996,46 @@ class MainActivity : AppCompatActivity() {
         canvasContainer.addView(toolbarScroll,tp)
 
         // ── Keyboard scroll-into-view ─────────────────────────────────────────────
-        // Use screenY (the tap position) as anchor — reliable even before box is measured.
-        // When keyboard opens: shift canvas + box + toolbar up so the editor sits above keyboard.
-        // When keyboard closes: restore everything exactly.
-        // Uses WindowInsetsCompat (IME inset) instead of getWindowVisibleDisplayFrame, which is
-        // unreliable with windowSoftInputMode="adjustNothing" (set in the manifest for this activity).
+        // Uses ViewTreeObserver on decorView + getRootWindowInsets() — more reliable than
+        // setOnApplyWindowInsetsListener on canvasContainer, which can miss IME callbacks
+        // when the root LinearLayout (fitsSystemWindows=true) intercepts the insets dispatch.
         var savedTranslateY: Float? = null
         var keyboardWasOpen = false
-        val tapScreenY = screenY  // absolute screen Y captured at editor-open time
+        val rootView = window.decorView
 
-
-        val keyboardListener = OnApplyWindowInsetsListener { _, insets ->
-            val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+        val keyboardListener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
+            val rootInsets = ViewCompat.getRootWindowInsets(rootView)
+            val imeBottom = rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
             val keyboardOpen = imeBottom > dp(150)
 
             if (keyboardOpen && !keyboardWasOpen) {
-                // Keyboard just opened
                 keyboardWasOpen = true
                 savedTranslateY = drawingView.getTranslateY()
 
-                // Use absolute screen coordinates — no post{} timing needed.
-                // visibleBoundary = where the keyboard top sits in screen space.
-                // If the tap is below that, scroll canvas up so it lands dp(120) above keyboard.
-                val screenHeight = canvasContainer.rootView.height
+                // textAbsoluteY: world position → view-local Y → absolute screen Y
+                val canvasTop = IntArray(2).also { canvasContainer.getLocationOnScreen(it) }[1]
+                val textAbsoluteY = drawingView.worldToScreenY(editWorldY) + canvasTop
+                val screenHeight = rootView.height
                 val visibleBoundary = screenHeight - imeBottom
-                if (tapScreenY > visibleBoundary) {
+
+                if (textAbsoluteY > visibleBoundary) {
                     val extraPadding = dp(120)
-                    val delta = -(tapScreenY - visibleBoundary + extraPadding).toFloat()
+                    val delta = -(textAbsoluteY - visibleBoundary + extraPadding).toFloat()
                     drawingView.shiftCanvasVertically(delta)
                 }
 
             } else if (!keyboardOpen && keyboardWasOpen) {
-                // Keyboard just closed — restore canvas scroll position precisely
                 keyboardWasOpen = false
                 val origY = savedTranslateY
                 if (origY != null) {
-                    val currentY = drawingView.getTranslateY()
-                    drawingView.shiftCanvasVertically(origY - currentY)
-                    // updateET() fires via onCanvasTransformed, repositioning box + toolbar
+                    drawingView.shiftCanvasVertically(origY - drawingView.getTranslateY())
                 }
                 savedTranslateY = null
             }
-            insets
         }
-        ViewCompat.setOnApplyWindowInsetsListener(canvasContainer, keyboardListener)
-        ViewCompat.requestApplyInsets(canvasContainer)
+        rootView.viewTreeObserver.addOnGlobalLayoutListener(keyboardListener)
         activeEditorKeyboardListener = keyboardListener
+        activeEditorKeyboardObserver = rootView.viewTreeObserver
         // ─────────────────────────────────────────────────────────────────────────
 
         fun updateET(){
@@ -3077,9 +3071,9 @@ class MainActivity : AppCompatActivity() {
         if(!isSwitchingTextEditor) drawingView.invalidate()
         // Remove keyboard scroll listener
         if (activeEditorKeyboardListener != null) {
-            try { ViewCompat.setOnApplyWindowInsetsListener(canvasContainer, null) } catch (e: Exception) {}
+            try { activeEditorKeyboardObserver?.removeOnGlobalLayoutListener(activeEditorKeyboardListener) } catch (e: Exception) {}
         }
-        activeEditorKeyboardListener = null
+        activeEditorKeyboardListener = null; activeEditorKeyboardObserver = null
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
     }
