@@ -2944,7 +2944,7 @@ class MainActivity : AppCompatActivity() {
             val w = boxContainer.width.toFloat(); val h = boxContainer.height.toFloat()
             val half = dp(16)
             val mlp = moveHandle.layoutParams as FrameLayout.LayoutParams
-            mlp.leftMargin = (bx - half).toInt().coerceAtLeast(0); mlp.topMargin = (by - half).toInt().coerceAtLeast(0)
+            mlp.leftMargin = (bx - half).toInt().coerceAtLeast(0); mlp.topMargin = (by - half).toInt()
             moveHandle.layoutParams = mlp
             val rlp = resizeHandle.layoutParams as FrameLayout.LayoutParams
             rlp.leftMargin = (bx + w - half).toInt(); rlp.topMargin = (by + h / 2f - half).toInt()
@@ -2953,7 +2953,7 @@ class MainActivity : AppCompatActivity() {
             rolp.leftMargin = (bx + w - half).toInt(); rolp.topMargin = (by + h - half).toInt()
             rotateHandle.layoutParams = rolp
             val dlp = deleteHandle.layoutParams as FrameLayout.LayoutParams
-            dlp.leftMargin = (bx + w - half).toInt(); dlp.topMargin = (by - half).toInt().coerceAtLeast(0)
+            dlp.leftMargin = (bx + w - half).toInt(); dlp.topMargin = (by - half).toInt()
             deleteHandle.layoutParams = dlp
         }
         boxContainer.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, or_, ob ->
