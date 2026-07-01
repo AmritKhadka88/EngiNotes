@@ -589,6 +589,15 @@ class MainActivity : AppCompatActivity() {
                 // Auto handwriting-to-text if toggle is on
             }
         }
+        drawingView.onShapeCompleted        = { _ ->
+            // Switch to SELECT tool so the resize/rotate/delete handles on the just-drawn
+            // shape are immediately interactive. Without this the shape tool stays active
+            // and every subsequent tap starts drawing a new shape instead of hitting handles.
+            // Tapping outside the selection (handled in DrawingView) sets selectedItem=null
+            // and fires onItemSelected(null) — we deselect and stay in SELECT mode, not
+            // going back to the shape tool, matching the expected "tap outside = finalize" UX.
+            runOnUiThread { setActiveTool(null, Tool.SELECT) }
+        }
         drawingView.onItemSelected          = { item ->
             layerToolbar?.let { canvasContainer.removeView(it) }; layerToolbar = null
             if (item != null && item !is TextItem) {
