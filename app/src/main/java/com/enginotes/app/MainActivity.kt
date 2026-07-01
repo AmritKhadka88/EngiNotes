@@ -143,6 +143,7 @@ class MainActivity : AppCompatActivity() {
     private val recentBrushStyles = mutableListOf(BrushStyle.ROUND, BrushStyle.SPRAY, BrushStyle.WATERCOLOR)
     private var cameraImageFile: File? = null
     private var activeToolbarButton: ImageButton? = null
+    private var lastShapeTool: Tool? = null  // restored after tapping outside a just-drawn shape
     private var isSwitchingTextEditor = false
     private var exportWindowBitmap: Bitmap? = null
     private var pendingExportBitmap: Bitmap? = null
@@ -590,17 +591,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
         drawingView.onShapeCompleted        = { _ ->
-            // Switch to SELECT tool so the resize/rotate/delete handles on the just-drawn
-            // shape are immediately interactive. Without this the shape tool stays active
-            // and every subsequent tap starts drawing a new shape instead of hitting handles.
-            // Tapping outside the selection (handled in DrawingView) sets selectedItem=null
-            // and fires onItemSelected(null) — we deselect and stay in SELECT mode, not
-            // going back to the shape tool, matching the expected "tap outside = finalize" UX.
-            runOnUiThread { setActiveTool(null, Tool.SELECT) }
+            runOnUiThread {
+                lastShapeTool = drawingView.currentTool  // remember so we can restore after tap-outside
+                setActiveTool(null, Tool.SELECT)
+            }
         }
         drawingView.onItemSelected          = { item ->
             layerToolbar?.let { canvasContainer.removeView(it) }; layerToolbar = null
-            if (item != null && item !is TextItem) {
+            if (item == null) {
+                // Tapped outside a shape — restore the last shape tool so user can keep drawing
+                val restore = lastShapeTool
+                if (restore != null) { lastShapeTool = null; setActiveTool(null, restore) }
+            } else if (item !is TextItem) {
                 val tb = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
                     background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat(); setStroke(dp(1), Color.parseColor("#DDDDDD")) }
