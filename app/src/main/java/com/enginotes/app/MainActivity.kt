@@ -3025,23 +3025,14 @@ class MainActivity : AppCompatActivity() {
                 // change (above) has settled, so canvasContainer.height reflects its new,
                 // already-shrunk size rather than a stale pre-shrink value.
                 canvasContainer.post {
-                    // Target: tap position should be ~40dp above the keyboard top
-                    // Use canvasContainer's own current bottom edge (in its local coordinate space)
-                    // rather than computing from rootView height/IME inset directly - canvasContainer
-                    // itself already shrinks correctly above the static bottom toolbars (see onCreate),
-                    // so this stays in sync with that reflow instead of double-accounting for it.
-                    // Buffer increased from the original 100dp - the floating toolbar sits ABOVE
-                    // the box itself, so the tap point needs enough headroom that the toolbar
-                    // (toolbarHeightEstimate tall) also clears the keyboard/bottom toolbar zone,
-                    // not just the box. This pushes editing further up the visible page, similar
-                    // to where "Hello there" sits in your screenshot, so it's never clipped.
-                    val targetTapY = canvasContainer.height - dp(180)  // where we want the editor to sit
-                    val delta = targetTapY - tapCanvasY   // how much to shift upward (negative = up)
-
-                    if (delta < 0) {  // only scroll if editor is actually hidden
-                        // Only shift the canvas. onCanvasTransformed fires after shiftCanvasVertically
-                        // which calls updateET(), repositioning box and toolbar from world coordinates
-                        // automatically. Don't touch box/toolbar margins here - that fights updateET().
+                    // canvasContainer.height is now the visible canvas height with keyboard open.
+                    // Only scroll if the tap point is actually hidden (below visible canvas).
+                    // When we do scroll, bring the box to ~dp(200) from the top — the upper
+                    // portion of the visible canvas (the "red rectangle" target area).
+                    val visibleCanvasHeight = canvasContainer.height
+                    if (tapCanvasY > visibleCanvasHeight) {
+                        val targetTapY = dp(200).toFloat()
+                        val delta = targetTapY - tapCanvasY  // always negative (scroll up)
                         drawingView.shiftCanvasVertically(delta)
                     }
                 }
