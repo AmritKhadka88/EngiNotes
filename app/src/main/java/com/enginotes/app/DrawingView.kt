@@ -552,9 +552,10 @@ class StrokeData(
             // SEPARATE strokes overlap, which is the correct/expected behavior.
             PenStyle.MARKER -> { p.strokeWidth = strokeWidth * 2.4f; p.strokeJoin = Paint.Join.MITER; p.strokeCap = Paint.Cap.BUTT; p.alpha = (255 * 0.57f).toInt() }
         }
-        if (lineType != LineType.CONTINUOUS && penStyle != PenStyle.PENCIL && lineType.intervals != null) {
+        val intervals = lineType.intervals
+        if (lineType != LineType.CONTINUOUS && penStyle != PenStyle.PENCIL && intervals != null) {
             val sw = p.strokeWidth.coerceAtLeast(1f)
-            val scaled = lineType.intervals.map { it * sw / 3f }.toFloatArray()
+            val scaled = intervals.map { it * sw / 3f }.toFloatArray()
             p.pathEffect = android.graphics.DashPathEffect(scaled, 0f)
             if (lineType.cap != android.graphics.Paint.Cap.BUTT) p.strokeCap = lineType.cap
         }
