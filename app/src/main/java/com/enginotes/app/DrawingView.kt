@@ -736,7 +736,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun markSpatialDirty() { spatialDirty = true }
-    fun markSpatialDirtyAndInvalidate() { spatialDirty = true; invalidate() }
 
     private fun itemsNear(x: Float, y: Float, r: Float): List<Any> {
         if (spatialDirty) rebuildSpatialIndex()
@@ -760,6 +759,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         // Always include non-stroke items (cheap, complex bounds)
         for (a in actions) { if ((a is TextItem || a is TableItem || a is AudioItem || a is DimensionItem) && seen.add(a)) result.add(a) }
+        // Always include the most recently committed stroke — safety net for spatial grid
+        // timing issues where markSpatialDirty+rebuild races with invalidate.
+        val lastStroke = actions.lastOrNull { it is StrokeItem }
+        if (lastStroke != null && seen.add(lastStroke)) result.add(lastStroke)
         return result
     }
     fun removeDimensionItem(d: DimensionItem) { actions.remove(d); selectedItem = null; redoStack.clear(); markSpatialDirty(); invalidate() }
