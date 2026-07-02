@@ -794,6 +794,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var snapCenter: Boolean = true
     var snapNearest: Boolean = true
     var snapPerpendicular: Boolean = true
+    var snapTangent: Boolean = true
     var snapParallel: Boolean = true
     var snapGrid: Boolean = true
     var snapAutoConnect: Boolean = false
@@ -804,7 +805,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     enum class SnapType(val priority: Int) {
         ENDPOINT(1), INTERSECTION(2), MIDPOINT(3), CENTER(4),
-        PERPENDICULAR(5), PARALLEL(6), NEAREST(7), GRID(8)
+        PERPENDICULAR(5), TANGENT(6), PARALLEL(7), NEAREST(8), GRID(9)
     }
     data class SnapResult(val wx: Float, val wy: Float, val type: SnapType)
 
@@ -3210,6 +3211,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     SnapType.INTERSECTION -> Color.parseColor("#FF5722")
                     SnapType.CENTER -> Color.parseColor("#9C27B0")
                     SnapType.PERPENDICULAR -> Color.parseColor("#00BCD4")
+                    SnapType.TANGENT -> Color.parseColor("#FF9800")
                     SnapType.PARALLEL -> Color.parseColor("#2196F3")
                     SnapType.NEAREST -> Color.parseColor("#607D8B")
                     SnapType.GRID -> Color.parseColor("#9E9E9E")
@@ -3258,6 +3260,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     sp.color = Color.parseColor("#00BCD4"); sp.style = Paint.Style.STROKE
                     canvas.drawLine(sx, sy, sx, sy-r*1.2f, sp); canvas.drawLine(sx, sy, sx+r*1.2f, sy, sp)
                     canvas.drawLine(sx, sy-r*0.5f, sx+r*0.5f, sy-r*0.5f, sp); canvas.drawLine(sx+r*0.5f, sy-r*0.5f, sx+r*0.5f, sy, sp)
+                }
+                SnapType.TANGENT -> {
+                    // Circle with horizontal tangent line — orange
+                    sp.color = Color.parseColor("#FF9800"); sp.style = Paint.Style.STROKE
+                    canvas.drawCircle(sx, sy, r, sp)
+                    canvas.drawLine(sx-r*1.4f, sy, sx+r*1.4f, sy, sp)
                 }
                 SnapType.PARALLEL -> {
                     // Two parallel lines
@@ -4248,12 +4256,23 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun distance(x1: Float, y1: Float, x2: Float, y2: Float): Float = kotlin.math.hypot((x2 - x1).toDouble(), (y2 - y1).toDouble()).toFloat()
 
-    // ── Snap geometry helpers (AutoCAD-accurate) ──────────────────────────────
-    private fun cos(a: Float) = kotlin.math.cos(a.toDouble()).toFloat()
-    private fun sin(a: Float) = kotlin.math.sin(a.toDouble()).toFloat()
-    private val PI = Math.PI.toFloat()
+    // ── Snap geometry helpers (AutoCAD-accurate, matching buildPath exactly) ──
+    private fun cosf(a: Float) = kotlin.math.cos(a.toDouble()).toFloat()
+    private fun sinf(a: Float) = kotlin.math.sin(a.toDouble()).toFloat()
+    private val PIf = Math.PI.toFloat()
 
-    // Vertices (endpoints) for each shape — actual drawn corners, not bbox corners
+    // Polygon vertices matching addPolygon(sides, isStar) — start = -PI/2, step = 2PI/count
+    private fun polygonVerts(cx: Float, cy: Float, rx: Float, ry: Float, sides: Int, isStar: Boolean): List<Pair<Float,Float>> {
+        val count = if (isStar) sides * 2 else sides
+        val step = 2f * PIf / count; val start = -PIf / 2f
+        return (0 until count).map { i ->
+            val r2 = if (isStar && i % 2 == 1) 0.5f else 1f
+            val a = start + i * step
+            Pair(cx + cosf(a) * rx * r2, cy + sinf(a) * ry * r2)
+        }
+    }
+
+    // Actual drawn vertices for each shape — exactly matching buildPath
     private fun shapeEndpoints(pts: MutableList<Float>, type: Tool): List<Pair<Float,Float>> {
         if (pts.size < 2) return emptyList()
         val x1=pts[0]; val y1=pts[1]
@@ -4262,36 +4281,39 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val cx=(l+r)/2f; val cy=(t+b)/2f; val rx=(r-l)/2f; val ry=(b-t)/2f
         return when(type) {
             Tool.LINE, Tool.ARROW -> listOf(Pair(x1,y1), Pair(x2,y2))
-            Tool.RECTANGLE, Tool.ROUNDED_RECT -> listOf(Pair(l,t),Pair(r,t),Pair(l,b),Pair(r,b))
+            Tool.RECTANGLE, Tool.ROUNDED_RECT ->
+                listOf(Pair(l,t), Pair(r,t), Pair(r,b), Pair(l,b))
             Tool.CIRCLE -> {
                 val rad = kotlin.math.hypot((x2-x1).toDouble(),(y2-y1).toDouble()).toFloat()
-                listOf(Pair(x1,y1-rad),Pair(x1+rad,y1),Pair(x1,y1+rad),Pair(x1-rad,y1)) // 4 quadrants
+                listOf(Pair(x1,y1-rad), Pair(x1+rad,y1), Pair(x1,y1+rad), Pair(x1-rad,y1)) // quadrants
             }
-            Tool.ELLIPSE -> listOf(Pair(cx,t),Pair(r,cy),Pair(cx,b),Pair(l,cy)) // cardinal points
-            Tool.TRIANGLE -> listOf(Pair(cx,t),Pair(r,b),Pair(l,b))
-            Tool.ISOSCELES_TRIANGLE -> listOf(Pair(cx,t),Pair(r,b),Pair(l,b))
-            Tool.TRIANGLE_DOWN -> listOf(Pair(l,t),Pair(r,t),Pair(cx,b))
-            Tool.RIGHT_TRIANGLE -> listOf(Pair(l,t),Pair(l,b),Pair(r,b))
-            Tool.DIAMOND -> listOf(Pair(cx,t),Pair(r,cy),Pair(cx,b),Pair(l,cy))
-            Tool.PENTAGON, Tool.HEXAGON, Tool.HEPTAGON, Tool.OCTAGON,
-            Tool.NONAGON, Tool.DECAGON -> {
-                val n = when(type) { Tool.PENTAGON->5; Tool.HEXAGON->6; Tool.HEPTAGON->7; Tool.OCTAGON->8; Tool.NONAGON->9; else->10 }
-                (0 until n).map { i -> val a=2f*PI*i/n-PI/2f; Pair(cx+rx*cos(a), cy+ry*sin(a)) }
-            }
-            Tool.STAR -> (0 until 5).map { i -> val a=2f*PI*i/5f-PI/2f; Pair(cx+rx*cos(a), cy+ry*sin(a)) }
-            Tool.TRAPEZOID -> { val inset=(r-l)*0.2f; listOf(Pair(l+inset,t),Pair(r-inset,t),Pair(r,b),Pair(l,b)) }
+            Tool.ELLIPSE ->
+                listOf(Pair(cx,t), Pair(r,cy), Pair(cx,b), Pair(l,cy)) // cardinal points
+            Tool.TRIANGLE -> listOf(Pair(cx,t), Pair(r,b), Pair(l,b))
+            Tool.ISOSCELES_TRIANGLE -> listOf(Pair(cx,t), Pair(r,b), Pair(l,b))
+            Tool.TRIANGLE_DOWN -> listOf(Pair(l,t), Pair(r,t), Pair(cx,b))
+            Tool.RIGHT_TRIANGLE -> listOf(Pair(l,t), Pair(l,b), Pair(r,b))
+            Tool.DIAMOND -> listOf(Pair(cx,t), Pair(r,cy), Pair(cx,b), Pair(l,cy))
+            Tool.TRAPEZOID -> { val ins=(r-l)*0.2f; listOf(Pair(l+ins,t),Pair(r-ins,t),Pair(r,b),Pair(l,b)) }
             Tool.PARALLELOGRAM -> { val sk=(r-l)*0.2f; listOf(Pair(l+sk,t),Pair(r,t),Pair(r-sk,b),Pair(l,b)) }
-            Tool.CROSS, Tool.PLUS_THICK -> {
-                val tx=(r-l)/3f; val ty=(b-t)/3f
-                listOf(Pair(l+tx,t),Pair(r-tx,t),Pair(r-tx,t+ty),Pair(r,t+ty),Pair(r,b-ty),
-                    Pair(r-tx,b-ty),Pair(r-tx,b),Pair(l+tx,b),Pair(l+tx,b-ty),Pair(l,b-ty),Pair(l,t+ty),Pair(l+tx,t+ty))
-            }
+            Tool.PENTAGON -> polygonVerts(cx, cy, rx, ry, 5, false)
+            Tool.HEXAGON -> polygonVerts(cx, cy, rx, ry, 6, false)
+            Tool.HEPTAGON -> polygonVerts(cx, cy, rx, ry, 7, false)
+            Tool.OCTAGON -> polygonVerts(cx, cy, rx, ry, 8, false)
+            Tool.NONAGON -> polygonVerts(cx, cy, rx, ry, 9, false)
+            Tool.DECAGON -> polygonVerts(cx, cy, rx, ry, 10, false)
+            Tool.STAR -> polygonVerts(cx, cy, rx, ry, 5, true) // outer (even) + inner (odd) vertices
+            Tool.CROSS -> // two crossing lines: 4 endpoints
+                listOf(Pair(l,cy), Pair(r,cy), Pair(cx,t), Pair(cx,b))
             Tool.PEN, Tool.CURVE, Tool.ARC -> {
                 val res = mutableListOf(Pair(x1,y1))
                 if (pts.size >= 4) res.add(Pair(x2,y2))
                 res
             }
-            else -> if (pts.size >= 4) listOf(Pair(l,t),Pair(r,t),Pair(l,b),Pair(r,b)) else listOf(Pair(x1,y1))
+            else -> {
+                // Unknown shape: try polygon approximation from bbox corners
+                if (pts.size >= 4) listOf(Pair(l,t),Pair(r,t),Pair(r,b),Pair(l,b)) else listOf(Pair(x1,y1))
+            }
         }
     }
 
@@ -4316,17 +4338,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (pts.size < 2) return null
         val x1=pts[0]; val y1=pts[1]
         val x2=if(pts.size>=4) pts[pts.size-2] else x1; val y2=if(pts.size>=4) pts[pts.size-1] else y1
-        val cx=(x1+x2)/2f; val cy=(y1+y2)/2f
+        val l=minOf(x1,x2); val r=maxOf(x1,x2); val t=minOf(y1,y2); val b=maxOf(y1,y2)
+        val cx=(l+r)/2f; val cy=(t+b)/2f
         return when(type) {
             Tool.CIRCLE -> Pair(x1, y1)  // center is pts[0,1]
-            Tool.LINE, Tool.ARROW, Tool.PEN, Tool.CURVE, Tool.ARC -> null  // lines have no center
-            Tool.TRIANGLE, Tool.ISOSCELES_TRIANGLE -> {
-                // centroid = average of 3 vertices
-                val l=minOf(x1,x2); val r=maxOf(x1,x2); val t=minOf(y1,y2); val b=maxOf(y1,y2)
-                Pair((l+r+l+r)/4f + (r-l)/4f, (t+b+b)/3f) // apex=(cx,t), bl=(l,b), br=(r,b) → centroid=(cx, (t+2b)/3)
-            }
-            Tool.TRIANGLE_DOWN -> { val l=minOf(x1,x2); val r=maxOf(x1,x2); val t=minOf(y1,y2); val b=maxOf(y1,y2); Pair((l+r)/2f, (t+t+b)/3f) }
-            Tool.RIGHT_TRIANGLE -> { val l=minOf(x1,x2); val r=maxOf(x1,x2); val t=minOf(y1,y2); val b=maxOf(y1,y2); Pair((l+l+r)/3f, (t+b+b)/3f) }
+            Tool.LINE, Tool.ARROW, Tool.PEN, Tool.CURVE, Tool.ARC -> null  // no center concept
+            // True centroid = average of vertices (not bounding-box center)
+            Tool.TRIANGLE, Tool.ISOSCELES_TRIANGLE -> Pair(cx, (t + b + b) / 3f)  // apex=(cx,t), bl/br=(l/r,b)
+            Tool.TRIANGLE_DOWN -> Pair(cx, (t + t + b) / 3f)
+            Tool.RIGHT_TRIANGLE -> Pair((l + l + r) / 3f, (t + b + b) / 3f)
+            Tool.TRAPEZOID -> { val ins=(r-l)*0.2f; Pair((l+ins+r-ins+r+l)/4f, cy) } // avg of 4 vertices x
             else -> Pair(cx, cy)
         }
     }
@@ -4351,7 +4372,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val cx=(l+r)/2f; val cy=(t+b)/2f; val rx=(r-l)/2f; val ry=(b-t)/2f
             if (rx < 1e-4f || ry < 1e-4f) return null
             val angle = kotlin.math.atan2((wy-cy).toDouble()/ry, (wx-cx).toDouble()/rx).toFloat()
-            return Pair(cx+rx*cos(angle), cy+ry*sin(angle))
+            return Pair(cx+rx*cosf(angle), cy+ry*sinf(angle))
         }
         // Lines: nearest point on segment
         if (type == Tool.LINE || type == Tool.ARROW) {
@@ -4432,6 +4453,43 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val dx=bx-ax; val dy=by-ay; val lenSq=(dx*dx+dy*dy).coerceAtLeast(1e-6f)
                     val tf=(((strokeStartWx-ax)*dx+(strokeStartWy-ay)*dy)/lenSq).coerceIn(0f,1f)
                     add(ax+tf*dx, ay+tf*dy, SnapType.PERPENDICULAR)
+                }
+            }
+
+            // Tangent — point(s) on circle/ellipse where a line from strokeStart is tangent
+            if (snapTangent && !strokeStartWx.isNaN()) {
+                when (t) {
+                    Tool.CIRCLE -> {
+                        val ox=x1; val oy=y1
+                        val rad = kotlin.math.hypot((x2-ox).toDouble(),(y2-oy).toDouble()).toFloat()
+                        val dx2=strokeStartWx-ox; val dy2=strokeStartWy-oy
+                        val d_sq=dx2*dx2+dy2*dy2
+                        if (d_sq > rad*rad + 1e-4f) {
+                            val A=rad*rad/d_sq
+                            val B=rad* kotlin.math.sqrt((d_sq-rad*rad).toDouble()).toFloat()/d_sq
+                            add(ox+A*dx2-B*(-dy2), oy+A*dy2-B*dx2, SnapType.TANGENT)
+                            add(ox+A*dx2+B*(-dy2), oy+A*dy2+B*dx2, SnapType.TANGENT)
+                        }
+                    }
+                    Tool.ELLIPSE -> {
+                        // Approximate tangent using circle of average radius
+                        val cx2=(l+r)/2f; val cy2=(t+b)/2f
+                        val rx2=(r-l)/2f; val ry2=(b-t)/2f; val rad2=(rx2+ry2)/2f
+                        val dx2=strokeStartWx-cx2; val dy2=strokeStartWy-cy2
+                        val d_sq=dx2*dx2+dy2*dy2
+                        if (d_sq > rad2*rad2 + 1e-4f) {
+                            val A=rad2*rad2/d_sq
+                            val B=rad2* kotlin.math.sqrt((d_sq-rad2*rad2).toDouble()).toFloat()/d_sq
+                            // Project back onto ellipse boundary
+                            val t1x=cx2+A*dx2-B*(-dy2); val t1y=cy2+A*dy2-B*dx2
+                            val t2x=cx2+A*dx2+B*(-dy2); val t2y=cy2+A*dy2+B*dx2
+                            val a1= kotlin.math.atan2((t1y-cy2).toDouble()/ry2,(t1x-cx2).toDouble()/rx2).toFloat()
+                            val a2= kotlin.math.atan2((t2y-cy2).toDouble()/ry2,(t2x-cx2).toDouble()/rx2).toFloat()
+                            add(cx2+rx2*cosf(a1), cy2+ry2*sinf(a1), SnapType.TANGENT)
+                            add(cx2+rx2*cosf(a2), cy2+ry2*sinf(a2), SnapType.TANGENT)
+                        }
+                    }
+                    else -> {}
                 }
             }
 

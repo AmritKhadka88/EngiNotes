@@ -2118,6 +2118,7 @@ class MainActivity : AppCompatActivity() {
             SnapOption("☑ Center",        { drawingView.snapCenter },        { drawingView.snapCenter = it }),
             SnapOption("☑ Nearest",       { drawingView.snapNearest },       { drawingView.snapNearest = it }),
             SnapOption("☑ Perpendicular", { drawingView.snapPerpendicular }, { drawingView.snapPerpendicular = it }),
+            SnapOption("☑ Tangent",       { drawingView.snapTangent },      { drawingView.snapTangent = it }),
             SnapOption("☑ Parallel",      { drawingView.snapParallel },      { drawingView.snapParallel = it }),
             SnapOption("☑ Grid",          { drawingView.snapGrid },          { drawingView.snapGrid = it }),
             SnapOption("⚡ Auto-connect",  { drawingView.snapAutoConnect },   { drawingView.snapAutoConnect = it }),
