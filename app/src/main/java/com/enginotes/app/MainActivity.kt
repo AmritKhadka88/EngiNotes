@@ -76,8 +76,6 @@ class MainActivity : AppCompatActivity() {
         R.drawable.ic_shape_parallelogram to Tool.PARALLELOGRAM,
         R.drawable.ic_shape_right_triangle to Tool.RIGHT_TRIANGLE,
         R.drawable.ic_shape_isosceles to Tool.ISOSCELES_TRIANGLE,
-        R.drawable.ic_shape_semicircle to Tool.SEMICIRCLE,
-        R.drawable.ic_shape_half_ellipse to Tool.HALF_ELLIPSE,
         R.drawable.ic_shape_teardrop to Tool.TEARDROP,
         R.drawable.ic_shape_heart to Tool.HEART,
         R.drawable.ic_shape_plus_thick to Tool.PLUS_THICK,
@@ -2254,6 +2252,23 @@ class MainActivity : AppCompatActivity() {
 
         // Line type section
         addLineTypeSection(panel, { sectionLabel(it) }) { lt -> drawingView.currentLineType = lt }
+
+        // Arc settings (only relevant when Arc tool is active, but shown always for quick access)
+        sectionLabel("Arc Control Points")
+        val arcLbl = TextView(this).apply { text = "Points: ${drawingView.arcDivisions}"; textSize = 12f; setTextColor(Color.parseColor("#6A6A6A")) }
+        panel.addView(arcLbl)
+        panel.addView(SeekBar(this).apply {
+            max = 19; progress = drawingView.arcDivisions - 1
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) {
+                    val pts = (v + 1).coerceIn(1, 20)
+                    drawingView.arcDivisions = pts
+                    arcLbl.text = "Points: $pts"
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        })
 
         // Snap to endpoints toggle
         sectionLabel("Snap to Endpoints")
