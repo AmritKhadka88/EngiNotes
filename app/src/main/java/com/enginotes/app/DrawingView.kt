@@ -2752,7 +2752,57 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
                 val item = selectedItem ?: return
                 when (activeHandle) {
-                    HandleType.MOVE -> { moveItem(item, wx - dragStartWorldX, wy - dragStartWorldY); dragStartWorldX = wx; dragStartWorldY = wy }
+                    HandleType.MOVE -> {
+                        var finalWx = wx; var finalWy = wy
+                        if (snapEnabled && item is StrokeItem) {
+                            // Compute all visible vertices of the item in its current position,
+                            // then check each against snap targets (excluding the item itself).
+                            val pts = item.data.points
+                            if (pts.size >= 4) {
+                                val dx0 = wx - dragStartWorldX; val dy0 = wy - dragStartWorldY
+                                val x1 = pts[0] + dx0; val y1 = pts[1] + dy0
+                                val x2 = pts[pts.size-2] + dx0; val y2 = pts[pts.size-1] + dy0
+                                val l = minOf(x1,x2); val r = maxOf(x1,x2)
+                                val t = minOf(y1,y2); val b = maxOf(y1,y2)
+                                val cxs = (l+r)/2f; val cys = (t+b)/2f
+                                val verts = when (item.data.type) {
+                                    Tool.TRIANGLE, Tool.ISOSCELES_TRIANGLE -> listOf(Pair(cxs,t), Pair(l,b), Pair(r,b))
+                                    Tool.TRIANGLE_DOWN -> listOf(Pair(l,t), Pair(r,t), Pair(cxs,b))
+                                    Tool.RIGHT_TRIANGLE -> listOf(Pair(l,t), Pair(l,b), Pair(r,b))
+                                    Tool.DIAMOND -> listOf(Pair(cxs,t), Pair(r,cys), Pair(cxs,b), Pair(l,cys))
+                                    Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.ELLIPSE ->
+                                        listOf(Pair(l,t), Pair(r,t), Pair(l,b), Pair(r,b))
+                                    Tool.LINE, Tool.ARROW -> listOf(Pair(x1,y1), Pair(x2,y2))
+                                    else -> listOf(Pair(l,t), Pair(r,t), Pair(l,b), Pair(r,b), Pair(cxs,cys))
+                                }
+                                // Temporarily remove this item from actions so it doesn't snap to itself
+                                actions.remove(item)
+                                var bestSnap: SnapResult? = null
+                                var bestPriority = Int.MAX_VALUE
+                                var bestDist = Float.MAX_VALUE
+                                var bestVx = 0f; var bestVy = 0f
+                                for ((vx2, vy2) in verts) {
+                                    val snap = findSnapTarget(vx2, vy2)
+                                    if (snap != null) {
+                                        val d = distance(vx2, vy2, snap.wx, snap.wy)
+                                        if (snap.type.priority < bestPriority ||
+                                            (snap.type.priority == bestPriority && d < bestDist)) {
+                                            bestSnap = snap; bestPriority = snap.type.priority
+                                            bestDist = d; bestVx = vx2; bestVy = vy2
+                                        }
+                                    }
+                                }
+                                actions.add(item)  // put it back
+                                if (bestSnap != null) {
+                                    // Offset the drag so the snapping vertex lands on the target
+                                    finalWx = wx + (bestSnap.wx - bestVx)
+                                    finalWy = wy + (bestSnap.wy - bestVy)
+                                }
+                            }
+                        }
+                        moveItem(item, finalWx - dragStartWorldX, finalWy - dragStartWorldY)
+                        dragStartWorldX = finalWx; dragStartWorldY = finalWy
+                    }
                     HandleType.ROTATE -> { val newAngle = computeAngle(item, wx, wy); setRotation(item, dragStartRotation + (newAngle - dragStartAngle)) }
                     HandleType.NONE -> return
                     else -> resizeItem(item, activeHandle, wx, wy)
@@ -3808,7 +3858,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
                     val snap = findSnapTarget(wx, wy)
                     if (snap != null) { wx = snap.wx; wy = snap.wy }
-                    snapResult = null  // clear indicator once stroke starts
+                    snapResult = null
                 }
                 val data = when {
                     currentTool == Tool.PEN -> {
@@ -3834,12 +3884,75 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     for (h in 0 until event.historySize) { eraseAt(screenToWorldX(event.getHistoricalX(h)), screenToWorldY(event.getHistoricalY(h))) }
                     eraseAt(wx, wy); invalidate(); return
                 }
-                // Update snap indicator target for live preview while drawing
+                // Update snap indicator and apply magnetic pull during live drawing.
+                // For shapes with computed vertices (TRIANGLE etc.), check ALL vertices
+                // of the current shape — not just the cursor — against snap targets.
+                // Offset wx,wy so the closest vertex lands exactly on the snap target.
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
-                    val pts = currentItem?.data?.points
-                    val sx = if (pts != null && pts.size >= 2) pts[0] else Float.NaN
-                    val sy = if (pts != null && pts.size >= 2) pts[1] else Float.NaN
-                    snapResult = findSnapTarget(wx, wy, sx, sy)
+                    val pts0 = currentItem?.data?.points
+                    val x1s = if (pts0 != null && pts0.size >= 2) pts0[0] else Float.NaN
+                    val y1s = if (pts0 != null && pts0.size >= 2) pts0[1] else Float.NaN
+
+                    // Compute candidate "check points" for this shape: all its visible vertices
+                    val checkPoints = mutableListOf(Pair(wx, wy))  // cursor = drag end
+                    if (!x1s.isNaN() && pts0 != null) {
+                        val l = minOf(x1s, wx); val r = maxOf(x1s, wx)
+                        val t = minOf(y1s, wy); val b = maxOf(y1s, wy)
+                        val cxs = (l + r) / 2f; val cys = (t + b) / 2f
+                        when (currentTool) {
+                            Tool.TRIANGLE, Tool.ISOSCELES_TRIANGLE -> {
+                                checkPoints.add(Pair(cxs, t))   // apex
+                                checkPoints.add(Pair(l, b))      // bottom-left
+                                checkPoints.add(Pair(r, b))      // bottom-right
+                            }
+                            Tool.TRIANGLE_DOWN -> {
+                                checkPoints.add(Pair(l, t))
+                                checkPoints.add(Pair(r, t))
+                                checkPoints.add(Pair(cxs, b))
+                            }
+                            Tool.RIGHT_TRIANGLE -> {
+                                checkPoints.add(Pair(l, t))
+                                checkPoints.add(Pair(l, b))
+                                checkPoints.add(Pair(r, b))
+                            }
+                            Tool.DIAMOND -> {
+                                checkPoints.add(Pair(cxs, t))
+                                checkPoints.add(Pair(r, cys))
+                                checkPoints.add(Pair(cxs, b))
+                                checkPoints.add(Pair(l, cys))
+                            }
+                            Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.ELLIPSE -> {
+                                checkPoints.add(Pair(l, t)); checkPoints.add(Pair(r, t))
+                                checkPoints.add(Pair(l, b)); checkPoints.add(Pair(r, b))
+                            }
+                            else -> {}  // LINE, ARROW, PEN: cursor already in list
+                        }
+                    }
+
+                    // Find the best snap target for any check point
+                    var bestSnap: SnapResult? = null
+                    var bestDist = Float.MAX_VALUE
+                    var bestVertexX = wx; var bestVertexY = wy
+
+                    for ((cpx, cpy) in checkPoints) {
+                        val snap = findSnapTarget(cpx, cpy, x1s, y1s)
+                        if (snap != null) {
+                            val d = distance(cpx, cpy, snap.wx, snap.wy)
+                            if (bestSnap == null || snap.type.priority < bestSnap.type.priority ||
+                                (snap.type.priority == bestSnap.type.priority && d < bestDist)) {
+                                bestSnap = snap; bestDist = d
+                                bestVertexX = cpx; bestVertexY = cpy
+                            }
+                        }
+                    }
+
+                    snapResult = bestSnap
+                    if (bestSnap != null) {
+                        // Offset wx,wy so the winning vertex lands exactly on the snap target
+                        val dx = bestSnap.wx - bestVertexX
+                        val dy = bestSnap.wy - bestVertexY
+                        wx += dx; wy += dy
+                    }
                 } else {
                     snapResult = null; snapAwarenessResults = emptyList()
                 }
