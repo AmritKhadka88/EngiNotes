@@ -614,14 +614,14 @@ class MainActivity : AppCompatActivity() {
                 // Auto handwriting-to-text if toggle is on
             }
         }
-        drawingView.onShapeCompleted        = { _ ->
+        drawingView.onShapeCompleted        = { item ->
+            // Don't switch currentTool to SELECT — it causes a rendering race where the
+            // tool setter fires invalidate() before the spatial grid is fully rebuilt,
+            // making the stroke disappear. selectedItem alone is enough to show the
+            // resize/rotate/delete handles. Touch handling for those handles works via
+            // handleSelect which checks selectedItem regardless of currentTool.
             lastShapeTool = drawingView.currentTool
-            drawingView.post {
-                setActiveTool(null, Tool.SELECT)
-                // After all layout changes from setActiveTool settle, force one more
-                // invalidate so the spatial grid is queried in a fully stable state.
-                drawingView.markSpatialDirtyAndInvalidate()
-            }
+            drawingView.selectedItem = item
         }
         drawingView.onItemSelected          = { item ->
             layerToolbar?.let { canvasContainer.removeView(it) }; layerToolbar = null
