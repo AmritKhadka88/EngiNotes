@@ -3161,78 +3161,32 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Drawn in canvas (world) coordinate space (inside the canvas.save/restore block).
     private fun drawSnapMarkers(canvas: Canvas) {
         val markerP = Paint().apply { isAntiAlias = true; strokeWidth = 1.5f / scaleFactor }
-        val r = 7f / scaleFactor  // marker radius in world units, stays constant size on screen
+        val r = 7f / scaleFactor
 
         for (action in actions) {
             if (action !is StrokeItem) continue
-            val pts = action.data.points
+            val pts = action.data.points; val t = action.data.type
             if (pts.size < 2) continue
-            val x1 = pts[0]; val y1 = pts[1]
-            val x2 = if (pts.size >= 4) pts[pts.size - 2] else x1
-            val y2 = if (pts.size >= 4) pts[pts.size - 1] else y1
-            val cx = (x1 + x2) / 2f; val cy = (y1 + y2) / 2f
 
             fun square(wx: Float, wy: Float) {
                 markerP.color = Color.parseColor("#2196F3"); markerP.style = Paint.Style.STROKE
-                canvas.drawRect(wx - r, wy - r, wx + r, wy + r, markerP)
+                canvas.drawRect(wx-r, wy-r, wx+r, wy+r, markerP)
             }
-            fun triangle(wx: Float, wy: Float) {
+            fun tri(wx: Float, wy: Float) {
                 markerP.color = Color.parseColor("#4CAF50"); markerP.style = Paint.Style.STROKE
-                val tri = android.graphics.Path().apply { moveTo(wx, wy - r); lineTo(wx + r, wy + r); lineTo(wx - r, wy + r); close() }
-                canvas.drawPath(tri, markerP)
+                val p = android.graphics.Path().apply { moveTo(wx,wy-r); lineTo(wx+r,wy+r); lineTo(wx-r,wy+r); close() }
+                canvas.drawPath(p, markerP)
             }
-            fun circle(wx: Float, wy: Float) {
+            fun circ(wx: Float, wy: Float) {
                 markerP.color = Color.parseColor("#9C27B0"); markerP.style = Paint.Style.STROKE
                 canvas.drawCircle(wx, wy, r, markerP)
-                canvas.drawLine(wx - r * 1.4f, wy, wx + r * 1.4f, wy, markerP)
-                canvas.drawLine(wx, wy - r * 1.4f, wx, wy + r * 1.4f, markerP)
+                canvas.drawLine(wx-r*1.4f, wy, wx+r*1.4f, wy, markerP)
+                canvas.drawLine(wx, wy-r*1.4f, wx, wy+r*1.4f, markerP)
             }
 
-            // Endpoint markers (blue squares)
-            if (snapEndpoint) {
-                val l = minOf(x1,x2); val rr = maxOf(x1,x2); val t = minOf(y1,y2); val b = maxOf(y1,y2)
-                when (action.data.type) {
-                    Tool.LINE, Tool.ARROW, Tool.CURVE, Tool.PEN -> { square(x1, y1); if (pts.size >= 4) square(x2, y2) }
-                    Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.ELLIPSE -> {
-                        square(l, t); square(rr, t); square(l, b); square(rr, b)
-                    }
-                    Tool.TRIANGLE, Tool.ISOSCELES_TRIANGLE -> {
-                        square((l+rr)/2f, t); square(l, b); square(rr, b)
-                    }
-                    Tool.TRIANGLE_DOWN -> {
-                        square(l, t); square(rr, t); square((l+rr)/2f, b)
-                    }
-                    Tool.DIAMOND -> {
-                        square((l+rr)/2f, t); square(rr, (t+b)/2f); square((l+rr)/2f, b); square(l, (t+b)/2f)
-                    }
-                    else -> { square(x1, y1); if (pts.size >= 4) square(x2, y2) }
-                }
-            }
-
-            // Midpoint markers (green triangles)
-            if (snapMidpoint && pts.size >= 4) {
-                when (action.data.type) {
-                    Tool.LINE, Tool.ARROW, Tool.CURVE -> triangle(cx, cy)
-                    Tool.RECTANGLE, Tool.ROUNDED_RECT -> {
-                        val l = minOf(x1,x2); val rr = maxOf(x1,x2); val t = minOf(y1,y2); val b = maxOf(y1,y2)
-                        triangle((l+rr)/2f, t); triangle((l+rr)/2f, b)
-                        triangle(l, (t+b)/2f); triangle(rr, (t+b)/2f)
-                    }
-                    else -> triangle(cx, cy)
-                }
-            }
-
-            // Center markers (purple circle+crosshair)
-            if (snapCenter) {
-                when (action.data.type) {
-                    Tool.CIRCLE -> circle(x1, y1)
-                    Tool.ELLIPSE, Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.DIAMOND,
-                    Tool.TRIANGLE, Tool.ISOSCELES_TRIANGLE, Tool.TRIANGLE_DOWN,
-                    Tool.PENTAGON, Tool.HEXAGON, Tool.HEPTAGON, Tool.OCTAGON,
-                    Tool.NONAGON, Tool.DECAGON, Tool.STAR, Tool.CROSS -> circle(cx, cy)
-                    else -> {}
-                }
-            }
+            if (snapEndpoint) shapeEndpoints(pts, t).forEach { (ex,ey) -> square(ex, ey) }
+            if (snapMidpoint) shapeEdgeMidpoints(pts, t).forEach { (mx,my) -> tri(mx, my) }
+            if (snapCenter) shapeCenter(pts, t)?.let { (cx,cy) -> circ(cx, cy) }
         }
     }
 
@@ -4294,6 +4248,146 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun distance(x1: Float, y1: Float, x2: Float, y2: Float): Float = kotlin.math.hypot((x2 - x1).toDouble(), (y2 - y1).toDouble()).toFloat()
 
+    // ── Snap geometry helpers (AutoCAD-accurate) ──────────────────────────────
+    private fun cos(a: Float) = kotlin.math.cos(a.toDouble()).toFloat()
+    private fun sin(a: Float) = kotlin.math.sin(a.toDouble()).toFloat()
+    private val PI = Math.PI.toFloat()
+
+    // Vertices (endpoints) for each shape — actual drawn corners, not bbox corners
+    private fun shapeEndpoints(pts: MutableList<Float>, type: Tool): List<Pair<Float,Float>> {
+        if (pts.size < 2) return emptyList()
+        val x1=pts[0]; val y1=pts[1]
+        val x2=if(pts.size>=4) pts[pts.size-2] else x1; val y2=if(pts.size>=4) pts[pts.size-1] else y1
+        val l=minOf(x1,x2); val r=maxOf(x1,x2); val t=minOf(y1,y2); val b=maxOf(y1,y2)
+        val cx=(l+r)/2f; val cy=(t+b)/2f; val rx=(r-l)/2f; val ry=(b-t)/2f
+        return when(type) {
+            Tool.LINE, Tool.ARROW -> listOf(Pair(x1,y1), Pair(x2,y2))
+            Tool.RECTANGLE, Tool.ROUNDED_RECT -> listOf(Pair(l,t),Pair(r,t),Pair(l,b),Pair(r,b))
+            Tool.CIRCLE -> {
+                val rad = kotlin.math.hypot((x2-x1).toDouble(),(y2-y1).toDouble()).toFloat()
+                listOf(Pair(x1,y1-rad),Pair(x1+rad,y1),Pair(x1,y1+rad),Pair(x1-rad,y1)) // 4 quadrants
+            }
+            Tool.ELLIPSE -> listOf(Pair(cx,t),Pair(r,cy),Pair(cx,b),Pair(l,cy)) // cardinal points
+            Tool.TRIANGLE -> listOf(Pair(cx,t),Pair(r,b),Pair(l,b))
+            Tool.ISOSCELES_TRIANGLE -> listOf(Pair(cx,t),Pair(r,b),Pair(l,b))
+            Tool.TRIANGLE_DOWN -> listOf(Pair(l,t),Pair(r,t),Pair(cx,b))
+            Tool.RIGHT_TRIANGLE -> listOf(Pair(l,t),Pair(l,b),Pair(r,b))
+            Tool.DIAMOND -> listOf(Pair(cx,t),Pair(r,cy),Pair(cx,b),Pair(l,cy))
+            Tool.PENTAGON, Tool.HEXAGON, Tool.HEPTAGON, Tool.OCTAGON,
+            Tool.NONAGON, Tool.DECAGON -> {
+                val n = when(type) { Tool.PENTAGON->5; Tool.HEXAGON->6; Tool.HEPTAGON->7; Tool.OCTAGON->8; Tool.NONAGON->9; else->10 }
+                (0 until n).map { i -> val a=2f*PI*i/n-PI/2f; Pair(cx+rx*cos(a), cy+ry*sin(a)) }
+            }
+            Tool.STAR -> (0 until 5).map { i -> val a=2f*PI*i/5f-PI/2f; Pair(cx+rx*cos(a), cy+ry*sin(a)) }
+            Tool.TRAPEZOID -> { val inset=(r-l)*0.2f; listOf(Pair(l+inset,t),Pair(r-inset,t),Pair(r,b),Pair(l,b)) }
+            Tool.PARALLELOGRAM -> { val sk=(r-l)*0.2f; listOf(Pair(l+sk,t),Pair(r,t),Pair(r-sk,b),Pair(l,b)) }
+            Tool.CROSS, Tool.PLUS_THICK -> {
+                val tx=(r-l)/3f; val ty=(b-t)/3f
+                listOf(Pair(l+tx,t),Pair(r-tx,t),Pair(r-tx,t+ty),Pair(r,t+ty),Pair(r,b-ty),
+                    Pair(r-tx,b-ty),Pair(r-tx,b),Pair(l+tx,b),Pair(l+tx,b-ty),Pair(l,b-ty),Pair(l,t+ty),Pair(l+tx,t+ty))
+            }
+            Tool.PEN, Tool.CURVE, Tool.ARC -> {
+                val res = mutableListOf(Pair(x1,y1))
+                if (pts.size >= 4) res.add(Pair(x2,y2))
+                res
+            }
+            else -> if (pts.size >= 4) listOf(Pair(l,t),Pair(r,t),Pair(l,b),Pair(r,b)) else listOf(Pair(x1,y1))
+        }
+    }
+
+    // Edge midpoints for each shape
+    private fun shapeEdgeMidpoints(pts: MutableList<Float>, type: Tool): List<Pair<Float,Float>> {
+        val verts = shapeEndpoints(pts, type)
+        if (verts.size < 2) {
+            // For lines: just the single midpoint
+            if (pts.size >= 4 && (type == Tool.LINE || type == Tool.ARROW)) {
+                return listOf(Pair((pts[0]+pts[pts.size-2])/2f, (pts[1]+pts[pts.size-1])/2f))
+            }
+            return emptyList()
+        }
+        return verts.indices.map { i ->
+            val (ax,ay) = verts[i]; val (bx,by) = verts[(i+1) % verts.size]
+            Pair((ax+bx)/2f, (ay+by)/2f)
+        }
+    }
+
+    // Centroid / center for each shape
+    private fun shapeCenter(pts: MutableList<Float>, type: Tool): Pair<Float,Float>? {
+        if (pts.size < 2) return null
+        val x1=pts[0]; val y1=pts[1]
+        val x2=if(pts.size>=4) pts[pts.size-2] else x1; val y2=if(pts.size>=4) pts[pts.size-1] else y1
+        val cx=(x1+x2)/2f; val cy=(y1+y2)/2f
+        return when(type) {
+            Tool.CIRCLE -> Pair(x1, y1)  // center is pts[0,1]
+            Tool.LINE, Tool.ARROW, Tool.PEN, Tool.CURVE, Tool.ARC -> null  // lines have no center
+            Tool.TRIANGLE, Tool.ISOSCELES_TRIANGLE -> {
+                // centroid = average of 3 vertices
+                val l=minOf(x1,x2); val r=maxOf(x1,x2); val t=minOf(y1,y2); val b=maxOf(y1,y2)
+                Pair((l+r+l+r)/4f + (r-l)/4f, (t+b+b)/3f) // apex=(cx,t), bl=(l,b), br=(r,b) → centroid=(cx, (t+2b)/3)
+            }
+            Tool.TRIANGLE_DOWN -> { val l=minOf(x1,x2); val r=maxOf(x1,x2); val t=minOf(y1,y2); val b=maxOf(y1,y2); Pair((l+r)/2f, (t+t+b)/3f) }
+            Tool.RIGHT_TRIANGLE -> { val l=minOf(x1,x2); val r=maxOf(x1,x2); val t=minOf(y1,y2); val b=maxOf(y1,y2); Pair((l+l+r)/3f, (t+b+b)/3f) }
+            else -> Pair(cx, cy)
+        }
+    }
+
+    // Nearest point on the shape's boundary from (wx, wy)
+    private fun nearestOnBoundary(pts: MutableList<Float>, type: Tool, wx: Float, wy: Float): Pair<Float,Float>? {
+        if (pts.size < 2) return null
+        val x1=pts[0]; val y1=pts[1]
+        val x2=if(pts.size>=4) pts[pts.size-2] else x1; val y2=if(pts.size>=4) pts[pts.size-1] else y1
+
+        // Circle: project onto circumference
+        if (type == Tool.CIRCLE) {
+            val rad = kotlin.math.hypot((x2-x1).toDouble(),(y2-y1).toDouble()).toFloat()
+            if (rad < 1e-4f) return null
+            val dx=wx-x1; val dy=wy-y1
+            val len=kotlin.math.hypot(dx.toDouble(),dy.toDouble()).toFloat().coerceAtLeast(1e-6f)
+            return Pair(x1+dx/len*rad, y1+dy/len*rad)
+        }
+        // Ellipse: project onto ellipse boundary using angle from center
+        if (type == Tool.ELLIPSE || type == Tool.ROUNDED_RECT) {
+            val l=minOf(x1,x2); val r=maxOf(x1,x2); val t=minOf(y1,y2); val b=maxOf(y1,y2)
+            val cx=(l+r)/2f; val cy=(t+b)/2f; val rx=(r-l)/2f; val ry=(b-t)/2f
+            if (rx < 1e-4f || ry < 1e-4f) return null
+            val angle = kotlin.math.atan2((wy-cy).toDouble()/ry, (wx-cx).toDouble()/rx).toFloat()
+            return Pair(cx+rx*cos(angle), cy+ry*sin(angle))
+        }
+        // Lines: nearest point on segment
+        if (type == Tool.LINE || type == Tool.ARROW) {
+            val dx=x2-x1; val dy=y2-y1; val lenSq=(dx*dx+dy*dy).coerceAtLeast(1e-6f)
+            val t2=(((wx-x1)*dx+(wy-y1)*dy)/lenSq).coerceIn(0f,1f)
+            return Pair(x1+t2*dx, y1+t2*dy)
+        }
+        // PEN/ARC/CURVE: nearest on sampled path
+        if (type == Tool.PEN || type == Tool.ARC || type == Tool.CURVE) {
+            if (pts.size < 4) return Pair(x1,y1)
+            var bDist=Float.MAX_VALUE; var bx=x1; var by=y1
+            var i=0
+            while (i<pts.size-3) {
+                val ax=pts[i]; val ay=pts[i+1]; val bx2=pts[i+2]; val by2=pts[i+3]
+                val dx=bx2-ax; val dy=by2-ay
+                val t2=(((wx-ax)*dx+(wy-ay)*dy)/(dx*dx+dy*dy).coerceAtLeast(1e-6f)).coerceIn(0f,1f)
+                val nx=ax+t2*dx; val ny=ay+t2*dy
+                val d=distance(wx,wy,nx,ny); if(d<bDist){bDist=d;bx=nx;by=ny}
+                i+=2
+            }
+            return Pair(bx,by)
+        }
+        // All other polygon shapes: nearest on any edge
+        val verts = shapeEndpoints(pts, type)
+        if (verts.isEmpty()) return null
+        var bDist=Float.MAX_VALUE; var bx=verts[0].first; var by=verts[0].second
+        for (i in verts.indices) {
+            val (ax,ay)=verts[i]; val (ex,ey)=verts[(i+1)%verts.size]
+            val dx=ex-ax; val dy=ey-ay
+            val t2=(((wx-ax)*dx+(wy-ay)*dy)/(dx*dx+dy*dy).coerceAtLeast(1e-6f)).coerceIn(0f,1f)
+            val nx=ax+t2*dx; val ny=ay+t2*dy
+            val d=distance(wx,wy,nx,ny); if(d<bDist){bDist=d;bx=nx;by=ny}
+        }
+        return Pair(bx,by)
+    }
+
     // ── Snap target finder ────────────────────────────────────────────────────
     // Evaluates all enabled snap types within snapScreenRadius, returning the highest-priority
     // result. Within same type, returns the closest. Priority: Endpoint>Intersection>Midpoint>
@@ -4305,6 +4399,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val awarenessCandidates = mutableListOf<SnapResult>()
 
         fun add(rx: Float, ry: Float, type: SnapType) {
+            if (!rx.isFinite() || !ry.isFinite()) return
             val d = distance(wx, wy, rx, ry)
             if (d <= worldRadius) candidates.add(Pair(SnapResult(rx, ry, type), d))
             else if (d <= worldAwareness) awarenessCandidates.add(SnapResult(rx, ry, type))
@@ -4315,153 +4410,60 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         for (item in strokes) {
             val pts = item.data.points
             if (pts.size < 2) continue
-            val x1 = pts[0]; val y1 = pts[1]
-            val x2 = if (pts.size >= 4) pts[pts.size - 2] else x1
-            val y2 = if (pts.size >= 4) pts[pts.size - 1] else y1
-            val cx = (x1 + x2) / 2f; val cy = (y1 + y2) / 2f
+            val t = item.data.type
 
-            // Endpoint
-            if (snapEndpoint) {
-                add(x1, y1, SnapType.ENDPOINT)
-                if (pts.size >= 4) add(x2, y2, SnapType.ENDPOINT)
-                // For shapes defined by bounding box (RECT, ELLIPSE, etc.), also add ALL 4 corners
-                // and key polygon vertices — only start+end pts are stored, the rest are computed.
-                if (pts.size >= 4) {
-                    val l = minOf(x1,x2); val r = maxOf(x1,x2); val t = minOf(y1,y2); val b = maxOf(y1,y2)
-                    val cx2 = (l+r)/2f; val cy2 = (t+b)/2f
-                    when (item.data.type) {
-                        Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.ELLIPSE -> {
-                            add(l, t, SnapType.ENDPOINT); add(r, t, SnapType.ENDPOINT)
-                            add(l, b, SnapType.ENDPOINT); add(r, b, SnapType.ENDPOINT)
-                        }
-                        Tool.TRIANGLE, Tool.ISOSCELES_TRIANGLE -> {
-                            add(cx2, t, SnapType.ENDPOINT); add(l, b, SnapType.ENDPOINT); add(r, b, SnapType.ENDPOINT)
-                        }
-                        Tool.TRIANGLE_DOWN -> {
-                            add(l, t, SnapType.ENDPOINT); add(r, t, SnapType.ENDPOINT); add(cx2, b, SnapType.ENDPOINT)
-                        }
-                        Tool.RIGHT_TRIANGLE -> {
-                            add(l, t, SnapType.ENDPOINT); add(l, b, SnapType.ENDPOINT); add(r, b, SnapType.ENDPOINT)
-                        }
-                        Tool.DIAMOND -> {
-                            add(cx2, t, SnapType.ENDPOINT); add(r, cy2, SnapType.ENDPOINT)
-                            add(cx2, b, SnapType.ENDPOINT); add(l, cy2, SnapType.ENDPOINT)
-                        }
-                        Tool.TRAPEZOID -> {
-                            val inset = (r-l)*0.2f
-                            add(l+inset, t, SnapType.ENDPOINT); add(r-inset, t, SnapType.ENDPOINT)
-                            add(l, b, SnapType.ENDPOINT); add(r, b, SnapType.ENDPOINT)
-                        }
-                        Tool.PARALLELOGRAM -> {
-                            val skew = (r-l)*0.2f
-                            add(l+skew, t, SnapType.ENDPOINT); add(r, t, SnapType.ENDPOINT)
-                            add(r-skew, b, SnapType.ENDPOINT); add(l, b, SnapType.ENDPOINT)
-                        }
-                        Tool.CROSS -> {
-                            add(l, cy2, SnapType.ENDPOINT); add(r, cy2, SnapType.ENDPOINT)
-                            add(cx2, t, SnapType.ENDPOINT); add(cx2, b, SnapType.ENDPOINT)
-                        }
-                        else -> {}
-                    }
-                }
-                if (item.data.type == Tool.PEN && pts.size > 8) {
-                    var i = 4
-                    while (i < pts.size - 4) { add(pts[i], pts[i + 1], SnapType.ENDPOINT); i += 20 }
+            // Endpoint — actual shape vertices via helper
+            if (snapEndpoint) shapeEndpoints(pts, t).forEach { (ex,ey) -> add(ex, ey, SnapType.ENDPOINT) }
+
+            // Midpoint — actual edge midpoints via helper
+            if (snapMidpoint) shapeEdgeMidpoints(pts, t).forEach { (mx,my) -> add(mx, my, SnapType.MIDPOINT) }
+
+            // Center — centroid/geometric center
+            if (snapCenter) shapeCenter(pts, t)?.let { (cx,cy) -> add(cx, cy, SnapType.CENTER) }
+
+            // Nearest — closest point on the actual boundary (circle circumference, polygon edge, etc.)
+            if (snapNearest) nearestOnBoundary(pts, t, wx, wy)?.let { (nx,ny) -> add(nx, ny, SnapType.NEAREST) }
+
+            // Perpendicular — foot of perpendicular from stroke start to this shape's edges
+            if (snapPerpendicular && !strokeStartWx.isNaN()) {
+                val verts = shapeEndpoints(pts, t)
+                for (i in verts.indices) {
+                    val (ax,ay) = verts[i]; val (bx,by) = verts[(i+1) % verts.size]
+                    val dx=bx-ax; val dy=by-ay; val lenSq=(dx*dx+dy*dy).coerceAtLeast(1e-6f)
+                    val tf=(((strokeStartWx-ax)*dx+(strokeStartWy-ay)*dy)/lenSq).coerceIn(0f,1f)
+                    add(ax+tf*dx, ay+tf*dy, SnapType.PERPENDICULAR)
                 }
             }
 
-            // Midpoint
-            if (snapMidpoint && pts.size >= 4) {
-                when (item.data.type) {
-                    Tool.LINE, Tool.ARROW, Tool.CURVE -> add(cx, cy, SnapType.MIDPOINT)
-                    Tool.RECTANGLE, Tool.ROUNDED_RECT -> {
-                        val l = minOf(x1,x2); val r = maxOf(x1,x2); val t = minOf(y1,y2); val b = maxOf(y1,y2)
-                        add((l+r)/2f, t, SnapType.MIDPOINT); add((l+r)/2f, b, SnapType.MIDPOINT)
-                        add(l, (t+b)/2f, SnapType.MIDPOINT); add(r, (t+b)/2f, SnapType.MIDPOINT)
-                    }
-                    Tool.PEN -> { val mi = (pts.size / 2) and -2; add(pts[mi], pts[mi+1], SnapType.MIDPOINT) }
-                    else -> add(cx, cy, SnapType.MIDPOINT)
+            // Parallel — constrain to be parallel to any edge of any shape
+            if (snapParallel && !strokeStartWx.isNaN()) {
+                val verts = shapeEndpoints(pts, t)
+                for (i in verts.indices) {
+                    val (ax,ay) = verts[i]; val (bx,by) = verts[(i+1) % verts.size]
+                    val dx=bx-ax; val dy=by-ay
+                    val len=kotlin.math.hypot(dx.toDouble(),dy.toDouble()).toFloat().coerceAtLeast(1e-6f)
+                    val ux=dx/len; val uy=dy/len
+                    val tf=(wx-strokeStartWx)*ux+(wy-strokeStartWy)*uy
+                    add(strokeStartWx+tf*ux, strokeStartWy+tf*uy, SnapType.PARALLEL)
                 }
-            }
-
-            // Center
-            if (snapCenter) {
-                when (item.data.type) {
-                    Tool.CIRCLE -> add(x1, y1, SnapType.CENTER)
-                    Tool.ELLIPSE, Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.DIAMOND,
-                    Tool.TRIANGLE, Tool.ISOSCELES_TRIANGLE, Tool.TRIANGLE_DOWN,
-                    Tool.PENTAGON, Tool.HEXAGON, Tool.HEPTAGON, Tool.OCTAGON,
-                    Tool.NONAGON, Tool.DECAGON, Tool.STAR, Tool.CROSS -> add(cx, cy, SnapType.CENTER)
-                    else -> {}
-                }
-            }
-
-            // Nearest (closest point on the stroke's outline)
-            if (snapNearest && pts.size >= 4) {
-                when (item.data.type) {
-                    Tool.LINE, Tool.ARROW -> {
-                        val dx = x2 - x1; val dy = y2 - y1
-                        val t = (((wx-x1)*dx + (wy-y1)*dy) / (dx*dx + dy*dy).coerceAtLeast(1e-6f)).coerceIn(0f,1f)
-                        add(x1 + t*dx, y1 + t*dy, SnapType.NEAREST)
-                    }
-                    Tool.RECTANGLE, Tool.ROUNDED_RECT -> {
-                        val l = minOf(x1,x2); val r = maxOf(x1,x2); val t = minOf(y1,y2); val b = maxOf(y1,y2)
-                        val cx2 = wx.coerceIn(l,r); val cy2 = wy.coerceIn(t,b)
-                        listOf(Pair(cx2,t),Pair(cx2,b),Pair(l,cy2),Pair(r,cy2))
-                            .minByOrNull { distance(wx,wy,it.first,it.second) }
-                            ?.let { add(it.first, it.second, SnapType.NEAREST) }
-                    }
-                    Tool.PEN -> {
-                        var bDist = Float.MAX_VALUE; var bx = wx; var by = wy
-                        var i = 0
-                        while (i < pts.size - 3) {
-                            val ax=pts[i]; val ay=pts[i+1]; val bx2=pts[i+2]; val by2=pts[i+3]
-                            val dx=bx2-ax; val dy=by2-ay
-                            val t = (((wx-ax)*dx+(wy-ay)*dy)/(dx*dx+dy*dy).coerceAtLeast(1e-6f)).coerceIn(0f,1f)
-                            val nx=ax+t*dx; val ny=ay+t*dy
-                            val d = distance(wx,wy,nx,ny)
-                            if (d < bDist) { bDist=d; bx=nx; by=ny }
-                            i += 2
-                        }
-                        add(bx, by, SnapType.NEAREST)
-                    }
-                    else -> add(cx, cy, SnapType.NEAREST)
-                }
-            }
-
-            // Perpendicular (foot of perp from stroke-start to this line)
-            if (snapPerpendicular && !strokeStartWx.isNaN() && pts.size >= 4 &&
-                (item.data.type == Tool.LINE || item.data.type == Tool.ARROW)) {
-                val dx=x2-x1; val dy=y2-y1
-                val lenSq=(dx*dx+dy*dy).coerceAtLeast(1e-6f)
-                val t=(((strokeStartWx-x1)*dx+(strokeStartWy-y1)*dy)/lenSq).coerceIn(0f,1f)
-                add(x1+t*dx, y1+t*dy, SnapType.PERPENDICULAR)
-            }
-
-            // Parallel (constrain new stroke to be parallel to this line)
-            if (snapParallel && !strokeStartWx.isNaN() && pts.size >= 4 &&
-                (item.data.type == Tool.LINE || item.data.type == Tool.ARROW)) {
-                val dx=x2-x1; val dy=y2-y1
-                val len=kotlin.math.hypot(dx.toDouble(),dy.toDouble()).toFloat().coerceAtLeast(1e-6f)
-                val ux=dx/len; val uy=dy/len
-                val t=(wx-strokeStartWx)*ux+(wy-strokeStartWy)*uy
-                add(strokeStartWx+t*ux, strokeStartWy+t*uy, SnapType.PARALLEL)
             }
         }
 
-        // Intersection (all LINE/ARROW pairs)
-        if (snapIntersection) {
-            val lines = strokes.filter { it.data.type == Tool.LINE || it.data.type == Tool.ARROW }
-            for (i in lines.indices) for (j in i+1 until lines.size) {
-                val a=lines[i].data.points; val b=lines[j].data.points
-                if (a.size < 4 || b.size < 4) continue
-                val x1a=a[0]; val y1a=a[1]; val x2a=a[a.size-2]; val y2a=a[a.size-1]
-                val x1b=b[0]; val y1b=b[1]; val x2b=b[b.size-2]; val y2b=b[b.size-1]
-                val denom=(x1a-x2a)*(y1b-y2b)-(y1a-y2a)*(x1b-x2b)
-                if (kotlin.math.abs(denom) < 1e-6f) continue
-                val t=((x1a-x1b)*(y1b-y2b)-(y1a-y1b)*(x1b-x2b))/denom
-                val u=-((x1a-x2a)*(y1a-y1b)-(y1a-y2a)*(x1a-x1b))/denom
-                if (t in 0f..1f && u in 0f..1f) add(x1a+t*(x2a-x1a), y1a+t*(y2a-y1a), SnapType.INTERSECTION)
+        // Intersection — all pairs of shapes, checking edge-edge crossings
+        if (snapIntersection && strokes.size >= 2) {
+            for (i in strokes.indices) for (j in i+1 until strokes.size) {
+                val va = shapeEndpoints(strokes[i].data.points, strokes[i].data.type)
+                val vb = shapeEndpoints(strokes[j].data.points, strokes[j].data.type)
+                for (ia in va.indices) for (ib in vb.indices) {
+                    val (x1a,y1a)=va[ia]; val (x2a,y2a)=va[(ia+1)%va.size]
+                    val (x1b,y1b)=vb[ib]; val (x2b,y2b)=vb[(ib+1)%vb.size]
+                    val denom=(x1a-x2a)*(y1b-y2b)-(y1a-y2a)*(x1b-x2b)
+                    if (kotlin.math.abs(denom) < 1e-6f) continue
+                    val tf=((x1a-x1b)*(y1b-y2b)-(y1a-y1b)*(x1b-x2b))/denom
+                    val uf=-((x1a-x2a)*(y1a-y1b)-(y1a-y2a)*(x1a-x1b))/denom
+                    if (tf in 0f..1f && uf in 0f..1f)
+                        add(x1a+tf*(x2a-x1a), y1a+tf*(y2a-y1a), SnapType.INTERSECTION)
+                }
             }
         }
 
@@ -4471,14 +4473,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             add(kotlin.math.round(wx/gs)*gs, kotlin.math.round(wy/gs)*gs, SnapType.GRID)
         }
 
-        if (candidates.isEmpty()) {
-            snapAwarenessResults = awarenessCandidates
-            return null
-        }
-        val winner = candidates.sortedWith(compareBy({ it.first.type.priority }, { it.second })).first().first
-        // Awareness includes all points not in snap radius (so user can see what's nearby)
         snapAwarenessResults = awarenessCandidates
-        return winner
+        if (candidates.isEmpty()) return null
+        return candidates.sortedWith(compareBy({ it.first.type.priority }, { it.second })).first().first
     }
 
     // Backward-compat wrapper
