@@ -619,9 +619,14 @@ class MainActivity : AppCompatActivity() {
             // Switch to SELECT so handles are interactive. Safe now — itemsInViewport
             // always includes the last stroke regardless of spatial grid timing.
             drawingView.post { setActiveTool(null, Tool.SELECT) }
+            showDimButton()
         }
         drawingView.onItemSelected          = { item ->
             layerToolbar?.let { canvasContainer.removeView(it) }; layerToolbar = null
+            // Refresh dimension overlay for newly selected item
+            if (dimModeEnabled) {
+                if (item != null) showDimOverlayForSelected() else clearDimOverlay()
+            }
             if (item == null) {
                 // Tapped outside a shape — restore the last shape tool so user can keep drawing
                 val restore = lastShapeTool
@@ -682,6 +687,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton?>(R.id.btnSelect)?.setOnClickListener { btn ->
             closeInlineEditor(true)
             lastShapeTool = null  // user explicitly chose SELECT — don't auto-restore shape tool
+            showDimButton()
             if (drawingView.currentTool == Tool.SELECT) showSelectModePopup(btn)
             else setActiveTool(btn as ImageButton, Tool.SELECT)
         }
@@ -1940,6 +1946,10 @@ class MainActivity : AppCompatActivity() {
     private var shapeOptionsPanel: View? = null
     private var snapOptionsPanel: View? = null
     private var snapOptionsButton: View? = null
+    private var dimModeEnabled: Boolean = false
+    private var dimButton: View? = null
+    private var dimOverlayViews: List<View> = emptyList()
+    private var dimScalePanel: View? = null
     private var eraserOptionsPanel: LinearLayout? = null
     private var contextBarPage = 0 // 0 = default, increments on swipe-up
 
@@ -2301,7 +2311,241 @@ class MainActivity : AppCompatActivity() {
         shapeOptionsPanel = scroll
     }
 
-    private fun showPenOptionsPanel() {
+    // ── Dimension mode ─────────────────────────────────────────────────────
+    private fun toggleDimMode() {
+        dimModeEnabled = !dimModeEnabled
+        updateDimButton()
+        if (dimModeEnabled) showDimOverlayForSelected()
+        else clearDimOverlay()
+    }
+
+    private fun updateDimButton() {
+        dimButton?.let { (it as? TextView)?.apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(if (dimModeEnabled) Color.parseColor("#FF9800") else Color.parseColor("#607D8B"))
+                cornerRadius = dp(16).toFloat()
+            }
+        }}
+    }
+
+    fun showDimButton() {
+        if (dimButton != null) return
+        val btn = TextView(this).apply {
+            text = "Dim ✎"; textSize = 12f; setTextColor(Color.WHITE)
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#607D8B")); cornerRadius = dp(16).toFloat()
+            }
+            elevation = dp(6).toFloat()
+            setOnClickListener { toggleDimMode() }
+            setOnLongClickListener { showDimScalePanel(); true }
+        }
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
+        lp.bottomMargin = dp(58); lp.leftMargin = dp(12)  // above Snap button
+        canvasContainer.addView(btn, lp)
+        dimButton = btn
+    }
+
+    fun hideDimButton() {
+        dimButton?.let { canvasContainer.removeView(it) }; dimButton = null
+        clearDimOverlay()
+    }
+
+    private fun clearDimOverlay() {
+        dimOverlayViews.forEach { canvasContainer.removeView(it) }
+        dimOverlayViews = emptyList()
+    }
+
+    fun showDimOverlayForSelected() {
+        clearDimOverlay()
+        if (!dimModeEnabled) return
+        val item = drawingView.selectedItem as? StrokeItem ?: return
+        val pts = item.data.points; if (pts.size < 4) return
+        val type = item.data.type
+        val views = mutableListOf<View>()
+
+        fun makeInput(label: String, currentMm: Float, onSet: (Float) -> Unit): View {
+            val container = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(Color.WHITE); cornerRadius = dp(6).toFloat()
+                    setStroke(dp(1), Color.parseColor("#E0E0E0"))
+                }
+                elevation = dp(8).toFloat()
+                setPadding(dp(6), dp(4), dp(6), dp(4))
+            }
+            container.addView(TextView(this).apply {
+                text = label; textSize = 9f; setTextColor(Color.parseColor("#888888"))
+            })
+            val et = android.widget.EditText(this).apply {
+                setText(if (currentMm >= 1000f) "${"%.3f".format(currentMm/1000f)}m" else "${"%.1f".format(currentMm)}mm")
+                textSize = 13f; setTextColor(Color.parseColor("#1A1A1A"))
+                background = null
+                inputType = android.text.InputType.TYPE_CLASS_TEXT
+                imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+                setOnEditorActionListener { _, _, _ ->
+                    val mm = drawingView.parseRealWorldMm(text.toString())
+                    if (mm != null && mm > 0f) onSet(mm)
+                    clearFocus()
+                    val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                    imm.hideSoftInputFromWindow(windowToken, 0)
+                    true
+                }
+            }
+            container.addView(et)
+            return container
+        }
+
+        // Compute current dimensions in world units then convert to real mm
+        val x1=pts[0]; val y1=pts[1]; val x2=pts[pts.size-2]; val y2=pts[pts.size-1]
+        val l=minOf(x1,x2); val r=maxOf(x1,x2); val t=minOf(y1,y2); val b=maxOf(y1,y2)
+        val wW=r-l; val wH=b-t
+
+        fun placeAt(v: View, wx: Float, wy: Float) {
+            val sx=drawingView.worldToScreenX(wx); val sy=drawingView.worldToScreenY(wy)
+            val lp2=FrameLayout.LayoutParams(dp(100), FrameLayout.LayoutParams.WRAP_CONTENT)
+            lp2.leftMargin=sx.toInt()-dp(50); lp2.topMargin=sy.toInt()-dp(20)
+            canvasContainer.addView(v, lp2); views.add(v)
+        }
+
+        fun resizeShape(newWmm: Float?, newHmm: Float?) {
+            val newWworld = newWmm?.let { drawingView.realMmToWorld(it) }
+            val newHworld = newHmm?.let { drawingView.realMmToWorld(it) }
+            val cx=(x1+x2)/2f; val cy=(y1+y2)/2f
+            val nW=newWworld?:wW; val nH=newHworld?:wH
+            pts[0]=cx-nW/2f; pts[1]=cy-nH/2f; pts[pts.size-2]=cx+nW/2f; pts[pts.size-1]=cy+nH/2f
+            item.path=item.data.buildPath(); drawingView.markSpatialDirtyAndInvalidate()
+            clearDimOverlay(); showDimOverlayForSelected()
+        }
+
+        when (type) {
+            Tool.LINE, Tool.ARROW -> {
+                val len = kotlin.math.hypot((x2-x1).toDouble(),(y2-y1).toDouble()).toFloat()
+                val lenMm = drawingView.worldToRealMm(len)
+                val v = makeInput("Length", lenMm) { mm ->
+                    val newLen = drawingView.realMmToWorld(mm)
+                    val dx=x2-x1; val dy=y2-y1; val oldLen=kotlin.math.hypot(dx.toDouble(),dy.toDouble()).toFloat().coerceAtLeast(1f)
+                    val ux=dx/oldLen; val uy=dy/oldLen
+                    val midX=(x1+x2)/2f; val midY=(y1+y2)/2f
+                    pts[0]=midX-ux*newLen/2f; pts[1]=midY-uy*newLen/2f
+                    pts[pts.size-2]=midX+ux*newLen/2f; pts[pts.size-1]=midY+uy*newLen/2f
+                    item.path=item.data.buildPath(); drawingView.markSpatialDirtyAndInvalidate()
+                    clearDimOverlay(); showDimOverlayForSelected()
+                }
+                placeAt(v, (x1+x2)/2f, (y1+y2)/2f)
+            }
+            Tool.CIRCLE -> {
+                val rad=kotlin.math.hypot((x2-x1).toDouble(),(y2-y1).toDouble()).toFloat()
+                val radMm=drawingView.worldToRealMm(rad)
+                val v = makeInput("Radius", radMm) { mm ->
+                    val newRad=drawingView.realMmToWorld(mm)
+                    pts[pts.size-2]=x1+newRad; pts[pts.size-1]=y1
+                    item.path=item.data.buildPath(); drawingView.markSpatialDirtyAndInvalidate()
+                    clearDimOverlay(); showDimOverlayForSelected()
+                }
+                placeAt(v, x1, y1)
+            }
+            else -> {
+                // Width and height for all bbox shapes
+                val wInput = makeInput("W", drawingView.worldToRealMm(wW)) { mm -> resizeShape(mm, null) }
+                val hInput = makeInput("H", drawingView.worldToRealMm(wH)) { mm -> resizeShape(null, mm) }
+                placeAt(wInput, l+wW/2f, t-drawingView.realMmToWorld(5f))
+                placeAt(hInput, r+drawingView.realMmToWorld(5f), t+wH/2f)
+            }
+        }
+        dimOverlayViews = views
+    }
+
+    private fun showDimScalePanel() {
+        dimScalePanel?.let { canvasContainer.removeView(it) }
+        val scroll = ScrollView(this)
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE)
+            elevation = dp(12).toFloat(); setPadding(dp(16), dp(12), dp(16), dp(16))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.WHITE); cornerRadius = dp(10).toFloat()
+                setStroke(1, Color.parseColor("#E0E0E0"))
+            }
+        }
+
+        fun sLbl(t: String) = panel.addView(TextView(this).apply {
+            text = t; textSize = 13f; setTextColor(Color.parseColor("#8D6E63")); setPadding(0, dp(12), 0, dp(4))
+        })
+
+        // Header
+        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL }
+        header.addView(TextView(this).apply { text = "Drawing Scale"; textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#2A2A2A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+        header.addView(TextView(this).apply { text = "✕"; textSize = 18f; setTextColor(Color.parseColor("#888")); setPadding(dp(10),dp(6),dp(10),dp(6)); setOnClickListener { dimScalePanel?.let { canvasContainer.removeView(it) }; dimScalePanel = null } })
+        panel.addView(header)
+
+        // Paper info
+        val isInfinite = drawingView.canvasMode == CanvasMode.INFINITE
+        if (!isInfinite) {
+            panel.addView(TextView(this).apply {
+                val ps = drawingView.paperSize
+                text = "Paper: ${ps.name} (${ps.widthMM.toInt()}×${ps.heightMM.toInt()}mm)"
+                textSize = 12f; setTextColor(Color.parseColor("#6A6A6A")); setPadding(0, dp(6), 0, 0)
+            })
+        }
+
+        // Scale ratio picker
+        sLbl("Scale Ratio (paper:real)")
+        val ratios = listOf(1f to "1:1", 2f to "1:2", 5f to "1:5", 10f to "1:10", 20f to "1:20",
+            50f to "1:50", 100f to "1:100", 200f to "1:200", 500f to "1:500", 1000f to "1:1000")
+        val ratioRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL }
+        val ratioScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        for ((v, label) in ratios) {
+            ratioRow.addView(TextView(this).apply {
+                text = label; textSize = 12f
+                val active = kotlin.math.abs(drawingView.paperScale - v) < 0.01f
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(if (active) Color.parseColor("#FF9800") else Color.parseColor("#ECEAE7")); cornerRadius = dp(12).toFloat()
+                }
+                setTextColor(if (active) Color.WHITE else Color.parseColor("#3C3C3E"))
+                val lp2 = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                lp2.setMargins(dp(3), 0, dp(3), 0); layoutParams = lp2; setPadding(dp(10), dp(6), dp(10), dp(6))
+                setOnClickListener {
+                    drawingView.paperScale = v
+                    dimScalePanel?.let { canvasContainer.removeView(it) }; dimScalePanel = null
+                    showDimScalePanel()
+                }
+            })
+        }
+        ratioScroll.addView(ratioRow); panel.addView(ratioScroll)
+
+        // For infinite canvas: grid real size
+        if (isInfinite) {
+            sLbl("Grid Square = ? mm (real world)")
+            val gridInput = android.widget.EditText(this).apply {
+                setText("%.0f".format(drawingView.gridRealSizeMm))
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+                textSize = 14f; setPadding(dp(8), dp(6), dp(8), dp(6))
+                background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#F5F5F5")); cornerRadius = dp(6).toFloat() }
+                hint = "mm per grid square"
+                setOnEditorActionListener { _, _, _ ->
+                    val v2 = text.toString().toFloatOrNull()
+                    if (v2 != null && v2 > 0) drawingView.gridRealSizeMm = v2
+                    true
+                }
+            }
+            panel.addView(gridInput)
+        }
+
+        // Current effective scale info
+        panel.addView(TextView(this).apply {
+            val oneUnit = drawingView.worldToRealMm(1f)
+            text = "1 world unit = ${"%.3f".format(oneUnit)}mm real"
+            textSize = 11f; setTextColor(Color.parseColor("#9E9E9E")); setPadding(0, dp(8), 0, 0)
+        })
+
+        scroll.addView(panel)
+        val lp2 = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        lp2.gravity = android.view.Gravity.BOTTOM; lp2.bottomMargin = dp(120)
+        lp2.leftMargin = dp(12); lp2.rightMargin = dp(12)
+        canvasContainer.addView(scroll, lp2)
+        dimScalePanel = scroll
+    }
         findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
         if (penOptionsPanel != null) { dismissPenOptionsPanel(); return }
         dismissAllFloatingPanels()

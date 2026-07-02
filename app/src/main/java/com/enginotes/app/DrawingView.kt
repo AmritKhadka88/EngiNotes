@@ -657,10 +657,16 @@ class DimensionItem(
     var textColor: Int = android.graphics.Color.parseColor("#1565C0")
 ) {
     val len: Float get() { val dx=x2-x1; val dy=y2-y1; return kotlin.math.sqrt((dx*dx+dy*dy).toDouble()).toFloat() }
-    fun displayLabel(refPixelLen: Float): String {
+    fun displayLabel(refPixelLen: Float, mmPerUnit: Float = 0f): String {
         return when {
             label.isNotEmpty() -> label
             isAngular -> "%.1f°".format(angle)
+            mmPerUnit > 0f -> {
+                // Real-world scale set — show actual real-world measurement
+                val mm = len * mmPerUnit
+                if (mm >= 1000f) "${"%.3f".format(mm / 1000f)}m"
+                else "${"%.1f".format(mm)}mm"
+            }
             mode == DimMode.AUTO && refPixelLen > 0f -> {
                 val scale = refLength / refPixelLen
                 "%.2f %s".format(len * scale, unit)
@@ -736,6 +742,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun markSpatialDirty() { spatialDirty = true }
+    fun markSpatialDirtyAndInvalidate() { spatialDirty = true; invalidate() }
 
     private fun itemsNear(x: Float, y: Float, r: Float): List<Any> {
         if (spatialDirty) rebuildSpatialIndex()
@@ -759,10 +766,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         // Always include non-stroke items (cheap, complex bounds)
         for (a in actions) { if ((a is TextItem || a is TableItem || a is AudioItem || a is DimensionItem) && seen.add(a)) result.add(a) }
-        // Always include the most recently committed stroke — safety net for spatial grid
-        // timing issues where markSpatialDirty+rebuild races with invalidate.
-        val lastStroke = actions.lastOrNull { it is StrokeItem }
-        if (lastStroke != null && seen.add(lastStroke)) result.add(lastStroke)
         return result
     }
     fun removeDimensionItem(d: DimensionItem) { actions.remove(d); selectedItem = null; redoStack.clear(); markSpatialDirty(); invalidate() }
@@ -836,6 +839,48 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     var canvasMode: CanvasMode = CanvasMode.CONVENIENT
     var paperSize: PaperSizeOption = PaperSizeOption.A4
+
+    // ── Real-world scale system ───────────────────────────────────────────────
+    // paperScale: denominator of paper:real ratio. 1=1:1, 100=1:100 (1mm paper=100mm real).
+    // gridRealSizeMm: for INFINITE canvas only — how many real-world mm one grid square = .
+    var paperScale: Float = 1f
+    var gridRealSizeMm: Float = 10f  // default: 1 grid square = 10mm real world
+
+    // How many real-world mm one world unit represents, accounting for canvas mode and scale.
+    fun mmPerWorldUnit(): Float {
+        return if (canvasMode == CanvasMode.INFINITE) {
+            // Infinite canvas: reference is the grid square size
+            gridRealSizeMm / gridSpacingPx()
+        } else {
+            // Paginated/Fixed/Convenient: reference is the physical paper size
+            // 3.7795 px/mm is the base conversion at 96 DPI
+            // pageWidthPx() covers CONVENIENT's dynamic size too
+            paperScale * paperSize.widthMM / pageWidthPx()
+        }
+    }
+    fun worldToRealMm(worldUnits: Float): Float = worldUnits * mmPerWorldUnit()
+    fun realMmToWorld(mm: Float): Float {
+        val mpu = mmPerWorldUnit()
+        return if (mpu < 1e-9f) mm else mm / mpu
+    }
+    // Formats a world-unit distance as a real-world string (mm or m).
+    fun formatRealWorld(worldUnits: Float): String {
+        val mm = worldToRealMm(worldUnits)
+        return if (mm >= 1000f) "${"%.3f".format(mm / 1000f)}m" else "${"%.1f".format(mm)}mm"
+    }
+    // Parses a real-world string ("5m", "250mm", "3.5") to mm.
+    fun parseRealWorldMm(input: String): Float? {
+        val s = input.trim().lowercase()
+        return try {
+            when {
+                s.endsWith("mm") -> s.dropLast(2).trim().toFloat()
+                s.endsWith("cm") -> s.dropLast(2).trim().toFloat() * 10f
+                s.endsWith("m")  -> s.dropLast(1).trim().toFloat() * 1000f
+                else -> s.toFloat() // assume mm
+            }
+        } catch (e: Exception) { null }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
     var pageOrientation: Orientation = Orientation.PORTRAIT
 
     var selectedGroup: MutableList<Any>? = null
@@ -1346,7 +1391,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         // Label
         val midX = (dl1x+dl2x)/2f; val midY = (dl1y+dl2y)/2f
-        val labelStr = d.displayLabel(autoRefPixelLen)
+        val labelStr = d.displayLabel(autoRefPixelLen, mmPerWorldUnit())
         canvas.save()
         canvas.translate(midX, midY)
         val angle = kotlin.math.atan2(dy.toDouble(), dx.toDouble()).toFloat() * 180f / Math.PI.toFloat()
