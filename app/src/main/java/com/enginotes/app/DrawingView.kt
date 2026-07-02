@@ -4457,30 +4457,30 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
 
             // Tangent — point(s) on circle/ellipse where a line from strokeStart is tangent
-            if (snapTangent && !strokeStartWx.isNaN()) {
+            if (snapTangent && !strokeStartWx.isNaN() && pts.size >= 4) {
+                val px1=pts[0]; val py1=pts[1]; val px2=pts[pts.size-2]; val py2=pts[pts.size-1]
+                val pl=minOf(px1,px2); val pr=maxOf(px1,px2); val pt2=minOf(py1,py2); val pb=maxOf(py1,py2)
                 when (t) {
                     Tool.CIRCLE -> {
-                        val ox=x1; val oy=y1
-                        val rad = kotlin.math.hypot((x2-ox).toDouble(),(y2-oy).toDouble()).toFloat()
+                        val ox=px1; val oy=py1
+                        val rad = kotlin.math.hypot((px2-ox).toDouble(),(py2-oy).toDouble()).toFloat()
                         val dx2=strokeStartWx-ox; val dy2=strokeStartWy-oy
                         val d_sq=dx2*dx2+dy2*dy2
                         if (d_sq > rad*rad + 1e-4f) {
-                            val A=rad*rad/d_sq
-                            val B=rad* kotlin.math.sqrt((d_sq-rad*rad).toDouble()).toFloat()/d_sq
+                            val A=(rad*rad/d_sq)
+                            val B=(rad* kotlin.math.sqrt((d_sq-rad*rad).toDouble())/d_sq).toFloat()
                             add(ox+A*dx2-B*(-dy2), oy+A*dy2-B*dx2, SnapType.TANGENT)
                             add(ox+A*dx2+B*(-dy2), oy+A*dy2+B*dx2, SnapType.TANGENT)
                         }
                     }
                     Tool.ELLIPSE -> {
-                        // Approximate tangent using circle of average radius
-                        val cx2=(l+r)/2f; val cy2=(t+b)/2f
-                        val rx2=(r-l)/2f; val ry2=(b-t)/2f; val rad2=(rx2+ry2)/2f
+                        val cx2=(pl+pr)/2f; val cy2=(pt2+pb)/2f
+                        val rx2=(pr-pl)/2f; val ry2=(pb-pt2)/2f; val rad2=(rx2+ry2)/2f
                         val dx2=strokeStartWx-cx2; val dy2=strokeStartWy-cy2
                         val d_sq=dx2*dx2+dy2*dy2
                         if (d_sq > rad2*rad2 + 1e-4f) {
-                            val A=rad2*rad2/d_sq
-                            val B=rad2* kotlin.math.sqrt((d_sq-rad2*rad2).toDouble()).toFloat()/d_sq
-                            // Project back onto ellipse boundary
+                            val A=(rad2*rad2/d_sq)
+                            val B=(rad2* kotlin.math.sqrt((d_sq-rad2*rad2).toDouble())/d_sq).toFloat()
                             val t1x=cx2+A*dx2-B*(-dy2); val t1y=cy2+A*dy2-B*dx2
                             val t2x=cx2+A*dx2+B*(-dy2); val t2y=cy2+A*dy2+B*dx2
                             val a1= kotlin.math.atan2((t1y-cy2).toDouble()/ry2,(t1x-cx2).toDouble()/rx2).toFloat()
