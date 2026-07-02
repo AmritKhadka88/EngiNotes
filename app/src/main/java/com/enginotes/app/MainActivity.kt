@@ -2546,6 +2546,8 @@ class MainActivity : AppCompatActivity() {
         canvasContainer.addView(scroll, lp2)
         dimScalePanel = scroll
     }
+
+    private fun showPenOptionsPanel() {
         findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
         if (penOptionsPanel != null) { dismissPenOptionsPanel(); return }
         dismissAllFloatingPanels()
