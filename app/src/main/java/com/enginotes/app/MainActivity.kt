@@ -614,14 +614,11 @@ class MainActivity : AppCompatActivity() {
                 // Auto handwriting-to-text if toggle is on
             }
         }
-        drawingView.onShapeCompleted        = { item ->
-            // Don't switch currentTool to SELECT — it causes a rendering race where the
-            // tool setter fires invalidate() before the spatial grid is fully rebuilt,
-            // making the stroke disappear. selectedItem alone is enough to show the
-            // resize/rotate/delete handles. Touch handling for those handles works via
-            // handleSelect which checks selectedItem regardless of currentTool.
+        drawingView.onShapeCompleted        = { _ ->
             lastShapeTool = drawingView.currentTool
-            drawingView.selectedItem = item
+            // Switch to SELECT so handles are interactive. Safe now — itemsInViewport
+            // always includes the last stroke regardless of spatial grid timing.
+            drawingView.post { setActiveTool(null, Tool.SELECT) }
         }
         drawingView.onItemSelected          = { item ->
             layerToolbar?.let { canvasContainer.removeView(it) }; layerToolbar = null
@@ -684,6 +681,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnQuickEraser).setOnLongClickListener { showEraserOptionsPanel(); true }
         findViewById<ImageButton?>(R.id.btnSelect)?.setOnClickListener { btn ->
             closeInlineEditor(true)
+            lastShapeTool = null  // user explicitly chose SELECT — don't auto-restore shape tool
             if (drawingView.currentTool == Tool.SELECT) showSelectModePopup(btn)
             else setActiveTool(btn as ImageButton, Tool.SELECT)
         }
