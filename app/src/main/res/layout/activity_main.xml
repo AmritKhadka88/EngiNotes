@@ -67,6 +67,22 @@
             android:layout_marginEnd="2dp"
             android:contentDescription="Drawing Scale" />
 
+        <TextView
+            android:id="@+id/btnDimToggle"
+            android:layout_width="wrap_content"
+            android:layout_height="32dp"
+            android:text="Dim"
+            android:textSize="12sp"
+            android:textColor="#3C3C3E"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:background="@drawable/btn_pill_selector"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="2dp"
+            android:contentDescription="Dimension Mode" />
+
         <ImageButton
             android:id="@+id/btnLink"
             android:layout_width="40dp"
