@@ -615,13 +615,13 @@ class MainActivity : AppCompatActivity() {
             }
         }
         drawingView.onShapeCompleted        = { _ ->
-            // Switch to SELECT directly on DrawingView without calling setActiveTool(),
-            // which triggers rebuildContextBar() causing a layout cascade that races with
-            // the spatial grid rebuild and makes the just-committed stroke invisible.
-            // The toolbar UI doesn't need to change here — user tapping outside will
-            // call setActiveTool properly to restore the shape tool.
             lastShapeTool = drawingView.currentTool
-            drawingView.currentTool = Tool.SELECT
+            drawingView.post {
+                setActiveTool(null, Tool.SELECT)
+                // After all layout changes from setActiveTool settle, force one more
+                // invalidate so the spatial grid is queried in a fully stable state.
+                drawingView.markSpatialDirtyAndInvalidate()
+            }
         }
         drawingView.onItemSelected          = { item ->
             layerToolbar?.let { canvasContainer.removeView(it) }; layerToolbar = null

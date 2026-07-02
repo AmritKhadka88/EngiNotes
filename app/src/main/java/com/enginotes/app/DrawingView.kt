@@ -736,6 +736,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun markSpatialDirty() { spatialDirty = true }
+    fun markSpatialDirtyAndInvalidate() { spatialDirty = true; invalidate() }
 
     private fun itemsNear(x: Float, y: Float, r: Float): List<Any> {
         if (spatialDirty) rebuildSpatialIndex()
