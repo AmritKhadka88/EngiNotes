@@ -615,7 +615,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
         drawingView.onShapeCompleted        = { _ ->
-            runOnUiThread {
+            // Post so this runs AFTER the stroke is fully committed to actions and the spatial
+            // grid is rebuilt — otherwise setActiveTool triggers invalidate() while the stroke
+            // is still mid-commit, causing it to be invisible until the next forced redraw.
+            drawingView.post {
                 lastShapeTool = drawingView.currentTool  // remember so we can restore after tap-outside
                 setActiveTool(null, Tool.SELECT)
             }

@@ -2756,33 +2756,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     HandleType.MOVE -> {
                         var finalWx = wx; var finalWy = wy
                         if (snapEnabled && item is StrokeItem) {
-                            // Compute all visible vertices of the item in its current position,
-                            // then check each against snap targets (excluding the item itself).
                             val pts = item.data.points
-                            if (pts.size >= 4) {
+                            if (pts.size >= 2) {
                                 val dx0 = wx - dragStartWorldX; val dy0 = wy - dragStartWorldY
-                                val x1 = pts[0] + dx0; val y1 = pts[1] + dy0
-                                val x2 = pts[pts.size-2] + dx0; val y2 = pts[pts.size-1] + dy0
-                                val l = minOf(x1,x2); val r = maxOf(x1,x2)
-                                val t = minOf(y1,y2); val b = maxOf(y1,y2)
-                                val cxs = (l+r)/2f; val cys = (t+b)/2f
-                                val verts = when (item.data.type) {
-                                    Tool.TRIANGLE, Tool.ISOSCELES_TRIANGLE -> listOf(Pair(cxs,t), Pair(l,b), Pair(r,b))
-                                    Tool.TRIANGLE_DOWN -> listOf(Pair(l,t), Pair(r,t), Pair(cxs,b))
-                                    Tool.RIGHT_TRIANGLE -> listOf(Pair(l,t), Pair(l,b), Pair(r,b))
-                                    Tool.DIAMOND -> listOf(Pair(cxs,t), Pair(r,cys), Pair(cxs,b), Pair(l,cys))
-                                    Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.ELLIPSE ->
-                                        listOf(Pair(l,t), Pair(r,t), Pair(l,b), Pair(r,b))
-                                    Tool.LINE, Tool.ARROW -> listOf(Pair(x1,y1), Pair(x2,y2))
-                                    else -> listOf(Pair(l,t), Pair(r,t), Pair(l,b), Pair(r,b), Pair(cxs,cys))
+                                // Build a shifted copy of pts at the new drag position
+                                val shiftedPts = pts.toMutableList().also { p ->
+                                    for (i in p.indices) { if (i % 2 == 0) p[i] += dx0 else p[i] += dy0 }
                                 }
-                                // Temporarily remove this item from actions so it doesn't snap to itself
+                                // Use the same helpers as findSnapTarget for consistent snap sources:
+                                // endpoints (corners), edge midpoints, AND centroid/center
+                                val snapSources = mutableListOf<Pair<Float,Float>>()
+                                snapSources.addAll(shapeEndpoints(shiftedPts, item.data.type))
+                                snapSources.addAll(shapeEdgeMidpoints(shiftedPts, item.data.type))
+                                shapeCenter(shiftedPts, item.data.type)?.let { snapSources.add(it) }
+
                                 actions.remove(item)
                                 var bestSnap: SnapResult? = null
                                 var bestPriority = Int.MAX_VALUE
                                 var bestDist = Float.MAX_VALUE
                                 var bestVx = 0f; var bestVy = 0f
-                                for ((vx2, vy2) in verts) {
+                                for ((vx2, vy2) in snapSources) {
                                     val snap = findSnapTarget(vx2, vy2)
                                     if (snap != null) {
                                         val d = distance(vx2, vy2, snap.wx, snap.wy)
@@ -2793,9 +2786,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                         }
                                     }
                                 }
-                                actions.add(item)  // put it back
+                                actions.add(item)
                                 if (bestSnap != null) {
-                                    // Offset the drag so the snapping vertex lands on the target
                                     finalWx = wx + (bestSnap.wx - bestVx)
                                     finalWy = wy + (bestSnap.wy - bestVy)
                                 }
