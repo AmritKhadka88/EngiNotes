@@ -2285,7 +2285,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (item.data.type == Tool.CIRCLE && pts.size >= 4) {
                     val r = kotlin.math.hypot((pts[2] - pts[0]).toDouble(), (pts[3] - pts[1]).toDouble()).toFloat()
                     floatArrayOf(pts[0] - r, pts[1] - r, pts[0] + r, pts[1] + r)
-                } else if (SHAPE_TOOLS.contains(item.data.type) && pts.size >= 4) {
+                } else if (SHAPE_TOOLS.contains(item.data.type) && pts.size == 4) {
+                    // 2-point shapes (LINE, RECT, CIRCLE, TRIANGLE etc.) — fast path
                     floatArrayOf(minOf(pts[0], pts[2]), minOf(pts[1], pts[3]), maxOf(pts[0], pts[2]), maxOf(pts[1], pts[3]))
                 } else {
                     var minX = pts[0]; var maxX = pts[0]; var minY = pts[1]; var maxY = pts[1]; var i = 0
