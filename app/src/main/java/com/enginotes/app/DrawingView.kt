@@ -797,8 +797,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var snapParallel: Boolean = true
     var snapGrid: Boolean = true
     var snapAutoConnect: Boolean = false
-    private val snapScreenRadius = 28f
-    private var snapResult: SnapResult? = null  // current snap target + type for visual indicator
+    private val snapScreenRadius = 48f        // actual snap in screen pixels — larger for finger
+    private val snapAwarenessRadius = 130f    // show ghost markers on objects within this range
+    private var snapResult: SnapResult? = null
+    private var snapAwarenessResults: List<SnapResult> = emptyList()  // all nearby snap points for preview
 
     enum class SnapType(val priority: Int) {
         ENDPOINT(1), INTERSECTION(2), MIDPOINT(3), CENTER(4),
@@ -1987,6 +1989,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         drawAutoSelectOverlay(canvas)
         drawTableOverlay(canvas)
         drawExportWindowOverlay(canvas)
+        // Draw persistent snap markers on all committed strokes — always visible when snap is
+        // enabled, so user knows exactly where snap points are before touching the screen.
+        if (snapEnabled) drawSnapMarkers(canvas)
         canvas.restore()
         drawCursor(canvas)
     }
@@ -3101,6 +3106,86 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
+    // Draws persistent snap point markers on all committed strokes so users can see exactly
+    // where snap targets are at all times when snap is enabled — no need to hover first.
+    // Drawn in canvas (world) coordinate space (inside the canvas.save/restore block).
+    private fun drawSnapMarkers(canvas: Canvas) {
+        val markerP = Paint().apply { isAntiAlias = true; strokeWidth = 1.5f / scaleFactor }
+        val r = 7f / scaleFactor  // marker radius in world units, stays constant size on screen
+
+        for (action in actions) {
+            if (action !is StrokeItem) continue
+            val pts = action.data.points
+            if (pts.size < 2) continue
+            val x1 = pts[0]; val y1 = pts[1]
+            val x2 = if (pts.size >= 4) pts[pts.size - 2] else x1
+            val y2 = if (pts.size >= 4) pts[pts.size - 1] else y1
+            val cx = (x1 + x2) / 2f; val cy = (y1 + y2) / 2f
+
+            fun square(wx: Float, wy: Float) {
+                markerP.color = Color.parseColor("#2196F3"); markerP.style = Paint.Style.STROKE
+                canvas.drawRect(wx - r, wy - r, wx + r, wy + r, markerP)
+            }
+            fun triangle(wx: Float, wy: Float) {
+                markerP.color = Color.parseColor("#4CAF50"); markerP.style = Paint.Style.STROKE
+                val tri = android.graphics.Path().apply { moveTo(wx, wy - r); lineTo(wx + r, wy + r); lineTo(wx - r, wy + r); close() }
+                canvas.drawPath(tri, markerP)
+            }
+            fun circle(wx: Float, wy: Float) {
+                markerP.color = Color.parseColor("#9C27B0"); markerP.style = Paint.Style.STROKE
+                canvas.drawCircle(wx, wy, r, markerP)
+                canvas.drawLine(wx - r * 1.4f, wy, wx + r * 1.4f, wy, markerP)
+                canvas.drawLine(wx, wy - r * 1.4f, wx, wy + r * 1.4f, markerP)
+            }
+
+            // Endpoint markers (blue squares)
+            if (snapEndpoint) {
+                val l = minOf(x1,x2); val rr = maxOf(x1,x2); val t = minOf(y1,y2); val b = maxOf(y1,y2)
+                when (action.data.type) {
+                    Tool.LINE, Tool.ARROW, Tool.CURVE, Tool.PEN -> { square(x1, y1); if (pts.size >= 4) square(x2, y2) }
+                    Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.ELLIPSE -> {
+                        square(l, t); square(rr, t); square(l, b); square(rr, b)
+                    }
+                    Tool.TRIANGLE, Tool.ISOSCELES_TRIANGLE -> {
+                        square((l+rr)/2f, t); square(l, b); square(rr, b)
+                    }
+                    Tool.TRIANGLE_DOWN -> {
+                        square(l, t); square(rr, t); square((l+rr)/2f, b)
+                    }
+                    Tool.DIAMOND -> {
+                        square((l+rr)/2f, t); square(rr, (t+b)/2f); square((l+rr)/2f, b); square(l, (t+b)/2f)
+                    }
+                    else -> { square(x1, y1); if (pts.size >= 4) square(x2, y2) }
+                }
+            }
+
+            // Midpoint markers (green triangles)
+            if (snapMidpoint && pts.size >= 4) {
+                when (action.data.type) {
+                    Tool.LINE, Tool.ARROW, Tool.CURVE -> triangle(cx, cy)
+                    Tool.RECTANGLE, Tool.ROUNDED_RECT -> {
+                        val l = minOf(x1,x2); val rr = maxOf(x1,x2); val t = minOf(y1,y2); val b = maxOf(y1,y2)
+                        triangle((l+rr)/2f, t); triangle((l+rr)/2f, b)
+                        triangle(l, (t+b)/2f); triangle(rr, (t+b)/2f)
+                    }
+                    else -> triangle(cx, cy)
+                }
+            }
+
+            // Center markers (purple circle+crosshair)
+            if (snapCenter) {
+                when (action.data.type) {
+                    Tool.CIRCLE -> circle(x1, y1)
+                    Tool.ELLIPSE, Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.DIAMOND,
+                    Tool.TRIANGLE, Tool.ISOSCELES_TRIANGLE, Tool.TRIANGLE_DOWN,
+                    Tool.PENTAGON, Tool.HEXAGON, Tool.HEPTAGON, Tool.OCTAGON,
+                    Tool.NONAGON, Tool.DECAGON, Tool.STAR, Tool.CROSS -> circle(cx, cy)
+                    else -> {}
+                }
+            }
+        }
+    }
+
     private fun drawCursor(canvas: Canvas) {
         val hx = hoverX ?: return; val hy = hoverY ?: return
         val p = Paint(); p.isAntiAlias = true
@@ -3109,6 +3194,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             Tool.ERASER -> { p.color = if (eraserMode == EraserMode.OBJECT) Color.DKGRAY else Color.RED; p.style = Paint.Style.STROKE; p.strokeWidth = 2f; val half = eraserSize * scaleFactor / 2f; if (eraserMode == EraserMode.OBJECT) canvas.drawRect(hx - half, hy - half, hx + half, hy + half, p) else canvas.drawCircle(hx, hy, half, p) }
             else -> { p.color = Color.DKGRAY; p.style = Paint.Style.FILL; canvas.drawCircle(hx, hy, 5f, p) }
         }
+        // Ghost markers: show snap candidates on nearby objects within awareness radius
+        // so user can see where they can snap to before entering the actual snap radius.
+        if (snapEnabled && snapAwarenessResults.isNotEmpty()) {
+            val ghostP = Paint().apply { isAntiAlias = true; style = Paint.Style.STROKE; strokeWidth = 1.5f; alpha = 100 }
+            for (ghost in snapAwarenessResults) {
+                val gx = worldToScreenX(ghost.wx); val gy = worldToScreenY(ghost.wy)
+                ghostP.color = when (ghost.type) {
+                    SnapType.ENDPOINT -> Color.parseColor("#2196F3")
+                    SnapType.MIDPOINT -> Color.parseColor("#4CAF50")
+                    SnapType.INTERSECTION -> Color.parseColor("#FF5722")
+                    SnapType.CENTER -> Color.parseColor("#9C27B0")
+                    SnapType.PERPENDICULAR -> Color.parseColor("#00BCD4")
+                    SnapType.PARALLEL -> Color.parseColor("#2196F3")
+                    SnapType.NEAREST -> Color.parseColor("#607D8B")
+                    SnapType.GRID -> Color.parseColor("#9E9E9E")
+                }
+                canvas.drawCircle(gx, gy, 6f, ghostP)
+            }
+        }
+
         // Snap indicator — type-specific icon drawn in screen space at the snap target
         val snap = snapResult
         if (snapEnabled && snap != null && currentItem == null) {
@@ -3285,7 +3390,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 invalidate()
             }
-            MotionEvent.ACTION_HOVER_EXIT -> { hoverX = null; hoverY = null; snapResult = null; invalidate() }
+            MotionEvent.ACTION_HOVER_EXIT -> { hoverX = null; hoverY = null; snapResult = null; snapAwarenessResults = emptyList(); invalidate() }
         }
         return true
     }
@@ -3735,6 +3840,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val sx = if (pts != null && pts.size >= 2) pts[0] else Float.NaN
                     val sy = if (pts != null && pts.size >= 2) pts[1] else Float.NaN
                     snapResult = findSnapTarget(wx, wy, sx, sy)
+                } else {
+                    snapResult = null; snapAwarenessResults = emptyList()
                 }
                 val item = currentItem ?: return
                 if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH) {
@@ -3819,7 +3926,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             item.path = item.data.buildPath()
                         }
                     }
-                    snapResult = null
+                    snapResult = null; snapAwarenessResults = emptyList()
                 }
                 currentItem?.let { item ->
                     // For shape/line tools, a tap with no meaningful drag is almost certainly an
@@ -4080,11 +4187,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Center>Perpendicular>Parallel>Nearest>Grid.
     private fun findSnapTarget(wx: Float, wy: Float, strokeStartWx: Float = Float.NaN, strokeStartWy: Float = Float.NaN): SnapResult? {
         val worldRadius = snapScreenRadius / scaleFactor
+        val worldAwareness = snapAwarenessRadius / scaleFactor
         val candidates = mutableListOf<Pair<SnapResult, Float>>()
+        val awarenessCandidates = mutableListOf<SnapResult>()
 
         fun add(rx: Float, ry: Float, type: SnapType) {
             val d = distance(wx, wy, rx, ry)
             if (d <= worldRadius) candidates.add(Pair(SnapResult(rx, ry, type), d))
+            else if (d <= worldAwareness) awarenessCandidates.add(SnapResult(rx, ry, type))
         }
 
         val strokes = actions.filterIsInstance<StrokeItem>()
@@ -4248,8 +4358,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             add(kotlin.math.round(wx/gs)*gs, kotlin.math.round(wy/gs)*gs, SnapType.GRID)
         }
 
-        if (candidates.isEmpty()) return null
-        return candidates.sortedWith(compareBy({ it.first.type.priority }, { it.second })).first().first
+        if (candidates.isEmpty()) {
+            snapAwarenessResults = awarenessCandidates
+            return null
+        }
+        val winner = candidates.sortedWith(compareBy({ it.first.type.priority }, { it.second })).first().first
+        // Awareness includes all points not in snap radius (so user can see what's nearby)
+        snapAwarenessResults = awarenessCandidates
+        return winner
     }
 
     // Backward-compat wrapper
