@@ -513,14 +513,12 @@ class MainActivity : AppCompatActivity() {
             val primaryBar = findViewById<View?>(R.id.primaryToolbarScroll)
             androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { _, insets ->
                 val imeBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
-                // root LinearLayout has fitsSystemWindows="true", which already reserves space
-                // for the navigation bar via its own padding. The IME inset on most devices
-                // already includes that nav bar height, so subtract it here to avoid pushing
-                // the toolbar up by the nav bar's height twice (the visible gap above keyboard).
                 val navBarBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars()).bottom
                 val extraForKeyboard = (imeBottom - navBarBottom).coerceAtLeast(0)
+                // Guard: only update bottomMargin when value changes — prevents layout
+                // thrashing and the blinking/lag caused by firing on every tiny inset update.
                 val lp = primaryBar?.layoutParams as? LinearLayout.LayoutParams
-                if (lp != null) {
+                if (lp != null && lp.bottomMargin != extraForKeyboard) {
                     lp.bottomMargin = extraForKeyboard
                     primaryBar.layoutParams = lp
                 }
@@ -569,6 +567,8 @@ class MainActivity : AppCompatActivity() {
         drawingView.arcDivisions = prefs.getInt("arc_divisions",3)
         drawingView.defaultDimFontSize = prefs.getFloat("dim_font_size", 11f)
         drawingView.defaultDimArrowSize = prefs.getFloat("dim_arrow_size", 9f)
+        // Apply bottom toolbar visibility preference
+        if (!prefs.getBoolean("show_bottom_toolbar", true)) setBottomToolbarVisible(false)
 
         applyConvenientLayout()
 
@@ -775,6 +775,14 @@ class MainActivity : AppCompatActivity() {
         // Scale ratio button — always visible in top bar
         val btnScaleRatio = findViewById<TextView>(R.id.btnScaleRatio)
         btnScaleRatio?.setOnClickListener { showScaleRatioPopup(it) }
+
+        // Dim mode button in top bar
+        val btnDimToggle = findViewById<TextView>(R.id.btnDimToggle)
+        btnDimToggle?.setOnClickListener {
+            dimModeEnabled = !dimModeEnabled
+            btnDimToggle.setTextColor(if (dimModeEnabled) Color.parseColor("#FF9800") else Color.parseColor("#3C3C3E"))
+            if (dimModeEnabled) showDimOverlayForSelected() else clearDimOverlay()
+        }
 
         rebuildContextBar()
     }
@@ -1243,6 +1251,7 @@ class MainActivity : AppCompatActivity() {
     private fun setBottomBarVisible(visible: Boolean) {
         findViewById<View?>(R.id.primaryToolbarScroll)?.visibility = if (visible) View.VISIBLE else View.GONE
     }
+    private fun setBottomToolbarVisible(visible: Boolean) = setBottomBarVisible(visible)
     private fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
 
     private fun showEraserModePopup(anchor: View) {
@@ -1758,6 +1767,15 @@ class MainActivity : AppCompatActivity() {
         hdr("GENERAL")
         val confirmCb = CheckBox(this).apply{ text="Confirm before exit or clear canvas"; isChecked=prefs.getBoolean("confirm_exit_clear",true) }; container.addView(confirmCb)
         val autosaveCb = CheckBox(this).apply{ text="Autosave every 10 seconds"; isChecked=prefs.getBoolean("autosave",true) }; container.addView(autosaveCb)
+        val bottomBarCb = CheckBox(this).apply{
+            text="Show bottom toolbar"
+            isChecked = prefs.getBoolean("show_bottom_toolbar", true)
+            setOnCheckedChangeListener { _, on ->
+                prefs.edit().putBoolean("show_bottom_toolbar", on).apply()
+                setBottomToolbarVisible(on)
+            }
+        }
+        container.addView(bottomBarCb)
 
         div(); hdr("PAPER")
         val paperLabels = arrayOf("Blank","Lined","Graph Grid","Dot Grid","Engineering","Coloured")
@@ -2324,37 +2342,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateDimButton() {
-        dimButton?.let { (it as? TextView)?.apply {
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(if (dimModeEnabled) Color.parseColor("#FF9800") else Color.parseColor("#607D8B"))
-                cornerRadius = dp(16).toFloat()
-            }
-        }}
+        val color = if (dimModeEnabled) Color.parseColor("#FF9800") else Color.parseColor("#3C3C3E")
+        findViewById<TextView>(R.id.btnDimToggle)?.setTextColor(color)
     }
 
-    fun showDimButton() {
-        if (dimButton != null) return
-        val btn = TextView(this).apply {
-            text = "Dim ✎"; textSize = 12f; setTextColor(Color.WHITE)
-            setPadding(dp(10), dp(6), dp(10), dp(6))
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.parseColor("#607D8B")); cornerRadius = dp(16).toFloat()
-            }
-            elevation = dp(6).toFloat()
-            setOnClickListener { toggleDimMode() }
-            setOnLongClickListener { showDimScalePanel(); true }
-        }
-        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
-        lp.bottomMargin = dp(58); lp.leftMargin = dp(12)  // above Snap button
-        canvasContainer.addView(btn, lp)
-        dimButton = btn
-    }
-
-    fun hideDimButton() {
-        dimButton?.let { canvasContainer.removeView(it) }; dimButton = null
-        clearDimOverlay()
-    }
+    fun showDimButton() { /* Dim button is always in top bar — nothing to show */ }
+    fun hideDimButton() { clearDimOverlay() }
 
     private fun clearDimOverlay() {
         dimOverlayViews.forEach { canvasContainer.removeView(it) }
