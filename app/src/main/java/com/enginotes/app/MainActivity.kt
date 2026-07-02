@@ -772,6 +772,10 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton?>(R.id.btnBack)?.setOnClickListener { confirmThenExit() }
         btnLayoutToggle.setOnClickListener { showLayoutMenu(it) }
 
+        // Scale ratio button — always visible in top bar
+        val btnScaleRatio = findViewById<TextView>(R.id.btnScaleRatio)
+        btnScaleRatio?.setOnClickListener { showScaleRatioPopup(it) }
+
         rebuildContextBar()
     }
 
@@ -2545,6 +2549,81 @@ class MainActivity : AppCompatActivity() {
         lp2.leftMargin = dp(12); lp2.rightMargin = dp(12)
         canvasContainer.addView(scroll, lp2)
         dimScalePanel = scroll
+    }
+
+    private fun updateScaleRatioButton() {
+        val label = if (drawingView.paperScale == 1f) "1:1"
+                    else "1:${drawingView.paperScale.toInt()}"
+        findViewById<TextView>(R.id.btnScaleRatio)?.text = label
+    }
+
+    private fun showScaleRatioPopup(anchor: View) {
+        val predefined = listOf(
+            1f to "1:1", 2f to "1:2", 5f to "1:5", 10f to "1:10",
+            20f to "1:20", 50f to "1:50", 100f to "1:100",
+            200f to "1:200", 500f to "1:500", 1000f to "1:1000"
+        )
+        val popup = android.widget.PopupWindow(this)
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.WHITE)
+            elevation = dp(12).toFloat()
+            setPadding(0, dp(4), 0, dp(4))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.WHITE); cornerRadius = dp(8).toFloat()
+                setStroke(1, Color.parseColor("#E0E0E0"))
+            }
+        }
+
+        fun row(label: String, scale: Float?, isCustom: Boolean = false) {
+            val active = !isCustom && scale != null && kotlin.math.abs(drawingView.paperScale - scale) < 0.01f
+            container.addView(TextView(this).apply {
+                text = label; textSize = 14f
+                setPadding(dp(18), dp(11), dp(32), dp(11))
+                setTextColor(if (active) Color.parseColor("#FF9800") else Color.parseColor("#1A1A1A"))
+                if (active) setTypeface(null, Typeface.BOLD)
+                setOnClickListener {
+                    popup.dismiss()
+                    if (isCustom) {
+                        val input = android.widget.EditText(this@MainActivity).apply {
+                            hint = "e.g. 25 for 1:25"; inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                            setPadding(dp(12), dp(8), dp(12), dp(8))
+                        }
+                        androidx.appcompat.app.AlertDialog.Builder(this@MainActivity)
+                            .setTitle("Custom Scale (1:?)")
+                            .setView(input)
+                            .setPositiveButton("Set") { _, _ ->
+                                val v = input.text.toString().toFloatOrNull()
+                                if (v != null && v > 0f) {
+                                    drawingView.paperScale = v
+                                    updateScaleRatioButton()
+                                }
+                            }
+                            .setNegativeButton("Cancel", null)
+                            .show()
+                    } else if (scale != null) {
+                        drawingView.paperScale = scale
+                        updateScaleRatioButton()
+                    }
+                }
+            })
+        }
+
+        predefined.forEach { (scale, label) -> row(label, scale) }
+        // Divider
+        container.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1)
+            setBackgroundColor(Color.parseColor("#E0E0E0"))
+        })
+        row("Custom…", null, isCustom = true)
+
+        popup.contentView = container
+        popup.isOutsideTouchable = true
+        popup.isFocusable = true
+        popup.width = dp(170)
+        popup.height = android.view.WindowManager.LayoutParams.WRAP_CONTENT
+        popup.elevation = dp(10).toFloat()
+        popup.showAsDropDown(anchor, 0, dp(4))
     }
 
     private fun showPenOptionsPanel() {
