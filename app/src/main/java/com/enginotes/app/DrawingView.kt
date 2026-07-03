@@ -2281,7 +2281,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (allItems.isEmpty()) return
 
             val gb = computeGroupBounds() ?: return
-            val hr = 20f / scaleFactor  // larger handles, easier to tap
+            val hr = 28f / scaleFactor  // larger handles
             val pinkP = Paint().apply { color = android.graphics.Color.parseColor("#E91E8C"); style = Paint.Style.STROKE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true }
             canvas.drawRect(gb[0], gb[1], gb[2], gb[3], pinkP)
             val hF = Paint().apply { style = Paint.Style.FILL; color = android.graphics.Color.parseColor("#E91E8C"); isAntiAlias = true }
@@ -2630,10 +2630,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Hit test using pre-sampled path points cached on StrokeItem.
     // First call per stroke builds the sample array via PathMeasure; subsequent calls are O(n) float scan.
     private fun pathHitTest(item: StrokeItem, x: Float, y: Float, r: Float): Boolean {
+        // Inverse-rotate test point if item has rotation
+        val testX: Float; val testY: Float
+        val rot = item.data.rotation
+        if (rot != 0f) {
+            val b = getBounds(item)
+            val cx = if (b != null) (b[0]+b[2])/2f else x; val cy = if (b != null) (b[1]+b[3])/2f else y
+            val rad = Math.toRadians(-rot.toDouble())
+            val cos = kotlin.math.cos(rad).toFloat(); val sin = kotlin.math.sin(rad).toFloat()
+            val dx = x-cx; val dy = y-cy
+            testX = cx + dx*cos - dy*sin; testY = cy + dx*sin + dy*cos
+        } else { testX = x; testY = y }
         val r2 = r * r
         val pts = item.getOrBuildSampledPath(r)
         var i = 0; while (i + 1 < pts.size) {
-            val dx = pts[i] - x; val dy = pts[i+1] - y
+            val dx = pts[i] - testX; val dy = pts[i+1] - testY
             if (dx * dx + dy * dy <= r2) return true
             i += 2
         }
@@ -2832,7 +2843,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (currentTool == Tool.MULTISELECT) {
                 val gb = computeGroupBounds()
                 if (gb != null) {
-                    val hr = 20f / scaleFactor  // match drawing size
+                    val hr = 28f / scaleFactor  // match drawing size
                     val gcx = (gb[0]+gb[2])/2f; val gcy = (gb[1]+gb[3])/2f
                     val rotY = gb[1] - 90f/scaleFactor
                     val delX = gb[2]+hr*4f; val delY = gb[1]-hr*4f
@@ -4544,6 +4555,23 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return minDist
     }
 
+    // Rotation-aware hit test: inverse-rotate the test point into the item's local space
+    private fun strokeHitTestRotated(data: StrokeData, x: Float, y: Float, r: Float): Boolean {
+        val rot = data.rotation
+        if (rot == 0f) return strokeHitTest(data, x, y, r)
+        // Compute bounding box center (pivot for rotation)
+        val pts = data.points; if (pts.size < 2) return false
+        var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+        var i = 0; while (i < pts.size-1) { if (pts[i]<minX) minX=pts[i]; if (pts[i]>maxX) maxX=pts[i]; if (pts[i+1]<minY) minY=pts[i+1]; if (pts[i+1]>maxY) maxY=pts[i+1]; i+=2 }
+        val cx = (minX+maxX)/2f; val cy = (minY+maxY)/2f
+        // Inverse-rotate tap point around pivot
+        val rad = Math.toRadians(-rot.toDouble())
+        val cos = kotlin.math.cos(rad).toFloat(); val sin = kotlin.math.sin(rad).toFloat()
+        val dx = x-cx; val dy = y-cy
+        val lx = cx + dx*cos - dy*sin; val ly = cy + dx*sin + dy*cos
+        return strokeHitTest(data, lx, ly, r)
+    }
+
     private fun strokeHitTest(data: StrokeData, x: Float, y: Float, r: Float): Boolean {
         if (data.type == Tool.PEN || data.type == Tool.ERASER || data.type == Tool.ARC || data.type == Tool.HIGHLIGHTER || data.type == Tool.BRUSH) {
             // Account for the stroke's own width so the eraser circle has to actually overlap the
@@ -4863,7 +4891,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // Use strokeHitTest (outline distance) for accuracy - prefer selected items first
         val outlineRadius = (snapScreenRadius * 0.8f) / scaleFactor
         for (item in selectedItems) {
-            if (item is StrokeItem && strokeHitTest(item.data, wx, wy, outlineRadius)) return item
+            if (item is StrokeItem && strokeHitTestRotated(item.data, wx, wy, outlineRadius)) return item
         }
         // Also check non-stroke selected items by bounding box
         for (item in selectedItems) {
