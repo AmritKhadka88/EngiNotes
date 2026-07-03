@@ -83,6 +83,21 @@
             android:layout_marginEnd="2dp"
             android:contentDescription="Dimension Mode" />
 
+        <TextView
+            android:id="@+id/btnLock"
+            android:layout_width="wrap_content"
+            android:layout_height="32dp"
+            android:text="🔓"
+            android:textSize="14sp"
+            android:gravity="center"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp"
+            android:visibility="gone"
+            android:background="@drawable/btn_pill_selector"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="2dp"
+            android:contentDescription="Lock selection" />
+
         <ImageButton
             android:id="@+id/btnLink"
             android:layout_width="40dp"
