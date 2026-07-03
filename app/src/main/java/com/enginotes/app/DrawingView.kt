@@ -1302,14 +1302,28 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     if (b != null) {
                         val cx = (b[0] + b[2]) / 2f; val cy = (b[1] + b[3]) / 2f
                         canvas.save(); canvas.rotate(action.data.rotation, cx, cy)
-                        action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }
-                        canvas.drawPath(renderPath, renderPaint); canvas.restore()
-                    } else { action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }; canvas.drawPath(renderPath, renderPaint) }
-                } else { action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }; canvas.drawPath(renderPath, renderPaint) }
-                // Punch out pixel-erase holes using PorterDuff.CLEAR
+                        if (action.data.clipHoles.isEmpty()) action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }
+                        if (action.data.clipHoles.isEmpty()) canvas.drawPath(renderPath, renderPaint); canvas.restore()
+                    } else {
+                        if (action.data.clipHoles.isEmpty()) action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }
+                        if (action.data.clipHoles.isEmpty()) canvas.drawPath(renderPath, renderPaint)
+                    }
+                } else {
+                    if (action.data.clipHoles.isEmpty()) action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }
+                    if (action.data.clipHoles.isEmpty()) canvas.drawPath(renderPath, renderPaint)
+                }
+                // Punch out pixel-erase holes using saveLayer + PorterDuff.CLEAR
                 if (action.data.clipHoles.isNotEmpty()) {
+                    val b = getBounds(action)
+                    val bounds = if (b != null) android.graphics.RectF(b[0]-1f, b[1]-1f, b[2]+1f, b[3]+1f) else null
+                    val sc = if (bounds != null) canvas.saveLayer(bounds, null) else canvas.saveLayer(null, null)
+                    // Redraw the shape into the isolated layer
+                    action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }
+                    canvas.drawPath(renderPath, renderPaint)
+                    // Now punch holes
                     val holePaint = Paint().apply { style = Paint.Style.FILL; xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR); isAntiAlias = true }
                     for (h in action.data.clipHoles) canvas.drawCircle(h[0], h[1], h[2], holePaint)
+                    canvas.restoreToCount(sc)
                 }
             }
             is DimensionItem -> drawDimensionItem(canvas, action)
