@@ -1315,12 +1315,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // Punch out pixel-erase holes using saveLayer + PorterDuff.CLEAR
                 if (action.data.clipHoles.isNotEmpty()) {
                     val b = getBounds(action)
-                    val bounds = if (b != null) android.graphics.RectF(b[0]-1f, b[1]-1f, b[2]+1f, b[3]+1f) else null
-                    val sc = if (bounds != null) canvas.saveLayer(bounds, null) else canvas.saveLayer(null, null)
-                    // Redraw the shape into the isolated layer
+                    val rect = if (b != null) android.graphics.RectF(b[0]-1f, b[1]-1f, b[2]+1f, b[3]+1f)
+                               else android.graphics.RectF(0f, 0f, width.toFloat(), height.toFloat())
+                    val sc = canvas.saveLayer(rect, null)
                     action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }
                     canvas.drawPath(renderPath, renderPaint)
-                    // Now punch holes
                     val holePaint = Paint().apply { style = Paint.Style.FILL; xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR); isAntiAlias = true }
                     for (h in action.data.clipHoles) canvas.drawCircle(h[0], h[1], h[2], holePaint)
                     canvas.restoreToCount(sc)
