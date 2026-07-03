@@ -589,28 +589,33 @@ class MainActivity : AppCompatActivity() {
         drawingView.onDimensionCreated      = { dim -> showDimensionLabelDialog(dim) }
         drawingView.onDimensionEdit         = { dim -> showDimensionStylePanel(dim) }
         drawingView.onDrawingStarted        = {
-            // Hide both bars while drawing for more canvas space — tap to bring back
-            if (drawingView.isDrawingTool()) {
+            if (drawingView.isDrawingTool() && getPrefs().getBoolean("auto_hide_toolbar", true)) {
                 runOnUiThread {
-                    val anim = android.view.animation.AnimationUtils.loadAnimation(this, android.R.anim.fade_out)
-                    anim.duration = 150
-                    findViewById<View?>(R.id.primaryToolbarScroll)?.startAnimation(anim)
-                    findViewById<View?>(R.id.primaryToolbarScroll)?.visibility = View.GONE
-                    findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.startAnimation(anim)
-                    findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
+                    val primary = findViewById<View?>(R.id.primaryToolbarScroll)
+                    val context = findViewById<HorizontalScrollView?>(R.id.toolbarScroll)
+                    primary?.animate()?.translationY(primary.height.toFloat())?.setDuration(120)?.withEndAction { primary.visibility = View.GONE; primary.translationY = 0f }?.start()
+                    context?.animate()?.translationY(context.height.toFloat())?.setDuration(120)?.withEndAction { context.visibility = View.GONE; context.translationY = 0f }?.start()
                 }
             }
         }
         drawingView.onDrawingEnded          = {
             runOnUiThread {
-                val anim = android.view.animation.AnimationUtils.loadAnimation(this, android.R.anim.fade_in)
-                anim.duration = 200
-                android.os.Handler(mainLooper).postDelayed({
-                    findViewById<View?>(R.id.primaryToolbarScroll)?.let { v -> v.visibility = View.VISIBLE; v.startAnimation(anim) }
-                    if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
-                        findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.let { v -> v.visibility = View.VISIBLE; v.startAnimation(anim) }
-                    }
-                }, 300)
+                if (getPrefs().getBoolean("auto_hide_toolbar", true)) {
+                    android.os.Handler(mainLooper).postDelayed({
+                        val primary = findViewById<View?>(R.id.primaryToolbarScroll)
+                        val context = findViewById<HorizontalScrollView?>(R.id.toolbarScroll)
+                        if (getPrefs().getBoolean("show_bottom_toolbar", true)) {
+                            primary?.visibility = View.VISIBLE
+                            primary?.translationY = primary?.height?.toFloat() ?: 0f
+                            primary?.animate()?.translationY(0f)?.setDuration(160)?.start()
+                        }
+                        if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
+                            context?.visibility = View.VISIBLE
+                            context?.translationY = context?.height?.toFloat() ?: 0f
+                            context?.animate()?.translationY(0f)?.setDuration(160)?.start()
+                        }
+                    }, 250)
+                }
                 // Auto handwriting-to-text if toggle is on
             }
         }
@@ -1768,11 +1773,15 @@ class MainActivity : AppCompatActivity() {
         val confirmCb = CheckBox(this).apply{ text="Confirm before exit or clear canvas"; isChecked=prefs.getBoolean("confirm_exit_clear",true) }; container.addView(confirmCb)
         val autosaveCb = CheckBox(this).apply{ text="Autosave every 10 seconds"; isChecked=prefs.getBoolean("autosave",true) }; container.addView(autosaveCb)
         val bottomBarCb = CheckBox(this).apply{
-            text="Show bottom toolbar"
-            isChecked = prefs.getBoolean("show_bottom_toolbar", true)
+            text="Auto-hide toolbar while drawing"
+            isChecked = prefs.getBoolean("auto_hide_toolbar", true)
             setOnCheckedChangeListener { _, on ->
-                prefs.edit().putBoolean("show_bottom_toolbar", on).apply()
-                setBottomToolbarVisible(on)
+                prefs.edit().putBoolean("auto_hide_toolbar", on).apply()
+                // If turning off, make sure bars are visible
+                if (!on) {
+                    if (prefs.getBoolean("show_bottom_toolbar", true)) setBottomToolbarVisible(true)
+                    if (penOptionsPanel == null) findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
+                }
             }
         }
         container.addView(bottomBarCb)
