@@ -670,7 +670,23 @@ class MainActivity : AppCompatActivity() {
                 layerToolbar = tb
             }
         }
-        drawingView.onTableCellEditRequest  = { table, row, col, sx, sy -> closeInlineEditor(true); dismissCellEditor(); showTableCellEditor(table,row,col,sx,sy) }
+        drawingView.onMultiSelectionChanged = { items ->
+            runOnUiThread {
+                val lockBtn = findViewById<TextView>(R.id.btnLock)
+                if (items.isNotEmpty()) {
+                    lockBtn?.visibility = View.VISIBLE
+                    val locked = drawingView.isSelectionLocked()
+                    lockBtn?.text = if (locked) "🔒" else "🔓"
+                    lockBtn?.setTextColor(Color.WHITE)
+                    lockBtn?.background = android.graphics.drawable.GradientDrawable().apply {
+                        setColor(if (locked) Color.parseColor("#C62828") else Color.parseColor("#2E7D32"))
+                        cornerRadius = dp(8).toFloat()
+                    }
+                } else {
+                    lockBtn?.visibility = View.GONE
+                }
+            }
+        }
         drawingView.onExportWindowSelected  = { l,t,r,b -> exportWindowBitmap = drawingView.exportWindow(l,t,r,b); showExportWindowDialog() }
         drawingView.onAudioItemTap          = { item -> AudioHelper.togglePlay(item) { drawingView.invalidate() }; drawingView.invalidate() }
 
@@ -1251,7 +1267,23 @@ class MainActivity : AppCompatActivity() {
                 val modes = listOf(
                     SM("Select", { c, p, r -> p.style = Paint.Style.STROKE; p.strokeWidth = 3f; c.drawRect(r, p) }, Tool.SELECT),
                     SM("Lasso", { c, p, r -> p.style = Paint.Style.STROKE; p.strokeWidth = 3f; val path = android.graphics.Path(); path.moveTo(r.centerX(), r.top); path.cubicTo(r.right, r.top, r.right, r.bottom, r.centerX(), r.bottom); path.cubicTo(r.left, r.bottom, r.left, r.top, r.centerX(), r.top); c.drawPath(path, p) }, Tool.LASSO),
-                    SM("Rect", { c, p, r -> p.style = Paint.Style.STROKE; p.strokeWidth = 3f; p.pathEffect = android.graphics.DashPathEffect(floatArrayOf(8f, 5f), 0f); c.drawRect(r, p) }, Tool.AUTOSELECT)
+                    SM("Rect", { c, p, r -> p.style = Paint.Style.STROKE; p.strokeWidth = 3f; p.pathEffect = android.graphics.DashPathEffect(floatArrayOf(8f, 5f), 0f); c.drawRect(r, p) }, Tool.AUTOSELECT),
+                    SM("Multi", { c, p, r ->
+                        // 3 stacked rectangles — back two show only top+right edges
+                        p.style = Paint.Style.STROKE; p.strokeWidth = 2.5f
+                        val w = r.width(); val h = r.height(); val off = w * 0.22f
+                        // Back rect (only top + right visible)
+                        p.alpha = if (drawingView.currentTool == Tool.MULTISELECT) 255 else 140
+                        c.drawLine(r.left + off*2, r.top, r.right, r.top, p)               // top
+                        c.drawLine(r.right, r.top, r.right, r.bottom - off*2, p)           // right
+                        // Middle rect (only top + right visible)
+                        p.alpha = if (drawingView.currentTool == Tool.MULTISELECT) 255 else 190
+                        c.drawLine(r.left + off, r.top + off, r.right - off, r.top + off, p)    // top
+                        c.drawLine(r.right - off, r.top + off, r.right - off, r.bottom - off, p) // right
+                        // Front rect (fully visible)
+                        p.alpha = 255
+                        c.drawRect(r.left, r.top + off*2, r.right - off*2, r.bottom, p)
+                    }, Tool.MULTISELECT)
                 )
                 modes.forEach { mode ->
                     val active = drawingView.currentTool == mode.tool

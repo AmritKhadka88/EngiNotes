@@ -64,7 +64,7 @@ enum class EraserShape { ROUND, SQUARE }
 
 enum class Tool {
     SELECT, FILL, PEN, BRUSH, ERASER, HIGHLIGHTER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
-    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT, AUTOSELECT, LASSO, EXPORT_WINDOW, OCR_SNIP,
+    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT, AUTOSELECT, LASSO, MULTISELECT, EXPORT_WINDOW, OCR_SNIP,
     HEPTAGON, OCTAGON, NONAGON, DECAGON, TRAPEZOID, PARALLELOGRAM, RIGHT_TRIANGLE, ISOSCELES_TRIANGLE,
     SEMICIRCLE, HALF_ELLIPSE, TEARDROP, HEART, PLUS_THICK, DOUBLE_ARROW, BRACKET_L, BRACKET_R,
     CLOUD, SPEECH_BUBBLE, LIGHTNING, MOON, CHEVRON_RIGHT, CHEVRON_LEFT, CHEVRON_UP, CHEVRON_DOWN,
@@ -2241,6 +2241,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
             }
         }
+        // Draw simple highlight boxes for all items in multi-select set
+        if (selectedItems.isNotEmpty()) {
+            val msP = Paint().apply {
+                color = Color.parseColor("#2196F3"); style = Paint.Style.STROKE
+                strokeWidth = 2f / scaleFactor; isAntiAlias = true
+                pathEffect = android.graphics.DashPathEffect(floatArrayOf(8f/scaleFactor, 4f/scaleFactor), 0f)
+            }
+            for (si in selectedItems) {
+                val b = getBounds(si) ?: continue
+                canvas.drawRect(b[0], b[1], b[2], b[3], msP)
+            }
+        }
+
         val item = selectedItem ?: return
         if (item is TextItem) {
             val tp = android.text.TextPaint(); tp.textSize = item.size
@@ -2810,7 +2823,27 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         if (!handled && lx >= b[0] - hit && lx <= b[2] + hit && ly >= b[1] - hit && ly <= b[3] + hit) { activeHandle = HandleType.MOVE; dragStartWorldX = wx; dragStartWorldY = wy; handled = true }
                     }
                 }
-                if (!handled) { activeHandle = HandleType.NONE; selectedItem = findItemAt(wx, wy) }
+                if (!handled) {
+                    activeHandle = HandleType.NONE
+                    if (currentTool == Tool.MULTISELECT) {
+                        // Multi-select: toggle item in selectedItems set
+                        val hit = findItemAt(wx, wy)
+                        if (hit != null) {
+                            if (selectedItems.contains(hit)) selectedItems.remove(hit)
+                            else selectedItems.add(hit)
+                            // Update selectedItem to last touched for lock button state
+                            selectedItem = if (selectedItems.isEmpty()) null else hit
+                            onMultiSelectionChanged?.invoke(selectedItems)
+                        } else {
+                            // Tap empty space: clear all
+                            selectedItems.clear()
+                            selectedItem = null
+                        }
+                    } else {
+                        selectedItems.clear()
+                        selectedItem = findItemAt(wx, wy)
+                    }
+                }
                 invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
