@@ -1360,8 +1360,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     for (h in action.data.clipHoles) canvas.drawCircle(h[0], h[1], h[2], holePaint)
                     canvas.restoreToCount(sc)
                 }
+                // Cyan selection overlay for MULTISELECT — industry standard CAD selection color.
+                // Drawn as a thick cyan stroke on top so it's visible over any original color.
+                if (currentTool == Tool.MULTISELECT) {
+                    val allSel = (selectedItems + setOfNotNull(selectedItem)).toSet()
+                    if (action in allSel) {
+                        val cyanP = Paint().apply {
+                            color = android.graphics.Color.parseColor("#CC00BCD4")  // 80% alpha cyan
+                            style = Paint.Style.STROKE
+                            strokeWidth = (action.paint.strokeWidth + 6f / scaleFactor).coerceAtLeast(6f / scaleFactor)
+                            isAntiAlias = true
+                            strokeJoin = Paint.Join.ROUND; strokeCap = Paint.Cap.ROUND
+                        }
+                        canvas.drawPath(action.path, cyanP)
+                    }
+                }
             }
-            is DimensionItem -> drawDimensionItem(canvas, action)
             is TextItem -> { if (!action.isEditing) drawTextItem(canvas, action) }
             is ImageItem -> {
                 val bmp = getOrLoadBitmap(action) ?: return
@@ -2261,48 +2275,40 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
             }
         }
-        // ── MULTISELECT drawing (replaces individual blue handles) ────────────
+        // ── MULTISELECT drawing (only pink box — items show cyan overlay via drawActionItem) ──
         if (currentTool == Tool.MULTISELECT) {
             val allItems = (selectedItems + setOfNotNull(selectedItem)).toSet()
-            if (allItems.isNotEmpty()) {
-                // Faint blue dashed outlines only — no individual handles
-                val faintP = Paint().apply {
-                    color = Color.parseColor("#2196F3"); style = Paint.Style.STROKE
-                    strokeWidth = 1.5f / scaleFactor; isAntiAlias = true; alpha = 100
-                    pathEffect = android.graphics.DashPathEffect(floatArrayOf(7f/scaleFactor, 4f/scaleFactor), 0f)
-                }
-                for (si in allItems) { val b = getBounds(si) ?: continue; canvas.drawRect(b[0], b[1], b[2], b[3], faintP) }
+            if (allItems.isEmpty()) return
 
-                val gb = computeGroupBounds() ?: return
-                val hr = 15f / scaleFactor
-                val pinkP = Paint().apply { color = Color.parseColor("#E91E8C"); style = Paint.Style.STROKE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true }
-                canvas.drawRect(gb[0], gb[1], gb[2], gb[3], pinkP)
-                val hF = Paint().apply { style = Paint.Style.FILL; color = Color.parseColor("#E91E8C"); isAntiAlias = true }
-                val hS = Paint().apply { style = Paint.Style.STROKE; color = Color.WHITE; strokeWidth = 2f/scaleFactor; isAntiAlias = true }
-                val gcx2 = (gb[0]+gb[2])/2f; val gcy2 = (gb[1]+gb[3])/2f
-                for ((hx,hy) in listOf(gb[0] to gb[1], gcx2 to gb[1], gb[2] to gb[1], gb[0] to gcy2, gb[2] to gcy2, gb[0] to gb[3], gcx2 to gb[3], gb[2] to gb[3])) {
-                    canvas.drawCircle(hx, hy, hr, hF); canvas.drawCircle(hx, hy, hr, hS)
-                }
-                val rotY2 = gb[1] - 90f/scaleFactor
-                val rotF2 = Paint().apply { style = Paint.Style.FILL; color = Color.parseColor("#34C759"); isAntiAlias = true }
-                canvas.drawLine(gcx2, gb[1], gcx2, rotY2+hr, pinkP)
-                canvas.drawCircle(gcx2, rotY2, 18f/scaleFactor, rotF2); canvas.drawCircle(gcx2, rotY2, 18f/scaleFactor, hS)
-                val delX2 = gb[2]+hr*4f; val delY2 = gb[1]-hr*4f
-                val delF2 = Paint().apply { style = Paint.Style.FILL; color = Color.parseColor("#FF3B30"); isAntiAlias = true }
-                val delS2 = Paint().apply { style = Paint.Style.STROKE; color = Color.WHITE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
-                canvas.drawCircle(delX2, delY2, hr*1.5f, delF2); canvas.drawCircle(delX2, delY2, hr*1.5f, hS)
-                val d3 = hr*0.85f; canvas.drawLine(delX2-d3, delY2-d3, delX2+d3, delY2+d3, delS2); canvas.drawLine(delX2+d3, delY2-d3, delX2-d3, delY2+d3, delS2)
-                // Individual/Group toggle pill
-                val pillW = 80f/scaleFactor; val pillH = 20f/scaleFactor
-                val pillX2 = gcx2-pillW/2f; val pillY2 = gb[3]+14f/scaleFactor
-                val bgP = Paint().apply { style = Paint.Style.FILL; color = Color.parseColor("#333333"); isAntiAlias = true; alpha = 200 }
-                canvas.drawRoundRect(android.graphics.RectF(pillX2, pillY2, pillX2+pillW, pillY2+pillH), pillH/2f, pillH/2f, bgP)
-                val tP = Paint().apply { isAntiAlias = true; textSize = 9f/scaleFactor }
-                tP.color = if (multiSelectIndividual) Color.parseColor("#E91E8C") else Color.WHITE
-                canvas.drawText("Indiv", pillX2+pillW*0.08f, pillY2+pillH*0.72f, tP)
-                tP.color = if (!multiSelectIndividual) Color.parseColor("#E91E8C") else Color.WHITE
-                canvas.drawText("Group", pillX2+pillW*0.52f, pillY2+pillH*0.72f, tP)
+            val gb = computeGroupBounds() ?: return
+            val hr = 20f / scaleFactor  // larger handles, easier to tap
+            val pinkP = Paint().apply { color = android.graphics.Color.parseColor("#E91E8C"); style = Paint.Style.STROKE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true }
+            canvas.drawRect(gb[0], gb[1], gb[2], gb[3], pinkP)
+            val hF = Paint().apply { style = Paint.Style.FILL; color = android.graphics.Color.parseColor("#E91E8C"); isAntiAlias = true }
+            val hS = Paint().apply { style = Paint.Style.STROKE; color = android.graphics.Color.WHITE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true }
+            val gcx = (gb[0]+gb[2])/2f; val gcy = (gb[1]+gb[3])/2f
+            // 8 resize handles
+            for ((hx,hy) in listOf(gb[0] to gb[1], gcx to gb[1], gb[2] to gb[1], gb[0] to gcy, gb[2] to gcy, gb[0] to gb[3], gcx to gb[3], gb[2] to gb[3])) {
+                canvas.drawCircle(hx, hy, hr, hF); canvas.drawCircle(hx, hy, hr, hS)
             }
+            // Rotation handle (green, well above)
+            val rotY = gb[1] - 90f/scaleFactor
+            val rotF = Paint().apply { style = Paint.Style.FILL; color = android.graphics.Color.parseColor("#34C759"); isAntiAlias = true }
+            canvas.drawLine(gcx, gb[1], gcx, rotY+hr, pinkP)
+            canvas.drawCircle(gcx, rotY, hr*1.2f, rotF); canvas.drawCircle(gcx, rotY, hr*1.2f, hS)
+            // Delete handle (red, top-right)
+            val delX = gb[2]+hr*4f; val delY = gb[1]-hr*4f
+            val delF = Paint().apply { style = Paint.Style.FILL; color = android.graphics.Color.parseColor("#FF3B30"); isAntiAlias = true }
+            val delS = Paint().apply { style = Paint.Style.STROKE; color = android.graphics.Color.WHITE; strokeWidth = 3f/scaleFactor; isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
+            canvas.drawCircle(delX, delY, hr*1.5f, delF); canvas.drawCircle(delX, delY, hr*1.5f, hS)
+            val d2 = hr*0.9f; canvas.drawLine(delX-d2,delY-d2,delX+d2,delY+d2,delS); canvas.drawLine(delX+d2,delY-d2,delX-d2,delY+d2,delS)
+            // Move handle (center arrow icon)
+            val moveF = Paint().apply { style = Paint.Style.FILL; color = android.graphics.Color.parseColor("#2196F3"); isAntiAlias = true }
+            canvas.drawCircle(gcx, gcy, hr*1.2f, moveF); canvas.drawCircle(gcx, gcy, hr*1.2f, hS)
+            val ap = Paint().apply { style = Paint.Style.STROKE; color = android.graphics.Color.WHITE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
+            val a = hr*0.6f
+            canvas.drawLine(gcx-a, gcy, gcx+a, gcy, ap); canvas.drawLine(gcx, gcy-a, gcx, gcy+a, ap)
+            // NOTE: Indiv/Group toggle is shown as a screen-space button via MainActivity
             return
         }
         // ── END MULTISELECT drawing ─────────────────────────────────────────────
@@ -2826,14 +2832,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (currentTool == Tool.MULTISELECT) {
                 val gb = computeGroupBounds()
                 if (gb != null) {
-                    val hr = 15f / scaleFactor
+                    val hr = 20f / scaleFactor  // match drawing size
                     val gcx = (gb[0]+gb[2])/2f; val gcy = (gb[1]+gb[3])/2f
                     val rotY = gb[1] - 90f/scaleFactor
                     val delX = gb[2]+hr*4f; val delY = gb[1]-hr*4f
-                    val pillW = 80f/scaleFactor; val pillH = 20f/scaleFactor
-                    val pillX = gcx-pillW/2f; val pillY = gb[3]+14f/scaleFactor
-                    // Toggle pill
-                    if (wx>=pillX && wx<=pillX+pillW && wy>=pillY && wy<=pillY+pillH) { multiSelectIndividual=!multiSelectIndividual; invalidate(); return }
                     // Delete
                     if (distance(wx,wy,delX,delY) <= hr*2.5f) {
                         val all=(selectedItems+setOfNotNull(selectedItem)).toSet()
@@ -2848,6 +2850,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val all=(selectedItems+setOfNotNull(selectedItem)).toSet()
                         for (it in all) { val b2=getBounds(it)?:continue; groupSnapshots.add(Pair(it,floatArrayOf((b2[0]+b2[2])/2f,(b2[1]+b2[3])/2f,getRotation(it)))) }
                         return
+                    }
+                    // Move handle (blue circle at center)
+                    if (distance(wx,wy,gcx,gcy) <= hr*2f) {
+                        groupActiveHandle=HandleType.MOVE; groupDragStartX=wx; groupDragStartY=wy; return
                     }
                     // 8 resize handles
                     val corners=listOf(HandleType.TL to (gb[0] to gb[1]),HandleType.TM to (gcx to gb[1]),HandleType.TR to (gb[2] to gb[1]),HandleType.ML to (gb[0] to gcy),HandleType.MR to (gb[2] to gcy),HandleType.BL to (gb[0] to gb[3]),HandleType.BM to (gcx to gb[3]),HandleType.BR to (gb[2] to gb[3]))

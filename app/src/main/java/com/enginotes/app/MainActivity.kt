@@ -641,6 +641,7 @@ class MainActivity : AppCompatActivity() {
                 }
             } else {
                 lockBtn?.visibility = View.GONE
+                updateGroupModeToggle(false)
             }
             // Refresh dimension overlay for newly selected item
             if (dimModeEnabled) {
@@ -685,6 +686,7 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     lockBtn?.visibility = View.GONE
                 }
+                updateGroupModeToggle(items.isNotEmpty())
             }
         }
         drawingView.onExportWindowSelected  = { l,t,r,b -> exportWindowBitmap = drawingView.exportWindow(l,t,r,b); showExportWindowDialog() }
@@ -2049,6 +2051,38 @@ class MainActivity : AppCompatActivity() {
     private var dimButton: View? = null
     private var dimOverlayViews: List<View> = emptyList()
     private var dimScalePanel: View? = null
+    private var groupModeToggleBtn: TextView? = null
+
+    private fun updateGroupModeToggle(show: Boolean) {
+        if (!show) {
+            groupModeToggleBtn?.let { canvasContainer.removeView(it) }; groupModeToggleBtn = null; return
+        }
+        val existing = groupModeToggleBtn
+        if (existing != null) {
+            existing.text = if (drawingView.multiSelectIndividual) "⚙ Indiv" else "⚙ Group"
+            existing.setTextColor(Color.WHITE)
+            return
+        }
+        val btn = TextView(this).apply {
+            text = if (drawingView.multiSelectIndividual) "⚙ Indiv" else "⚙ Group"
+            textSize = 12f; setTextColor(Color.WHITE)
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#9C27B0")); cornerRadius = dp(16).toFloat()
+            }
+            elevation = dp(6).toFloat()
+            setOnClickListener {
+                drawingView.multiSelectIndividual = !drawingView.multiSelectIndividual
+                text = if (drawingView.multiSelectIndividual) "⚙ Indiv" else "⚙ Group"
+                drawingView.invalidate()
+            }
+        }
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.END
+        lp.bottomMargin = dp(8); lp.rightMargin = dp(12)
+        canvasContainer.addView(btn, lp)
+        groupModeToggleBtn = btn
+    }
     private var eraserOptionsPanel: LinearLayout? = null
     private var contextBarPage = 0 // 0 = default, increments on swipe-up
 
