@@ -1422,7 +1422,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val parts = d.unit.split(",")
         val p3x = parts.getOrNull(0)?.toFloatOrNull() ?: d.x2
         val p3y = parts.getOrNull(1)?.toFloatOrNull() ?: d.y2
-        val supplementary = parts.getOrNull(2)? == "true"
+        val supplementary = parts.getOrNull(2) == "true"
 
         val vx = d.x1; val vy = d.y1
         val sw = d.strokeW / scaleFactor
