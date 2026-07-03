@@ -162,7 +162,11 @@ class StrokeData(
     var fillColorVal: Int = color, var penStyle: PenStyle = PenStyle.FOUNTAIN, var opacity: Int = 255,
     var brushStyle: BrushStyle = BrushStyle.ROUND,
     var widths: MutableList<Float> = mutableListOf(),
-    var lineType: LineType = LineType.CONTINUOUS
+    var lineType: LineType = LineType.CONTINUOUS,
+    var isLocked: Boolean = false,
+    // Pixel-erase holes: each entry is [cx, cy, radius] in world units.
+    // Rendered by punching transparent circles out of the shape via PorterDuff.CLEAR.
+    val clipHoles: MutableList<FloatArray> = mutableListOf()
 ) {
     fun buildPath(): Path {
         val path = Path()
@@ -657,16 +661,10 @@ class DimensionItem(
     var textColor: Int = android.graphics.Color.parseColor("#1565C0")
 ) {
     val len: Float get() { val dx=x2-x1; val dy=y2-y1; return kotlin.math.sqrt((dx*dx+dy*dy).toDouble()).toFloat() }
-    fun displayLabel(refPixelLen: Float, mmPerUnit: Float = 0f): String {
+    fun displayLabel(refPixelLen: Float): String {
         return when {
             label.isNotEmpty() -> label
             isAngular -> "%.1f°".format(angle)
-            mmPerUnit > 0f -> {
-                // Real-world scale set — show actual real-world measurement
-                val mm = len * mmPerUnit
-                if (mm >= 1000f) "${"%.3f".format(mm / 1000f)}m"
-                else "${"%.1f".format(mm)}mm"
-            }
             mode == DimMode.AUTO && refPixelLen > 0f -> {
                 val scale = refLength / refPixelLen
                 "%.2f %s".format(len * scale, unit)
@@ -743,6 +741,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun markSpatialDirty() { spatialDirty = true }
     fun markSpatialDirtyAndInvalidate() { spatialDirty = true; invalidate() }
+
+    // Lock/unlock — called from MainActivity lock button
+    fun lockSelectedItems() {
+        for (item in selectedItems) if (item is StrokeItem) item.data.isLocked = true
+        if (selectedItem is StrokeItem) (selectedItem as StrokeItem).data.isLocked = true
+        invalidate()
+    }
+    fun unlockSelectedItems() {
+        for (item in selectedItems) if (item is StrokeItem) item.data.isLocked = false
+        if (selectedItem is StrokeItem) (selectedItem as StrokeItem).data.isLocked = false
+        invalidate()
+    }
+    fun isSelectionLocked(): Boolean {
+        val items = (selectedItems + setOfNotNull(selectedItem)).filterIsInstance<StrokeItem>()
+        return items.isNotEmpty() && items.all { it.data.isLocked }
+    }
 
     private fun itemsNear(x: Float, y: Float, r: Float): List<Any> {
         if (spatialDirty) rebuildSpatialIndex()
@@ -839,48 +853,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     var canvasMode: CanvasMode = CanvasMode.CONVENIENT
     var paperSize: PaperSizeOption = PaperSizeOption.A4
-
-    // ── Real-world scale system ───────────────────────────────────────────────
-    // paperScale: denominator of paper:real ratio. 1=1:1, 100=1:100 (1mm paper=100mm real).
-    // gridRealSizeMm: for INFINITE canvas only — how many real-world mm one grid square = .
-    var paperScale: Float = 1f
-    var gridRealSizeMm: Float = 10f  // default: 1 grid square = 10mm real world
-
-    // How many real-world mm one world unit represents, accounting for canvas mode and scale.
-    fun mmPerWorldUnit(): Float {
-        return if (canvasMode == CanvasMode.INFINITE) {
-            // Infinite canvas: reference is the grid square size
-            gridRealSizeMm / gridSpacingPx()
-        } else {
-            // Paginated/Fixed/Convenient: reference is the physical paper size
-            // 3.7795 px/mm is the base conversion at 96 DPI
-            // pageWidthPx() covers CONVENIENT's dynamic size too
-            paperScale * paperSize.widthMM / pageWidthPx()
-        }
-    }
-    fun worldToRealMm(worldUnits: Float): Float = worldUnits * mmPerWorldUnit()
-    fun realMmToWorld(mm: Float): Float {
-        val mpu = mmPerWorldUnit()
-        return if (mpu < 1e-9f) mm else mm / mpu
-    }
-    // Formats a world-unit distance as a real-world string (mm or m).
-    fun formatRealWorld(worldUnits: Float): String {
-        val mm = worldToRealMm(worldUnits)
-        return if (mm >= 1000f) "${"%.3f".format(mm / 1000f)}m" else "${"%.1f".format(mm)}mm"
-    }
-    // Parses a real-world string ("5m", "250mm", "3.5") to mm.
-    fun parseRealWorldMm(input: String): Float? {
-        val s = input.trim().lowercase()
-        return try {
-            when {
-                s.endsWith("mm") -> s.dropLast(2).trim().toFloat()
-                s.endsWith("cm") -> s.dropLast(2).trim().toFloat() * 10f
-                s.endsWith("m")  -> s.dropLast(1).trim().toFloat() * 1000f
-                else -> s.toFloat() // assume mm
-            }
-        } catch (e: Exception) { null }
-    }
-    // ─────────────────────────────────────────────────────────────────────────
     var pageOrientation: Orientation = Orientation.PORTRAIT
 
     var selectedGroup: MutableList<Any>? = null
@@ -899,6 +871,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     var selectedItem: Any? = null
         set(value) { field = value; onItemSelected?.invoke(value) }
+    // Multi-select: set of all selected items (includes selectedItem when non-null)
+    val selectedItems: MutableSet<Any> = mutableSetOf()
+    var onMultiSelectionChanged: ((Set<Any>) -> Unit)? = null
+    var multiSelectMode: Boolean = false  // when true, taps add/remove from selectedItems
     var onItemSelected: ((Any?) -> Unit)? = null
 
     private enum class HandleType { NONE, MOVE, ROTATE, TL, TM, TR, ML, MR, BL, BM, BR }
@@ -1330,6 +1306,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         canvas.drawPath(renderPath, renderPaint); canvas.restore()
                     } else { action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }; canvas.drawPath(renderPath, renderPaint) }
                 } else { action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }; canvas.drawPath(renderPath, renderPaint) }
+                // Punch out pixel-erase holes using PorterDuff.CLEAR
+                if (action.data.clipHoles.isNotEmpty()) {
+                    val holePaint = Paint().apply { style = Paint.Style.FILL; xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR); isAntiAlias = true }
+                    for (h in action.data.clipHoles) canvas.drawCircle(h[0], h[1], h[2], holePaint)
+                }
             }
             is DimensionItem -> drawDimensionItem(canvas, action)
             is TextItem -> { if (!action.isEditing) drawTextItem(canvas, action) }
@@ -1391,7 +1372,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         // Label
         val midX = (dl1x+dl2x)/2f; val midY = (dl1y+dl2y)/2f
-        val labelStr = d.displayLabel(autoRefPixelLen, mmPerWorldUnit())
+        val labelStr = d.displayLabel(autoRefPixelLen)
         canvas.save()
         canvas.translate(midX, midY)
         val angle = kotlin.math.atan2(dy.toDouble(), dx.toDouble()).toFloat() * 180f / Math.PI.toFloat()
@@ -2802,6 +2783,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_MOVE -> {
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
                 val item = selectedItem ?: return
+                // Skip all manipulation if item is locked
+                if (item is StrokeItem && item.data.isLocked) return
                 when (activeHandle) {
                     HandleType.MOVE -> {
                         var finalWx = wx; var finalWy = wy
@@ -4156,12 +4139,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (a !in candidates) { newActions.add(a); continue }
                 when (a) {
                     is StrokeItem -> {
-                        if (a.data.type == Tool.PEN || a.data.type == Tool.ERASER || a.data.type == Tool.ARC || a.data.type == Tool.HIGHLIGHTER || a.data.type == Tool.BRUSH) {
+                        if (a.data.isLocked) { newActions.add(a); continue }                        if (a.data.type == Tool.PEN || a.data.type == Tool.ERASER || a.data.type == Tool.ARC || a.data.type == Tool.HIGHLIGHTER || a.data.type == Tool.BRUSH) {
                             newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r))
+                        } else if (CLOSED_SHAPES.contains(a.data.type)) {
+                            // Closed shapes: add a pixel-erase hole instead of splitting into
+                            // open PEN fragments (which distorts the shape due to closed path loops)
+                            if (strokeHitTest(a.data, x, y, r)) {
+                                a.data.clipHoles.add(floatArrayOf(x, y, r))
+                                a.invalidateCache()
+                            }
+                            newActions.add(a)
                         } else {
-                            // Shapes: only touch them if the eraser circle actually overlaps the
-                            // outline (checked first as a cheap early-out), then partially erase
-                            // just the touched portion instead of deleting the whole shape.
+                            // Open shapes (LINE, ARROW): split into fragments
                             if (strokeHitTest(a.data, x, y, r)) newActions.addAll(splitShapeAroundEraser(a.data, x, y, r))
                             else newActions.add(a)
                         }
@@ -4816,7 +4805,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         sb.append("META\u0001${paperType.name}\u0001${canvasMode.name}\u0001${paperSize.name}\u0001${pageOrientation.name}\u0001$paperColor\n")
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
-            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}\n")
+            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\n")
@@ -4901,7 +4890,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val opac = if (p.size >= 9) p[8].toIntOrNull() ?: 255 else 255
                                 val bStyle = if (p.size >= 10) try { BrushStyle.valueOf(p[9]) } catch (e: Exception) { BrushStyle.ROUND } else BrushStyle.ROUND
                                 val wArr = if (p.size >= 11 && p[10].isNotBlank()) p[10].split(",").mapNotNull { it.toFloatOrNull() }.toMutableList() else mutableListOf()
-                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
+                                val lType = if (p.size >= 12 && p[11].isNotBlank()) try { LineType.valueOf(p[11]) } catch (e: Exception) { LineType.CONTINUOUS } else LineType.CONTINUOUS
+                                val locked = if (p.size >= 13) p[12].toBooleanStrictOrNull() ?: false else false
+                                val holes = mutableListOf<FloatArray>()
+                                if (p.size >= 14 && p[13].isNotBlank()) for (h in p[13].split(";")) { val hv = h.split(","); if (hv.size == 3) holes.add(floatArrayOf(hv[0].toFloat(), hv[1].toFloat(), hv[2].toFloat())) }
+                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, holes); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
                             } else {
                                 val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
                                 val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))

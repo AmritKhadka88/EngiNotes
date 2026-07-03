@@ -628,6 +628,14 @@ class MainActivity : AppCompatActivity() {
         }
         drawingView.onItemSelected          = { item ->
             layerToolbar?.let { canvasContainer.removeView(it) }; layerToolbar = null
+            // Show/hide lock button based on selection
+            val lockBtn = findViewById<TextView>(R.id.btnLock)
+            if (item != null) {
+                lockBtn?.visibility = View.VISIBLE
+                lockBtn?.text = if (drawingView.isSelectionLocked()) "🔒" else "🔓"
+            } else {
+                lockBtn?.visibility = View.GONE
+            }
             // Refresh dimension overlay for newly selected item
             if (dimModeEnabled) {
                 if (item != null) showDimOverlayForSelected() else clearDimOverlay()
@@ -787,6 +795,18 @@ class MainActivity : AppCompatActivity() {
             dimModeEnabled = !dimModeEnabled
             btnDimToggle.setTextColor(if (dimModeEnabled) Color.parseColor("#FF9800") else Color.parseColor("#3C3C3E"))
             if (dimModeEnabled) showDimOverlayForSelected() else clearDimOverlay()
+        }
+
+        // Lock button — appears when item(s) selected
+        val btnLock = findViewById<TextView>(R.id.btnLock)
+        btnLock?.setOnClickListener {
+            if (drawingView.isSelectionLocked()) {
+                drawingView.unlockSelectedItems()
+                btnLock.text = "🔓"
+            } else {
+                drawingView.lockSelectedItems()
+                btnLock.text = "🔒"
+            }
         }
 
         rebuildContextBar()
@@ -1769,7 +1789,12 @@ class MainActivity : AppCompatActivity() {
         fun hdr(t:String){ container.addView(TextView(this).apply{ text=t;textSize=11f;setTextColor(Color.parseColor("#7B61FF"));setPadding(0,dp(10),0,dp(2));typeface=Typeface.DEFAULT_BOLD }) }
         fun div(){ container.addView(View(this).apply{ layoutParams=LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,dp(1)).also{it.setMargins(0,dp(8),0,dp(4))};setBackgroundColor(Color.LTGRAY) }) }
 
-        hdr("GENERAL")
+        div(); hdr("LOCK BEHAVIOUR")
+        val lockEraseCb = CheckBox(this).apply { text="Locked items: prevent erasing"; isChecked=prefs.getBoolean("lock_prevent_erase",true); setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_erase",on).apply() } }; container.addView(lockEraseCb)
+        val lockMoveCb = CheckBox(this).apply { text="Locked items: prevent moving/resizing"; isChecked=prefs.getBoolean("lock_prevent_move",true); setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_move",on).apply() } }; container.addView(lockMoveCb)
+        val lockColorCb = CheckBox(this).apply { text="Locked items: prevent colour changes"; isChecked=prefs.getBoolean("lock_prevent_color",true); setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_color",on).apply() } }; container.addView(lockColorCb)
+
+        div(); hdr("GENERAL")
         val confirmCb = CheckBox(this).apply{ text="Confirm before exit or clear canvas"; isChecked=prefs.getBoolean("confirm_exit_clear",true) }; container.addView(confirmCb)
         val autosaveCb = CheckBox(this).apply{ text="Autosave every 10 seconds"; isChecked=prefs.getBoolean("autosave",true) }; container.addView(autosaveCb)
         val bottomBarCb = CheckBox(this).apply{
