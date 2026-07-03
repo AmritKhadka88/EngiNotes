@@ -891,6 +891,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     val selectedItems: MutableSet<Any> = mutableSetOf()
     var onMultiSelectionChanged: ((Set<Any>) -> Unit)? = null
     var multiSelectMode: Boolean = false  // when true, taps add/remove from selectedItems
+    var multiSelectIndividual: Boolean = true  // true=each item transforms independently, false=rigid group
     var onItemSelected: ((Any?) -> Unit)? = null
 
     private enum class HandleType { NONE, MOVE, ROTATE, TL, TM, TR, ML, MR, BL, BM, BR }
@@ -2260,55 +2261,51 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
             }
         }
-        // Draw simple highlight boxes for all items in multi-select set
-        if (selectedItems.isNotEmpty()) {
-            val msP = Paint().apply {
-                color = Color.parseColor("#2196F3"); style = Paint.Style.STROKE
-                strokeWidth = 2f / scaleFactor; isAntiAlias = true
-                pathEffect = android.graphics.DashPathEffect(floatArrayOf(8f/scaleFactor, 4f/scaleFactor), 0f)
-            }
-            for (si in selectedItems) {
-                val b = getBounds(si) ?: continue
-                canvas.drawRect(b[0], b[1], b[2], b[3], msP)
-            }
-
-            // Pink group bounding box when 2+ items selected
-            val gb = computeGroupBounds()
-            if (gb != null) {
-                val pinkP = Paint().apply {
-                    color = Color.parseColor("#E91E8C"); style = Paint.Style.STROKE
-                    strokeWidth = 2.5f / scaleFactor; isAntiAlias = true
-                    pathEffect = android.graphics.DashPathEffect(floatArrayOf(14f/scaleFactor, 6f/scaleFactor), 0f)
+        // ── MULTISELECT drawing (replaces individual blue handles) ────────────
+        if (currentTool == Tool.MULTISELECT) {
+            val allItems = (selectedItems + setOfNotNull(selectedItem)).toSet()
+            if (allItems.isNotEmpty()) {
+                // Faint blue dashed outlines only — no individual handles
+                val faintP = Paint().apply {
+                    color = Color.parseColor("#2196F3"); style = Paint.Style.STROKE
+                    strokeWidth = 1.5f / scaleFactor; isAntiAlias = true; alpha = 100
+                    pathEffect = android.graphics.DashPathEffect(floatArrayOf(7f/scaleFactor, 4f/scaleFactor), 0f)
                 }
+                for (si in allItems) { val b = getBounds(si) ?: continue; canvas.drawRect(b[0], b[1], b[2], b[3], faintP) }
+
+                val gb = computeGroupBounds() ?: return
+                val hr = 15f / scaleFactor
+                val pinkP = Paint().apply { color = Color.parseColor("#E91E8C"); style = Paint.Style.STROKE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true }
                 canvas.drawRect(gb[0], gb[1], gb[2], gb[3], pinkP)
-                // 8 resize handles on pink box
-                val hr = 14f / scaleFactor
                 val hF = Paint().apply { style = Paint.Style.FILL; color = Color.parseColor("#E91E8C"); isAntiAlias = true }
                 val hS = Paint().apply { style = Paint.Style.STROKE; color = Color.WHITE; strokeWidth = 2f/scaleFactor; isAntiAlias = true }
-                val cx = (gb[0]+gb[2])/2f; val cy = (gb[1]+gb[3])/2f
-                for ((hx, hy) in listOf(
-                    gb[0] to gb[1], cx to gb[1], gb[2] to gb[1],
-                    gb[0] to cy,                  gb[2] to cy,
-                    gb[0] to gb[3], cx to gb[3], gb[2] to gb[3]
-                )) {
+                val gcx2 = (gb[0]+gb[2])/2f; val gcy2 = (gb[1]+gb[3])/2f
+                for ((hx,hy) in listOf(gb[0] to gb[1], gcx2 to gb[1], gb[2] to gb[1], gb[0] to gcy2, gb[2] to gcy2, gb[0] to gb[3], gcx2 to gb[3], gb[2] to gb[3])) {
                     canvas.drawCircle(hx, hy, hr, hF); canvas.drawCircle(hx, hy, hr, hS)
                 }
-                // Rotation handle (green, above center-top)
-                val rotY = gb[1] - 90f/scaleFactor
-                val rotF = Paint().apply { style = Paint.Style.FILL; color = Color.parseColor("#34C759"); isAntiAlias = true }
-                canvas.drawLine(cx, gb[1], cx, rotY+hr, pinkP)
-                canvas.drawCircle(cx, rotY, 16f/scaleFactor, rotF)
-                canvas.drawCircle(cx, rotY, 16f/scaleFactor, hS)
-                // Delete handle (red X, top-right corner)
-                val delX = gb[2] + hr*5f; val delY = gb[1] - hr*5f
-                val delF = Paint().apply { style = Paint.Style.FILL; color = Color.parseColor("#FF3B30"); isAntiAlias = true }
-                val delS = Paint().apply { style = Paint.Style.STROKE; color = Color.WHITE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
-                canvas.drawCircle(delX, delY, hr*1.4f, delF)
-                val d2 = hr*0.8f
-                canvas.drawLine(delX-d2, delY-d2, delX+d2, delY+d2, delS)
-                canvas.drawLine(delX+d2, delY-d2, delX-d2, delY+d2, delS)
+                val rotY2 = gb[1] - 90f/scaleFactor
+                val rotF2 = Paint().apply { style = Paint.Style.FILL; color = Color.parseColor("#34C759"); isAntiAlias = true }
+                canvas.drawLine(gcx2, gb[1], gcx2, rotY2+hr, pinkP)
+                canvas.drawCircle(gcx2, rotY2, 18f/scaleFactor, rotF2); canvas.drawCircle(gcx2, rotY2, 18f/scaleFactor, hS)
+                val delX2 = gb[2]+hr*4f; val delY2 = gb[1]-hr*4f
+                val delF2 = Paint().apply { style = Paint.Style.FILL; color = Color.parseColor("#FF3B30"); isAntiAlias = true }
+                val delS2 = Paint().apply { style = Paint.Style.STROKE; color = Color.WHITE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
+                canvas.drawCircle(delX2, delY2, hr*1.5f, delF2); canvas.drawCircle(delX2, delY2, hr*1.5f, hS)
+                val d3 = hr*0.85f; canvas.drawLine(delX2-d3, delY2-d3, delX2+d3, delY2+d3, delS2); canvas.drawLine(delX2+d3, delY2-d3, delX2-d3, delY2+d3, delS2)
+                // Individual/Group toggle pill
+                val pillW = 80f/scaleFactor; val pillH = 20f/scaleFactor
+                val pillX2 = gcx2-pillW/2f; val pillY2 = gb[3]+14f/scaleFactor
+                val bgP = Paint().apply { style = Paint.Style.FILL; color = Color.parseColor("#333333"); isAntiAlias = true; alpha = 200 }
+                canvas.drawRoundRect(android.graphics.RectF(pillX2, pillY2, pillX2+pillW, pillY2+pillH), pillH/2f, pillH/2f, bgP)
+                val tP = Paint().apply { isAntiAlias = true; textSize = 9f/scaleFactor }
+                tP.color = if (multiSelectIndividual) Color.parseColor("#E91E8C") else Color.WHITE
+                canvas.drawText("Indiv", pillX2+pillW*0.08f, pillY2+pillH*0.72f, tP)
+                tP.color = if (!multiSelectIndividual) Color.parseColor("#E91E8C") else Color.WHITE
+                canvas.drawText("Group", pillX2+pillW*0.52f, pillY2+pillH*0.72f, tP)
             }
+            return
         }
+        // ── END MULTISELECT drawing ─────────────────────────────────────────────
 
         val item = selectedItem ?: return
         if (item is TextItem) {
@@ -2825,74 +2822,56 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             tableIsActive = false; tableSelStart = null; tableSelEnd = null
         }
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-            // Check pink group bounding box handles FIRST (before individual item handles)
-            val gb = computeGroupBounds()
-            if (gb != null && (selectedItems.size + (if (selectedItem != null && !selectedItems.contains(selectedItem)) 1 else 0)) >= 2) {
-                val hr = 22f / scaleFactor
-                val gcx = (gb[0]+gb[2])/2f; val gcy = (gb[1]+gb[3])/2f
-                val delX = gb[2] + hr*5f; val delY = gb[1] - hr*5f
-                val rotY = gb[1] - 90f/scaleFactor
-                // Delete handle
-                if (distance(wx, wy, delX, delY) <= hr*2f) {
-                    val all = (selectedItems + setOfNotNull(selectedItem)).toSet()
-                    for (it in all) { if (!(it is StrokeItem && it.data.isLocked)) actions.remove(it) }
-                    selectedItems.clear(); selectedItem = null; markSpatialDirty()
-                    onMultiSelectionChanged?.invoke(emptySet()); invalidate(); return
-                }
-                // Rotation handle
-                if (distance(wx, wy, gcx, rotY) <= 24f/scaleFactor) {
-                    groupActiveHandle = HandleType.ROTATE
-                    groupOrigGcx = gcx; groupOrigGcy = gcy
-                    groupDragStartAngle = kotlin.math.atan2((wy-gcy).toDouble(), (wx-gcx).toDouble()).toFloat()
-                    groupOrigBounds = gb.copyOf()
-                    groupSnapshots.clear()
-                    val all = (selectedItems + setOfNotNull(selectedItem)).toSet()
-                    // Snapshot: store [centerX, centerY, rotationDegrees] per item
-                    for (it in all) {
-                        val b2 = getBounds(it) ?: continue
-                        val cx2 = (b2[0]+b2[2])/2f; val cy2 = (b2[1]+b2[3])/2f
-                        groupSnapshots.add(Pair(it, floatArrayOf(cx2, cy2, getRotation(it))))
+            // MULTISELECT: only pink box handles — skip individual item handles entirely
+            if (currentTool == Tool.MULTISELECT) {
+                val gb = computeGroupBounds()
+                if (gb != null) {
+                    val hr = 15f / scaleFactor
+                    val gcx = (gb[0]+gb[2])/2f; val gcy = (gb[1]+gb[3])/2f
+                    val rotY = gb[1] - 90f/scaleFactor
+                    val delX = gb[2]+hr*4f; val delY = gb[1]-hr*4f
+                    val pillW = 80f/scaleFactor; val pillH = 20f/scaleFactor
+                    val pillX = gcx-pillW/2f; val pillY = gb[3]+14f/scaleFactor
+                    // Toggle pill
+                    if (wx>=pillX && wx<=pillX+pillW && wy>=pillY && wy<=pillY+pillH) { multiSelectIndividual=!multiSelectIndividual; invalidate(); return }
+                    // Delete
+                    if (distance(wx,wy,delX,delY) <= hr*2.5f) {
+                        val all=(selectedItems+setOfNotNull(selectedItem)).toSet()
+                        for (it in all) { if (!(it is StrokeItem && it.data.isLocked)) actions.remove(it) }
+                        selectedItems.clear(); selectedItem=null; markSpatialDirty(); onMultiSelectionChanged?.invoke(emptySet()); invalidate(); return
                     }
-                    return
-                }
-                // 8 resize handles
-                val corners = listOf(
-                    HandleType.TL to (gb[0] to gb[1]), HandleType.TM to (gcx to gb[1]), HandleType.TR to (gb[2] to gb[1]),
-                    HandleType.ML to (gb[0] to gcy),                                    HandleType.MR to (gb[2] to gcy),
-                    HandleType.BL to (gb[0] to gb[3]), HandleType.BM to (gcx to gb[3]), HandleType.BR to (gb[2] to gb[3])
-                )
-                for ((hType, pos) in corners) {
-                    if (distance(wx, wy, pos.first, pos.second) <= hr) {
-                        groupActiveHandle = hType
-                        groupDragStartX = wx; groupDragStartY = wy
-                        groupOrigBounds = gb.copyOf()
-                        groupSnapshots.clear()
-                        val all = (selectedItems + setOfNotNull(selectedItem)).toSet()
-                        for (it in all) { val b2 = getBounds(it); if (b2 != null) groupSnapshots.add(Pair(it, b2.copyOf())) }
+                    // Rotation
+                    if (distance(wx,wy,gcx,rotY) <= 22f/scaleFactor) {
+                        groupActiveHandle=HandleType.ROTATE; groupOrigGcx=gcx; groupOrigGcy=gcy
+                        groupDragStartAngle=kotlin.math.atan2((wy-gcy).toDouble(),(wx-gcx).toDouble()).toFloat()
+                        groupOrigBounds=gb.copyOf(); groupSnapshots.clear()
+                        val all=(selectedItems+setOfNotNull(selectedItem)).toSet()
+                        for (it in all) { val b2=getBounds(it)?:continue; groupSnapshots.add(Pair(it,floatArrayOf((b2[0]+b2[2])/2f,(b2[1]+b2[3])/2f,getRotation(it)))) }
                         return
                     }
+                    // 8 resize handles
+                    val corners=listOf(HandleType.TL to (gb[0] to gb[1]),HandleType.TM to (gcx to gb[1]),HandleType.TR to (gb[2] to gb[1]),HandleType.ML to (gb[0] to gcy),HandleType.MR to (gb[2] to gcy),HandleType.BL to (gb[0] to gb[3]),HandleType.BM to (gcx to gb[3]),HandleType.BR to (gb[2] to gb[3]))
+                    for ((hType,pos) in corners) {
+                        if (distance(wx,wy,pos.first,pos.second) <= hr*1.5f) {
+                            groupActiveHandle=hType; groupDragStartX=wx; groupDragStartY=wy; groupOrigBounds=gb.copyOf(); groupSnapshots.clear()
+                            val all=(selectedItems+setOfNotNull(selectedItem)).toSet()
+                            for (it in all) { val b2=getBounds(it); if (b2!=null) groupSnapshots.add(Pair(it,b2.copyOf())) }
+                            return
+                        }
+                    }
                 }
-                // NOTE: taps INSIDE the pink box (not on handles) fall through to normal
-                // item detection — don't intercept here so selection toggle still works
-            }
-
-            // MULTISELECT: toggle item directly on ACTION_DOWN (no gesture detector latency)
-            if (currentTool == Tool.MULTISELECT) {
+                // Tap not on any handle: toggle item
                 val hit = findItemAtPreferSelected(wx, wy)
                 if (hit != null) {
                     if (selectedItems.contains(hit) || hit === selectedItem) {
-                        selectedItems.remove(hit)
-                        selectedItem = if (selectedItems.isEmpty()) null else selectedItems.last()
+                        selectedItems.remove(hit); selectedItem=if (selectedItems.isEmpty()) null else selectedItems.last()
                     } else {
-                        if (selectedItem != null) selectedItems.add(selectedItem!!)
-                        selectedItems.add(hit)
-                        selectedItem = hit
+                        if (selectedItem!=null && !selectedItems.contains(selectedItem!!)) selectedItems.add(selectedItem!!)
+                        selectedItems.add(hit); selectedItem=hit
                     }
-                    onMultiSelectionChanged?.invoke(selectedItems.toSet())
-                    invalidate(); return
-                } else {
-                    // Tap on empty space: don't clear yet (let double-tap clear)
+                    onMultiSelectionChanged?.invoke(selectedItems.toSet()); invalidate()
                 }
+                return  // MULTISELECT never falls through to individual handle detection
             }
 
             for (action in actions.reversed()) {
@@ -2989,25 +2968,29 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             groupDragStartX = wx; groupDragStartY = wy
                         }
                         HandleType.ROTATE -> {
-                            // Compute TOTAL angle delta from drag start (absolute, not incremental)
                             val currentAngle = kotlin.math.atan2((wy-groupOrigGcy).toDouble(), (wx-groupOrigGcx).toDouble()).toFloat()
                             val totalDeltaRad = (currentAngle - groupDragStartAngle).toDouble()
-                            val cosD = kotlin.math.cos(totalDeltaRad).toFloat()
-                            val sinD = kotlin.math.sin(totalDeltaRad).toFloat()
                             val totalDeltaDeg = Math.toDegrees(totalDeltaRad).toFloat()
-                            for ((it, snap) in groupSnapshots) {
-                                if (it is StrokeItem && it.data.isLocked) continue
-                                val origCx = snap[0]; val origCy = snap[1]; val origRotDeg = snap[2]
-                                // Rotate original center around group center (absolute from snapshot)
-                                val relX = origCx - groupOrigGcx; val relY = origCy - groupOrigGcy
-                                val targetCx = groupOrigGcx + relX*cosD - relY*sinD
-                                val targetCy = groupOrigGcy + relX*sinD + relY*cosD
-                                // Move from current position to target
-                                val curB = getBounds(it) ?: continue
-                                val curCx = (curB[0]+curB[2])/2f; val curCy = (curB[1]+curB[3])/2f
-                                moveItem(it, targetCx - curCx, targetCy - curCy)
-                                // Set absolute rotation
-                                setRotation(it, origRotDeg + totalDeltaDeg)
+                            if (multiSelectIndividual) {
+                                // Individual mode: each item rotates about its OWN center, stays in place
+                                for ((it, snap) in groupSnapshots) {
+                                    if (it is StrokeItem && it.data.isLocked) continue
+                                    setRotation(it, snap[2] + totalDeltaDeg)
+                                    // Pink box will auto-adjust to enclose rotated items
+                                }
+                            } else {
+                                // Group mode: rigid body — all items orbit group center together
+                                val cosD = kotlin.math.cos(totalDeltaRad).toFloat()
+                                val sinD = kotlin.math.sin(totalDeltaRad).toFloat()
+                                for ((it, snap) in groupSnapshots) {
+                                    if (it is StrokeItem && it.data.isLocked) continue
+                                    val relX = snap[0]-groupOrigGcx; val relY = snap[1]-groupOrigGcy
+                                    val targetCx = groupOrigGcx + relX*cosD - relY*sinD
+                                    val targetCy = groupOrigGcy + relX*sinD + relY*cosD
+                                    val curB = getBounds(it) ?: continue
+                                    moveItem(it, targetCx-(curB[0]+curB[2])/2f, targetCy-(curB[1]+curB[3])/2f)
+                                    setRotation(it, snap[2]+totalDeltaDeg)
+                                }
                             }
                         }
                         else -> {
@@ -3108,27 +3091,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                     HandleType.ROTATE -> {
                         val newAngle = computeAngle(item, wx, wy)
-                        val gb2 = computeGroupBounds()
-                        if (gb2 != null && groupSnapshots.isNotEmpty()) {
-                            // Multiselect: rigid block rotation from snapshots (absolute, no compounding)
-                            val currentAngle = kotlin.math.atan2((wy-groupOrigGcy).toDouble(), (wx-groupOrigGcx).toDouble()).toFloat()
-                            val totalDeltaRad = (currentAngle - groupDragStartAngle).toDouble()
-                            val cosD = kotlin.math.cos(totalDeltaRad).toFloat()
-                            val sinD = kotlin.math.sin(totalDeltaRad).toFloat()
-                            val totalDeltaDeg = Math.toDegrees(totalDeltaRad).toFloat()
-                            for ((it, snap) in groupSnapshots) {
-                                if (it is StrokeItem && it.data.isLocked) continue
-                                val relX = snap[0] - groupOrigGcx; val relY = snap[1] - groupOrigGcy
-                                val targetCx = groupOrigGcx + relX*cosD - relY*sinD
-                                val targetCy = groupOrigGcy + relX*sinD + relY*cosD
-                                val curB = getBounds(it) ?: continue
-                                moveItem(it, targetCx - (curB[0]+curB[2])/2f, targetCy - (curB[1]+curB[3])/2f)
-                                setRotation(it, snap[2] + totalDeltaDeg)
-                            }
-                        } else {
-                            // Single item rotation
-                            setRotation(item, dragStartRotation + Math.toDegrees((newAngle - dragStartAngle).toDouble()).toFloat())
-                        }
+                        // In MULTISELECT, rotation is handled via pink box only
+                        // Blue box rotation = single item only (pink box handles group)
+                        setRotation(item, dragStartRotation + Math.toDegrees((newAngle - dragStartAngle).toDouble()).toFloat())
                     }
                     HandleType.NONE -> return
                     else -> resizeItem(item, activeHandle, wx, wy)
@@ -4873,10 +4838,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return candidates.sortedWith(compareBy({ it.first.type.priority }, { it.second })).first().first
     }
 
-    // Returns union bounding box of all selectedItems (including selectedItem)
+    // Returns union bounding box of all selectedItems (including selectedItem). Works for 1+ items.
     private fun computeGroupBounds(): FloatArray? {
         val allItems = (selectedItems + setOfNotNull(selectedItem)).toSet()
-        if (allItems.size < 2) return null
+        if (allItems.isEmpty()) return null
         var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE
         var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
         for (item in allItems) {
