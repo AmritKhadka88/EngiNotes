@@ -661,14 +661,12 @@ class DimensionItem(
     var textColor: Int = android.graphics.Color.parseColor("#1565C0")
 ) {
     val len: Float get() { val dx=x2-x1; val dy=y2-y1; return kotlin.math.sqrt((dx*dx+dy*dy).toDouble()).toFloat() }
-    fun displayLabel(refPixelLen: Float): String {
+    fun displayLabel(refPixelLen: Float, mmPerUnit: Float = 0f): String {
         return when {
             label.isNotEmpty() -> label
             isAngular -> "%.1f°".format(angle)
-            mode == DimMode.AUTO && refPixelLen > 0f -> {
-                val scale = refLength / refPixelLen
-                "%.2f %s".format(len * scale, unit)
-            }
+            mmPerUnit > 0f -> { val mm = len * mmPerUnit; if (mm >= 1000f) "${"%.3f".format(mm/1000f)}m" else "${"%.1f".format(mm)}mm" }
+            mode == DimMode.AUTO && refPixelLen > 0f -> "%.2f %s".format(len * refLength / refPixelLen, unit)
             else -> "%.0fpx".format(len)
         }
     }
@@ -853,6 +851,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     var canvasMode: CanvasMode = CanvasMode.CONVENIENT
     var paperSize: PaperSizeOption = PaperSizeOption.A4
+
+    // ── Real-world scale system ───────────────────────────────────────────────
+    var paperScale: Float = 1f        // denominator: 100 = 1:100
+    var gridRealSizeMm: Float = 10f   // for INFINITE canvas: mm per grid square
+
+    fun mmPerWorldUnit(): Float = if (canvasMode == CanvasMode.INFINITE)
+        gridRealSizeMm / gridSpacingPx()
+    else
+        paperScale * paperSize.widthMM / pageWidthPx()
+
+    fun worldToRealMm(worldUnits: Float): Float = worldUnits * mmPerWorldUnit()
+    fun realMmToWorld(mm: Float): Float { val m = mmPerWorldUnit(); return if (m < 1e-9f) mm else mm / m }
+    fun formatRealWorld(worldUnits: Float): String { val mm = worldToRealMm(worldUnits); return if (mm >= 1000f) "${"%.3f".format(mm/1000f)}m" else "${"%.1f".format(mm)}mm" }
+    fun parseRealWorldMm(input: String): Float? {
+        val s = input.trim().lowercase()
+        return try { when { s.endsWith("mm") -> s.dropLast(2).trim().toFloat(); s.endsWith("cm") -> s.dropLast(2).trim().toFloat()*10f; s.endsWith("m") -> s.dropLast(1).trim().toFloat()*1000f; else -> s.toFloat() } } catch (e: Exception) { null }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
     var pageOrientation: Orientation = Orientation.PORTRAIT
 
     var selectedGroup: MutableList<Any>? = null
@@ -1385,7 +1401,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         // Label
         val midX = (dl1x+dl2x)/2f; val midY = (dl1y+dl2y)/2f
-        val labelStr = d.displayLabel(autoRefPixelLen)
+        val labelStr = d.displayLabel(autoRefPixelLen, mmPerWorldUnit())
         canvas.save()
         canvas.translate(midX, midY)
         val angle = kotlin.math.atan2(dy.toDouble(), dx.toDouble()).toFloat() * 180f / Math.PI.toFloat()
