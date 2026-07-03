@@ -904,6 +904,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var groupDragStartAngle = 0f  // atan2 angle at rotation drag start
     private var groupOrigGcx = 0f; private var groupOrigGcy = 0f  // group center at drag start
     private var groupOrigBounds: FloatArray? = null  // [minX,minY,maxX,maxY] at drag start
+    private var msTapDownWx = Float.NaN; private var msTapDownWy = Float.NaN
+    private var msDragging = false
     // Snapshots of each item's defining points at group drag start, for proportional resize
     private val groupSnapshots = mutableListOf<Pair<Any, FloatArray>>()  // item → pts copy
     private var dragStartAngle = 0f; private var dragStartRotation = 0f
@@ -1360,19 +1362,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     for (h in action.data.clipHoles) canvas.drawCircle(h[0], h[1], h[2], holePaint)
                     canvas.restoreToCount(sc)
                 }
-                // Cyan selection overlay for MULTISELECT — industry standard CAD selection color.
-                // Drawn as a thick cyan stroke on top so it's visible over any original color.
+                // Cyan selection overlay for MULTISELECT — rotated same as the item
                 if (currentTool == Tool.MULTISELECT) {
                     val allSel = (selectedItems + setOfNotNull(selectedItem)).toSet()
                     if (action in allSel) {
                         val cyanP = Paint().apply {
-                            color = android.graphics.Color.parseColor("#CC00BCD4")  // 80% alpha cyan
+                            color = android.graphics.Color.parseColor("#CC00BCD4")
                             style = Paint.Style.STROKE
                             strokeWidth = (action.paint.strokeWidth + 6f / scaleFactor).coerceAtLeast(6f / scaleFactor)
-                            isAntiAlias = true
-                            strokeJoin = Paint.Join.ROUND; strokeCap = Paint.Cap.ROUND
+                            isAntiAlias = true; strokeJoin = Paint.Join.ROUND; strokeCap = Paint.Cap.ROUND
                         }
-                        canvas.drawPath(action.path, cyanP)
+                        val rot = action.data.rotation
+                        if (rot != 0f) {
+                            val b = getBounds(action)
+                            if (b != null) { val cx=(b[0]+b[2])/2f; val cy=(b[1]+b[3])/2f; canvas.save(); canvas.rotate(rot,cx,cy); canvas.drawPath(action.path,cyanP); canvas.restore() }
+                            else canvas.drawPath(action.path, cyanP)
+                        } else canvas.drawPath(action.path, cyanP)
                     }
                 }
             }
@@ -2877,17 +2882,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         }
                     }
                 }
-                // Tap not on any handle: toggle item
-                val hit = findItemAtPreferSelected(wx, wy)
-                if (hit != null) {
-                    if (selectedItems.contains(hit) || hit === selectedItem) {
-                        selectedItems.remove(hit); selectedItem=if (selectedItems.isEmpty()) null else selectedItems.last()
-                    } else {
-                        if (selectedItem!=null && !selectedItems.contains(selectedItem!!)) selectedItems.add(selectedItem!!)
-                        selectedItems.add(hit); selectedItem=hit
-                    }
-                    onMultiSelectionChanged?.invoke(selectedItems.toSet()); invalidate()
-                }
+                // Tap not on any handle: record position for potential toggle on ACTION_UP
+                msTapDownWx = wx; msTapDownWy = wy; msDragging = false
                 return  // MULTISELECT never falls through to individual handle detection
             }
 
@@ -2972,6 +2968,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             MotionEvent.ACTION_MOVE -> {
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
+
+                // Track drag distance for multiselect tap-vs-drag detection
+                if (currentTool == Tool.MULTISELECT && !msTapDownWx.isNaN()) {
+                    val dragThreshold = 8f / scaleFactor
+                    if (distance(wx, wy, msTapDownWx, msTapDownWy) > dragThreshold) msDragging = true
+                }
 
                 // Handle pink group bounding box operations
                 if (groupActiveHandle != HandleType.NONE) {
@@ -3117,7 +3119,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 invalidate()
             }
-            MotionEvent.ACTION_UP -> { longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }; activeHandle = HandleType.NONE; groupActiveHandle = HandleType.NONE; groupSnapshots.clear() }
+            MotionEvent.ACTION_UP -> {
+                longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
+                activeHandle = HandleType.NONE; groupActiveHandle = HandleType.NONE; groupSnapshots.clear()
+                // MULTISELECT: toggle item only if this was a tap (not a drag)
+                if (currentTool == Tool.MULTISELECT && !msTapDownWx.isNaN() && !msDragging) {
+                    val hit = findItemAtPreferSelected(msTapDownWx, msTapDownWy)
+                    if (hit != null) {
+                        if (selectedItems.contains(hit) || hit === selectedItem) {
+                            selectedItems.remove(hit); selectedItem = if (selectedItems.isEmpty()) null else selectedItems.last()
+                        } else {
+                            if (selectedItem != null && !selectedItems.contains(selectedItem!!)) selectedItems.add(selectedItem!!)
+                            selectedItems.add(hit); selectedItem = hit
+                        }
+                        onMultiSelectionChanged?.invoke(selectedItems.toSet()); invalidate()
+                    }
+                }
+                msTapDownWx = Float.NaN; msTapDownWy = Float.NaN; msDragging = false
+            }
         }
     }
 
@@ -4886,22 +4905,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return if (minX == Float.MAX_VALUE) null else floatArrayOf(minX, minY, maxX, maxY)
     }
 
-    // In MULTISELECT, prefer already-selected items on boundary/outline hit
     private fun findItemAtPreferSelected(wx: Float, wy: Float): Any? {
-        // Use strokeHitTest (outline distance) for accuracy - prefer selected items first
-        val outlineRadius = (snapScreenRadius * 0.8f) / scaleFactor
+        // Use tight hit test — only match if tap is on the actual shape, not just nearby
+        val tightR = (8f / scaleFactor).coerceAtLeast(2f)
+        // Prefer already-selected items (so re-tapping deselects the right one)
         for (item in selectedItems) {
-            if (item is StrokeItem && strokeHitTestRotated(item.data, wx, wy, outlineRadius)) return item
+            if (item is StrokeItem && strokeHitTestRotated(item.data, wx, wy, tightR + item.data.strokeWidth * 0.5f)) return item
         }
-        // Also check non-stroke selected items by bounding box
-        for (item in selectedItems) {
-            if (item !is StrokeItem) {
-                val b = getBounds(item) ?: continue
-                val pad = 20f / scaleFactor
-                if (wx >= b[0]-pad && wx <= b[2]+pad && wy >= b[1]-pad && wy <= b[3]+pad) return item
-            }
+        if (selectedItem is StrokeItem) {
+            val si = selectedItem as StrokeItem
+            if (strokeHitTestRotated(si.data, wx, wy, tightR + si.data.strokeWidth * 0.5f)) return si
         }
-        // Fallback: check any item at position (outline priority)
+        // Fallback: any item at position using normal hit testing
         return findItemAt(wx, wy)
     }
 
