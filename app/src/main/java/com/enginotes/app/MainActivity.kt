@@ -632,7 +632,13 @@ class MainActivity : AppCompatActivity() {
             val lockBtn = findViewById<TextView>(R.id.btnLock)
             if (item != null) {
                 lockBtn?.visibility = View.VISIBLE
-                lockBtn?.text = if (drawingView.isSelectionLocked()) "🔒" else "🔓"
+                val locked = drawingView.isSelectionLocked()
+                lockBtn?.text = if (locked) "🔒" else "🔓"
+                lockBtn?.setTextColor(Color.WHITE)
+                lockBtn?.background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(if (locked) Color.parseColor("#C62828") else Color.parseColor("#2E7D32"))
+                    cornerRadius = dp(8).toFloat()
+                }
             } else {
                 lockBtn?.visibility = View.GONE
             }
@@ -799,14 +805,19 @@ class MainActivity : AppCompatActivity() {
 
         // Lock button — appears when item(s) selected
         val btnLock = findViewById<TextView>(R.id.btnLock)
-        btnLock?.setOnClickListener {
-            if (drawingView.isSelectionLocked()) {
-                drawingView.unlockSelectedItems()
-                btnLock.text = "🔓"
-            } else {
-                drawingView.lockSelectedItems()
-                btnLock.text = "🔒"
+        fun updateLockBtn() {
+            val locked = drawingView.isSelectionLocked()
+            btnLock?.text = if (locked) "🔒" else "🔓"
+            btnLock?.background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(if (locked) Color.parseColor("#C62828") else Color.parseColor("#2E7D32"))
+                cornerRadius = dp(8).toFloat()
             }
+            btnLock?.setTextColor(Color.WHITE)
+        }
+        btnLock?.setOnClickListener {
+            if (drawingView.isSelectionLocked()) drawingView.unlockSelectedItems()
+            else drawingView.lockSelectedItems()
+            updateLockBtn()
         }
 
         rebuildContextBar()
