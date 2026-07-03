@@ -1408,7 +1408,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val parts = d.unit.split(",")
         val p3x = parts.getOrNull(0)?.toFloatOrNull() ?: d.x2
         val p3y = parts.getOrNull(1)?.toFloatOrNull() ?: d.y2
-        val supplementary = parts.getOrNull(2)?.toBooleanStrictOrNull() ?: false
+        val supplementary = parts.getOrNull(2)? == "true"
 
         val vx = d.x1; val vy = d.y1
         val sw = d.strokeW / scaleFactor
@@ -4139,7 +4139,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (a !in candidates) { newActions.add(a); continue }
                 when (a) {
                     is StrokeItem -> {
-                        if (a.data.isLocked) { newActions.add(a); continue }                        if (a.data.type == Tool.PEN || a.data.type == Tool.ERASER || a.data.type == Tool.ARC || a.data.type == Tool.HIGHLIGHTER || a.data.type == Tool.BRUSH) {
+                        if (a.data.isLocked) {
+                            newActions.add(a)
+                        } else if (a.data.type == Tool.PEN || a.data.type == Tool.ERASER || a.data.type == Tool.ARC || a.data.type == Tool.HIGHLIGHTER || a.data.type == Tool.BRUSH) {
                             newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r))
                         } else if (CLOSED_SHAPES.contains(a.data.type)) {
                             // Closed shapes: add a pixel-erase hole instead of splitting into
@@ -4891,7 +4893,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val bStyle = if (p.size >= 10) try { BrushStyle.valueOf(p[9]) } catch (e: Exception) { BrushStyle.ROUND } else BrushStyle.ROUND
                                 val wArr = if (p.size >= 11 && p[10].isNotBlank()) p[10].split(",").mapNotNull { it.toFloatOrNull() }.toMutableList() else mutableListOf()
                                 val lType = if (p.size >= 12 && p[11].isNotBlank()) try { LineType.valueOf(p[11]) } catch (e: Exception) { LineType.CONTINUOUS } else LineType.CONTINUOUS
-                                val locked = if (p.size >= 13) p[12].toBooleanStrictOrNull() ?: false else false
+                                val locked = if (p.size >= 13) p[12] == "true" else false
                                 val holes = mutableListOf<FloatArray>()
                                 if (p.size >= 14 && p[13].isNotBlank()) for (h in p[13].split(";")) { val hv = h.split(","); if (hv.size == 3) holes.add(floatArrayOf(hv[0].toFloat(), hv[1].toFloat(), hv[2].toFloat())) }
                                 val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, holes); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
