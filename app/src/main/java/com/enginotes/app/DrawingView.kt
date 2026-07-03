@@ -900,6 +900,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Group (pink) bounding box state for multi-select
     private var groupActiveHandle = HandleType.NONE
     private var groupDragStartX = 0f; private var groupDragStartY = 0f
+    private var groupDragStartAngle = 0f  // atan2 angle at rotation drag start
+    private var groupOrigGcx = 0f; private var groupOrigGcy = 0f  // group center at drag start
     private var groupOrigBounds: FloatArray? = null  // [minX,minY,maxX,maxY] at drag start
     // Snapshots of each item's defining points at group drag start, for proportional resize
     private val groupSnapshots = mutableListOf<Pair<Any, FloatArray>>()  // item → pts copy
@@ -2292,13 +2294,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     canvas.drawCircle(hx, hy, hr, hF); canvas.drawCircle(hx, hy, hr, hS)
                 }
                 // Rotation handle (green, above center-top)
-                val rotY = gb[1] - 48f/scaleFactor
+                val rotY = gb[1] - 90f/scaleFactor
                 val rotF = Paint().apply { style = Paint.Style.FILL; color = Color.parseColor("#34C759"); isAntiAlias = true }
                 canvas.drawLine(cx, gb[1], cx, rotY+hr, pinkP)
                 canvas.drawCircle(cx, rotY, 16f/scaleFactor, rotF)
                 canvas.drawCircle(cx, rotY, 16f/scaleFactor, hS)
                 // Delete handle (red X, top-right corner)
-                val delX = gb[2] + hr*2f; val delY = gb[1] - hr*2f
+                val delX = gb[2] + hr*5f; val delY = gb[1] - hr*5f
                 val delF = Paint().apply { style = Paint.Style.FILL; color = Color.parseColor("#FF3B30"); isAntiAlias = true }
                 val delS = Paint().apply { style = Paint.Style.STROKE; color = Color.WHITE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
                 canvas.drawCircle(delX, delY, hr*1.4f, delF)
@@ -2828,8 +2830,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (gb != null && (selectedItems.size + (if (selectedItem != null && !selectedItems.contains(selectedItem)) 1 else 0)) >= 2) {
                 val hr = 22f / scaleFactor
                 val gcx = (gb[0]+gb[2])/2f; val gcy = (gb[1]+gb[3])/2f
-                val delX = gb[2] + hr*2f; val delY = gb[1] - hr*2f
-                val rotY = gb[1] - 48f/scaleFactor
+                val delX = gb[2] + hr*5f; val delY = gb[1] - hr*5f
+                val rotY = gb[1] - 90f/scaleFactor
                 // Delete handle
                 if (distance(wx, wy, delX, delY) <= hr*2f) {
                     val all = (selectedItems + setOfNotNull(selectedItem)).toSet()
@@ -2840,11 +2842,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // Rotation handle
                 if (distance(wx, wy, gcx, rotY) <= 24f/scaleFactor) {
                     groupActiveHandle = HandleType.ROTATE
-                    groupDragStartX = wx; groupDragStartY = wy
+                    groupOrigGcx = gcx; groupOrigGcy = gcy
+                    groupDragStartAngle = kotlin.math.atan2((wy-gcy).toDouble(), (wx-gcx).toDouble()).toFloat()
                     groupOrigBounds = gb.copyOf()
                     groupSnapshots.clear()
                     val all = (selectedItems + setOfNotNull(selectedItem)).toSet()
-                    for (it in all) { val b2 = getBounds(it); if (b2 != null) groupSnapshots.add(Pair(it, b2.copyOf())) }
+                    // Snapshot: store [centerX, centerY, rotationDegrees] per item
+                    for (it in all) {
+                        val b2 = getBounds(it) ?: continue
+                        val cx2 = (b2[0]+b2[2])/2f; val cy2 = (b2[1]+b2[3])/2f
+                        groupSnapshots.add(Pair(it, floatArrayOf(cx2, cy2, getRotation(it))))
+                    }
                     return
                 }
                 // 8 resize handles
@@ -2922,7 +2930,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val canRot = item is ImageItem || item is TextItem || item is AudioItem || (item is StrokeItem && item.data.type != Tool.PEN && item.data.type != Tool.ARC)
                         if (!handled && canRot) {
                             val cx = (b[0] + b[2]) / 2f; val ry = b[1] - 60f / scaleFactor
-                            if (distance(lx, ly, cx, ry) <= hit) { activeHandle = HandleType.ROTATE; dragStartAngle = computeAngle(item, wx, wy); dragStartRotation = rot; handled = true }
+                            if (distance(lx, ly, cx, ry) <= hit) {
+                                activeHandle = HandleType.ROTATE
+                                dragStartAngle = computeAngle(item, wx, wy); dragStartRotation = rot; handled = true
+                                // In multiselect: snapshot all items for absolute rotation from group center
+                                val gb2 = computeGroupBounds()
+                                if (gb2 != null) {
+                                    groupOrigGcx = (gb2[0]+gb2[2])/2f; groupOrigGcy = (gb2[1]+gb2[3])/2f
+                                    groupDragStartAngle = kotlin.math.atan2((wy-groupOrigGcy).toDouble(), (wx-groupOrigGcx).toDouble()).toFloat()
+                                    groupSnapshots.clear()
+                                    val all = (selectedItems + setOfNotNull(selectedItem)).toSet()
+                                    for (itSnap in all) {
+                                        val bSnap = getBounds(itSnap) ?: continue
+                                        groupSnapshots.add(Pair(itSnap, floatArrayOf((bSnap[0]+bSnap[2])/2f, (bSnap[1]+bSnap[3])/2f, getRotation(itSnap))))
+                                    }
+                                }
+                            }
                         }
                         val isBbox = item is ImageItem || item is TextItem || item is AudioItem || (item is StrokeItem && (BBOX_RESIZE_SHAPES.contains(item.data.type) || STROKE_SCALE_SHAPES.contains(item.data.type)))
                         val isEndpoint = item is StrokeItem && ENDPOINT_RESIZE_SHAPES.contains(item.data.type)
@@ -2966,27 +2989,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             groupDragStartX = wx; groupDragStartY = wy
                         }
                         HandleType.ROTATE -> {
-                            val prevAngle = kotlin.math.atan2((groupDragStartY-gcy).toDouble(),(groupDragStartX-gcx).toDouble()).toFloat()
-                            val newAngle = kotlin.math.atan2((wy-gcy).toDouble(),(wx-gcx).toDouble()).toFloat()
-                            val delta = Math.toDegrees((newAngle-prevAngle).toDouble()).toFloat()
-                            val deltaRad = (newAngle - prevAngle).toDouble()
-                            val cosDelta = kotlin.math.cos(deltaRad).toFloat()
-                            val sinDelta = kotlin.math.sin(deltaRad).toFloat()
-                            val all = (selectedItems + setOfNotNull(selectedItem)).toSet()
-                            for (it in all) {
+                            // Compute TOTAL angle delta from drag start (absolute, not incremental)
+                            val currentAngle = kotlin.math.atan2((wy-groupOrigGcy).toDouble(), (wx-groupOrigGcx).toDouble()).toFloat()
+                            val totalDeltaRad = (currentAngle - groupDragStartAngle).toDouble()
+                            val cosD = kotlin.math.cos(totalDeltaRad).toFloat()
+                            val sinD = kotlin.math.sin(totalDeltaRad).toFloat()
+                            val totalDeltaDeg = Math.toDegrees(totalDeltaRad).toFloat()
+                            for ((it, snap) in groupSnapshots) {
                                 if (it is StrokeItem && it.data.isLocked) continue
-                                val b2 = getBounds(it) ?: continue
-                                val itemCx = (b2[0]+b2[2])/2f; val itemCy = (b2[1]+b2[3])/2f
-                                // Rotate this item's center around group center (rigid body)
-                                val relX = itemCx - gcx; val relY = itemCy - gcy
-                                val newItemCx = gcx + relX*cosDelta - relY*sinDelta
-                                val newItemCy = gcy + relX*sinDelta + relY*cosDelta
-                                val moveDx = newItemCx - itemCx; val moveDy = newItemCy - itemCy
-                                moveItem(it, moveDx, moveDy)
-                                // Also rotate the item itself by the same angle
-                                setRotation(it, getRotation(it) + delta)
+                                val origCx = snap[0]; val origCy = snap[1]; val origRotDeg = snap[2]
+                                // Rotate original center around group center (absolute from snapshot)
+                                val relX = origCx - groupOrigGcx; val relY = origCy - groupOrigGcy
+                                val targetCx = groupOrigGcx + relX*cosD - relY*sinD
+                                val targetCy = groupOrigGcy + relX*sinD + relY*cosD
+                                // Move from current position to target
+                                val curB = getBounds(it) ?: continue
+                                val curCx = (curB[0]+curB[2])/2f; val curCy = (curB[1]+curB[3])/2f
+                                moveItem(it, targetCx - curCx, targetCy - curCy)
+                                // Set absolute rotation
+                                setRotation(it, origRotDeg + totalDeltaDeg)
                             }
-                            groupDragStartX = wx; groupDragStartY = wy
                         }
                         else -> {
                             // Proportional resize of all items based on how the group bounds changed
@@ -3086,27 +3108,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                     HandleType.ROTATE -> {
                         val newAngle = computeAngle(item, wx, wy)
-                        val angleDelta = newAngle - dragStartAngle
                         val gb2 = computeGroupBounds()
-                        val all = (selectedItems + setOfNotNull(selectedItem)).toSet()
-                        if (gb2 != null && all.size >= 2) {
-                            // Multiselect: rotate all as rigid block around group center
-                            val gcx2 = (gb2[0]+gb2[2])/2f; val gcy2 = (gb2[1]+gb2[3])/2f
-                            val deltaRad = Math.toRadians(Math.toDegrees(angleDelta.toDouble()))
-                            val cosDelta = kotlin.math.cos(deltaRad).toFloat()
-                            val sinDelta = kotlin.math.sin(deltaRad).toFloat()
-                            for (it in all) {
+                        if (gb2 != null && groupSnapshots.isNotEmpty()) {
+                            // Multiselect: rigid block rotation from snapshots (absolute, no compounding)
+                            val currentAngle = kotlin.math.atan2((wy-groupOrigGcy).toDouble(), (wx-groupOrigGcx).toDouble()).toFloat()
+                            val totalDeltaRad = (currentAngle - groupDragStartAngle).toDouble()
+                            val cosD = kotlin.math.cos(totalDeltaRad).toFloat()
+                            val sinD = kotlin.math.sin(totalDeltaRad).toFloat()
+                            val totalDeltaDeg = Math.toDegrees(totalDeltaRad).toFloat()
+                            for ((it, snap) in groupSnapshots) {
                                 if (it is StrokeItem && it.data.isLocked) continue
-                                val b2 = getBounds(it) ?: continue
-                                val itemCx = (b2[0]+b2[2])/2f; val itemCy = (b2[1]+b2[3])/2f
-                                val relX = itemCx - gcx2; val relY = itemCy - gcy2
-                                moveItem(it, (relX*cosDelta - relY*sinDelta + gcx2 - itemCx), (relX*sinDelta + relY*cosDelta + gcy2 - itemCy))
-                                setRotation(it, getRotation(it) + Math.toDegrees(angleDelta.toDouble()).toFloat())
+                                val relX = snap[0] - groupOrigGcx; val relY = snap[1] - groupOrigGcy
+                                val targetCx = groupOrigGcx + relX*cosD - relY*sinD
+                                val targetCy = groupOrigGcy + relX*sinD + relY*cosD
+                                val curB = getBounds(it) ?: continue
+                                moveItem(it, targetCx - (curB[0]+curB[2])/2f, targetCy - (curB[1]+curB[3])/2f)
+                                setRotation(it, snap[2] + totalDeltaDeg)
                             }
-                            dragStartAngle = newAngle
                         } else {
                             // Single item rotation
-                            setRotation(item, dragStartRotation + Math.toDegrees(angleDelta.toDouble()).toFloat())
+                            setRotation(item, dragStartRotation + Math.toDegrees((newAngle - dragStartAngle).toDouble()).toFloat())
                         }
                     }
                     HandleType.NONE -> return
@@ -4866,13 +4887,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return if (minX == Float.MAX_VALUE) null else floatArrayOf(minX, minY, maxX, maxY)
     }
 
-    // In MULTISELECT, prefer already-selected items so re-tapping deselects the right one
+    // In MULTISELECT, prefer already-selected items on boundary/outline hit
     private fun findItemAtPreferSelected(wx: Float, wy: Float): Any? {
+        // Use strokeHitTest (outline distance) for accuracy - prefer selected items first
+        val outlineRadius = (snapScreenRadius * 0.8f) / scaleFactor
         for (item in selectedItems) {
-            val b = getBounds(item) ?: continue
-            val pad = 20f / scaleFactor
-            if (wx >= b[0]-pad && wx <= b[2]+pad && wy >= b[1]-pad && wy <= b[3]+pad) return item
+            if (item is StrokeItem && strokeHitTest(item.data, wx, wy, outlineRadius)) return item
         }
+        // Also check non-stroke selected items by bounding box
+        for (item in selectedItems) {
+            if (item !is StrokeItem) {
+                val b = getBounds(item) ?: continue
+                val pad = 20f / scaleFactor
+                if (wx >= b[0]-pad && wx <= b[2]+pad && wy >= b[1]-pad && wy <= b[3]+pad) return item
+            }
+        }
+        // Fallback: check any item at position (outline priority)
         return findItemAt(wx, wy)
     }
 
