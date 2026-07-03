@@ -2474,6 +2474,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 var i = 0
                 while (i + 1 < item.data.points.size) { item.data.points[i] += dx; item.data.points[i + 1] += dy; i += 2 }
                 item.path = item.data.buildPath()
+                item.invalidateCache()  // clear stale sampled path — critical for hit testing after move
             }
         }
     }
@@ -3027,10 +3028,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 HandleType.BR -> { newMaxX = wx; newMaxY = wy }
                                 else -> {}
                             }
-                            val newW = (newMaxX-newMinX).coerceAtLeast(10f)
-                            val newH = (newMaxY-newMinY).coerceAtLeast(10f)
-                            val scaleX = if (gW > 0f) newW/gW else 1f
-                            val scaleY = if (gH > 0f) newH/gH else 1f
+                            val newW = (newMaxX-newMinX).coerceAtLeast(20f)
+                            val newH = (newMaxY-newMinY).coerceAtLeast(20f)
+                            val scaleX = (if (gW > 0f) newW/gW else 1f).coerceIn(0.01f, 50f)
+                            val scaleY = (if (gH > 0f) newH/gH else 1f).coerceIn(0.01f, 50f)
                             for ((it, snap) in groupSnapshots) {
                                 if (it !is StrokeItem || !it.data.isLocked) {
                                     val relL = (snap[0]-ogb[0])*scaleX + newMinX
@@ -3110,9 +3111,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                     HandleType.ROTATE -> {
                         val newAngle = computeAngle(item, wx, wy)
-                        // In MULTISELECT, rotation is handled via pink box only
-                        // Blue box rotation = single item only (pink box handles group)
-                        setRotation(item, dragStartRotation + Math.toDegrees((newAngle - dragStartAngle).toDouble()).toFloat())
+                        // newAngle and dragStartAngle are already in degrees (computeAngle uses Math.toDegrees)
+                        setRotation(item, dragStartRotation + (newAngle - dragStartAngle))
                     }
                     HandleType.NONE -> return
                     else -> resizeItem(item, activeHandle, wx, wy)
@@ -3512,7 +3512,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
 
             if (snapEndpoint) shapeEndpoints(pts, t).forEach { (ex,ey) -> square(ex, ey) }
-            if (snapMidpoint) shapeEdgeMidpoints(pts, t).forEach { (mx,my) -> tri(mx, my) }
+            if (snapMidpoint) {
+                // Don't draw midpoints for circles/ellipses — their "edge midpoints" between
+                // the 4 quadrant points would appear as triangles inside the shape, not on boundary
+                when (action.data.type) {
+                    Tool.CIRCLE, Tool.ELLIPSE -> {}  // skip — use NEAREST snap for circles instead
+                    else -> shapeEdgeMidpoints(pts, t).forEach { (mx,my) -> tri(mx, my) }
+                }
+            }
             if (snapCenter) shapeCenter(pts, t)?.let { (cx,cy) -> circ(cx, cy) }
         }
     }
@@ -4409,8 +4416,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         flush()
         return segs.map { sp ->
-            // Fragments render as plain freeform pen strokes (no fill, original stroke color/width)
-            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.FOUNTAIN, opacity = data.opacity)
+            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.FOUNTAIN, opacity = data.opacity, lineType = data.lineType)
             StrokeItem(d, d.buildPath(), d.toPaint())
         }
     }
@@ -4531,7 +4537,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             i += 2
         }
         flush()
-        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle); StrokeItem(d, d.buildPath(), d.toPaint()) }
+        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType); StrokeItem(d, d.buildPath(), d.toPaint()) }
     }
 
     // Finds where a line segment crosses a circle boundary (used to cut strokes precisely at the

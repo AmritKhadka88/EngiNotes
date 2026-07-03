@@ -698,6 +698,11 @@ class MainActivity : AppCompatActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 when {
+                    // Dismiss any open full-screen panel first
+                    penOptionsPanel != null -> { dismissPenOptionsPanel(); return }
+                    shapeOptionsPanel != null -> { dismissShapeOptionsPanel(); return }
+                    snapOptionsPanel != null -> { dismissSnapOptionsPanel(); return }
+                    dimScalePanel != null -> { dimScalePanel?.let { canvasContainer.removeView(it) }; dimScalePanel = null; return }
                     activeEditText != null -> closeInlineEditor(true)
                     activeCellEditText != null -> dismissCellEditor()
                     tableToolbarOverlay != null -> { tableToolbarOverlay?.let { canvasContainer.removeView(it) }; tableToolbarOverlay = null }
