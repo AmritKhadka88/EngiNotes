@@ -2783,7 +2783,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val (lx, ly) = rotatePoint(wx, wy, px, py, -rot)
                         val hr = 18f / scaleFactor; val hit = (hr * 4f).coerceAtLeast(50f / scaleFactor)
                         val delX = b[2] + hr * 5f; val delY = b[1] - hr * 5f
-                        if (distance(lx, ly, delX, delY) <= hit) { actions.remove(item); if (item === activeTableItem) { activeTableItem = null; tableIsActive = false }; selectedItem = null; markSpatialDirty(); handled = true; invalidate(); return }
+                        if (distance(lx, ly, delX, delY) <= hit) {
+                            // Don't delete locked items
+                            if (item is StrokeItem && item.data.isLocked) { handled = true; return }
+                            actions.remove(item); if (item === activeTableItem) { activeTableItem = null; tableIsActive = false }; selectedItem = null; markSpatialDirty(); handled = true; invalidate(); return
+                        }
                         val canRot = item is ImageItem || item is TextItem || item is AudioItem || (item is StrokeItem && item.data.type != Tool.PEN && item.data.type != Tool.ARC)
                         if (!handled && canRot) {
                             val cx = (b[0] + b[2]) / 2f; val ry = b[1] - 60f / scaleFactor
@@ -2813,7 +2817,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
                 val item = selectedItem ?: return
                 // Skip all manipulation if item is locked
-                if (item is StrokeItem && item.data.isLocked) return
+                if (item is StrokeItem && item.data.isLocked) {
+                    // Still allow ACTION_DOWN to detect the delete handle attempt
+                    if (event.actionMasked == MotionEvent.ACTION_DOWN) return
+                    return
+                }
                 when (activeHandle) {
                     HandleType.MOVE -> {
                         var finalWx = wx; var finalWy = wy
@@ -4157,7 +4165,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     is FillItem -> distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) <= r + maxOf(a.w, a.h) / 2f
                     is AudioItem -> distance(x, y, a.x, a.y) <= r + a.radius; else -> false
                 }
-                if (hit) toRemove.add(a)
+                if (hit) {
+                    // Don't remove locked items
+                    if (a is StrokeItem && a.data.isLocked) continue
+                    toRemove.add(a)
+                }
             }
             if (toRemove.isNotEmpty()) { actions.removeAll(toRemove); markSpatialDirty() }
         } else {
