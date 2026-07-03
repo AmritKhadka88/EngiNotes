@@ -1261,7 +1261,7 @@ class MainActivity : AppCompatActivity() {
                 divider()
                 eightColors(editColor) { c -> editColor = c; activeEditText?.setTextColor(c); textSelectionItem?.let { it.color = c; drawingView.invalidate() } }
             }
-            Tool.SELECT, Tool.LASSO, Tool.AUTOSELECT -> {
+            Tool.SELECT, Tool.LASSO, Tool.AUTOSELECT, Tool.MULTISELECT -> {
                 // Select: rectangle icon, Lasso: lasso icon, Rectangle (was Auto): dashed rect icon
                 data class SM(val label: String, val drawIcon: (Canvas, Paint, android.graphics.RectF) -> Unit, val tool: Tool)
                 val modes = listOf(

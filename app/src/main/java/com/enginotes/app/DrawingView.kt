@@ -1086,6 +1086,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         selectedItem = null; if (!isTextSelected) onTextEditRequest?.invoke(null, e.x, e.y, wx, wy)
                     }
                 }
+                Tool.MULTISELECT -> {
+                    // Single tap: toggle item in/out of selection
+                    val hit = findItemAt(wx, wy)
+                    if (hit != null) {
+                        if (selectedItems.contains(hit)) selectedItems.remove(hit)
+                        else selectedItems.add(hit)
+                        selectedItem = if (selectedItems.isEmpty()) null else hit
+                        onMultiSelectionChanged?.invoke(selectedItems.toSet())
+                    }
+                    // Tap on empty space does nothing until double-tap (handled in onDoubleTap)
+                    invalidate()
+                }
                 Tool.SELECT -> {
                     val hit = findTextItemAt(wx, wy)
                     if (hit != null && hit.linkTarget == null) {
@@ -1118,6 +1130,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         override fun onDoubleTap(e: MotionEvent): Boolean {
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
+            // Double-tap on empty space in MULTISELECT mode: clear all selections
+            if (currentTool == Tool.MULTISELECT) {
+                val hit = findItemAt(wx, wy)
+                if (hit == null) {
+                    selectedItems.clear(); selectedItem = null
+                    onMultiSelectionChanged?.invoke(emptySet()); invalidate(); return true
+                }
+            }
             // Double-tap on a DimensionItem → edit it
             if (currentTool == Tool.DIMENSION || currentTool == Tool.SELECT) {
                 val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
@@ -2825,24 +2845,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 if (!handled) {
                     activeHandle = HandleType.NONE
-                    if (currentTool == Tool.MULTISELECT) {
-                        // Multi-select: toggle item in selectedItems set
-                        val hit = findItemAt(wx, wy)
-                        if (hit != null) {
-                            if (selectedItems.contains(hit)) selectedItems.remove(hit)
-                            else selectedItems.add(hit)
-                            // Update selectedItem to last touched for lock button state
-                            selectedItem = if (selectedItems.isEmpty()) null else hit
-                            onMultiSelectionChanged?.invoke(selectedItems)
-                        } else {
-                            // Tap empty space: clear all
-                            selectedItems.clear()
-                            selectedItem = null
-                        }
-                    } else {
+                    if (currentTool != Tool.MULTISELECT) {
                         selectedItems.clear()
                         selectedItem = findItemAt(wx, wy)
                     }
+                    // MULTISELECT item toggling is handled in onSingleTapConfirmed
                 }
                 invalidate()
             }
