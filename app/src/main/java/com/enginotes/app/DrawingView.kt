@@ -3790,7 +3790,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             gestureDetector.onTouchEvent(event); return true
         }
-        if (currentTool == Tool.SELECT) {
+        if (currentTool == Tool.SELECT || currentTool == Tool.MULTISELECT) {
             val wx2 = screenToWorldX(event.x); val wy2 = screenToWorldY(event.y)
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
