@@ -2474,7 +2474,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 var i = 0
                 while (i + 1 < item.data.points.size) { item.data.points[i] += dx; item.data.points[i + 1] += dy; i += 2 }
                 item.path = item.data.buildPath()
-                item.invalidateCache()  // clear stale sampled path — critical for hit testing after move
+                item.invalidateCache()
+                markSpatialDirty()  // spatial grid must update or hit testing fails at new position
+                // Also translate clip holes so they move with the shape
+                for (h in item.data.clipHoles) { h[0] += dx; h[1] += dy }
             }
         }
     }
@@ -2845,47 +2848,49 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             tableIsActive = false; tableSelStart = null; tableSelEnd = null
         }
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-            // MULTISELECT: only pink box handles — skip individual item handles entirely
-            if (currentTool == Tool.MULTISELECT) {
+            // Pink group box handles — active for ANY tool when 2+ items selected (lasso, rect, multi)
+            val allSel = (selectedItems + setOfNotNull(selectedItem)).toSet()
+            if (allSel.size >= 2) {
                 val gb = computeGroupBounds()
                 if (gb != null) {
-                    val hr = 28f / scaleFactor  // match drawing size
+                    val hr = 28f / scaleFactor
                     val gcx = (gb[0]+gb[2])/2f; val gcy = (gb[1]+gb[3])/2f
                     val rotY = gb[1] - 90f/scaleFactor
                     val delX = gb[2]+hr*4f; val delY = gb[1]-hr*4f
-                    // Delete
                     if (distance(wx,wy,delX,delY) <= hr*2.5f) {
-                        val all=(selectedItems+setOfNotNull(selectedItem)).toSet()
-                        for (it in all) { if (!(it is StrokeItem && it.data.isLocked)) actions.remove(it) }
+                        for (it in allSel) { if (!(it is StrokeItem && it.data.isLocked)) actions.remove(it) }
                         selectedItems.clear(); selectedItem=null; markSpatialDirty(); onMultiSelectionChanged?.invoke(emptySet()); invalidate(); return
                     }
-                    // Rotation
-                    if (distance(wx,wy,gcx,rotY) <= 22f/scaleFactor) {
+                    if (distance(wx,wy,gcx,rotY) <= 28f/scaleFactor) {
                         groupActiveHandle=HandleType.ROTATE; groupOrigGcx=gcx; groupOrigGcy=gcy
                         groupDragStartAngle=kotlin.math.atan2((wy-gcy).toDouble(),(wx-gcx).toDouble()).toFloat()
                         groupOrigBounds=gb.copyOf(); groupSnapshots.clear()
-                        val all=(selectedItems+setOfNotNull(selectedItem)).toSet()
-                        for (it in all) { val b2=getBounds(it)?:continue; groupSnapshots.add(Pair(it,floatArrayOf((b2[0]+b2[2])/2f,(b2[1]+b2[3])/2f,getRotation(it)))) }
+                        for (it in allSel) { val b2=getBounds(it)?:continue; groupSnapshots.add(Pair(it,floatArrayOf((b2[0]+b2[2])/2f,(b2[1]+b2[3])/2f,getRotation(it)))) }
                         return
                     }
-                    // Move handle (blue circle at center)
                     if (distance(wx,wy,gcx,gcy) <= hr*2f) {
                         groupActiveHandle=HandleType.MOVE; groupDragStartX=wx; groupDragStartY=wy; return
                     }
-                    // 8 resize handles
                     val corners=listOf(HandleType.TL to (gb[0] to gb[1]),HandleType.TM to (gcx to gb[1]),HandleType.TR to (gb[2] to gb[1]),HandleType.ML to (gb[0] to gcy),HandleType.MR to (gb[2] to gcy),HandleType.BL to (gb[0] to gb[3]),HandleType.BM to (gcx to gb[3]),HandleType.BR to (gb[2] to gb[3]))
                     for ((hType,pos) in corners) {
                         if (distance(wx,wy,pos.first,pos.second) <= hr*1.5f) {
                             groupActiveHandle=hType; groupDragStartX=wx; groupDragStartY=wy; groupOrigBounds=gb.copyOf(); groupSnapshots.clear()
-                            val all=(selectedItems+setOfNotNull(selectedItem)).toSet()
-                            for (it in all) { val b2=getBounds(it); if (b2!=null) groupSnapshots.add(Pair(it,b2.copyOf())) }
+                            for (it in allSel) { val b2=getBounds(it); if (b2!=null) groupSnapshots.add(Pair(it,b2.copyOf())) }
                             return
                         }
                     }
                 }
-                // Tap not on any handle: record position for potential toggle on ACTION_UP
+            }
+            // MULTISELECT: toggle pill + record tap for ACTION_UP toggle
+            if (currentTool == Tool.MULTISELECT) {
+                val gb2 = computeGroupBounds()
+                if (gb2 != null) {
+                    val pillW = 80f/scaleFactor; val pillH = 20f/scaleFactor
+                    val gcx2 = (gb2[0]+gb2[2])/2f; val pillX = gcx2-pillW/2f; val pillY = gb2[3]+14f/scaleFactor
+                    if (wx>=pillX && wx<=pillX+pillW && wy>=pillY && wy<=pillY+pillH) { multiSelectIndividual=!multiSelectIndividual; invalidate(); return }
+                }
                 msTapDownWx = wx; msTapDownWy = wy; msDragging = false
-                return  // MULTISELECT never falls through to individual handle detection
+                return
             }
 
             for (action in actions.reversed()) {

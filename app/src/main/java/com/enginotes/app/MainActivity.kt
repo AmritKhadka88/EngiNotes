@@ -811,7 +811,16 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<ImageButton?>(R.id.btnMenu)?.setOnClickListener { onMenuClick(it) }
         findViewById<ImageButton?>(R.id.btnLink)?.setOnClickListener { closeInlineEditor(true); showLinkPickerDialog() }
-        findViewById<ImageButton?>(R.id.btnBack)?.setOnClickListener { confirmThenExit() }
+        findViewById<ImageButton?>(R.id.btnBack)?.setOnClickListener {
+            // Close any open full-screen panel first; only exit if nothing is open
+            when {
+                penOptionsPanel != null -> dismissPenOptionsPanel()
+                shapeOptionsPanel != null -> dismissShapeOptionsPanel()
+                snapOptionsPanel != null -> dismissSnapOptionsPanel()
+                dimScalePanel != null -> { dimScalePanel?.let { canvasContainer.removeView(it) }; dimScalePanel = null }
+                else -> confirmThenExit()
+            }
+        }
         btnLayoutToggle.setOnClickListener { showLayoutMenu(it) }
 
         // Scale ratio button — always visible in top bar
