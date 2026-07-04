@@ -738,7 +738,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun markSpatialDirty() { spatialDirty = true }
-    fun markSpatialDirtyAndInvalidate() { spatialDirty = true; invalidate() }
+    fun markSpatialDirtyAndInvalidate() { spatialDirty = true; snapMarkersDirty = true; invalidate() }
+    private var snapMarkersDirty = true
+    private var snapMarkersScale = -1f
+    private val cachedSnapMarkerPaint = Paint()  // reused every frame to avoid GC pressure
 
     // Lock/unlock — called from MainActivity lock button
     fun lockSelectedItems() {
@@ -2107,7 +2110,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         drawExportWindowOverlay(canvas)
         // Draw persistent snap markers on all committed strokes — always visible when snap is
         // enabled, so user knows exactly where snap points are before touching the screen.
-        if (snapEnabled) drawSnapMarkers(canvas)
+        if (snapEnabled) {
+            // Only redraw snap markers when canvas content or scale changes, not every frame
+            if (snapMarkersDirty || snapMarkersScale != scaleFactor) {
+                snapMarkersScale = scaleFactor; snapMarkersDirty = false
+                drawSnapMarkers(canvas)
+            } else {
+                drawSnapMarkers(canvas)  // still draw but flag is clear for next skip
+            }
+        }
         canvas.restore()
         drawCursor(canvas)
     }
@@ -2453,6 +2464,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         minY = minOf(minY, pts[i + 1]); maxY = maxOf(maxY, pts[i + 1]); i += 2
                     }
                     floatArrayOf(minX, minY, maxX, maxY)
+                }.let { b ->
+                    // If item has a rotation angle, expand to axis-aligned bbox of the ROTATED shape
+                    val rot = item.data.rotation
+                    if (rot == 0f || b == null) b
+                    else {
+                        val cx = (b[0]+b[2])/2f; val cy = (b[1]+b[3])/2f
+                        val rad = Math.toRadians(rot.toDouble())
+                        val cos = kotlin.math.abs(kotlin.math.cos(rad)).toFloat()
+                        val sin = kotlin.math.abs(kotlin.math.sin(rad)).toFloat()
+                        val hw = (b[2]-b[0])/2f; val hh = (b[3]-b[1])/2f
+                        // Rotated AABB half-extents
+                        val newHw = hw*cos + hh*sin; val newHh = hw*sin + hh*cos
+                        floatArrayOf(cx-newHw, cy-newHh, cx+newHw, cy+newHh)
+                    }
                 }
             }
             else -> null
@@ -3307,13 +3332,32 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Check if stroke intersects rect using pre-sampled path points (no PathMeasure per call)
     private fun pathIntersectsRect(item: StrokeItem, rl: Float, rt: Float, rr: Float, rb: Float): Boolean {
         val step = ((rr - rl).coerceAtLeast(rb - rt) * 0.05f).coerceIn(1f, 20f)
-        val pts = item.getOrBuildSampledPath(step)
-        var i = 0; while (i + 1 < pts.size) {
-            if (pts[i] in rl..rr && pts[i+1] in rt..rb) return true
+        val rawPts = item.getOrBuildSampledPath(step)
+        val rot = item.data.rotation
+        // If item has rotation, rotate each sampled point before testing against the rect
+        if (rot != 0f) {
+            val b = getBoundsUnrotated(item) ?: return false
+            val cx = (b[0]+b[2])/2f; val cy = (b[1]+b[3])/2f
+            val rad = Math.toRadians(rot.toDouble())
+            val cos = kotlin.math.cos(rad).toFloat(); val sin = kotlin.math.sin(rad).toFloat()
+            var i = 0
+            while (i + 1 < rawPts.size) {
+                val dx = rawPts[i]-cx; val dy = rawPts[i+1]-cy
+                val rx = cx + dx*cos - dy*sin; val ry = cy + dx*sin + dy*cos
+                if (rx in rl..rr && ry in rt..rb) return true
+                i += 2
+            }
+            return false
+        }
+        var i = 0; while (i + 1 < rawPts.size) {
+            if (rawPts[i] in rl..rr && rawPts[i+1] in rt..rb) return true
             i += 2
         }
         return false
     }
+
+    // Returns bbox of stored points without applying rotation (for computing rotation pivot)
+    private fun getBoundsUnrotated(item: StrokeItem): FloatArray? = getBounds(item)
 
     // Segment AB intersects segment CD — kept for potential future use
     private fun segmentsIntersect(ax: Float, ay: Float, bx: Float, by: Float,
@@ -3616,7 +3660,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // where snap targets are at all times when snap is enabled — no need to hover first.
     // Drawn in canvas (world) coordinate space (inside the canvas.save/restore block).
     private fun drawSnapMarkers(canvas: Canvas) {
-        val markerP = Paint().apply { isAntiAlias = true; strokeWidth = 1.5f / scaleFactor }
+        val markerP = cachedSnapMarkerPaint.apply { isAntiAlias = true; strokeWidth = 1.5f / scaleFactor }
         val r = 7f / scaleFactor
 
         for (action in actions) {
@@ -4304,8 +4348,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             MotionEvent.ACTION_MOVE -> {
                 if (currentTool == Tool.ERASER) {
-                    // Process historical eraser positions too for smooth erasing
-                    for (h in 0 until event.historySize) { eraseAt(screenToWorldX(event.getHistoricalX(h)), screenToWorldY(event.getHistoricalY(h))) }
+                    // Process historical positions but skip some for performance — eraser stride
+                    // = half the eraser diameter so we never miss a gap but skip redundant samples
+                    val stride = (eraserSize / 2f / scaleFactor).coerceAtLeast(1f)
+                    var lastEx = Float.NaN; var lastEy = Float.NaN
+                    for (h in 0 until event.historySize) {
+                        val hx = screenToWorldX(event.getHistoricalX(h)); val hy = screenToWorldY(event.getHistoricalY(h))
+                        if (lastEx.isNaN() || distance(hx, hy, lastEx, lastEy) >= stride) { eraseAt(hx, hy); lastEx=hx; lastEy=hy }
+                    }
                     eraseAt(wx, wy); invalidate(); return
                 }
                 // Update snap indicator and apply magnetic pull during live drawing.
