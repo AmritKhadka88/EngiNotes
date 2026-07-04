@@ -792,6 +792,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (field == Tool.ARC && value != Tool.ARC) activeArcItem = null
             if ((field == Tool.AUTOSELECT || field == Tool.LASSO) && value != Tool.AUTOSELECT && value != Tool.LASSO) {
                 selectedGroup = null; regionPath = null; regionStart = null
+                groupCurrentRotation = 0f
             }
             field = value; invalidate()
         }
@@ -875,7 +876,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var onGroupDelete: (() -> Unit)? = null  // called when group delete handle tapped
     private var groupRotateStartAngle = 0f
     private var groupRotateCenterX = 0f; private var groupRotateCenterY = 0f
-    private var groupRotateSnapshots: List<FloatArray?>? = null  // [centerX, centerY, rotationDeg] per item
+    private var groupRotateSnapshots: List<FloatArray?>? = null
+    private var groupCurrentRotation = 0f  // tracked rotation of the group box (for drawing)
     private var groupRotating = false
     private var regionPath: Path? = null
     private var regionStart: Pair<Float, Float>? = null
@@ -2311,11 +2313,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             for ((hx,hy) in listOf(gb[0] to gb[1], gcx to gb[1], gb[2] to gb[1], gb[0] to gcy, gb[2] to gcy, gb[0] to gb[3], gcx to gb[3], gb[2] to gb[3])) {
                 canvas.drawCircle(hx, hy, hr, hF); canvas.drawCircle(hx, hy, hr, hS)
             }
-            // Rotation handle (green, well above)
+            // Rotation handle (green circle with arc symbol — matches single-select design)
             val rotY = gb[1] - 90f/scaleFactor
             val rotF = Paint().apply { style = Paint.Style.FILL; color = android.graphics.Color.parseColor("#34C759"); isAntiAlias = true }
             canvas.drawLine(gcx, gb[1], gcx, rotY+hr, pinkP)
             canvas.drawCircle(gcx, rotY, hr*1.2f, rotF); canvas.drawCircle(gcx, rotY, hr*1.2f, hS)
+            // Arc symbol inside green circle
+            val arcSP = Paint().apply { style = Paint.Style.STROKE; color = android.graphics.Color.WHITE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
+            val arcR = hr*0.65f
+            canvas.drawArc(android.graphics.RectF(gcx-arcR, rotY-arcR, gcx+arcR, rotY+arcR), -30f, 240f, false, arcSP)
+            canvas.drawLine(gcx+arcR*0.5f, rotY-arcR*0.85f, gcx+arcR, rotY-arcR*0.3f, arcSP)
             // Delete handle (red, top-right)
             val delX = gb[2]+hr*4f; val delY = gb[1]-hr*4f
             val delF = Paint().apply { style = Paint.Style.FILL; color = android.graphics.Color.parseColor("#FF3B30"); isAntiAlias = true }
@@ -2865,7 +2872,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             // Pink group box handles — active for ANY tool when 2+ items selected (lasso, rect, multi)
             val allSel = (selectedItems + setOfNotNull(selectedItem)).toSet()
-            if (allSel.size >= 2) {
+            val minForGroup = if (currentTool == Tool.MULTISELECT) 1 else 2
+            if (allSel.size >= minForGroup) {
                 val gb = computeGroupBounds()
                 if (gb != null) {
                     val hr = 28f / scaleFactor
@@ -3382,6 +3390,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             for (it in group) rotateItemAroundPoint(it, groupRotateCenterX, groupRotateCenterY, incDelta)
                             groupRotateStartAngle = currentAngle
                         }
+                        groupCurrentRotation = totalDelta
                         markSpatialDirty(); invalidate(); return
                     }
                     if (groupResizeHandle >= 0) {
@@ -3407,7 +3416,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                groupResizeHandle = -1; groupRotating = false; groupRotateSnapshots = null; val group = selectedGroup; if (group != null && group.isNotEmpty()) return
+                groupResizeHandle = -1; groupRotating = false; groupRotateSnapshots = null; groupCurrentRotation = 0f; val group = selectedGroup; if (group != null && group.isNotEmpty()) return
                 val rp = regionPath; val s = regionStart
                 if (rp != null && s != null) {
                     val bounds = floatArrayOf(minOf(s.first, wx), minOf(s.second, wy), maxOf(s.first, wx), maxOf(s.second, wy))
@@ -3432,8 +3441,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val gb = groupBounds(group)
                     if (gb != null) {
                         val delX = gb[2] + hr * 5f; val delY = gb[1] - hr * 5f
-                        if (distance(wx, wy, delX, delY) <= hit) { for (it in group) actions.remove(it); selectedGroup = null; markSpatialDirty(); invalidate(); return }
                         val gcx = (gb[0] + gb[2]) / 2f
+                        val rotY = gb[1] - hr * 5f
+                        if (distance(wx, wy, delX, delY) <= hit) { for (it in group) actions.remove(it); selectedGroup = null; markSpatialDirty(); invalidate(); return }
+                        // Rotation handle
+                        if (distance(wx, wy, gcx, rotY) <= hit) {
+                            groupRotating = true; groupRotateCenterX = gcx; groupRotateCenterY = (gb[1] + gb[3]) / 2f
+                            groupRotateStartAngle = kotlin.math.atan2((wy - groupRotateCenterY).toDouble(), (wx - groupRotateCenterX).toDouble()).toFloat()
+                            groupRotateSnapshots = group.map { it2 ->
+                                val b2 = getBounds(it2) ?: return@map null
+                                floatArrayOf((b2[0]+b2[2])/2f, (b2[1]+b2[3])/2f, getRotation(it2))
+                            }
+                            invalidate(); return
+                        }
                         val gHandles = listOf(gb[0] to gb[1], gcx to gb[1], gb[2] to gb[1], gb[0] to (gb[1]+gb[3])/2f, gb[2] to (gb[1]+gb[3])/2f, gb[0] to gb[3], gcx to gb[3], gb[2] to gb[3])
                         var found = -1
                         for ((hi, hpos) in gHandles.withIndex()) { if (distance(wx, wy, hpos.first, hpos.second) <= hit) { found = hi; break } }
@@ -3448,6 +3468,25 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_MOVE -> {
                 val group = selectedGroup
                 if (group != null && group.isNotEmpty()) {
+                    if (groupRotating) {
+                        val currentAngle = kotlin.math.atan2((wy - groupRotateCenterY).toDouble(), (wx - groupRotateCenterX).toDouble()).toFloat()
+                        val totalDelta = Math.toDegrees((currentAngle - groupRotateStartAngle).toDouble()).toFloat()
+                        val snaps = groupRotateSnapshots
+                        if (snaps != null) {
+                            for ((idx, it) in group.withIndex()) {
+                                val snap = snaps.getOrNull(idx) ?: continue
+                                val rad = Math.toRadians(totalDelta.toDouble())
+                                val cos = kotlin.math.cos(rad).toFloat(); val sin = kotlin.math.sin(rad).toFloat()
+                                val dx = snap[0] - groupRotateCenterX; val dy = snap[1] - groupRotateCenterY
+                                val newCx = groupRotateCenterX + dx*cos - dy*sin
+                                val newCy = groupRotateCenterY + dx*sin + dy*cos
+                                val curB = getBounds(it) ?: continue
+                                moveItem(it, newCx-(curB[0]+curB[2])/2f, newCy-(curB[1]+curB[3])/2f)
+                                setRotation(it, snap[2] + totalDelta)
+                            }
+                        }
+                        markSpatialDirty(); invalidate(); return
+                    }
                     if (groupResizeHandle >= 0) {
                         val origW = (groupResizeOrigBounds[2] - groupResizeOrigBounds[0]).coerceAtLeast(1f); val origH = (groupResizeOrigBounds[3] - groupResizeOrigBounds[1]).coerceAtLeast(1f)
                         var nl = groupResizeOrigBounds[0]; var nt = groupResizeOrigBounds[1]; var nr = groupResizeOrigBounds[2]; var nb = groupResizeOrigBounds[3]
@@ -3455,16 +3494,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val sx = ((nr - nl).coerceAtLeast(10f) / origW).coerceIn(0.01f, 100f)
                         val sy = ((nb - nt).coerceAtLeast(10f) / origH).coerceIn(0.01f, 100f)
                         val snaps = groupResizeItemSnapshots
-                        for ((idx, it) in group.withIndex()) {
-                            val snap = snaps.getOrNull(idx)
-                            scaleItemInGroupFromSnapshot(it, snap, groupResizeOrigBounds[0], groupResizeOrigBounds[1], sx, sy, nl, nt)
-                        }
+                        for ((idx, it) in group.withIndex()) { scaleItemInGroupFromSnapshot(it, snaps.getOrNull(idx), groupResizeOrigBounds[0], groupResizeOrigBounds[1], sx, sy, nl, nt) }
                     } else { val dx = wx - groupMoveStartX; val dy = wy - groupMoveStartY; for (it in group) moveItem(it, dx, dy); groupMoveStartX = wx; groupMoveStartY = wy }
                     invalidate(); return
                 }
-                // Freeform: just keep adding points to trace whatever shape the finger draws,
-                // unlike box-select's rectangle reconstruction.
-                lassoPoints.add(Pair(wx, wy))
                 regionPath?.lineTo(wx, wy)
                 invalidate()
             }
@@ -3537,25 +3570,44 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         val group = selectedGroup
         if (group != null && group.isNotEmpty()) {
+            // Highlight each item
             val hp = Paint(); hp.color = Color.parseColor("#332196F3"); hp.style = Paint.Style.FILL
             for (item in group) { val b = getBounds(item) ?: continue; canvas.drawRect(b[0], b[1], b[2], b[3], hp) }
             val gb = groupBounds(group)
             if (gb != null) {
-                val bp = Paint(); bp.color = Color.parseColor("#2196F3"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 2f / scaleFactor
+                val r = 18f / scaleFactor; val gcx = (gb[0]+gb[2])/2f; val gcy = (gb[1]+gb[3])/2f
+                // Rotate the entire group box around its center by current rotation
+                canvas.save(); canvas.rotate(groupCurrentRotation, gcx, gcy)
+                val bp = Paint(); bp.color = Color.parseColor("#2196F3"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 2f/scaleFactor
+                bp.pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f/scaleFactor, 5f/scaleFactor), 0f)
                 canvas.drawRect(gb[0], gb[1], gb[2], gb[3], bp)
-                val r = 18f / scaleFactor; val cx = (gb[0] + gb[2]) / 2f
-                val hf = Paint(); hf.style = Paint.Style.FILL; hf.color = Color.WHITE
-                val hs = Paint(); hs.style = Paint.Style.STROKE; hs.color = Color.parseColor("#2196F3"); hs.strokeWidth = 2f / scaleFactor
-                for ((hx, hy) in listOf(gb[0] to gb[1], cx to gb[1], gb[2] to gb[1], gb[0] to (gb[1]+gb[3])/2f, gb[2] to (gb[1]+gb[3])/2f, gb[0] to gb[3], cx to gb[3], gb[2] to gb[3])) {
+                // 8 resize handles (white circle with blue stroke — matches single-select style)
+                val hf = Paint(); hf.style = Paint.Style.FILL; hf.color = Color.WHITE; hf.isAntiAlias = true
+                val hs = Paint(); hs.style = Paint.Style.STROKE; hs.color = Color.parseColor("#2196F3"); hs.strokeWidth = 2f/scaleFactor; hs.isAntiAlias = true
+                for ((hx,hy) in listOf(gb[0] to gb[1], gcx to gb[1], gb[2] to gb[1], gb[0] to gcy, gb[2] to gcy, gb[0] to gb[3], gcx to gb[3], gb[2] to gb[3])) {
                     canvas.drawCircle(hx, hy, r, hf); canvas.drawCircle(hx, hy, r, hs)
                 }
-                val dp = Paint(); dp.color = Color.parseColor("#F44336"); dp.style = Paint.Style.FILL
-                canvas.drawCircle(gb[2] + r * 5f, gb[1] - r * 5f, r * 1.4f, dp)
-                // Rotate handle: blue circle above center of group
-                val rtp = Paint(); rtp.color = Color.parseColor("#2196F3"); rtp.style = Paint.Style.FILL
-                canvas.drawCircle(cx, gb[1] - r * 5f, r * 1.4f, rtp)
-                val rtp2 = Paint(); rtp2.color = Color.WHITE; rtp2.style = Paint.Style.STROKE; rtp2.strokeWidth = 2f / scaleFactor
-                canvas.drawCircle(cx, gb[1] - r * 5f, r * 0.8f, rtp2)
+                // Rotation handle (green circle with rotation arc — same as single-select)
+                val rotY = gb[1] - r * 5f
+                val rotLinePaint = Paint(); rotLinePaint.color = Color.parseColor("#34C759"); rotLinePaint.strokeWidth = 1.5f/scaleFactor; rotLinePaint.isAntiAlias = true
+                canvas.drawLine(gcx, gb[1], gcx, rotY + r, rotLinePaint)
+                val rotF = Paint(); rotF.style = Paint.Style.FILL; rotF.color = Color.parseColor("#34C759"); rotF.isAntiAlias = true
+                val rotS = Paint(); rotS.style = Paint.Style.STROKE; rotS.color = Color.WHITE; rotS.strokeWidth = 2f/scaleFactor; rotS.isAntiAlias = true
+                canvas.drawCircle(gcx, rotY, r * 1.4f, rotF); canvas.drawCircle(gcx, rotY, r * 1.4f, rotS)
+                // Small rotation arc symbol inside green circle
+                val arcP = Paint(); arcP.style = Paint.Style.STROKE; arcP.color = Color.WHITE; arcP.strokeWidth = 2f/scaleFactor; arcP.isAntiAlias = true; arcP.strokeCap = Paint.Cap.ROUND
+                val arcR = r * 0.65f
+                canvas.drawArc(android.graphics.RectF(gcx-arcR, rotY-arcR, gcx+arcR, rotY+arcR), -30f, 240f, false, arcP)
+                canvas.drawLine(gcx+arcR*0.5f, rotY-arcR*0.85f, gcx+arcR, rotY-arcR*0.3f, arcP)
+                // Delete handle (red circle with X — same as single-select)
+                val delX = gb[2] + r * 5f; val delY = gb[1] - r * 5f
+                val delF = Paint(); delF.style = Paint.Style.FILL; delF.color = Color.parseColor("#FF3B30"); delF.isAntiAlias = true
+                val delS = Paint(); delS.style = Paint.Style.STROKE; delS.color = Color.WHITE; delS.strokeWidth = 2.5f/scaleFactor; delS.isAntiAlias = true; delS.strokeCap = Paint.Cap.ROUND
+                canvas.drawCircle(delX, delY, r * 1.4f, delF); canvas.drawCircle(delX, delY, r * 1.4f, rotS)
+                val d2 = r * 0.8f
+                canvas.drawLine(delX-d2, delY-d2, delX+d2, delY+d2, delS)
+                canvas.drawLine(delX+d2, delY-d2, delX-d2, delY+d2, delS)
+                canvas.restore()
             }
         }
     }
