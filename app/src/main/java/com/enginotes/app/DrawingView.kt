@@ -875,6 +875,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var onGroupDelete: (() -> Unit)? = null  // called when group delete handle tapped
     private var groupRotateStartAngle = 0f
     private var groupRotateCenterX = 0f; private var groupRotateCenterY = 0f
+    private var groupRotateSnapshots: List<FloatArray?>? = null  // [centerX, centerY, rotationDeg] per item
     private var groupRotating = false
     private var regionPath: Path? = null
     private var regionStart: Pair<Float, Float>? = null
@@ -1356,10 +1357,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val rect = if (b != null) android.graphics.RectF(b[0]-1f, b[1]-1f, b[2]+1f, b[3]+1f)
                                else android.graphics.RectF(0f, 0f, width.toFloat(), height.toFloat())
                     val sc = canvas.saveLayer(rect, null)
-                    action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }
-                    canvas.drawPath(renderPath, renderPaint)
-                    val holePaint = Paint().apply { style = Paint.Style.FILL; xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR); isAntiAlias = true }
-                    for (h in action.data.clipHoles) canvas.drawCircle(h[0], h[1], h[2], holePaint)
+                    // Redraw shape into isolated layer (with rotation if needed)
+                    val rot2 = action.data.rotation
+                    if (rot2 != 0f && b != null) {
+                        val cx2=(b[0]+b[2])/2f; val cy2=(b[1]+b[3])/2f
+                        canvas.save(); canvas.rotate(rot2, cx2, cy2)
+                        action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }
+                        canvas.drawPath(renderPath, renderPaint); canvas.restore()
+                        // Punch holes also rotated with item
+                        val holePaint = Paint().apply { style = Paint.Style.FILL; xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR); isAntiAlias = true }
+                        canvas.save(); canvas.rotate(rot2, cx2, cy2)
+                        for (h in action.data.clipHoles) canvas.drawCircle(h[0], h[1], h[2], holePaint)
+                        canvas.restore()
+                    } else {
+                        action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }
+                        canvas.drawPath(renderPath, renderPaint)
+                        val holePaint = Paint().apply { style = Paint.Style.FILL; xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR); isAntiAlias = true }
+                        for (h in action.data.clipHoles) canvas.drawCircle(h[0], h[1], h[2], holePaint)
+                    }
                     canvas.restoreToCount(sc)
                 }
                 // Cyan selection overlay for MULTISELECT — rotated same as the item
@@ -3205,11 +3220,32 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun scaleItemInGroup(item: Any, ox: Float, oy: Float, sx: Float, sy: Float) {
         when (item) {
-            is StrokeItem -> { var i = 0; while (i + 1 < item.data.points.size) { item.data.points[i] = ox + (item.data.points[i] - ox) * sx; item.data.points[i + 1] = oy + (item.data.points[i + 1] - oy) * sy; i += 2 }; item.path = item.data.buildPath() }
+            is StrokeItem -> { var i = 0; while (i + 1 < item.data.points.size) { item.data.points[i] = ox + (item.data.points[i] - ox) * sx; item.data.points[i + 1] = oy + (item.data.points[i + 1] - oy) * sy; i += 2 }; item.path = item.data.buildPath(); item.invalidateCache(); markSpatialDirty() }
             is TextItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.size = (item.size * ((sx + sy) / 2f)).coerceIn(6f, 500f) }
             is ImageItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.w *= sx; item.h *= sy }
             is FillItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.w *= sx; item.h *= sy }
             is AudioItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.radius = (item.radius * ((sx + sy) / 2f)).coerceIn(24f, 220f) }
+        }
+    }
+
+    // Snapshot-based version: applies scale from original captured state to avoid incremental compounding
+    private fun scaleItemInGroupFromSnapshot(item: Any, snap: FloatArray?, ox: Float, oy: Float, sx: Float, sy: Float, newOx: Float, newOy: Float) {
+        if (snap == null) return
+        when (item) {
+            is StrokeItem -> {
+                // snap is FloatArray of original points (captured at drag start)
+                if (snap.size >= 4 && item.data.points.size >= 4) {
+                    var i = 0
+                    val pts = item.data.points
+                    while (i + 1 < minOf(snap.size, pts.size)) {
+                        pts[i] = newOx + (snap[i] - ox) * sx
+                        pts[i+1] = newOy + (snap[i+1] - oy) * sy
+                        i += 2
+                    }
+                    item.path = item.data.buildPath(); item.invalidateCache(); markSpatialDirty()
+                }
+            }
+            else -> scaleItemInGroup(item, ox, oy, sx, sy)  // fallback for non-stroke items
         }
     }
 
@@ -3300,12 +3336,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         if (distance(wx, wy, rotX, rotY) <= hit) {
                             groupRotating = true; groupRotateCenterX = gcx; groupRotateCenterY = (gb[1] + gb[3]) / 2f
                             groupRotateStartAngle = kotlin.math.atan2((wy - groupRotateCenterY).toDouble(), (wx - groupRotateCenterX).toDouble()).toFloat()
+                            // Snapshot center + rotation for absolute (non-incremental) rotation
+                            groupRotateSnapshots = group.map { it2 ->
+                                val b2 = getBounds(it2) ?: return@map null
+                                floatArrayOf((b2[0]+b2[2])/2f, (b2[1]+b2[3])/2f, getRotation(it2))
+                            }
                             invalidate(); return
                         }
                         val gHandles = listOf(gb[0] to gb[1], gcx to gb[1], gb[2] to gb[1], gb[0] to (gb[1]+gb[3])/2f, gb[2] to (gb[1]+gb[3])/2f, gb[0] to gb[3], gcx to gb[3], gb[2] to gb[3])
                         var found = -1
                         for ((hi, hpos) in gHandles.withIndex()) { if (distance(wx, wy, hpos.first, hpos.second) <= hit) { found = hi; break } }
-                        if (found >= 0) { groupResizeHandle = found; groupResizeOrigBounds = gb.copyOf(); groupResizeItemSnapshots = group.map { getBounds(it)?.copyOf() }; invalidate(); return }
+                        if (found >= 0) { groupResizeHandle = found; groupResizeOrigBounds = gb.copyOf(); groupResizeItemSnapshots = group.map { if (it is StrokeItem) it.data.points.toFloatArray() else getBounds(it)?.copyOf() }; invalidate(); return }
                         if (wx in gb[0]..gb[2] && wy in gb[1]..gb[3]) { groupMoveStartX = wx; groupMoveStartY = wy; groupResizeHandle = -1; invalidate(); return }
                     }
                     selectedGroup = null
@@ -3316,18 +3357,44 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val group = selectedGroup
                 if (group != null && group.isNotEmpty()) {
                     if (groupRotating) {
-                        val angle = kotlin.math.atan2((wy - groupRotateCenterY).toDouble(), (wx - groupRotateCenterX).toDouble()).toFloat()
-                        val delta = Math.toDegrees((angle - groupRotateStartAngle).toDouble()).toFloat()
-                        groupRotateStartAngle = angle
-                        for (it in group) rotateItemAroundPoint(it, groupRotateCenterX, groupRotateCenterY, delta)
+                        val currentAngle = kotlin.math.atan2((wy - groupRotateCenterY).toDouble(), (wx - groupRotateCenterX).toDouble()).toFloat()
+                        val totalDelta = Math.toDegrees((currentAngle - groupRotateStartAngle).toDouble()).toFloat()
+                        val snaps = groupRotateSnapshots
+                        if (snaps != null) {
+                            for ((idx, it) in group.withIndex()) {
+                                val snap = snaps.getOrNull(idx) ?: continue
+                                // Restore to snapshot position first, then rotate
+                                val origCx = snap[0]; val origCy = snap[1]
+                                val rad = Math.toRadians(totalDelta.toDouble())
+                                val cos = kotlin.math.cos(rad).toFloat(); val sin = kotlin.math.sin(rad).toFloat()
+                                val dx = origCx - groupRotateCenterX; val dy = origCy - groupRotateCenterY
+                                val newCx = groupRotateCenterX + dx*cos - dy*sin
+                                val newCy = groupRotateCenterY + dx*sin + dy*cos
+                                // Move item to new center from CURRENT position
+                                val curB = getBounds(it) ?: continue
+                                val curCx = (curB[0]+curB[2])/2f; val curCy = (curB[1]+curB[3])/2f
+                                moveItem(it, newCx - curCx, newCy - curCy)
+                                setRotation(it, snap[2] + totalDelta)
+                            }
+                        } else {
+                            // Fallback: incremental (for items without snapshots)
+                            val incDelta = Math.toDegrees((currentAngle - groupRotateStartAngle).toDouble()).toFloat()
+                            for (it in group) rotateItemAroundPoint(it, groupRotateCenterX, groupRotateCenterY, incDelta)
+                            groupRotateStartAngle = currentAngle
+                        }
                         markSpatialDirty(); invalidate(); return
                     }
                     if (groupResizeHandle >= 0) {
                         val origW = (groupResizeOrigBounds[2] - groupResizeOrigBounds[0]).coerceAtLeast(1f); val origH = (groupResizeOrigBounds[3] - groupResizeOrigBounds[1]).coerceAtLeast(1f)
                         var nl = groupResizeOrigBounds[0]; var nt = groupResizeOrigBounds[1]; var nr = groupResizeOrigBounds[2]; var nb = groupResizeOrigBounds[3]
                         when (groupResizeHandle) { 0 -> { nl = wx; nt = wy }; 1 -> nt = wy; 2 -> { nr = wx; nt = wy }; 3 -> nl = wx; 4 -> nr = wx; 5 -> { nl = wx; nb = wy }; 6 -> nb = wy; 7 -> { nr = wx; nb = wy } }
-                        val sx = (nr - nl).coerceAtLeast(10f) / origW; val sy = (nb - nt).coerceAtLeast(10f) / origH
-                        for (it in group) scaleItemInGroup(it, groupResizeOrigBounds[0], groupResizeOrigBounds[1], sx, sy)
+                        val sx = ((nr - nl).coerceAtLeast(10f) / origW).coerceIn(0.01f, 100f)
+                        val sy = ((nb - nt).coerceAtLeast(10f) / origH).coerceIn(0.01f, 100f)
+                        val snaps = groupResizeItemSnapshots
+                        for ((idx, it) in group.withIndex()) {
+                            val snap = snaps.getOrNull(idx)
+                            scaleItemInGroupFromSnapshot(it, snap, groupResizeOrigBounds[0], groupResizeOrigBounds[1], sx, sy, nl, nt)
+                        }
                     } else { val dx = wx - groupMoveStartX; val dy = wy - groupMoveStartY; for (it in group) moveItem(it, dx, dy); groupMoveStartX = wx; groupMoveStartY = wy }
                     invalidate(); return
                 }
@@ -3340,7 +3407,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                groupResizeHandle = -1; groupRotating = false; val group = selectedGroup; if (group != null && group.isNotEmpty()) return
+                groupResizeHandle = -1; groupRotating = false; groupRotateSnapshots = null; val group = selectedGroup; if (group != null && group.isNotEmpty()) return
                 val rp = regionPath; val s = regionStart
                 if (rp != null && s != null) {
                     val bounds = floatArrayOf(minOf(s.first, wx), minOf(s.second, wy), maxOf(s.first, wx), maxOf(s.second, wy))
@@ -3370,7 +3437,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val gHandles = listOf(gb[0] to gb[1], gcx to gb[1], gb[2] to gb[1], gb[0] to (gb[1]+gb[3])/2f, gb[2] to (gb[1]+gb[3])/2f, gb[0] to gb[3], gcx to gb[3], gb[2] to gb[3])
                         var found = -1
                         for ((hi, hpos) in gHandles.withIndex()) { if (distance(wx, wy, hpos.first, hpos.second) <= hit) { found = hi; break } }
-                        if (found >= 0) { groupResizeHandle = found; groupResizeOrigBounds = gb.copyOf(); groupResizeItemSnapshots = group.map { getBounds(it)?.copyOf() }; invalidate(); return }
+                        if (found >= 0) { groupResizeHandle = found; groupResizeOrigBounds = gb.copyOf(); groupResizeItemSnapshots = group.map { if (it is StrokeItem) it.data.points.toFloatArray() else getBounds(it)?.copyOf() }; invalidate(); return }
                         if (wx in gb[0]..gb[2] && wy in gb[1]..gb[3]) { groupMoveStartX = wx; groupMoveStartY = wy; groupResizeHandle = -1; invalidate(); return }
                     }
                     selectedGroup = null
@@ -3385,8 +3452,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val origW = (groupResizeOrigBounds[2] - groupResizeOrigBounds[0]).coerceAtLeast(1f); val origH = (groupResizeOrigBounds[3] - groupResizeOrigBounds[1]).coerceAtLeast(1f)
                         var nl = groupResizeOrigBounds[0]; var nt = groupResizeOrigBounds[1]; var nr = groupResizeOrigBounds[2]; var nb = groupResizeOrigBounds[3]
                         when (groupResizeHandle) { 0 -> { nl = wx; nt = wy }; 1 -> nt = wy; 2 -> { nr = wx; nt = wy }; 3 -> nl = wx; 4 -> nr = wx; 5 -> { nl = wx; nb = wy }; 6 -> nb = wy; 7 -> { nr = wx; nb = wy } }
-                        val sx = (nr - nl).coerceAtLeast(10f) / origW; val sy = (nb - nt).coerceAtLeast(10f) / origH
-                        for (it in group) scaleItemInGroup(it, groupResizeOrigBounds[0], groupResizeOrigBounds[1], sx, sy)
+                        val sx = ((nr - nl).coerceAtLeast(10f) / origW).coerceIn(0.01f, 100f)
+                        val sy = ((nb - nt).coerceAtLeast(10f) / origH).coerceIn(0.01f, 100f)
+                        val snaps = groupResizeItemSnapshots
+                        for ((idx, it) in group.withIndex()) {
+                            val snap = snaps.getOrNull(idx)
+                            scaleItemInGroupFromSnapshot(it, snap, groupResizeOrigBounds[0], groupResizeOrigBounds[1], sx, sy, nl, nt)
+                        }
                     } else { val dx = wx - groupMoveStartX; val dy = wy - groupMoveStartY; for (it in group) moveItem(it, dx, dy); groupMoveStartX = wx; groupMoveStartY = wy }
                     invalidate(); return
                 }
