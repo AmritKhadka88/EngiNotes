@@ -4715,7 +4715,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                     }
                 }
-                }
                 currentItem = null; invalidate()
                 onDrawingEnded?.invoke()
             }
