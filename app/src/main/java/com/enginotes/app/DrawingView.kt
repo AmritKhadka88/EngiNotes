@@ -828,10 +828,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         // Commit as ONE unified multi-segment stroke (true AutoCAD-style polyline) — moves,
         // rotates, selects, and deletes as a single object, and renders in a single draw call
-        // instead of fragmenting into N independent LINE items. Tool.PEN + PenStyle.BALL gives
-        // a plain uniform-width straight-segment path with no smoothing/tapering applied.
+        // instead of fragmenting into N independent LINE items. Uses the user's currently
+        // selected pen style so drawn thickness matches the thickness slider (PenStyle.BALL
+        // renders at 0.65x strokeWidth, which was silently shrinking every polyline).
         val d = StrokeData(Tool.PEN, polylinePoints.toMutableList(),
-            currentColor, currentStrokeWidth, false, lineType = currentLineType, penStyle = PenStyle.BALL)
+            currentColor, currentStrokeWidth, false, lineType = currentLineType, penStyle = currentPenStyle)
         val si = StrokeItem(d, d.buildPath(), d.toPaint())
         actions.add(si)
         redoStack.clear(); markSpatialDirty()
@@ -4901,6 +4902,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return if (t in 0f..1f && u in 0f..1f) t else null
     }
 
+    // Returns a copy of the item's path transformed into its actual VISUAL (rotated) position.
+    // item.path is always stored unrotated — rotation is applied only at draw-time via
+    // canvas.rotate() — so anything sampling the path directly (like TRIM) must apply this
+    // same transform first, or it compares world-space coordinates against unrotated-local
+    // sample points whenever the item has any rotation.
+    private fun rotatedPathFor(item: StrokeItem): Path {
+        val rot = item.data.rotation
+        if (rot == 0f) return item.path
+        val b = getBoundsRaw(item) ?: return item.path
+        val p = Path(item.path)
+        val m = android.graphics.Matrix()
+        m.setRotate(rot, (b[0]+b[2])/2f, (b[1]+b[3])/2f)
+        p.transform(m)
+        return p
+    }
+
     private fun trimAt(x: Float, y: Float) {
         val r = eraserSize / 2f
         val candidates = itemsNear(x, y, r * 4f).filterIsInstance<StrokeItem>().filter { !it.data.isLocked }
@@ -4915,8 +4932,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val t = target ?: return
         if (bestDist > r * 2.5f) return  // tap wasn't close enough to any stroke to trim it
 
-        // Densely sample the target path, tracking cumulative arc-length at each point.
-        val measure = android.graphics.PathMeasure(t.path, false)
+        // Densely sample the target's VISUAL (rotated) path, tracking cumulative arc-length.
+        val measure = android.graphics.PathMeasure(rotatedPathFor(t), false)
         val allPts = mutableListOf<Float>(); val cumLen = mutableListOf<Float>()
         val pos = FloatArray(2); var totalLen = 0f
         do {
@@ -4940,7 +4957,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val cutPositions = mutableListOf<Float>()
         for (other in candidates) {
             if (other === t) continue
-            val om = android.graphics.PathMeasure(other.path, false)
+            val om = android.graphics.PathMeasure(rotatedPathFor(other), false)
             val oPts = mutableListOf<Float>()
             val opos = FloatArray(2)
             do {
@@ -4989,12 +5006,31 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun eraseFillItemRegion(item: FillItem, ex: Float, ey: Float, r: Float): FillItem? {
-        val bmp = getOrLoadFillBitmap(item)?.copy(Bitmap.Config.ARGB_8888, true) ?: return item
-        val bw = bmp.width; val bh = bmp.height
-        // Convert world eraser circle to bitmap pixel coords
+        val cached = getOrLoadFillBitmap(item) ?: return item
+        val bw = cached.width; val bh = cached.height
         val scaleX = bw / item.w; val scaleY = bh / item.h
         val bex = ((ex - item.x) * scaleX).toInt(); val bey = ((ey - item.y) * scaleY).toInt()
         val brx = (r * scaleX).toInt().coerceAtLeast(1); val bry = (r * scaleY).toInt().coerceAtLeast(1)
+
+        // Cheap early-out: sample a sparse grid of points within the erase circle in the
+        // CACHED (unmodified) bitmap for any opaque pixel, before doing the expensive
+        // copy+modify+PNG-encode+disk-write cycle below. This was previously running in full
+        // on EVERY erase tick merely near the fill's bounding box — even when the eraser never
+        // touched a single visible pixel — writing a full PNG to disk each time and making
+        // erasing near any filled shape progressively slower and less responsive.
+        var anyOpaqueHit = false
+        val stepX = maxOf(1, brx / 6); val stepY = maxOf(1, bry / 6)
+        outer@ for (sy in -bry..bry step stepY) {
+            for (sx in -brx..brx step stepX) {
+                val nx = sx.toFloat() / brx.coerceAtLeast(1); val ny = sy.toFloat() / bry.coerceAtLeast(1)
+                if (nx*nx + ny*ny > 1f) continue
+                val px = bex + sx; val py = bey + sy
+                if (px in 0 until bw && py in 0 until bh && (cached.getPixel(px, py) ushr 24) != 0) { anyOpaqueHit = true; break@outer }
+            }
+        }
+        if (!anyOpaqueHit) return item  // eraser isn't actually touching any visible fill pixel — skip entirely
+
+        val bmp = cached.copy(Bitmap.Config.ARGB_8888, true)
         val cv = Canvas(bmp)
         val p = Paint(); p.color = Color.TRANSPARENT; p.style = Paint.Style.FILL
         p.xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR)
@@ -5117,6 +5153,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Used by area-mode erasing so touching empty space near a shape's bbox corner doesn't delete
     // the whole shape - only actually touching its drawn line does.
     private fun distanceToShapeOutline(data: StrokeData, x: Float, y: Float): Float {
+        var tx = x; var ty = y
+        val rot = data.rotation
+        if (rot != 0f) {
+            val pts = data.points
+            if (pts.size >= 2) {
+                var minX=pts[0]; var maxX=pts[0]; var minY=pts[1]; var maxY=pts[1]; var i=0
+                while (i+1<pts.size) { if(pts[i]<minX)minX=pts[i]; if(pts[i]>maxX)maxX=pts[i]; if(pts[i+1]<minY)minY=pts[i+1]; if(pts[i+1]>maxY)maxY=pts[i+1]; i+=2 }
+                val cx=(minX+maxX)/2f; val cy=(minY+maxY)/2f
+                val rad = Math.toRadians(-rot.toDouble())
+                val cos = kotlin.math.cos(rad).toFloat(); val sin = kotlin.math.sin(rad).toFloat()
+                val dx=x-cx; val dy=y-cy
+                tx = cx + dx*cos - dy*sin; ty = cy + dx*sin + dy*cos
+            }
+        }
         val path = data.buildPath()
         val measure = android.graphics.PathMeasure(path, false)
         var minDist = Float.MAX_VALUE
@@ -5128,7 +5178,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val step = (len / 24f).coerceAtLeast(2f)
             while (dist <= len) {
                 measure.getPosTan(dist, pos, null)
-                val d = distance(x, y, pos[0], pos[1])
+                val d = distance(tx, ty, pos[0], pos[1])
                 if (d < minDist) minDist = d
                 dist += step
             }
@@ -5542,8 +5592,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 // Force exact closure regardless of any residual PathMeasure rounding.
                 if (segPts.size >= 4) { segPts[segPts.size-2] = segPts[0]; segPts[segPts.size-1] = segPts[1] }
+                // Preserve the shape's ORIGINAL pen style so erasing/converting a shape never
+                // changes its rendered thickness. PenStyle.BALL renders at 0.65x strokeWidth —
+                // hardcoding it here silently shrunk every shape's line weight the instant it
+                // was first touched by the eraser.
                 val d = StrokeData(Tool.PEN, segPts, data.color, data.strokeWidth, false,
-                    lineType = data.lineType, penStyle = PenStyle.BALL, opacity = data.opacity)
+                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity)
                 listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
             }
             else -> {
@@ -5559,7 +5613,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 for ((vx, vy) in verts) { plinePts.add(vx); plinePts.add(vy) }
                 if (closed && verts.isNotEmpty()) { plinePts.add(verts[0].first); plinePts.add(verts[0].second) }
                 val d = StrokeData(Tool.PEN, plinePts, data.color, data.strokeWidth, false,
-                    lineType = data.lineType, penStyle = PenStyle.BALL, opacity = data.opacity)
+                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity)
                 listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
             }
         }
@@ -5713,6 +5767,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     fun performFill(screenX: Float, screenY: Float) {
+        // Capture the z-order insertion point NOW (fill was initiated at this moment), not when
+        // the async flood-fill computation finishes. Without this, a stroke drawn while the fill
+        // is still computing would commit first, then the fill's completion callback would
+        // append itself AFTER that stroke — landing on top of it, even though the user drew the
+        // stroke after tapping fill and expects it to stay on top.
+        val fillInsertionIndex = actions.size
         val scale = 2.0f
         val w = (width * scale).toInt().coerceAtLeast(1); val h = (height * scale).toInt().coerceAtLeast(1)
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); val cv = Canvas(bmp)
@@ -5790,7 +5850,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val alpha = (existBmp.getPixel(bx, by) ushr 24) and 0xFF
                         alpha > 25  // non-transparent = tap was inside this fill region
                     }
-                    actions.add(fi); redoStack.clear(); markSpatialDirty(); invalidate()
+                    // Insert at the position captured when the fill was initiated, not the end —
+                    // so strokes drawn while this fill was still computing correctly stay on top.
+                    val safeIndex = fillInsertionIndex.coerceAtMost(actions.size)
+                    actions.add(safeIndex, fi); redoStack.clear(); markSpatialDirty(); invalidate()
                 }
             }
         }
