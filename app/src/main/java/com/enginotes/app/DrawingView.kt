@@ -826,16 +826,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (close && polylinePoints.size >= 4) {
             polylinePoints.add(polylinePoints[0]); polylinePoints.add(polylinePoints[1])
         }
-        // Commit each segment as an independent LINE stroke
-        var i = 0
-        while (i + 3 < polylinePoints.size) {
-            val d = StrokeData(Tool.LINE,
-                mutableListOf(polylinePoints[i], polylinePoints[i+1], polylinePoints[i+2], polylinePoints[i+3]),
-                currentColor, currentStrokeWidth, false, lineType = currentLineType, penStyle = PenStyle.BALL)
-            val si = StrokeItem(d, d.buildPath(), d.toPaint())
-            actions.add(si)
-            i += 2
-        }
+        // Commit as ONE unified multi-segment stroke (true AutoCAD-style polyline) — moves,
+        // rotates, selects, and deletes as a single object, and renders in a single draw call
+        // instead of fragmenting into N independent LINE items. Tool.PEN + PenStyle.BALL gives
+        // a plain uniform-width straight-segment path with no smoothing/tapering applied.
+        val d = StrokeData(Tool.PEN, polylinePoints.toMutableList(),
+            currentColor, currentStrokeWidth, false, lineType = currentLineType, penStyle = PenStyle.BALL)
+        val si = StrokeItem(d, d.buildPath(), d.toPaint())
+        actions.add(si)
         redoStack.clear(); markSpatialDirty()
         polylinePoints.clear(); onPolylineUpdated?.invoke(); invalidate()
     }
@@ -4811,7 +4809,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         } else if (CLOSED_SHAPES.contains(a.data.type)) {
                             // Convert to component lines at erase time.
                             // Each edge becomes independent — user gets remaining parts as separate strokes.
-                            if (strokeHitTest(a.data, x, y, r)) {
+                            // Use strokeHitTestRotated: the plain strokeHitTest tests against the
+                            // UNROTATED outline, which caused wrong-edge erasure on rotated shapes.
+                            if (strokeHitTestRotated(a.data, x, y, r)) {
                                 val components = convertShapeToComponents(a.data)
                                 for (comp in components) {
                                     if (strokeHitTest(comp.data, x, y, r)) {
@@ -5289,12 +5289,31 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     // Converts a typed shape (RECTANGLE, TRIANGLE, etc.) into component LINE or PEN StrokeItems.
     // This makes every edge independently erasable, selectable, and splittable — like pen strokes.
+    // CRITICAL: shapes store their rotation separately (applied via canvas.rotate at render time),
+    // but component lines have no such rotation field applied elsewhere — so we must BAKE the
+    // current rotation into the actual point coordinates here, or the converted lines land at the
+    // shape's original unrotated position (causing wrong-edge erasure and apparent "rotation reset").
     private fun convertShapeToComponents(data: StrokeData): List<StrokeItem> {
         val pts = data.points; if (pts.size < 2) return emptyList()
-        val verts = shapeEndpoints(pts, data.type)
+        var verts = shapeEndpoints(pts, data.type)
         if (verts.isEmpty()) return emptyList()
 
+        // Bake rotation: rotate every vertex around the shape's bounding-box center
+        val rot = data.rotation
+        if (rot != 0f) {
+            var minX=verts[0].first; var maxX=verts[0].first; var minY=verts[0].second; var maxY=verts[0].second
+            for ((vx,vy) in verts) { if(vx<minX)minX=vx; if(vx>maxX)maxX=vx; if(vy<minY)minY=vy; if(vy>maxY)maxY=vy }
+            val cx=(minX+maxX)/2f; val cy=(minY+maxY)/2f
+            val rad = Math.toRadians(rot.toDouble())
+            val cos = kotlin.math.cos(rad).toFloat(); val sin = kotlin.math.sin(rad).toFloat()
+            verts = verts.map { (vx,vy) ->
+                val dx=vx-cx; val dy=vy-cy
+                Pair(cx+dx*cos-dy*sin, cy+dx*sin+dy*cos)
+            }
+        }
+
         fun makeLine(ax: Float, ay: Float, bx: Float, by: Float): StrokeItem {
+            // Preserve original thickness and line type exactly — no implicit changes
             val d = StrokeData(Tool.LINE, mutableListOf(ax, ay, bx, by),
                 data.color, data.strokeWidth, false, lineType = data.lineType,
                 penStyle = PenStyle.BALL, opacity = data.opacity)
@@ -5302,27 +5321,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
 
         return when (data.type) {
-            Tool.CIRCLE -> {
-                // Adaptive sampling: fewer segments when zoomed out (eye can't tell difference)
-                // 8 segs at 0.1× zoom → 72 segs at 2×+ zoom
-                val segments = (24 * scaleFactor).toInt().coerceIn(8, 72)
+            Tool.CIRCLE, Tool.ELLIPSE, Tool.ROUNDED_RECT -> {
+                // Sample the ROTATED path directly (build path, then rotate via matrix) so the
+                // sampled points already reflect the shape's current on-screen orientation —
+                // and use a generous fixed segment count so a circle never looks like a polygon
+                // ("connection of multiple lines") regardless of zoom level at conversion time.
                 val path = data.buildPath()
+                if (rot != 0f) {
+                    val b = getBoundsRaw(StrokeItem(data, path, data.toPaint()))
+                    if (b != null) {
+                        val m = android.graphics.Matrix()
+                        m.setRotate(rot, (b[0]+b[2])/2f, (b[1]+b[3])/2f)
+                        path.transform(m)
+                    }
+                }
                 val measure = android.graphics.PathMeasure(path, true)
                 val segPts = mutableListOf<Float>()
-                val step = measure.length / segments
-                val pos = FloatArray(2)
-                var dist = 0f
-                while (dist <= measure.length) { measure.getPosTan(dist, pos, null); segPts.add(pos[0]); segPts.add(pos[1]); dist += step }
-                val d = StrokeData(Tool.PEN, segPts, data.color, data.strokeWidth, false,
-                    lineType = data.lineType, penStyle = PenStyle.BALL, opacity = data.opacity)
-                listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
-            }
-            Tool.ELLIPSE, Tool.ROUNDED_RECT -> {
-                val segments = (24 * scaleFactor).toInt().coerceIn(8, 72)
-                val path = data.buildPath()
-                val measure = android.graphics.PathMeasure(path, true)
-                val segPts = mutableListOf<Float>()
-                val step = (measure.length / segments).coerceAtLeast(1f)
+                // Fixed high segment count at conversion time (erase-triggered, not per-frame) —
+                // always smooth regardless of current zoom, never faceted.
+                val segments = 96
+                val step = (measure.length / segments).coerceAtLeast(0.5f)
                 val pos = FloatArray(2)
                 var dist = 0f
                 while (dist <= measure.length) { measure.getPosTan(dist, pos, null); segPts.add(pos[0]); segPts.add(pos[1]); dist += step }
@@ -5331,7 +5349,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
             }
             else -> {
-                // All polygon shapes: one LINE stroke per edge
+                // All polygon shapes: one LINE stroke per edge, using rotation-baked vertices
                 val result = mutableListOf<StrokeItem>()
                 val closed = CLOSED_SHAPES.contains(data.type)
                 for (i in verts.indices) {

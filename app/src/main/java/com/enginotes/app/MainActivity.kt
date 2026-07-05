@@ -72,7 +72,6 @@ class MainActivity : AppCompatActivity() {
         R.drawable.ic_shape_curve to Tool.CURVE,
         R.drawable.ic_shape_cross to Tool.CROSS,
         R.drawable.ic_arc to Tool.ARC,
-        R.drawable.ic_shape_curve to Tool.POLYLINE,  // polyline uses curve/zigzag icon
         R.drawable.ic_shape_trapezoid to Tool.TRAPEZOID,
         R.drawable.ic_shape_parallelogram to Tool.PARALLELOGRAM,
         R.drawable.ic_shape_right_triangle to Tool.RIGHT_TRIANGLE,
@@ -1578,6 +1577,16 @@ class MainActivity : AppCompatActivity() {
                 val p = LinearLayout.LayoutParams(dp(42), dp(42)); p.setMargins(dp(2),0,dp(2),0); layoutParams = p
                 setOnClickListener { setActiveTool(null, tool) }
             })
+            // Polyline sits immediately beside the Line icon — same family of tool (connected
+            // straight segments), so users find it right where they'd expect it.
+            if (tool == Tool.LINE) {
+                row.addView(TextView(this).apply {
+                    text = "〜"; textSize = 20f; gravity = android.view.Gravity.CENTER
+                    setBackgroundResource(R.drawable.btn_toolbar_selector)
+                    val p = LinearLayout.LayoutParams(dp(42), dp(42)); p.setMargins(dp(2),0,dp(2),0); layoutParams = p
+                    setOnClickListener { setActiveTool(null, Tool.POLYLINE) }
+                })
+            }
         }
         contextBar.scrollTo(0, 0)
     }
