@@ -737,11 +737,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         spatialDirty = false
     }
 
-    private fun markSpatialDirty() { spatialDirty = true }
-    fun markSpatialDirtyAndInvalidate() { spatialDirty = true; snapMarkersDirty = true; invalidate() }
+    private fun markSpatialDirty() { spatialDirty = true; snapMarkersActionCount = -1 }
+    fun markSpatialDirtyAndInvalidate() { spatialDirty = true; snapMarkersDirty = true; snapMarkersActionCount = -1; invalidate() }
     private var snapMarkersDirty = true
     private var snapMarkersScale = -1f
-    private val cachedSnapMarkerPaint = Paint()  // reused every frame to avoid GC pressure
+    private val cachedSnapMarkerPaint = Paint()
+    // Cached paints for frequently-called drawing functions — avoids Paint() allocation each frame
+    private val _selBoxPaint = Paint().apply { style = Paint.Style.STROKE; isAntiAlias = true }
+    private val _handleFill = Paint().apply { style = Paint.Style.FILL; isAntiAlias = true }
+    private val _handleStroke = Paint().apply { style = Paint.Style.STROKE; isAntiAlias = true }
+    private val _holePaint = Paint().apply { style = Paint.Style.FILL; xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR); isAntiAlias = true }
+    private val _cursorPaint = Paint().apply { isAntiAlias = true }
 
     // Lock/unlock — called from MainActivity lock button
     fun lockSelectedItems() {
@@ -1370,14 +1376,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }
                         canvas.drawPath(renderPath, renderPaint); canvas.restore()
                         // Punch holes also rotated with item
-                        val holePaint = Paint().apply { style = Paint.Style.FILL; xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR); isAntiAlias = true }
+                        val holePaint = _holePaint
                         canvas.save(); canvas.rotate(rot2, cx2, cy2)
                         for (h in action.data.clipHoles) canvas.drawCircle(h[0], h[1], h[2], holePaint)
                         canvas.restore()
                     } else {
                         action.data.toFillPaint()?.let { canvas.drawPath(action.path, it) }
                         canvas.drawPath(renderPath, renderPaint)
-                        val holePaint = Paint().apply { style = Paint.Style.FILL; xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR); isAntiAlias = true }
+                        val holePaint = _holePaint
                         for (h in action.data.clipHoles) canvas.drawCircle(h[0], h[1], h[2], holePaint)
                     }
                     canvas.restoreToCount(sc)
@@ -2384,7 +2390,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             canvas.restore()
             return
         }
-        val bounds = getBounds(item) ?: return
+        val bounds = getBoundsRaw(item) ?: return  // unrotated bbox — canvas.rotate() below handles orientation
         val rotation = getRotation(item); val (pivotX, pivotY) = getPivot(item, bounds)
         canvas.save(); canvas.rotate(rotation, pivotX, pivotY)
         val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE
@@ -2415,8 +2421,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             canvas.drawCircle(p0x, p0y, hr, hFill); canvas.drawCircle(p0x, p0y, hr, hStroke)
             canvas.drawCircle(p1x, p1y, hr, hFill); canvas.drawCircle(p1x, p1y, hr, hStroke)
         }
-        val canRotate = item is ImageItem || item is TextItem || item is AudioItem ||
-            (item is StrokeItem && item.data.type != Tool.PEN && item.data.type != Tool.ARC)
+        val canRotate = item is ImageItem || item is TextItem || item is AudioItem || item is StrokeItem
         if (canRotate) {
             val cx = (bounds[0] + bounds[2]) / 2f; val rotY = bounds[1] - 60f / scaleFactor
             val rotLinePaint = Paint(); rotLinePaint.color = Color.parseColor("#2196F3"); rotLinePaint.strokeWidth = 1.5f / scaleFactor
@@ -3336,7 +3341,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val rot = item.data.rotation
         // If item has rotation, rotate each sampled point before testing against the rect
         if (rot != 0f) {
-            val b = getBoundsUnrotated(item) ?: return false
+            val b = getBoundsRaw(item) ?: return false
             val cx = (b[0]+b[2])/2f; val cy = (b[1]+b[3])/2f
             val rad = Math.toRadians(rot.toDouble())
             val cos = kotlin.math.cos(rad).toFloat(); val sin = kotlin.math.sin(rad).toFloat()
@@ -3356,8 +3361,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return false
     }
 
-    // Returns bbox of stored points without applying rotation (for computing rotation pivot)
-    private fun getBoundsUnrotated(item: StrokeItem): FloatArray? = getBounds(item)
+    // Raw (unrotated) bbox — used for rendering selection handles and computing pivot points.
+    // data.rotation is NOT factored in; the caller applies canvas.rotate() for visual orientation.
+    private fun getBoundsRaw(item: Any): FloatArray? {
+        return when (item) {
+            is StrokeItem -> {
+                val pts = item.data.points; if (pts.size < 2) return null
+                if (item.data.type == Tool.CIRCLE && pts.size >= 4) {
+                    val r = kotlin.math.hypot((pts[2]-pts[0]).toDouble(),(pts[3]-pts[1]).toDouble()).toFloat()
+                    floatArrayOf(pts[0]-r, pts[1]-r, pts[0]+r, pts[1]+r)
+                } else if (SHAPE_TOOLS.contains(item.data.type) && pts.size == 4) {
+                    floatArrayOf(minOf(pts[0],pts[2]),minOf(pts[1],pts[3]),maxOf(pts[0],pts[2]),maxOf(pts[1],pts[3]))
+                } else {
+                    var mnX=pts[0]; var mxX=pts[0]; var mnY=pts[1]; var mxY=pts[1]; var i=0
+                    while (i+1<pts.size) { mnX=minOf(mnX,pts[i]); mxX=maxOf(mxX,pts[i]); mnY=minOf(mnY,pts[i+1]); mxY=maxOf(mxY,pts[i+1]); i+=2 }
+                    floatArrayOf(mnX, mnY, mxX, mxY)
+                }
+            }
+            else -> getBounds(item)  // non-stroke items don't have separate raw bounds
+        }
+    }
 
     // Segment AB intersects segment CD — kept for potential future use
     private fun segmentsIntersect(ax: Float, ay: Float, bx: Float, by: Float,
@@ -3659,41 +3682,50 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Draws persistent snap point markers on all committed strokes so users can see exactly
     // where snap targets are at all times when snap is enabled — no need to hover first.
     // Drawn in canvas (world) coordinate space (inside the canvas.save/restore block).
-    private fun drawSnapMarkers(canvas: Canvas) {
-        val markerP = cachedSnapMarkerPaint.apply { isAntiAlias = true; strokeWidth = 1.5f / scaleFactor }
-        val r = 7f / scaleFactor
+    // Cached snap marker positions: [x, y, type] where type 0=endpoint, 1=midpoint, 2=center
+    private var cachedSnapMarkers: List<FloatArray> = emptyList()
+    private var snapMarkersActionCount = -1
 
+    private fun rebuildSnapMarkerCache() {
+        val markers = mutableListOf<FloatArray>()
         for (action in actions) {
             if (action !is StrokeItem) continue
             val pts = action.data.points; val t = action.data.type
             if (pts.size < 2) continue
+            if (snapEndpoint) shapeEndpoints(pts, t).forEach { (ex,ey) -> markers.add(floatArrayOf(ex,ey,0f)) }
+            if (snapMidpoint) when (t) { Tool.CIRCLE, Tool.ELLIPSE -> {} else -> shapeEdgeMidpoints(pts, t).forEach { (mx,my) -> markers.add(floatArrayOf(mx,my,1f)) } }
+            if (snapCenter) shapeCenter(pts, t)?.let { (cx,cy) -> markers.add(floatArrayOf(cx,cy,2f)) }
+        }
+        cachedSnapMarkers = markers
+        snapMarkersActionCount = actions.size
+    }
 
-            fun square(wx: Float, wy: Float) {
-                markerP.color = Color.parseColor("#2196F3"); markerP.style = Paint.Style.STROKE
-                canvas.drawRect(wx-r, wy-r, wx+r, wy+r, markerP)
-            }
-            fun tri(wx: Float, wy: Float) {
-                markerP.color = Color.parseColor("#4CAF50"); markerP.style = Paint.Style.STROKE
-                val p = android.graphics.Path().apply { moveTo(wx,wy-r); lineTo(wx+r,wy+r); lineTo(wx-r,wy+r); close() }
-                canvas.drawPath(p, markerP)
-            }
-            fun circ(wx: Float, wy: Float) {
-                markerP.color = Color.parseColor("#9C27B0"); markerP.style = Paint.Style.STROKE
-                canvas.drawCircle(wx, wy, r, markerP)
-                canvas.drawLine(wx-r*1.4f, wy, wx+r*1.4f, wy, markerP)
-                canvas.drawLine(wx, wy-r*1.4f, wx, wy+r*1.4f, markerP)
-            }
+    private fun drawSnapMarkers(canvas: Canvas) {
+        // Rebuild cache only when actions list changes
+        if (snapMarkersActionCount != actions.size || snapMarkersDirty) rebuildSnapMarkerCache()
 
-            if (snapEndpoint) shapeEndpoints(pts, t).forEach { (ex,ey) -> square(ex, ey) }
-            if (snapMidpoint) {
-                // Don't draw midpoints for circles/ellipses — their "edge midpoints" between
-                // the 4 quadrant points would appear as triangles inside the shape, not on boundary
-                when (action.data.type) {
-                    Tool.CIRCLE, Tool.ELLIPSE -> {}  // skip — use NEAREST snap for circles instead
-                    else -> shapeEdgeMidpoints(pts, t).forEach { (mx,my) -> tri(mx, my) }
+        val r = 7f / scaleFactor
+        val p = cachedSnapMarkerPaint.apply { isAntiAlias = true; strokeWidth = 1.5f/scaleFactor }
+
+        for (m in cachedSnapMarkers) {
+            val x = m[0]; val y = m[1]
+            when (m[2].toInt()) {
+                0 -> { // Endpoint - blue square
+                    p.color = android.graphics.Color.parseColor("#2196F3"); p.style = Paint.Style.STROKE
+                    canvas.drawRect(x-r, y-r, x+r, y+r, p)
+                }
+                1 -> { // Midpoint - green triangle
+                    p.color = android.graphics.Color.parseColor("#4CAF50"); p.style = Paint.Style.STROKE
+                    val tri = android.graphics.Path().apply { moveTo(x,y-r); lineTo(x+r,y+r); lineTo(x-r,y+r); close() }
+                    canvas.drawPath(tri, p)
+                }
+                2 -> { // Center - purple crosshair
+                    p.color = android.graphics.Color.parseColor("#9C27B0"); p.style = Paint.Style.STROKE
+                    canvas.drawCircle(x, y, r, p)
+                    canvas.drawLine(x-r*1.4f, y, x+r*1.4f, y, p)
+                    canvas.drawLine(x, y-r*1.4f, x, y+r*1.4f, p)
                 }
             }
-            if (snapCenter) shapeCenter(pts, t)?.let { (cx,cy) -> circ(cx, cy) }
         }
     }
 
@@ -4534,11 +4566,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         var ii = 0; while (ii < src.size - 1) { if ((ii/2) % skip == 0 || ii >= src.size - 2) { keep.add(src[ii]); keep.add(src[ii+1]) }; ii += 2 }
                         src.clear(); src.addAll(keep); item.path = item.data.buildPath(); item.invalidateCache()
                     }
-                    actions.add(item); redoStack.clear(); markSpatialDirty()
-                    // For shape tools: notify MainActivity to show select handles temporarily
+                    // Convert shape tools to component LINE/PEN strokes so each edge is
+                    // independently erasable and selectable — just like pen strokes.
+                    // PEN/BRUSH/HIGHLIGHTER/ARC/CURVE are kept as-is (already freeform).
+                    val itemsToAdd = if (isShapeTool && item.data.type != Tool.PEN &&
+                            item.data.type != Tool.BRUSH && item.data.type != Tool.HIGHLIGHTER &&
+                            item.data.type != Tool.ARC && item.data.type != Tool.CURVE &&
+                            item.data.type != Tool.LINE && item.data.type != Tool.ARROW) {
+                        convertShapeToComponents(item.data)
+                    } else listOf(item)
+                    for (si in itemsToAdd) { actions.add(si); redoStack.clear() }
+                    markSpatialDirty()
+                    // Notify MainActivity — pass the last added item for handle display
                     if (isShapeTool) {
-                        selectedItem = item
-                        onShapeCompleted?.invoke(item)
+                        selectedItem = itemsToAdd.last()
+                        onShapeCompleted?.invoke(itemsToAdd.last())
                     }
                 }
                 }
@@ -5104,6 +5146,64 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // Fallback: any item at position using normal hit testing
         return findItemAt(wx, wy)
     }
+
+    // Converts a typed shape (RECTANGLE, TRIANGLE, etc.) into component LINE or PEN StrokeItems.
+    // This makes every edge independently erasable, selectable, and splittable — like pen strokes.
+    private fun convertShapeToComponents(data: StrokeData): List<StrokeItem> {
+        val pts = data.pts; if (pts.size < 2) return emptyList()
+        val verts = shapeEndpoints(pts, data.type)
+        if (verts.isEmpty()) return emptyList()
+
+        fun makeLine(ax: Float, ay: Float, bx: Float, by: Float): StrokeItem {
+            val d = StrokeData(Tool.LINE, mutableListOf(ax, ay, bx, by),
+                data.color, data.strokeWidth, false, lineType = data.lineType,
+                penStyle = PenStyle.BALL, opacity = data.opacity)
+            return StrokeItem(d, d.buildPath(), d.toPaint())
+        }
+
+        return when (data.type) {
+            Tool.CIRCLE -> {
+                // Sample circle path into a smooth PEN stroke
+                val path = data.buildPath()
+                val measure = android.graphics.PathMeasure(path, true)
+                val segPts = mutableListOf<Float>()
+                val step = measure.length / 72f  // 72 segments = 5° each
+                val pos = FloatArray(2)
+                var dist = 0f
+                while (dist <= measure.length) { measure.getPosTan(dist, pos, null); segPts.add(pos[0]); segPts.add(pos[1]); dist += step }
+                val d = StrokeData(Tool.PEN, segPts, data.color, data.strokeWidth, false,
+                    lineType = data.lineType, penStyle = PenStyle.BALL, opacity = data.opacity)
+                listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
+            }
+            Tool.ELLIPSE, Tool.ROUNDED_RECT -> {
+                // Sample ellipse/rounded rect path
+                val path = data.buildPath()
+                val measure = android.graphics.PathMeasure(path, true)
+                val segPts = mutableListOf<Float>()
+                val step = (measure.length / 72f).coerceAtLeast(1f)
+                val pos = FloatArray(2)
+                var dist = 0f
+                while (dist <= measure.length) { measure.getPosTan(dist, pos, null); segPts.add(pos[0]); segPts.add(pos[1]); dist += step }
+                val d = StrokeData(Tool.PEN, segPts, data.color, data.strokeWidth, false,
+                    lineType = data.lineType, penStyle = PenStyle.BALL, opacity = data.opacity)
+                listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
+            }
+            else -> {
+                // All polygon shapes: one LINE stroke per edge
+                val result = mutableListOf<StrokeItem>()
+                val closed = CLOSED_SHAPES.contains(data.type)
+                for (i in verts.indices) {
+                    val ni = if (closed) (i+1) % verts.size else i+1
+                    if (!closed && ni >= verts.size) break
+                    result.add(makeLine(verts[i].first, verts[i].second, verts[ni].first, verts[ni].second))
+                }
+                result
+            }
+        }
+    }
+
+    // pts alias for use inside convertShapeToComponents
+    private val StrokeData.pts get() = points
 
     // Backward-compat wrapper
     private fun findNearestEndpoint(wx: Float, wy: Float): Pair<Float, Float>? =
