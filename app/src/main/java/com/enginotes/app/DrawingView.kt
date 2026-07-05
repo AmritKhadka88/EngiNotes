@@ -913,6 +913,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var groupRotateCenterX = 0f; private var groupRotateCenterY = 0f
     private var groupRotateSnapshots: List<FloatArray?>? = null
     private var groupCurrentRotation = 0f  // tracked rotation of the group box (for drawing)
+    private var pinkGroupRotation = 0f  // rigid-body display rotation for the MULTISELECT pink box during GROUP-mode drag
     private var groupRotating = false
     private var regionPath: Path? = null
     private var regionStart: Pair<Float, Float>? = null
@@ -2395,7 +2396,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val allItems = (selectedItems + setOfNotNull(selectedItem)).toSet()
             if (allItems.isEmpty()) return
 
-            val gb = computeGroupBounds() ?: return
+            // During an active GROUP-mode rotation drag, draw the box RIGIDLY: use the bounds
+            // captured at drag-start and apply a canvas rotation, rather than recomputing a
+            // fresh axis-aligned union every frame (which grows/shrinks as the now-rotated
+            // items' AABBs expand, making the box look like it's resizing instead of rotating).
+            val isGroupRotating = groupActiveHandle == HandleType.ROTATE && !multiSelectIndividual
+            val gb = (if (isGroupRotating) groupOrigBounds else null) ?: computeGroupBounds() ?: return
+            val rotForDraw = if (isGroupRotating) pinkGroupRotation else 0f
+            val gcxForRotate = (gb[0]+gb[2])/2f; val gcyForRotate = (gb[1]+gb[3])/2f
+            if (rotForDraw != 0f) canvas.save().also { canvas.rotate(rotForDraw, gcxForRotate, gcyForRotate) }
             val hr = 28f / scaleFactor  // larger handles
             val pinkP = Paint().apply { color = android.graphics.Color.parseColor("#E91E8C"); style = Paint.Style.STROKE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true }
             canvas.drawRect(gb[0], gb[1], gb[2], gb[3], pinkP)
@@ -2428,6 +2437,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val ap = Paint().apply { style = Paint.Style.STROKE; color = android.graphics.Color.WHITE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
             val a = hr*0.6f
             canvas.drawLine(gcx-a, gcy, gcx+a, gcy, ap); canvas.drawLine(gcx, gcy-a, gcx, gcy+a, ap)
+            if (rotForDraw != 0f) canvas.restore()
             // NOTE: Indiv/Group toggle is shown as a screen-space button via MainActivity
             return
         }
@@ -2997,9 +3007,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         for (it in allSel) { val b2=getBounds(it)?:continue; groupSnapshots.add(Pair(it,floatArrayOf((b2[0]+b2[2])/2f,(b2[1]+b2[3])/2f,getRotation(it)))) }
                         return
                     }
-                    if (distance(wx,wy,gcx,gcy) <= hr*2f) {
-                        groupActiveHandle=HandleType.MOVE; groupDragStartX=wx; groupDragStartY=wy; return
-                    }
                     val corners=listOf(HandleType.TL to (gb[0] to gb[1]),HandleType.TM to (gcx to gb[1]),HandleType.TR to (gb[2] to gb[1]),HandleType.ML to (gb[0] to gcy),HandleType.MR to (gb[2] to gcy),HandleType.BL to (gb[0] to gb[3]),HandleType.BM to (gcx to gb[3]),HandleType.BR to (gb[2] to gb[3]))
                     for ((hType,pos) in corners) {
                         if (distance(wx,wy,pos.first,pos.second) <= hr*1.5f) {
@@ -3007,6 +3014,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             for (it in allSel) { val b2=getBounds(it); if (b2!=null) groupSnapshots.add(Pair(it,b2.copyOf())) }
                             return
                         }
+                    }
+                    // MOVE: tapping anywhere inside the box (not just a tiny center dot) drags
+                    // the whole group. A precise center-only hit-zone meant most taps inside the
+                    // box fell through to item-toggle logic instead of moving — very unforgiving.
+                    val movePad = hr * 0.5f
+                    if (wx >= gb[0]-movePad && wx <= gb[2]+movePad && wy >= gb[1]-movePad && wy <= gb[3]+movePad) {
+                        groupActiveHandle=HandleType.MOVE; groupDragStartX=wx; groupDragStartY=wy; return
                     }
                 }
             }
@@ -3118,7 +3132,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     when (groupActiveHandle) {
                         HandleType.MOVE -> {
                             val dx = wx - groupDragStartX; val dy = wy - groupDragStartY
-                            for (it in selectedItems) { if (!(it is StrokeItem && it.data.isLocked)) moveItem(it, dx, dy) }
+                            val allSel2 = (selectedItems + setOfNotNull(selectedItem)).toSet()
+                            for (it in allSel2) { if (!(it is StrokeItem && it.data.isLocked)) moveItem(it, dx, dy) }
                             groupDragStartX = wx; groupDragStartY = wy
                         }
                         HandleType.ROTATE -> {
@@ -3145,6 +3160,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                     moveItem(it, targetCx-(curB[0]+curB[2])/2f, targetCy-(curB[1]+curB[3])/2f)
                                     setRotation(it, snap[2]+totalDeltaDeg)
                                 }
+                                // Track angle so the pink box draws as a RIGID rotated rectangle
+                                // (using the original captured bounds) instead of a fresh
+                                // axis-aligned union of the now-rotated items' expanded AABBs,
+                                // which visually looked like the box was resizing mid-rotation.
+                                pinkGroupRotation = totalDeltaDeg
                             }
                         }
                         else -> {
@@ -3255,7 +3275,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             MotionEvent.ACTION_UP -> {
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
-                activeHandle = HandleType.NONE; groupActiveHandle = HandleType.NONE; groupSnapshots.clear()
+                activeHandle = HandleType.NONE; groupActiveHandle = HandleType.NONE; groupSnapshots.clear(); pinkGroupRotation = 0f
                 // MULTISELECT: toggle item only if this was a tap (not a drag)
                 if (currentTool == Tool.MULTISELECT && !msTapDownWx.isNaN() && !msDragging) {
                     val hit = findItemAtPreferSelected(msTapDownWx, msTapDownWy)
@@ -3352,7 +3372,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
-                if (arcDragPointIndex >= 0) { val arc = activeArcItem ?: return; arc.data.points[arcDragPointIndex] = wx; arc.data.points[arcDragPointIndex + 1] = wy; arc.path = arc.data.buildPath() }
+                if (arcDragPointIndex >= 0) { val arc = activeArcItem ?: return; arc.data.points[arcDragPointIndex] = wx; arc.data.points[arcDragPointIndex + 1] = wy; arc.path = arc.data.buildPath(); arc.invalidateCache(); markSpatialDirty() }
                 else { val item = currentItem ?: return; item.data.points[2] = wx; item.data.points[3] = wy; item.path = item.data.buildPath() }
                 invalidate()
             }
@@ -3366,7 +3386,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         for (i in 0..n) { val t = i.toFloat() / n; pts.add(p0x + (p1x - p0x) * t); pts.add(p0y + (p1y - p0y) * t) }
                         val d = StrokeData(Tool.ARC, pts, item.data.color, item.data.strokeWidth, false)
                         val ni = StrokeItem(d, d.buildPath(), d.toPaint())
-                        actions.add(ni); redoStack.clear(); activeArcItem = ni; currentItem = null
+                        actions.add(ni); redoStack.clear(); markSpatialDirty(); activeArcItem = ni; currentItem = null
                     }
                 }
                 invalidate()
@@ -4872,50 +4892,80 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val pts = data.points
         if (pts.size < 4) { if (pts.size >= 2 && distance(ex, ey, pts[0], pts[1]) <= r) return emptyList(); return listOf(StrokeItem(data, data.buildPath(), data.toPaint())) }
 
-        // Walk each segment; if the eraser circle intersects it, cut precisely at the circle
-        // boundary (inserting the intersection point) instead of dropping the whole segment.
+        // Walk each segment and find EXACT circle-crossing parameters along it (0, 1, or 2
+        // crossings), rather than classifying the whole segment as one in/out unit based on its
+        // nearest point. The old whole-segment approach broke badly for long straight segments
+        // (a rectangle edge, or a long span in a polyline) — erasing near just one endpoint made
+        // the nearest-point distance small for the ENTIRE segment, deleting all of it instead of
+        // only the portion actually under the eraser.
         val segs = mutableListOf<MutableList<Float>>(); var cur = mutableListOf<Float>()
         fun flush() { if (cur.size >= 4) segs.add(cur); cur = mutableListOf() }
+        fun ptIn(x: Float, y: Float) = distance(ex, ey, x, y) <= r
+
+        var prevIn = ptIn(pts[0], pts[1])
+        if (!prevIn) { cur.add(pts[0]); cur.add(pts[1]) }
 
         var i = 0
-        var prevIn = distance(ex, ey, pts[0], pts[1]) <= r
-        if (!prevIn) { cur.add(pts[0]); cur.add(pts[1]) }
         while (i + 3 < pts.size) {
             val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
-            val segDist = distToSeg(ex, ey, x1, y1, x2, y2)
-            val curIn = segDist <= r
-            if (curIn != prevIn) {
-                // Find the point along this segment where it crosses the eraser circle boundary
-                // and use that as the cut point so erasing follows the actual visual edge.
-                val cut = findCircleSegIntersection(ex, ey, r, x1, y1, x2, y2)
-                if (cut != null) {
-                    if (!prevIn) { cur.add(cut.first); cur.add(cut.second); flush() }
-                    else { cur.add(cut.first); cur.add(cut.second) }
-                } else flush()
+            val endIn = ptIn(x2, y2)
+            val crossings = findAllCircleSegIntersections(ex, ey, r, x1, y1, x2, y2)
+
+            if (crossings.isEmpty()) {
+                // No boundary crossing on this segment — it shares prevIn's state throughout.
+                if (!prevIn) { cur.add(x2); cur.add(y2) }
+            } else {
+                var state = prevIn
+                for (t in crossings) {
+                    val cx2 = x1 + t * (x2 - x1); val cy2 = y1 + t * (y2 - y1)
+                    if (!state) {
+                        // Was outside, entering the erased zone: this crossing ends the surviving fragment.
+                        if (cur.isEmpty()) { cur.add(x1); cur.add(y1) }
+                        cur.add(cx2); cur.add(cy2); flush()
+                    } else {
+                        // Was inside the erased zone, exiting: this crossing starts a new fragment.
+                        cur.add(cx2); cur.add(cy2)
+                    }
+                    state = !state
+                }
+                if (!endIn) {
+                    if (cur.isEmpty()) { val lastT = crossings.last(); cur.add(x1 + lastT * (x2 - x1)); cur.add(y1 + lastT * (y2 - y1)) }
+                    cur.add(x2); cur.add(y2)
+                }
             }
-            if (!curIn) { cur.add(x2); cur.add(y2) }
-            prevIn = curIn
+            prevIn = endIn
             i += 2
         }
         flush()
         return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType); StrokeItem(d, d.buildPath(), d.toPaint()) }
     }
 
-    // Finds where a line segment crosses a circle boundary (used to cut strokes precisely at the
-    // eraser's visual edge rather than at the nearest sample point).
-    private fun findCircleSegIntersection(cx: Float, cy: Float, r: Float, x1: Float, y1: Float, x2: Float, y2: Float): Pair<Float, Float>? {
+    // Finds ALL points (as sorted t-values in [0,1]) where a segment crosses the eraser circle
+    // boundary — up to 2 crossings, needed to correctly clip a single long segment that may pass
+    // through the erase circle at any point along its length (not just near an endpoint).
+    private fun findAllCircleSegIntersections(cx: Float, cy: Float, r: Float, x1: Float, y1: Float, x2: Float, y2: Float): List<Float> {
         val dx = x2 - x1; val dy = y2 - y1
         val fx = x1 - cx; val fy = y1 - cy
         val a = dx * dx + dy * dy
-        if (a < 0.0001f) return null
+        if (a < 0.0001f) return emptyList()
         val b = 2f * (fx * dx + fy * dy)
         val c = fx * fx + fy * fy - r * r
         val disc = b * b - 4f * a * c
-        if (disc < 0f) return null
+        if (disc < 0f) return emptyList()
         val sq = kotlin.math.sqrt(disc)
         val t1 = (-b - sq) / (2f * a); val t2 = (-b + sq) / (2f * a)
-        val t = if (t1 in 0f..1f) t1 else if (t2 in 0f..1f) t2 else return null
-        return Pair(x1 + t * dx, y1 + t * dy)
+        val result = mutableListOf<Float>()
+        if (t1 in 0f..1f) result.add(t1)
+        if (t2 in 0f..1f && kotlin.math.abs(t2 - t1) > 1e-5f) result.add(t2)
+        result.sort()
+        return result
+    }
+
+    // Backward-compat wrapper for the legacy splitShapeAroundEraser path (which pre-samples
+    // shapes into many short chunks, so the coarse single-crossing approximation is fine there).
+    private fun findCircleSegIntersection(cx: Float, cy: Float, r: Float, x1: Float, y1: Float, x2: Float, y2: Float): Pair<Float, Float>? {
+        val t = findAllCircleSegIntersections(cx, cy, r, x1, y1, x2, y2).firstOrNull() ?: return null
+        return Pair(x1 + t * (x2 - x1), y1 + t * (y2 - y1))
     }
 
     // True distance from a point to a closed/open shape's outline (not its inflated bounding box).
@@ -5312,14 +5362,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
         }
 
-        fun makeLine(ax: Float, ay: Float, bx: Float, by: Float): StrokeItem {
-            // Preserve original thickness and line type exactly — no implicit changes
-            val d = StrokeData(Tool.LINE, mutableListOf(ax, ay, bx, by),
-                data.color, data.strokeWidth, false, lineType = data.lineType,
-                penStyle = PenStyle.BALL, opacity = data.opacity)
-            return StrokeItem(d, d.buildPath(), d.toPaint())
-        }
-
         return when (data.type) {
             Tool.CIRCLE, Tool.ELLIPSE, Tool.ROUNDED_RECT -> {
                 // Sample the ROTATED path directly (build path, then rotate via matrix) so the
@@ -5360,15 +5402,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
             }
             else -> {
-                // All polygon shapes: one LINE stroke per edge, using rotation-baked vertices
-                val result = mutableListOf<StrokeItem>()
+                // All polygon shapes (rectangle, triangle, star, etc.): build ONE unified
+                // multi-vertex pline (Tool.PEN) walking through all vertices in order, closing
+                // the loop back to vertex 0 for closed shapes. This matches the same object
+                // model as the dedicated Polyline tool — a single connected stroke, not N
+                // separate LINE items — so unrelated edges stay joined as one object and the
+                // eraser (via splitStrokeAroundEraser) naturally produces correctly-connected
+                // pline fragments around whatever was actually erased.
                 val closed = CLOSED_SHAPES.contains(data.type)
-                for (i in verts.indices) {
-                    val ni = if (closed) (i+1) % verts.size else i+1
-                    if (!closed && ni >= verts.size) break
-                    result.add(makeLine(verts[i].first, verts[i].second, verts[ni].first, verts[ni].second))
-                }
-                result
+                val plinePts = mutableListOf<Float>()
+                for ((vx, vy) in verts) { plinePts.add(vx); plinePts.add(vy) }
+                if (closed && verts.isNotEmpty()) { plinePts.add(verts[0].first); plinePts.add(verts[0].second) }
+                val d = StrokeData(Tool.PEN, plinePts, data.color, data.strokeWidth, false,
+                    lineType = data.lineType, penStyle = PenStyle.BALL, opacity = data.opacity)
+                listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
             }
         }
     }
