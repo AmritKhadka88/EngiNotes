@@ -73,7 +73,7 @@ enum class Tool {
     DIMENSION
 }
 enum class PaperType { BLANK, BLANK_COLORED, LINED, GRID, DOTS, ENGINEERING }
-enum class EraserMode { OBJECT, AREA }
+enum class EraserMode { OBJECT, AREA, TRIM }
 enum class CanvasMode { INFINITE, FIXED, PAGINATED, CONVENIENT }
 enum class HatchPattern {
     // Lines
@@ -3894,7 +3894,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val p = Paint(); p.isAntiAlias = true
         when (currentTool) {
             Tool.PEN -> { p.color = currentColor; p.style = Paint.Style.FILL; canvas.drawCircle(hx, hy, (currentStrokeWidth * scaleFactor / 2f).coerceAtLeast(2f), p) }
-            Tool.ERASER -> { p.color = if (eraserMode == EraserMode.OBJECT) Color.DKGRAY else Color.RED; p.style = Paint.Style.STROKE; p.strokeWidth = 2f; val half = eraserSize * scaleFactor / 2f; if (eraserMode == EraserMode.OBJECT) canvas.drawRect(hx - half, hy - half, hx + half, hy + half, p) else canvas.drawCircle(hx, hy, half, p) }
+            Tool.ERASER -> {
+                when (eraserMode) {
+                    EraserMode.OBJECT -> { p.color = Color.DKGRAY; p.style = Paint.Style.STROKE; p.strokeWidth = 2f; val half = eraserSize * scaleFactor / 2f; canvas.drawRect(hx - half, hy - half, hx + half, hy + half, p) }
+                    EraserMode.AREA -> { p.color = Color.RED; p.style = Paint.Style.STROKE; p.strokeWidth = 2f; val half = eraserSize * scaleFactor / 2f; canvas.drawCircle(hx, hy, half, p) }
+                    EraserMode.TRIM -> {
+                        // Crosshair cursor — trim is a precise tap-to-cut action, not a radius brush
+                        p.color = Color.parseColor("#FF9800"); p.style = Paint.Style.STROKE; p.strokeWidth = 2.5f
+                        val s = 14f
+                        canvas.drawLine(hx - s, hy, hx + s, hy, p); canvas.drawLine(hx, hy - s, hx, hy + s, p)
+                        canvas.drawCircle(hx, hy, s * 0.6f, p)
+                    }
+                }
+            }
             else -> { p.color = Color.DKGRAY; p.style = Paint.Style.FILL; canvas.drawCircle(hx, hy, 5f, p) }
         }
         // Ghost markers: show snap candidates on nearby objects within awareness radius
@@ -4514,6 +4526,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val pressure = event.pressure.coerceIn(0.3f, 1.5f)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                if (currentTool == Tool.ERASER && eraserMode == EraserMode.TRIM) { trimAt(wx, wy); invalidate(); return }
                 if (currentTool == Tool.ERASER) { eraseAt(wx, wy); invalidate(); return }
                 // Snap start point to nearest existing endpoint if snap is enabled
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
@@ -4540,6 +4553,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 onDrawingStarted?.invoke()
             }
             MotionEvent.ACTION_MOVE -> {
+                if (currentTool == Tool.ERASER && eraserMode == EraserMode.TRIM) { invalidate(); return }
                 if (currentTool == Tool.ERASER) {
                     // Process historical positions but skip some for performance — eraser stride
                     // = half the eraser diameter so we never miss a gap but skip redundant samples
@@ -4756,8 +4770,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         do {
             val len = measure.length
             if (len <= 0f) continue
+            // Adaptive density: at least 150 samples regardless of length, or denser still for
+            // long curves (1 sample per 2 world units). At the old fixed 48 segments, a smooth
+            // curve visibly turned into a faceted polyline the instant any part was erased.
+            val segmentCount = maxOf(150, (len / 2f).toInt())
+            val step = (len / segmentCount).coerceAtLeast(0.25f)
             var dist = 0f
-            val step = (len / 48f).coerceAtLeast(1.5f)
             while (dist <= len) {
                 measure.getPosTan(dist, pos, null)
                 allPts.add(pos[0]); allPts.add(pos[1])
@@ -4867,6 +4885,109 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
+    // ── TRIM tool (AutoCAD-style) ────────────────────────────────────────────
+    // Unlike the circle-brush erasers, TRIM removes exactly the bounded segment of the tapped
+    // stroke between its two nearest intersections with OTHER strokes ("cutting edges"), leaving
+    // the rest of the stroke intact. If no intersecting strokes are found on a side, that side's
+    // bound falls back to the stroke's own start/end. Fires once per tap, not during drags.
+    private fun segSegIntersectionT(ax1: Float, ay1: Float, ax2: Float, ay2: Float, bx1: Float, by1: Float, bx2: Float, by2: Float): Float? {
+        val d1x = ax2 - ax1; val d1y = ay2 - ay1
+        val d2x = bx2 - bx1; val d2y = by2 - by1
+        val denom = d1x * d2y - d1y * d2x
+        if (kotlin.math.abs(denom) < 1e-6f) return null
+        val dx = bx1 - ax1; val dy = by1 - ay1
+        val t = (dx * d2y - dy * d2x) / denom
+        val u = (dx * d1y - dy * d1x) / denom
+        return if (t in 0f..1f && u in 0f..1f) t else null
+    }
+
+    private fun trimAt(x: Float, y: Float) {
+        val r = eraserSize / 2f
+        val candidates = itemsNear(x, y, r * 4f).filterIsInstance<StrokeItem>().filter { !it.data.isLocked }
+        if (candidates.isEmpty()) return
+
+        // Target = the stroke whose outline is closest to the tap
+        var target: StrokeItem? = null; var bestDist = Float.MAX_VALUE
+        for (c in candidates) {
+            val d = distanceToShapeOutline(c.data, x, y)
+            if (d < bestDist) { bestDist = d; target = c }
+        }
+        val t = target ?: return
+        if (bestDist > r * 2.5f) return  // tap wasn't close enough to any stroke to trim it
+
+        // Densely sample the target path, tracking cumulative arc-length at each point.
+        val measure = android.graphics.PathMeasure(t.path, false)
+        val allPts = mutableListOf<Float>(); val cumLen = mutableListOf<Float>()
+        val pos = FloatArray(2); var totalLen = 0f
+        do {
+            val len = measure.length
+            if (len <= 0f) continue
+            val segCount = maxOf(150, (len / 2f).toInt())
+            val step = (len / segCount).coerceAtLeast(0.25f)
+            var dist = 0f
+            while (dist <= len) { measure.getPosTan(dist, pos, null); allPts.add(pos[0]); allPts.add(pos[1]); cumLen.add(totalLen + dist); dist += step }
+            totalLen += len
+        } while (measure.nextContour())
+        if (allPts.size < 4) return
+
+        // Tap's own arc-length position (nearest sampled point)
+        var tapArcPos = 0f; var tapNearest = Float.MAX_VALUE
+        var i = 0
+        while (i < allPts.size) { val d = distance(x, y, allPts[i], allPts[i+1]); if (d < tapNearest) { tapNearest = d; tapArcPos = cumLen[i/2] }; i += 2 }
+
+        // Find all intersections with OTHER nearby strokes, recording their arc-length position
+        // along the TARGET path.
+        val cutPositions = mutableListOf<Float>()
+        for (other in candidates) {
+            if (other === t) continue
+            val om = android.graphics.PathMeasure(other.path, false)
+            val oPts = mutableListOf<Float>()
+            val opos = FloatArray(2)
+            do {
+                val olen = om.length
+                if (olen <= 0f) continue
+                val ostep = (olen / 100f).coerceAtLeast(0.5f)
+                var od = 0f
+                while (od <= olen) { om.getPosTan(od, opos, null); oPts.add(opos[0]); oPts.add(opos[1]); od += ostep }
+            } while (om.nextContour())
+            if (oPts.size < 4) continue
+            var ti = 0
+            while (ti + 3 < allPts.size) {
+                val ax1=allPts[ti]; val ay1=allPts[ti+1]; val ax2=allPts[ti+2]; val ay2=allPts[ti+3]
+                var oi = 0
+                while (oi + 3 < oPts.size) {
+                    val segT = segSegIntersectionT(ax1,ay1,ax2,ay2,oPts[oi],oPts[oi+1],oPts[oi+2],oPts[oi+3])
+                    if (segT != null) cutPositions.add(cumLen[ti/2] + segT * (cumLen[ti/2+1] - cumLen[ti/2]))
+                    oi += 2
+                }
+                ti += 2
+            }
+        }
+        if (cutPositions.isEmpty()) return  // no cutting edge found — do nothing rather than surprise-delete
+        cutPositions.sort()
+
+        var lowerBound = 0f; var upperBound = totalLen
+        for (cp in cutPositions) {
+            if (cp <= tapArcPos) lowerBound = maxOf(lowerBound, cp)
+            if (cp >= tapArcPos) { upperBound = cp; break }
+        }
+
+        val keepBefore = mutableListOf<Float>(); val keepAfter = mutableListOf<Float>()
+        i = 0
+        while (i < allPts.size) {
+            val p2 = cumLen[i/2]
+            if (p2 <= lowerBound) { keepBefore.add(allPts[i]); keepBefore.add(allPts[i+1]) }
+            else if (p2 >= upperBound) { keepAfter.add(allPts[i]); keepAfter.add(allPts[i+1]) }
+            i += 2
+        }
+        val toAdd = mutableListOf<StrokeItem>()
+        if (keepBefore.size >= 4) { val d = StrokeData(t.data.type, keepBefore, t.data.color, t.data.strokeWidth, false, penStyle = t.data.penStyle, opacity = t.data.opacity, lineType = t.data.lineType); toAdd.add(StrokeItem(d, d.buildPath(), d.toPaint())) }
+        if (keepAfter.size >= 4) { val d = StrokeData(t.data.type, keepAfter, t.data.color, t.data.strokeWidth, false, penStyle = t.data.penStyle, opacity = t.data.opacity, lineType = t.data.lineType); toAdd.add(StrokeItem(d, d.buildPath(), d.toPaint())) }
+
+        actions.remove(t); actions.addAll(toAdd)
+        redoStack.clear(); markSpatialDirty(); invalidate()
+    }
+
     private fun eraseFillItemRegion(item: FillItem, ex: Float, ey: Float, r: Float): FillItem? {
         val bmp = getOrLoadFillBitmap(item)?.copy(Bitmap.Config.ARGB_8888, true) ?: return item
         val bw = bmp.width; val bh = bmp.height
@@ -4937,6 +5058,30 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             i += 2
         }
         flush()
+
+        // If the original stroke was a CLOSED loop (first point == last point, as produced by
+        // convertShapeToComponents for closed shapes), the "first" and "last" surviving
+        // fragments are really two ends of the SAME continuous arc — the loop only artificially
+        // starts/ends at an arbitrary seam point. Without this merge, erasing anywhere except
+        // exactly at that seam always splits the shape into two separate objects instead of one.
+        if (segs.size >= 2) {
+            val n = pts.size
+            val isClosedLoop = n >= 6 && distance(pts[0], pts[1], pts[n - 2], pts[n - 1]) < 0.01f
+            if (isClosedLoop) {
+                val firstFrag = segs.first(); val lastFrag = segs.last()
+                val firstStartsAtSeam = distance(firstFrag[0], firstFrag[1], pts[0], pts[1]) < 0.01f
+                val lastEndsAtSeam = distance(lastFrag[lastFrag.size - 2], lastFrag[lastFrag.size - 1], pts[n - 2], pts[n - 1]) < 0.01f
+                if (firstStartsAtSeam && lastEndsAtSeam && firstFrag !== lastFrag) {
+                    val merged = mutableListOf<Float>()
+                    merged.addAll(lastFrag)
+                    merged.addAll(firstFrag.subList(2, firstFrag.size)) // skip duplicate seam point
+                    val newSegs = mutableListOf<MutableList<Float>>()
+                    newSegs.addAll(segs.subList(1, segs.size - 1))
+                    newSegs.add(merged)
+                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType); StrokeItem(d, d.buildPath(), d.toPaint()) }
+                }
+            }
+        }
         return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType); StrokeItem(d, d.buildPath(), d.toPaint()) }
     }
 

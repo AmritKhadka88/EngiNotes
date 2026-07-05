@@ -1237,8 +1237,8 @@ class MainActivity : AppCompatActivity() {
                 eightColors(drawingView.currentColor) { c -> drawingView.currentColor = c }
             }
             Tool.ERASER -> {
-                chipScrollRow(listOf("Object" to (drawingView.eraserMode == EraserMode.OBJECT), "Area" to (drawingView.eraserMode == EraserMode.AREA))) { i ->
-                    drawingView.eraserMode = if (i == 0) EraserMode.OBJECT else EraserMode.AREA; rebuildContextBar()
+                chipScrollRow(listOf("Object" to (drawingView.eraserMode == EraserMode.OBJECT), "Area" to (drawingView.eraserMode == EraserMode.AREA), "Trim" to (drawingView.eraserMode == EraserMode.TRIM))) { i ->
+                    drawingView.eraserMode = when (i) { 0 -> EraserMode.OBJECT; 1 -> EraserMode.AREA; else -> EraserMode.TRIM }; rebuildContextBar()
                 }
                 divider()
                 sizeButton(drawingView.eraserSize, 120) { drawingView.eraserSize = it }
@@ -1346,8 +1346,13 @@ class MainActivity : AppCompatActivity() {
         val popup = PopupMenu(this, anchor)
         popup.menu.add("Object Eraser")
         popup.menu.add("Area Eraser")
+        popup.menu.add("Trim (AutoCAD-style)")
         popup.setOnMenuItemClickListener { item ->
-            drawingView.eraserMode = if (item.title == "Object Eraser") EraserMode.OBJECT else EraserMode.AREA
+            drawingView.eraserMode = when (item.title) {
+                "Object Eraser" -> EraserMode.OBJECT
+                "Area Eraser" -> EraserMode.AREA
+                else -> EraserMode.TRIM
+            }
             Toast.makeText(this, item.title, Toast.LENGTH_SHORT).show()
             true
         }
@@ -2955,7 +2960,7 @@ class MainActivity : AppCompatActivity() {
         sectionLabel("Mode")
         val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val modeButtons = mutableListOf<TextView>()
-        for ((label, mode) in listOf("Object" to EraserMode.OBJECT, "Area" to EraserMode.AREA)) {
+        for ((label, mode) in listOf("Object" to EraserMode.OBJECT, "Area" to EraserMode.AREA, "Trim" to EraserMode.TRIM)) {
             val b = TextView(this).apply {
                 text = label; textSize = 13f; gravity = Gravity.CENTER
                 setPadding(dp(8), dp(10), dp(8), dp(10))
