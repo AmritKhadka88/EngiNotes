@@ -2178,6 +2178,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val fa = FloatArray(arr.size) { arr[it] }
             canvas.drawLines(fa, pair.first)
         }
+        // Draw all non-batched items (shapes, pen strokes, text, images, everything else)
+        for (action in remainingItems) drawActionItem(canvas, action, true)
         currentItem?.let {
             val isCalligraphyPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.CALLIGRAPHY
             val isFountainPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.FOUNTAIN && it.data.widths.size >= 2
