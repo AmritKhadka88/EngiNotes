@@ -3054,7 +3054,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             if (item is StrokeItem && item.data.isLocked) { handled = true; return }
                             actions.remove(item); if (item === activeTableItem) { activeTableItem = null; tableIsActive = false }; selectedItem = null; markSpatialDirty(); handled = true; invalidate(); return
                         }
-                        val canRot = item is ImageItem || item is TextItem || item is AudioItem || (item is StrokeItem && item.data.type != Tool.PEN && item.data.type != Tool.ARC)
+                        val canRot = item is ImageItem || item is TextItem || item is AudioItem || item is StrokeItem
                         if (!handled && canRot) {
                             val cx = (b[0] + b[2]) / 2f; val ry = b[1] - 60f / scaleFactor
                             if (distance(lx, ly, cx, ry) <= hit) {
@@ -5340,10 +5340,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // Fixed high segment count at conversion time (erase-triggered, not per-frame) —
                 // always smooth regardless of current zoom, never faceted.
                 val segments = 96
-                val step = (measure.length / segments).coerceAtLeast(0.5f)
+                val len = measure.length
                 val pos = FloatArray(2)
-                var dist = 0f
-                while (dist <= measure.length) { measure.getPosTan(dist, pos, null); segPts.add(pos[0]); segPts.add(pos[1]); dist += step }
+                // Index-based sampling (dist = k * step) avoids the floating-point drift that
+                // cumulative "dist += step" produces over 96 additions — that drift was causing
+                // the sampled loop to fall slightly short of full closure, leaving a real
+                // (if tiny) gap in the geometry at the seam. That gap only became visible once
+                // the shape was split by the eraser, showing up as an unexplained SECOND gap
+                // (e.g. on the right side) in addition to the one the user actually erased.
+                for (k in 0..segments) {
+                    val dist = (len * k / segments).coerceAtMost(len)
+                    measure.getPosTan(dist, pos, null)
+                    segPts.add(pos[0]); segPts.add(pos[1])
+                }
+                // Force exact closure regardless of any residual PathMeasure rounding.
+                if (segPts.size >= 4) { segPts[segPts.size-2] = segPts[0]; segPts[segPts.size-1] = segPts[1] }
                 val d = StrokeData(Tool.PEN, segPts, data.color, data.strokeWidth, false,
                     lineType = data.lineType, penStyle = PenStyle.BALL, opacity = data.opacity)
                 listOf(StrokeItem(d, d.buildPath(), d.toPaint()))

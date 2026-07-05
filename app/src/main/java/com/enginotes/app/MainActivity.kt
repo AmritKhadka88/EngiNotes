@@ -1580,8 +1580,31 @@ class MainActivity : AppCompatActivity() {
             // Polyline sits immediately beside the Line icon — same family of tool (connected
             // straight segments), so users find it right where they'd expect it.
             if (tool == Tool.LINE) {
-                row.addView(TextView(this).apply {
-                    text = "〜"; textSize = 20f; gravity = android.view.Gravity.CENTER
+                row.addView(object : View(this) {
+                    // Draws a zigzag polyline glyph: three straight segments at different
+                    // angles (not a smooth tilde/wave) so it visually reads as "connected
+                    // straight lines" rather than a curve.
+                    override fun onDraw(canvas: Canvas) {
+                        super.onDraw(canvas)
+                        val density = resources.displayMetrics.density
+                        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                            color = Color.parseColor("#3C3C3E"); style = Paint.Style.STROKE
+                            strokeWidth = 2.4f * density; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+                        }
+                        val w = width.toFloat(); val h = height.toFloat()
+                        val path = android.graphics.Path()
+                        path.moveTo(w*0.18f, h*0.72f)
+                        path.lineTo(w*0.40f, h*0.30f)
+                        path.lineTo(w*0.62f, h*0.62f)
+                        path.lineTo(w*0.84f, h*0.24f)
+                        canvas.drawPath(path, p)
+                        // Small dots at each vertex to emphasize discrete connected points
+                        val dotP = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#3C3C3E"); style = Paint.Style.FILL }
+                        for ((vx, vy) in listOf(w*0.18f to h*0.72f, w*0.40f to h*0.30f, w*0.62f to h*0.62f, w*0.84f to h*0.24f)) {
+                            canvas.drawCircle(vx, vy, 1.6f * density, dotP)
+                        }
+                    }
+                }.apply {
                     setBackgroundResource(R.drawable.btn_toolbar_selector)
                     val p = LinearLayout.LayoutParams(dp(42), dp(42)); p.setMargins(dp(2),0,dp(2),0); layoutParams = p
                     setOnClickListener { setActiveTool(null, Tool.POLYLINE) }
