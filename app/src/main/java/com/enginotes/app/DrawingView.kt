@@ -64,7 +64,7 @@ enum class EraserShape { ROUND, SQUARE }
 
 enum class Tool {
     SELECT, FILL, PEN, BRUSH, ERASER, HIGHLIGHTER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
-    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT, AUTOSELECT, LASSO, MULTISELECT, EXPORT_WINDOW, OCR_SNIP,
+    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT, AUTOSELECT, LASSO, MULTISELECT, POLYLINE, EXPORT_WINDOW, OCR_SNIP,
     HEPTAGON, OCTAGON, NONAGON, DECAGON, TRAPEZOID, PARALLELOGRAM, RIGHT_TRIANGLE, ISOSCELES_TRIANGLE,
     SEMICIRCLE, HALF_ELLIPSE, TEARDROP, HEART, PLUS_THICK, DOUBLE_ARROW, BRACKET_L, BRACKET_R,
     CLOUD, SPEECH_BUBBLE, LIGHTNING, MOON, CHEVRON_RIGHT, CHEVRON_LEFT, CHEVRON_UP, CHEVRON_DOWN,
@@ -815,7 +815,35 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var snapToEndpoints: Boolean
         get() = snapEnabled
         set(v) { snapEnabled = v }
-    // ── Snap system ──────────────────────────────────────────────────────────
+    // ── Polyline state ────────────────────────────────────────────────────────
+    // Points accumulate with each tap; double-tap or Close button finishes.
+    val polylinePoints = mutableListOf<Float>()  // world coords [x0,y0,x1,y1,...]
+    var polylineCursorX = 0f; var polylineCursorY = 0f  // live preview end point
+    var onPolylineUpdated: (() -> Unit)? = null  // notify MainActivity to offer Close/Undo
+
+    fun finalizePolyline(close: Boolean = false) {
+        if (polylinePoints.size < 4) { polylinePoints.clear(); invalidate(); return }
+        if (close && polylinePoints.size >= 4) {
+            polylinePoints.add(polylinePoints[0]); polylinePoints.add(polylinePoints[1])
+        }
+        // Commit each segment as an independent LINE stroke
+        var i = 0
+        while (i + 3 < polylinePoints.size) {
+            val d = StrokeData(Tool.LINE,
+                mutableListOf(polylinePoints[i], polylinePoints[i+1], polylinePoints[i+2], polylinePoints[i+3]),
+                currentColor, currentStrokeWidth, false, lineType = currentLineType, penStyle = PenStyle.BALL)
+            val si = StrokeItem(d, d.buildPath(), d.toPaint())
+            actions.add(si)
+            i += 2
+        }
+        redoStack.clear(); markSpatialDirty()
+        polylinePoints.clear(); onPolylineUpdated?.invoke(); invalidate()
+    }
+
+    fun undoLastPolylineVertex() {
+        if (polylinePoints.size >= 2) { polylinePoints.removeAt(polylinePoints.size-1); polylinePoints.removeAt(polylinePoints.size-1) }
+        invalidate()
+    }
     var snapEnabled: Boolean = false
     var snapEndpoint: Boolean = true
     var snapMidpoint: Boolean = true
@@ -2169,14 +2197,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // Draw persistent snap markers on all committed strokes — always visible when snap is
         // enabled, so user knows exactly where snap points are before touching the screen.
         if (snapEnabled) {
-            // Only redraw snap markers when canvas content or scale changes, not every frame
-            if (snapMarkersDirty || snapMarkersScale != scaleFactor) {
-                snapMarkersScale = scaleFactor; snapMarkersDirty = false
-                drawSnapMarkers(canvas)
-            } else {
-                drawSnapMarkers(canvas)  // still draw but flag is clear for next skip
-            }
+            if (snapMarkersActionCount != actions.size || snapMarkersDirty) rebuildSnapMarkerCache()
         }
+        if (snapEnabled) drawSnapMarkers(canvas)
+        if (currentTool == Tool.POLYLINE) drawPolylinePreview(canvas)
         canvas.restore()
         drawCursor(canvas)
     }
@@ -3247,6 +3271,70 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 msTapDownWx = Float.NaN; msTapDownWy = Float.NaN; msDragging = false
             }
+        }
+    }
+
+    // ── Polyline tool ─────────────────────────────────────────────────────────
+    // Tap to add vertices. Double-tap on last vertex or empty space to finish.
+    // Each segment commits as an independent LINE stroke on completion.
+    private fun handlePolyline(event: MotionEvent) {
+        var wx = screenToWorldX(event.x); var wy = screenToWorldY(event.y)
+        // Snap if enabled
+        if (snapEnabled && polylinePoints.size >= 2) {
+            val sx = polylinePoints[polylinePoints.size-2]; val sy = polylinePoints[polylinePoints.size-1]
+            val snap = findSnapTarget(wx, wy, sx, sy)
+            if (snap != null) { wx = snap.wx; wy = snap.wy; snapResult = snap } else snapResult = null
+        }
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                polylineCursorX = wx; polylineCursorY = wy; invalidate()
+            }
+            MotionEvent.ACTION_MOVE -> {
+                polylineCursorX = wx; polylineCursorY = wy; invalidate()
+            }
+            MotionEvent.ACTION_UP -> {
+                // Double-tap: finish polyline
+                if (gestureDetectorPolyline.onTouchEvent(event)) return
+                if (polylinePoints.isEmpty()) { polylinePoints.add(wx); polylinePoints.add(wy) }
+                else { polylinePoints.add(wx); polylinePoints.add(wy) }
+                onPolylineUpdated?.invoke(); invalidate()
+            }
+        }
+        gestureDetectorPolyline.onTouchEvent(event)
+    }
+
+    private val gestureDetectorPolyline = android.view.GestureDetector(context,
+        object : android.view.GestureDetector.SimpleOnGestureListener() {
+            override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
+                finalizePolyline(false); return true
+            }
+        })
+
+    private fun drawPolylinePreview(canvas: Canvas) {
+        if (currentTool != Tool.POLYLINE || polylinePoints.size < 2) return
+        val p = Paint().apply {
+            color = currentColor; style = Paint.Style.STROKE
+            strokeWidth = currentStrokeWidth; isAntiAlias = true
+            strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+        }
+        // Draw committed segments
+        var i = 0
+        while (i + 3 < polylinePoints.size) {
+            canvas.drawLine(polylinePoints[i], polylinePoints[i+1], polylinePoints[i+2], polylinePoints[i+3], p)
+            i += 2
+        }
+        // Draw live preview segment (last committed point → cursor)
+        if (polylinePoints.size >= 2) {
+            p.alpha = 150
+            canvas.drawLine(polylinePoints[polylinePoints.size-2], polylinePoints[polylinePoints.size-1],
+                polylineCursorX, polylineCursorY, p)
+        }
+        // Draw vertex dots
+        val dotP = Paint().apply { color = Color.parseColor("#2196F3"); style = Paint.Style.FILL; isAntiAlias = true }
+        i = 0
+        while (i + 1 < polylinePoints.size) {
+            canvas.drawCircle(polylinePoints[i], polylinePoints[i+1], 8f/scaleFactor, dotP)
+            i += 2
         }
     }
 
@@ -4344,6 +4432,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             gestureDetector.onTouchEvent(event); handleSelect(event); return true
         }
         if (currentTool == Tool.ARC) { handleArc(event); return true }
+        if (currentTool == Tool.POLYLINE) { handlePolyline(event); return true }
         if (currentTool == Tool.AUTOSELECT) { gestureDetector.onTouchEvent(event); handleAutoSelect(event); return true }
         if (currentTool == Tool.LASSO) { handleLasso(event); return true }
         if (currentTool == Tool.EXPORT_WINDOW) { handleExportWindow(event); return true }
@@ -4618,21 +4707,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         var ii = 0; while (ii < src.size - 1) { if ((ii/2) % skip == 0 || ii >= src.size - 2) { keep.add(src[ii]); keep.add(src[ii+1]) }; ii += 2 }
                         src.clear(); src.addAll(keep); item.path = item.data.buildPath(); item.invalidateCache()
                     }
-                    // Convert shape tools to component LINE/PEN strokes so each edge is
-                    // independently erasable and selectable — just like pen strokes.
-                    // PEN/BRUSH/HIGHLIGHTER/ARC/CURVE are kept as-is (already freeform).
-                    val itemsToAdd = if (isShapeTool && item.data.type != Tool.PEN &&
-                            item.data.type != Tool.BRUSH && item.data.type != Tool.HIGHLIGHTER &&
-                            item.data.type != Tool.ARC && item.data.type != Tool.CURVE &&
-                            item.data.type != Tool.LINE && item.data.type != Tool.ARROW) {
-                        convertShapeToComponents(item.data)
-                    } else listOf(item)
-                    for (si in itemsToAdd) { actions.add(si); redoStack.clear() }
-                    markSpatialDirty()
-                    // Notify MainActivity — pass the last added item for handle display
+                    actions.add(item); redoStack.clear(); markSpatialDirty()
+                    // For shape tools: notify MainActivity to show select handles temporarily
                     if (isShapeTool) {
-                        selectedItem = itemsToAdd.last()
-                        onShapeCompleted?.invoke(itemsToAdd.last())
+                        selectedItem = item
+                        onShapeCompleted?.invoke(item)
+                    }
                     }
                 }
                 }
@@ -4728,13 +4808,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         } else if (a.data.type == Tool.PEN || a.data.type == Tool.ERASER || a.data.type == Tool.ARC || a.data.type == Tool.HIGHLIGHTER || a.data.type == Tool.BRUSH) {
                             newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r))
                         } else if (CLOSED_SHAPES.contains(a.data.type)) {
-                            // Closed shapes: add a pixel-erase hole instead of splitting into
-                            // open PEN fragments (which distorts the shape due to closed path loops)
+                            // Convert to component lines at erase time.
+                            // Each edge becomes independent — user gets remaining parts as separate strokes.
                             if (strokeHitTest(a.data, x, y, r)) {
-                                a.data.clipHoles.add(floatArrayOf(x, y, r))
-                                a.invalidateCache()
+                                val components = convertShapeToComponents(a.data)
+                                for (comp in components) {
+                                    if (strokeHitTest(comp.data, x, y, r)) {
+                                        newActions.addAll(splitStrokeAroundEraser(comp.data, x, y, r))
+                                    } else {
+                                        newActions.add(comp)
+                                    }
+                                }
+                            } else {
+                                newActions.add(a)
                             }
-                            newActions.add(a)
                         } else {
                             // Open shapes (LINE, ARROW): split into fragments
                             if (strokeHitTest(a.data, x, y, r)) newActions.addAll(splitShapeAroundEraser(a.data, x, y, r))
@@ -5202,7 +5289,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Converts a typed shape (RECTANGLE, TRIANGLE, etc.) into component LINE or PEN StrokeItems.
     // This makes every edge independently erasable, selectable, and splittable — like pen strokes.
     private fun convertShapeToComponents(data: StrokeData): List<StrokeItem> {
-        val pts = data.pts; if (pts.size < 2) return emptyList()
+        val pts = data.points; if (pts.size < 2) return emptyList()
         val verts = shapeEndpoints(pts, data.type)
         if (verts.isEmpty()) return emptyList()
 
@@ -5255,9 +5342,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
         }
     }
-
-    // pts alias for use inside convertShapeToComponents
-    private val StrokeData.pts get() = points
 
     // Backward-compat wrapper
     private fun findNearestEndpoint(wx: Float, wy: Float): Pair<Float, Float>? =

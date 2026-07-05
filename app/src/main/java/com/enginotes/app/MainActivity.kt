@@ -72,6 +72,7 @@ class MainActivity : AppCompatActivity() {
         R.drawable.ic_shape_curve to Tool.CURVE,
         R.drawable.ic_shape_cross to Tool.CROSS,
         R.drawable.ic_arc to Tool.ARC,
+        R.drawable.ic_shape_curve to Tool.POLYLINE,  // polyline uses curve/zigzag icon
         R.drawable.ic_shape_trapezoid to Tool.TRAPEZOID,
         R.drawable.ic_shape_parallelogram to Tool.PARALLELOGRAM,
         R.drawable.ic_shape_right_triangle to Tool.RIGHT_TRIANGLE,
@@ -619,6 +620,9 @@ class MainActivity : AppCompatActivity() {
                 // Auto handwriting-to-text if toggle is on
             }
         }
+        drawingView.onPolylineUpdated = {
+            runOnUiThread { updatePolylineBar() }
+        }
         drawingView.onShapeCompleted        = { _ ->
             lastShapeTool = drawingView.currentTool
             // Switch to SELECT so handles are interactive. Safe now — itemsInViewport
@@ -898,6 +902,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setActiveTool(btn: ImageButton?, tool: Tool) {
+        if (tool != Tool.POLYLINE) { drawingView.finalizePolyline(false); polylineBar?.let { canvasContainer.removeView(it) }; polylineBar = null }
         drawingView.currentTool = tool; setActiveToolbarBtn(btn)
         dismissPenOptionsPanel(); dismissEraserOptionsPanel(); dismissHighlighterOptionsPanel(); dismissBrushOptionsPanel(); dismissShapesPicker(); dismissShapeOptionsPanel()
         contextBarPage = 0
@@ -2061,6 +2066,34 @@ class MainActivity : AppCompatActivity() {
     private var shapeOptionsPanel: View? = null
     private var snapOptionsPanel: View? = null
     private var snapOptionsButton: View? = null
+    private var polylineBar: View? = null
+
+    private fun updatePolylineBar() {
+        if (drawingView.currentTool != Tool.POLYLINE || drawingView.polylinePoints.isEmpty()) {
+            polylineBar?.let { canvasContainer.removeView(it) }; polylineBar = null; return
+        }
+        if (polylineBar != null) return
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE)
+            elevation = dp(8).toFloat(); setPadding(dp(8),dp(6),dp(8),dp(6))
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(20).toFloat(); setStroke(1, Color.parseColor("#E0E0E0")) }
+        }
+        bar.addView(TextView(this).apply {
+            text = "Close"; setTextColor(Color.parseColor("#2196F3")); textSize = 14f; setPadding(dp(12),dp(6),dp(12),dp(6))
+            setOnClickListener { drawingView.finalizePolyline(true); updatePolylineBar() }
+        })
+        bar.addView(TextView(this).apply {
+            text = "Done"; setTextColor(Color.parseColor("#34C759")); textSize = 14f; setPadding(dp(12),dp(6),dp(12),dp(6))
+            setOnClickListener { drawingView.finalizePolyline(false); updatePolylineBar() }
+        })
+        bar.addView(TextView(this).apply {
+            text = "Undo"; setTextColor(Color.parseColor("#FF9800")); textSize = 14f; setPadding(dp(12),dp(6),dp(12),dp(6))
+            setOnClickListener { drawingView.undoLastPolylineVertex(); if (drawingView.polylinePoints.isEmpty()) updatePolylineBar() }
+        })
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        lp.gravity = android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL; lp.topMargin = dp(8)
+        canvasContainer.addView(bar, lp); polylineBar = bar
+    }
     private var dimModeEnabled: Boolean = false
     private var dimButton: View? = null
     private var dimOverlayViews: List<View> = emptyList()
