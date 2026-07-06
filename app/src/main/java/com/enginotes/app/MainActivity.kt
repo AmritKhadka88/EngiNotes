@@ -496,6 +496,7 @@ class MainActivity : AppCompatActivity() {
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
 
         drawingView     = findViewById(R.id.drawingView)
+        drawingView.inputMode = try { InputMode.valueOf(getPrefs().getString("input_mode", "AUTO") ?: "AUTO") } catch (e: Exception) { InputMode.AUTO }
         canvasContainer = findViewById(R.id.canvasContainer)
         canvasContainer.clipChildren = false
         canvasContainer.clipToPadding = false
@@ -657,9 +658,15 @@ class MainActivity : AppCompatActivity() {
             } else if (item !is TextItem) {
                 val tb = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
+                }
+                val scroll = HorizontalScrollView(this).apply {
+                    isHorizontalScrollBarEnabled = false
                     background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat(); setStroke(dp(1), Color.parseColor("#DDDDDD")) }
                     elevation = dp(4).toFloat()
-                    layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).also { it.gravity = Gravity.TOP or Gravity.END; it.topMargin = dp(56); it.rightMargin = dp(8) }
+                    layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).also {
+                        it.gravity = Gravity.TOP or Gravity.END; it.topMargin = dp(56); it.rightMargin = dp(8)
+                    }
+                    addView(tb)
                 }
                 fun lBtn(label: String, action: () -> Unit) = TextView(this).apply {
                     text = label; textSize = 13f; gravity = Gravity.CENTER
@@ -681,8 +688,8 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                 }
-                canvasContainer.addView(tb)
-                layerToolbar = tb
+                canvasContainer.addView(scroll)
+                layerToolbar = scroll
             }
         }
         drawingView.onMultiSelectionChanged = { items ->
@@ -1199,7 +1206,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val allPenTypes = listOf("Fountain" to PenStyle.FOUNTAIN, "Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
-        val allBrushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH, "Spray" to BrushStyle.SPRAY, "Stipple" to BrushStyle.STIPPLE, "Splatter" to BrushStyle.SPLATTER, "Neon" to BrushStyle.NEON, "Marker" to BrushStyle.MARKER, "Dry Brush" to BrushStyle.DRY_BRUSH, "Scatter" to BrushStyle.SCATTER, "Fur" to BrushStyle.FUR, "Grass" to BrushStyle.GRASS, "Smoke" to BrushStyle.SMOKE, "Fill Spray" to BrushStyle.FILL_SPRAY, "Glitter" to BrushStyle.GLITTER, "Confetti" to BrushStyle.CONFETTI, "Fire" to BrushStyle.FIRE, "Lightning" to BrushStyle.LIGHTNING)
+        val allBrushTypes = listOf("Round" to BrushStyle.ROUND, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Neon" to BrushStyle.NEON, "Dry Brush" to BrushStyle.DRY_BRUSH, "Spray" to BrushStyle.SPRAY, "Fire" to BrushStyle.FIRE, "Grass" to BrushStyle.GRASS)
         val allFontFamilies = listOf(
             "Default" to "sans-serif", "Serif" to "serif", "Monospace" to "monospace",
             "Sans Condensed" to "sans-serif-condensed", "Sans Light" to "sans-serif-light",
@@ -1253,7 +1260,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 divider()
                 sizeButton(drawingView.eraserSize, 120) { drawingView.eraserSize = it }
-                opacityButton(drawingView.eraserOpacity) { drawingView.eraserOpacity = it; drawingView.invalidate() }
             }
             Tool.FILL -> {
                 eightColors(drawingView.fillColor) { c -> drawingView.fillColor = c; drawingView.pendingHatchPattern = null }
@@ -1974,6 +1980,32 @@ class MainActivity : AppCompatActivity() {
             }
         }
         container.addView(bottomBarCb)
+
+        div(); hdr("INPUT")
+        val inputRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, dp(6)) }
+        val inputButtons = mutableListOf<TextView>()
+        for ((label, mode) in listOf("Auto" to InputMode.AUTO, "Stylus only" to InputMode.STYLUS_ONLY, "Finger only" to InputMode.FINGER_ONLY)) {
+            val b = TextView(this).apply {
+                text = label; textSize = 13f; gravity = Gravity.CENTER
+                setPadding(dp(6), dp(10), dp(6), dp(10))
+                val p = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f); p.setMargins(dp(2), 0, dp(2), 0)
+                layoutParams = p
+                setOnClickListener {
+                    drawingView.inputMode = mode
+                    prefs.edit().putString("input_mode", mode.name).apply()
+                    inputButtons.forEach { tb -> tb.setBackgroundColor(Color.parseColor("#F0EBE0")); tb.setTextColor(Color.parseColor("#4A4A4A")) }
+                    setBackgroundColor(Color.parseColor("#7B61FF")); setTextColor(Color.WHITE)
+                }
+            }
+            if (mode == drawingView.inputMode) { b.setBackgroundColor(Color.parseColor("#7B61FF")); b.setTextColor(Color.WHITE) }
+            else { b.setBackgroundColor(Color.parseColor("#F0EBE0")); b.setTextColor(Color.parseColor("#4A4A4A")) }
+            inputButtons.add(b); inputRow.addView(b)
+        }
+        container.addView(inputRow)
+        container.addView(TextView(this).apply {
+            text = "Auto allows both; palm gets rejected only while the stylus is actively down."
+            textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(4), 0, 0)
+        })
 
         div(); hdr("PAPER")
         val paperLabels = arrayOf("Blank","Lined","Graph Grid","Dot Grid","Engineering","Coloured")
@@ -3215,7 +3247,7 @@ class MainActivity : AppCompatActivity() {
         sectionLabel("Brush Type")
         val typeScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val typeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val brushTypes = listOf("Round" to BrushStyle.ROUND, "Flat" to BrushStyle.FLAT, "Texture" to BrushStyle.TEXTURE, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Airbrush" to BrushStyle.AIRBRUSH)
+        val brushTypes = listOf("Round" to BrushStyle.ROUND, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Neon" to BrushStyle.NEON, "Dry Brush" to BrushStyle.DRY_BRUSH, "Spray" to BrushStyle.SPRAY, "Fire" to BrushStyle.FIRE, "Grass" to BrushStyle.GRASS)
         val typeButtons = mutableListOf<TextView>()
         for ((label, style) in brushTypes) {
             val b = TextView(this).apply {

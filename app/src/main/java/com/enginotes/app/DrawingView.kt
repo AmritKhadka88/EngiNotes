@@ -56,11 +56,10 @@ enum class LineType(val label: String, val intervals: FloatArray?, val cap: andr
     SECTION_PLANE   ("Section Plane",       floatArrayOf(20f, 4f, 1f, 4f, 1f, 4f, 20f, 4f)),
 }
 enum class BrushStyle {
-    ROUND, FLAT, TEXTURE, INK, WATERCOLOR, CRAYON, CHARCOAL, AIRBRUSH, SPRAY, STIPPLE, SPLATTER, NEON,
-    MARKER, DRY_BRUSH, SCATTER, FUR, GRASS, SMOKE, PATTERN_BRUSH,
-    FILL_SPRAY, GLITTER, CONFETTI, FIRE, LIGHTNING
+    ROUND, INK, WATERCOLOR, CRAYON, CHARCOAL, NEON, DRY_BRUSH, SPRAY, FIRE, GRASS
 }
 enum class EraserShape { ROUND, SQUARE }
+enum class InputMode { AUTO, STYLUS_ONLY, FINGER_ONLY }
 
 enum class Tool {
     SELECT, FILL, PEN, BRUSH, ERASER, HIGHLIGHTER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
@@ -137,11 +136,9 @@ val BBOX_RESIZE_SHAPES = setOf(
     Tool.SQUARE_ROUNDED_SMALL, Tool.BURST, Tool.FRAME, Tool.PLAQUE, Tool.FIVE_POINT_BURST
 )
 // Brush styles that are expensive to render and benefit from bitmap caching
-val CACHED_BRUSH_STYLES = setOf(BrushStyle.SPRAY, BrushStyle.STIPPLE, BrushStyle.SPLATTER,
-    BrushStyle.SCATTER, BrushStyle.FUR, BrushStyle.GRASS, BrushStyle.SMOKE,
-    BrushStyle.FILL_SPRAY, BrushStyle.GLITTER, BrushStyle.CONFETTI, BrushStyle.FIRE,
-    BrushStyle.LIGHTNING, BrushStyle.DRY_BRUSH, BrushStyle.CHARCOAL, BrushStyle.CRAYON,
-    BrushStyle.TEXTURE, BrushStyle.WATERCOLOR, BrushStyle.AIRBRUSH, BrushStyle.NEON)
+val CACHED_BRUSH_STYLES = setOf(BrushStyle.SPRAY, BrushStyle.GRASS, BrushStyle.FIRE,
+    BrushStyle.DRY_BRUSH, BrushStyle.CHARCOAL, BrushStyle.CRAYON,
+    BrushStyle.WATERCOLOR, BrushStyle.NEON)
 
 // Shapes resized by moving their two endpoints (fine reshaping of start/end point)
 val ENDPOINT_RESIZE_SHAPES = setOf(Tool.LINE, Tool.CIRCLE, Tool.ARROW, Tool.CURVE, Tool.PEN)
@@ -524,18 +521,13 @@ class StrokeData(
         if (type == Tool.BRUSH) {
             when (brushStyle) {
                 BrushStyle.ROUND -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
-                BrushStyle.FLAT -> { p.strokeWidth = strokeWidth * 1.4f; p.strokeJoin = Paint.Join.MITER; p.strokeCap = Paint.Cap.SQUARE }
-                BrushStyle.TEXTURE -> { p.strokeWidth = strokeWidth * 1.2f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.75f).toInt() }
                 BrushStyle.INK -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = opacity }
                 BrushStyle.WATERCOLOR -> { p.strokeWidth = strokeWidth * 2.8f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.15f).toInt() }
                 BrushStyle.CRAYON -> { p.strokeWidth = strokeWidth * 1.1f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.80f).toInt(); p.pathEffect = android.graphics.DashPathEffect(floatArrayOf(strokeWidth * 0.6f, strokeWidth * 0.15f), 0f) }
                 BrushStyle.CHARCOAL -> { p.strokeWidth = strokeWidth * 1.4f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.55f).toInt(); p.pathEffect = android.graphics.ComposePathEffect(android.graphics.DashPathEffect(floatArrayOf(strokeWidth * 0.4f, strokeWidth * 0.2f), 0f), android.graphics.DiscretePathEffect(strokeWidth * 0.15f, strokeWidth * 0.08f)) }
-                BrushStyle.AIRBRUSH -> { p.strokeWidth = strokeWidth * 2.5f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.12f).toInt() }
-                BrushStyle.MARKER -> { p.strokeWidth = strokeWidth * 1.8f; p.strokeJoin = Paint.Join.MITER; p.strokeCap = Paint.Cap.SQUARE; p.alpha = (opacity * 0.95f).toInt() }
                 BrushStyle.NEON -> { p.strokeWidth = strokeWidth * 1.5f; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = opacity }
                 BrushStyle.DRY_BRUSH -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND; p.alpha = (opacity * 0.7f).toInt(); p.pathEffect = android.graphics.ComposePathEffect(android.graphics.DashPathEffect(floatArrayOf(strokeWidth * 0.3f, strokeWidth * 0.25f), 0f), android.graphics.DiscretePathEffect(strokeWidth * 0.4f, strokeWidth * 0.2f)) }
-                BrushStyle.LIGHTNING -> { p.strokeWidth = strokeWidth * 0.5f; p.strokeJoin = Paint.Join.MITER; p.strokeCap = Paint.Cap.BUTT; p.alpha = (opacity * 0.9f).toInt(); p.pathEffect = android.graphics.DiscretePathEffect(strokeWidth * 2f, strokeWidth * 1.5f) }
-                // Particle brushes handled separately in drawActionItem
+                // Particle brushes (SPRAY, FIRE, GRASS) handled separately in drawActionItem
                 else -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
             }
             return p
@@ -881,7 +873,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var currentBrushStyle: BrushStyle = BrushStyle.ROUND
     var brushThickness: Float = 30f
     var brushOpacity: Int = 255
-    var eraserOpacity: Int = 255 // 255 = full erase, lower = partial erase
     var eraserSize: Float = 40f
     var eraserMode: EraserMode = EraserMode.OBJECT
     var eraserAffectsFill: Boolean = true  // when false, eraser skips FillItems entirely (leaves colour fills untouched)
@@ -890,6 +881,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val dirtyFillItems = mutableSetOf<FillItem>()
     private var eraserLastX = Float.NaN; private var eraserLastY = Float.NaN  // persists ACROSS ACTION_MOVE calls for gap-free interpolation
     var eraserShape: EraserShape = EraserShape.ROUND
+    var inputMode: InputMode = InputMode.AUTO  // AUTO = existing palm-rejection-while-stylus-down behavior
     var fillShapes: Boolean = false
     var fillColor: Int = Color.RED
     var arcDivisions: Int = 3
@@ -2018,18 +2010,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val r2=java.util.Random(pts[0].toLong())
                 points.forEach { pt -> repeat(2){canvas.drawCircle(pt.x+(r2.nextFloat()-0.5f)*sw,pt.y+(r2.nextFloat()-0.5f)*sw*0.8f,sw*0.05f+r2.nextFloat()*sw*0.06f,gp)} }
             }
-            BrushStyle.AIRBRUSH -> {
-                canvas.drawPath(item.path, bp(18, sw*3.0f))
-                canvas.drawPath(item.path, bp(25, sw*1.8f))
-                canvas.drawPath(item.path, bp(35, sw*0.9f))
-            }
-            BrushStyle.TEXTURE -> {
-                canvas.drawPath(item.path, bp(210))
-                val gp=Paint(Paint.ANTI_ALIAS_FLAG).apply{color=col;this.style=Paint.Style.FILL;alpha=(30*opF).toInt().coerceAtLeast(1)}
-                val r2=java.util.Random(pts[0].toLong())
-                points.forEach { pt -> repeat(3){val rx=pt.x+(r2.nextFloat()-0.5f)*sw;val ry=pt.y+(r2.nextFloat()-0.5f)*sw*0.8f;canvas.drawRect(rx,ry,rx+sw*0.08f,ry+sw*0.08f,gp)} }
-            }
-            BrushStyle.MARKER -> canvas.drawPath(item.path, bp(200, sw*1.6f).apply{strokeCap=Paint.Cap.SQUARE;strokeJoin=Paint.Join.MITER})
             BrushStyle.NEON -> {
                 canvas.drawPath(item.path, bp(60, sw*3f).apply{maskFilter=android.graphics.BlurMaskFilter(sw*2f, android.graphics.BlurMaskFilter.Blur.NORMAL)})
                 canvas.drawPath(item.path, Paint(Paint.ANTI_ALIAS_FLAG).apply{color=android.graphics.Color.WHITE;this.style=Paint.Style.STROKE;strokeWidth=sw*0.35f;strokeJoin=Paint.Join.ROUND;strokeCap=Paint.Cap.ROUND;alpha=(200*opF).toInt().coerceAtLeast(1)})
@@ -2038,49 +2018,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val r2=java.util.Random(pts[0].toLong())
                 repeat(7) { i -> val off=(i-3f)*sw*0.12f; canvas.save(); canvas.translate(off,0f); canvas.drawPath(item.path, bp((80+r2.nextInt(80)), sw*0.07f+r2.nextFloat()*sw*0.05f).apply{pathEffect=android.graphics.DashPathEffect(floatArrayOf(sw*(0.3f+r2.nextFloat()*0.5f),sw*(0.1f+r2.nextFloat()*0.25f)),r2.nextFloat()*sw)}); canvas.restore() }
             }
-            BrushStyle.SPRAY, BrushStyle.STIPPLE, BrushStyle.SPLATTER -> drawParticleBrush(canvas, item)
-            BrushStyle.SCATTER -> {
-                val fp=Paint(Paint.ANTI_ALIAS_FLAG).apply{color=col;this.style=Paint.Style.FILL;alpha=(180*opF).toInt().coerceAtLeast(1)}
-                val r2=java.util.Random(pts[0].toLong())
-                points.forEachIndexed { i,pt -> if(i%2==0){canvas.save();canvas.translate(pt.x+(r2.nextFloat()-0.5f)*sw*0.8f,pt.y+(r2.nextFloat()-0.5f)*sw*0.8f);canvas.rotate(r2.nextFloat()*360f);val rx=sw*(0.2f+r2.nextFloat()*0.3f);val ry=rx*(0.4f+r2.nextFloat()*0.5f);canvas.drawOval(android.graphics.RectF(-rx,-ry,rx,ry),fp);canvas.restore()} }
-            }
-            BrushStyle.FUR -> {
-                val p=bp(160, sw*0.06f).apply{strokeCap=Paint.Cap.ROUND}
-                val r2=java.util.Random(pts[0].toLong())
-                points.forEachIndexed { i,pt -> if(i%2==0){val len=sw*(0.8f+r2.nextFloat()*0.6f);val ang=(r2.nextFloat()-0.5f)*0.7f;canvas.drawLine(pt.x,pt.y,pt.x+kotlin.math.cos(ang)*len,pt.y+kotlin.math.sin(ang)*len,p)} }
-            }
+            BrushStyle.SPRAY -> drawParticleBrush(canvas, item)
             BrushStyle.GRASS -> {
                 val p=bp(200, sw*0.07f).apply{strokeCap=Paint.Cap.ROUND}
                 val r2=java.util.Random(pts[0].toLong())
                 points.forEachIndexed { i,pt -> if(i%3==0){val h=sw*(1.2f+r2.nextFloat()*0.8f);val lean=(r2.nextFloat()-0.5f)*sw*0.5f;val p2=android.graphics.Path();p2.moveTo(pt.x,pt.y);p2.quadTo(pt.x+lean*0.5f,pt.y-h*0.6f,pt.x+lean,pt.y-h);canvas.drawPath(p2,p)} }
             }
-            BrushStyle.SMOKE -> {
-                val r2=java.util.Random(pts[0].toLong())
-                val sp=Paint(Paint.ANTI_ALIAS_FLAG).apply{color=col;this.style=Paint.Style.FILL;alpha=(18*opF).toInt().coerceAtLeast(2)}
-                points.forEachIndexed { i,pt -> if(i%4==0) canvas.drawCircle(pt.x+(r2.nextFloat()-0.5f)*sw*0.4f,pt.y+(r2.nextFloat()-0.5f)*sw*0.4f,sw*(0.7f+r2.nextFloat()*0.5f),sp) }
-            }
-            BrushStyle.FILL_SPRAY -> {
-                val fp=Paint(Paint.ANTI_ALIAS_FLAG).apply{color=col;this.style=Paint.Style.FILL;alpha=(140*opF).toInt().coerceAtLeast(1)}
-                val r2=java.util.Random(pts[0].toLong()); val spread=sw*1.2f; val dotR=sw*0.04f
-                points.forEach { pt -> repeat(50){val a=r2.nextFloat()*Math.PI.toFloat()*2f;val d=r2.nextGaussian().toFloat().coerceIn(-2f,2f)*spread*0.35f;canvas.drawCircle(pt.x+kotlin.math.cos(a)*d,pt.y+kotlin.math.sin(a)*d,dotR+r2.nextFloat()*dotR,fp)} }
-            }
-            BrushStyle.GLITTER -> {
-                val gp=Paint(Paint.ANTI_ALIAS_FLAG).apply{this.style=Paint.Style.FILL}
-                val r2=java.util.Random(pts[0].toLong()); val gc=intArrayOf(col,android.graphics.Color.WHITE,android.graphics.Color.YELLOW,android.graphics.Color.CYAN)
-                points.forEachIndexed { i,pt -> if(i%2==0) repeat(6){gp.color=gc[r2.nextInt(gc.size)];gp.alpha=((100+r2.nextInt(155))*opF).toInt();canvas.drawCircle(pt.x+(r2.nextFloat()-0.5f)*sw*1.1f,pt.y+(r2.nextFloat()-0.5f)*sw*1.1f,sw*0.03f+r2.nextFloat()*sw*0.07f,gp)} }
-            }
-            BrushStyle.CONFETTI -> {
-                val cp=Paint(Paint.ANTI_ALIAS_FLAG).apply{this.style=Paint.Style.FILL}
-                val r2=java.util.Random(pts[0].toLong()); val cc=intArrayOf(android.graphics.Color.RED,android.graphics.Color.BLUE,android.graphics.Color.GREEN,android.graphics.Color.YELLOW,android.graphics.Color.MAGENTA,col)
-                points.forEachIndexed { i,pt -> if(i%2==0){cp.color=cc[r2.nextInt(cc.size)];cp.alpha=(210*opF).toInt().coerceAtLeast(1);canvas.save();canvas.translate(pt.x+(r2.nextFloat()-0.5f)*sw,pt.y+(r2.nextFloat()-0.5f)*sw);canvas.rotate(r2.nextFloat()*360f);val w=sw*0.18f+r2.nextFloat()*sw*0.18f;val h=sw*0.07f+r2.nextFloat()*sw*0.09f;canvas.drawRect(-w,-h,w,h,cp);canvas.restore()} }
-            }
             BrushStyle.FIRE -> {
                 val r2=java.util.Random(pts[0].toLong())
                 points.forEachIndexed { i,pt -> if(i%3==0){val fc=if(r2.nextFloat()>0.5f) android.graphics.Color.argb((200*opF).toInt().coerceAtLeast(1),255,80+r2.nextInt(120),0) else android.graphics.Color.argb((200*opF).toInt().coerceAtLeast(1),255,180+r2.nextInt(75),0);val fp=Paint(Paint.ANTI_ALIAS_FLAG).apply{color=fc;this.style=Paint.Style.FILL;maskFilter=android.graphics.BlurMaskFilter(sw*0.3f, android.graphics.BlurMaskFilter.Blur.NORMAL)};val h=sw*(0.8f+r2.nextFloat()*1.0f);val lean=(r2.nextFloat()-0.5f)*sw*0.5f;val p2=android.graphics.Path();p2.moveTo(pt.x-sw*0.25f,pt.y);p2.quadTo(pt.x+lean,pt.y-h*0.5f,pt.x,pt.y-h);p2.quadTo(pt.x-lean*0.4f,pt.y-h*0.5f,pt.x+sw*0.25f,pt.y);p2.close();canvas.drawPath(p2,fp)} }
-            }
-            BrushStyle.LIGHTNING -> {
-                canvas.drawPath(item.path, bp(60, sw*1.8f).apply{maskFilter=android.graphics.BlurMaskFilter(sw, android.graphics.BlurMaskFilter.Blur.NORMAL);pathEffect=android.graphics.DiscretePathEffect(sw*1.5f,sw*1.2f)})
-                canvas.drawPath(item.path, bp(220, sw*0.4f).apply{pathEffect=android.graphics.DiscretePathEffect(sw*1.5f,sw*1.2f)})
             }
             else -> canvas.drawPath(item.path, item.paint)
         }
@@ -2094,10 +2040,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         p.alpha = (180 * opF2).toInt().coerceAtLeast(1)
         val sw = item.data.strokeWidth; val style = item.data.brushStyle
         // Density per sampled point — kept low because we batch all dots into one Path
-        val density = when(style) { BrushStyle.SPRAY -> 22; BrushStyle.SPLATTER -> 10; else -> 15 }
-        val spread = when(style) { BrushStyle.SPRAY -> sw * 1.2f; BrushStyle.SPLATTER -> sw * 1.8f; else -> sw * 0.8f }
+        val density = 22
+        val spread = sw * 1.2f
         // dotR sized so particles are clearly visible — sw*0.3 means at sw=30 each dot is ~9 world units
-        val dotR  = when(style) { BrushStyle.SPRAY -> sw * 0.3f; BrushStyle.SPLATTER -> sw * 0.5f; else -> sw * 0.35f }
+        val dotR = sw * 0.3f
         // Minimum spacing between sampled points — avoids redundant dots on slow/stationary strokes
         val minStep = sw * 0.3f; val minStep2 = minStep * minStep
         val seed = (pts[0] + pts[1]).toLong()
@@ -2116,11 +2062,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val dist  = rand.nextGaussian().toFloat().coerceIn(-2f, 2f) * spread * 0.5f
                     val ox = kotlin.math.cos(angle) * dist; val oy = kotlin.math.sin(angle) * dist
                     val r = dotR * (0.3f + rand.nextFloat() * 0.7f)
-                    if (style == BrushStyle.SPLATTER && rand.nextFloat() < 0.3f) {
-                        batchPath.addOval(android.graphics.RectF(cx+ox-r*2f, cy+oy-r*0.5f, cx+ox+r*2f, cy+oy+r*0.5f), android.graphics.Path.Direction.CW)
-                    } else {
-                        batchPath.addCircle(cx + ox, cy + oy, r, android.graphics.Path.Direction.CW)
-                    }
+                    batchPath.addCircle(cx + ox, cy + oy, r, android.graphics.Path.Direction.CW)
                 }
             }
             i += 2
@@ -4204,6 +4146,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val toolType = event.getToolType(0)
         val isStylus = toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER
         val isFinger = toolType == MotionEvent.TOOL_TYPE_FINGER || toolType == MotionEvent.TOOL_TYPE_UNKNOWN
+        // User-selected input restriction (Settings). AUTO keeps the existing behavior below
+        // (only reject finger touches while the stylus is actively down). STYLUS_ONLY rejects
+        // ALL finger touches at all times (full palm rejection); FINGER_ONLY rejects the stylus.
+        if (inputMode == InputMode.STYLUS_ONLY && isFinger) return true
+        if (inputMode == InputMode.FINGER_ONLY && isStylus) return true
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> { if (isStylus) { isStylusDown = true; drawingPointerId = event.getPointerId(0) } else { if (isStylusDown) return true; drawingPointerId = event.getPointerId(0) } }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { if (isStylus) isStylusDown = false; drawingPointerId = -1 }
