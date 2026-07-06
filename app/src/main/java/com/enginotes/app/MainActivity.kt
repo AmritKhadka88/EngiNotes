@@ -670,6 +670,17 @@ class MainActivity : AppCompatActivity() {
                 lBtn("⬆") { drawingView.bringForward(item) }
                 lBtn("⬇") { drawingView.sendBackward(item) }
                 lBtn("⬇⬇") { drawingView.sendToBack(item) }
+                if (item is StrokeItem) {
+                    lBtn("Offset") { showOffsetDialog(item) }
+                    lBtn("Explode") {
+                        val pieces = drawingView.explodeItem(item)
+                        if (pieces == null) {
+                            Toast.makeText(this, "Can't explode this — curves and simple lines aren't explodable", Toast.LENGTH_SHORT).show()
+                        } else {
+                            drawingView.applyExplodeResult(item, pieces)
+                        }
+                    }
+                }
                 canvasContainer.addView(tb)
                 layerToolbar = tb
             }
@@ -1341,6 +1352,63 @@ class MainActivity : AppCompatActivity() {
     }
     private fun setBottomToolbarVisible(visible: Boolean) = setBottomBarVisible(visible)
     private fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
+
+    private fun showOffsetDialog(item: StrokeItem) {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(12), dp(20), dp(4))
+        }
+        container.addView(TextView(this).apply {
+            text = "Offset distance"; textSize = 13f; setTextColor(Color.parseColor("#6A6A6A"))
+        })
+        val input = android.widget.EditText(this).apply {
+            hint = "e.g. 20"; setText("20")
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
+        }
+        container.addView(input)
+        val dirRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, 0) }
+        var outward = true
+        val outBtn = TextView(this).apply {
+            text = "Outward"; setPadding(dp(14), dp(8), dp(14), dp(8)); textSize = 13f
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#FF9800")); cornerRadius = dp(14).toFloat() }
+            setTextColor(Color.WHITE)
+        }
+        val inBtn = TextView(this).apply {
+            text = "Inward"; setPadding(dp(14), dp(8), dp(14), dp(8)); textSize = 13f
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(14).toFloat() }
+            setTextColor(Color.parseColor("#3C3C3E"))
+            (layoutParams as? LinearLayout.LayoutParams)?.marginStart = dp(8)
+        }
+        fun refreshDirButtons() {
+            outBtn.background = android.graphics.drawable.GradientDrawable().apply { setColor(if (outward) Color.parseColor("#FF9800") else Color.parseColor("#ECEAE7")); cornerRadius = dp(14).toFloat() }
+            outBtn.setTextColor(if (outward) Color.WHITE else Color.parseColor("#3C3C3E"))
+            inBtn.background = android.graphics.drawable.GradientDrawable().apply { setColor(if (!outward) Color.parseColor("#FF9800") else Color.parseColor("#ECEAE7")); cornerRadius = dp(14).toFloat() }
+            inBtn.setTextColor(if (!outward) Color.WHITE else Color.parseColor("#3C3C3E"))
+        }
+        outBtn.setOnClickListener { outward = true; refreshDirButtons() }
+        inBtn.setOnClickListener { outward = false; refreshDirButtons() }
+        val lp1 = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        val lp2 = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp2.marginStart = dp(8)
+        dirRow.addView(outBtn, lp1); dirRow.addView(inBtn, lp2)
+        container.addView(dirRow)
+
+        AlertDialog.Builder(this)
+            .setTitle("Offset")
+            .setView(container)
+            .setPositiveButton("Apply") { _, _ ->
+                val mag = input.text.toString().toFloatOrNull()
+                if (mag != null && mag > 0f) {
+                    val dist = if (outward) mag else -mag
+                    val result = drawingView.offsetItem(item, dist)
+                    if (result == null) {
+                        Toast.makeText(this, "Offset too large for this shape, or unsupported (curves)", Toast.LENGTH_SHORT).show()
+                    } else {
+                        drawingView.applyOffsetResult(item, result)
+                    }
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
 
     private fun showEraserModePopup(anchor: View) {
         val popup = PopupMenu(this, anchor)

@@ -5072,6 +5072,176 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // True distance from a point to a closed/open shape's outline (not its inflated bounding box).
     // Used by area-mode erasing so touching empty space near a shape's bbox corner doesn't delete
     // the whole shape - only actually touching its drawn line does.
+    // ── Offset & Explode ──────────────────────────────────────────────────────
+    // Infinite-line intersection (NOT bounded to the segment range) — needed for offset corner
+    // miter joins, since the new corner point usually lies outside either original segment.
+    private fun lineLineIntersection(x1: Float, y1: Float, x2: Float, y2: Float, x3: Float, y3: Float, x4: Float, y4: Float): Pair<Float, Float>? {
+        val d1x = x2 - x1; val d1y = y2 - y1
+        val d2x = x4 - x3; val d2y = y4 - y3
+        val denom = d1x * d2y - d1y * d2x
+        if (kotlin.math.abs(denom) < 1e-6f) return null
+        val t = ((x3 - x1) * d2y - (y3 - y1) * d2x) / denom
+        return Pair(x1 + t * d1x, y1 + t * d1y)
+    }
+
+    // Bounded segment intersection (0..1 on segment A) — used to detect self-intersection after
+    // offsetting, which happens when the offset distance exceeds the shape's narrowest width.
+    private fun offsetSegSegT(ax1: Float, ay1: Float, ax2: Float, ay2: Float, bx1: Float, by1: Float, bx2: Float, by2: Float): Float? {
+        val d1x = ax2 - ax1; val d1y = ay2 - ay1
+        val d2x = bx2 - bx1; val d2y = by2 - by1
+        val denom = d1x * d2y - d1y * d2x
+        if (kotlin.math.abs(denom) < 1e-6f) return null
+        val dx = bx1 - ax1; val dy = by1 - ay1
+        val t = (dx * d2y - dy * d2x) / denom
+        val u = (dx * d1y - dy * d1x) / denom
+        return if (t in 0.02f..0.98f && u in 0.02f..0.98f) t else null  // small margin excludes shared-endpoint false positives
+    }
+
+    // Extracts a straight-edged vertex list + closed/open flag from an item, for offset/explode.
+    // Returns null for anything curve-like (dense point count, or a genuine curve/circle type).
+    private fun extractStraightVertices(data: StrokeData): Pair<List<Pair<Float, Float>>, Boolean>? {
+        if (data.type == Tool.CURVE || data.type == Tool.ARC || data.type == Tool.CIRCLE || data.type == Tool.ELLIPSE || data.type == Tool.ROUNDED_RECT) return null
+        if (data.type == Tool.PEN) {
+            val pts = data.points
+            if (pts.size < 4 || pts.size > 42) return null  // too many points = curve/freehand, unsupported
+            val vlist = mutableListOf<Pair<Float, Float>>()
+            var i = 0; while (i + 1 < pts.size) { vlist.add(Pair(pts[i], pts[i + 1])); i += 2 }
+            val isClosed = vlist.size >= 3 && distance(vlist.first().first, vlist.first().second, vlist.last().first, vlist.last().second) < 0.5f
+            return Pair(if (isClosed) vlist.dropLast(1) else vlist, isClosed)
+        }
+        if (data.type == Tool.LINE || data.type == Tool.ARROW) {
+            val pts = data.points; if (pts.size < 4) return null
+            return Pair(listOf(Pair(pts[0], pts[1]), Pair(pts[2], pts[3])), false)
+        }
+        if (EXPLICIT_VERTEX_SHAPES.contains(data.type) || CLOSED_SHAPES.contains(data.type)) {
+            val verts = shapeEndpoints(data.points, data.type)
+            if (verts.size < 2) return null
+            return Pair(verts, CLOSED_SHAPES.contains(data.type))
+        }
+        return null
+    }
+
+    // Creates a new offset copy of the item at the given signed distance (positive = outward for
+    // a closed shape, direction is otherwise just perpendicular to travel direction). Returns
+    // null if the item type isn't supported (curves) or if the offset would self-intersect
+    // (distance too large relative to the shape's narrowest width) — never silently produces
+    // broken geometry.
+    fun offsetItem(item: StrokeItem, dist: Float): StrokeItem? {
+        val data = item.data
+        if (kotlin.math.abs(dist) < 0.01f) return null
+
+        when (data.type) {
+            Tool.CIRCLE -> {
+                val pts = data.points; if (pts.size < 4) return null
+                val cx = pts[0]; val cy = pts[1]
+                val rad = kotlin.math.hypot((pts[2] - cx).toDouble(), (pts[3] - cy).toDouble()).toFloat()
+                val newRad = rad + dist
+                if (newRad <= 2f) return null
+                val ang = kotlin.math.atan2((pts[3] - cy).toDouble(), (pts[2] - cx).toDouble())
+                val d = StrokeData(Tool.CIRCLE, mutableListOf(cx, cy, cx + (newRad * kotlin.math.cos(ang)).toFloat(), cy + (newRad * kotlin.math.sin(ang)).toFloat()),
+                    data.color, data.strokeWidth, false, lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity)
+                return StrokeItem(d, d.buildPath(), d.toPaint())
+            }
+            Tool.ELLIPSE -> {
+                val pts = data.points; if (pts.size < 4) return null
+                val l = minOf(pts[0], pts[2]) - dist; val r = maxOf(pts[0], pts[2]) + dist
+                val t = minOf(pts[1], pts[3]) - dist; val b = maxOf(pts[1], pts[3]) + dist
+                if (r - l <= 2f || b - t <= 2f) return null
+                val d = StrokeData(Tool.ELLIPSE, mutableListOf(l, t, r, b), data.color, data.strokeWidth, false, lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity)
+                return StrokeItem(d, d.buildPath(), d.toPaint())
+            }
+            else -> {}
+        }
+
+        val (verts, closed) = extractStraightVertices(data) ?: return null
+        val n = verts.size
+        val edgeCount = if (closed) n else n - 1
+        if (edgeCount < 1) return null
+
+        data class OffLine(val x1: Float, val y1: Float, val x2: Float, val y2: Float)
+        val offLines = mutableListOf<OffLine>()
+        for (i in 0 until edgeCount) {
+            val a = verts[i]; val b = verts[(i + 1) % n]
+            val dx = b.first - a.first; val dy = b.second - a.second
+            val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+            if (len < 0.01f) { offLines.add(OffLine(a.first, a.second, b.first, b.second)); continue }
+            val nx = -dy / len; val ny = dx / len
+            offLines.add(OffLine(a.first + nx * dist, a.second + ny * dist, b.first + nx * dist, b.second + ny * dist))
+        }
+        if (offLines.isEmpty()) return null
+
+        val newVerts = mutableListOf<Pair<Float, Float>>()
+        val lc = offLines.size
+        if (closed) {
+            for (i in 0 until lc) {
+                val prev = offLines[(i - 1 + lc) % lc]; val cur = offLines[i]
+                val ip = lineLineIntersection(prev.x1, prev.y1, prev.x2, prev.y2, cur.x1, cur.y1, cur.x2, cur.y2)
+                newVerts.add(ip ?: Pair(cur.x1, cur.y1))
+            }
+        } else {
+            newVerts.add(Pair(offLines[0].x1, offLines[0].y1))
+            for (i in 0 until lc - 1) {
+                val cur = offLines[i]; val next = offLines[i + 1]
+                val ip = lineLineIntersection(cur.x1, cur.y1, cur.x2, cur.y2, next.x1, next.y1, next.x2, next.y2)
+                newVerts.add(ip ?: Pair(cur.x2, cur.y2))
+            }
+            newVerts.add(Pair(offLines.last().x2, offLines.last().y2))
+        }
+
+        // Safety check: reject if any two non-adjacent new edges cross — this is exactly what
+        // happens when the offset distance exceeds the shape's narrowest local width (e.g.
+        // offsetting an L-shape inward by more than its narrower arm's width).
+        val vc = newVerts.size
+        val checkEdges = if (closed) vc else vc - 1
+        for (i in 0 until checkEdges) {
+            val a1 = newVerts[i]; val a2 = newVerts[(i + 1) % vc]
+            for (j in i + 2 until checkEdges) {
+                if (closed && i == 0 && j == checkEdges - 1) continue  // adjacent via wraparound
+                val b1 = newVerts[j]; val b2 = newVerts[(j + 1) % vc]
+                if (offsetSegSegT(a1.first, a1.second, a2.first, a2.second, b1.first, b1.second, b2.first, b2.second) != null) return null
+            }
+        }
+
+        val finalPts = mutableListOf<Float>()
+        for ((vx, vy) in newVerts) { finalPts.add(vx); finalPts.add(vy) }
+        if (closed) { finalPts.add(newVerts[0].first); finalPts.add(newVerts[0].second) }
+        val d = StrokeData(Tool.PEN, finalPts, data.color, data.strokeWidth, false, lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity)
+        return StrokeItem(d, d.buildPath(), d.toPaint())
+    }
+
+    // Breaks a compound object (polyline, or a still-typed shape like rectangle/hexagon) into
+    // its individual straight-line primitive edges — AutoCAD's EXPLODE. Returns null for
+    // anything curve-like (never explodes curves) or already a single primitive (a plain LINE
+    // has nothing to explode into).
+    fun explodeItem(item: StrokeItem): List<StrokeItem>? {
+        val data = item.data
+        if (data.type == Tool.LINE || data.type == Tool.ARROW) return null  // already a single primitive
+        val (verts, closed) = extractStraightVertices(data) ?: return null
+        val n = verts.size
+        val edgeCount = if (closed) n else n - 1
+        if (edgeCount < 1) return null
+        val result = mutableListOf<StrokeItem>()
+        for (i in 0 until edgeCount) {
+            val a = verts[i]; val b = verts[(i + 1) % n]
+            val d = StrokeData(Tool.LINE, mutableListOf(a.first, a.second, b.first, b.second),
+                data.color, data.strokeWidth, false, lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity)
+            result.add(StrokeItem(d, d.buildPath(), d.toPaint()))
+        }
+        return result
+    }
+
+    // Public wrappers for MainActivity — actions is private, so offset/explode results need
+    // a safe entry point to commit their changes.
+    fun applyOffsetResult(original: StrokeItem, offset: StrokeItem) {
+        actions.add(offset); redoStack.clear(); markSpatialDirty(); invalidate()
+        selectedItem = offset
+    }
+    fun applyExplodeResult(original: StrokeItem, pieces: List<StrokeItem>) {
+        actions.remove(original); actions.addAll(pieces)
+        redoStack.clear(); markSpatialDirty(); invalidate()
+        selectedItem = null
+    }
+
     private fun distanceToShapeOutline(data: StrokeData, x: Float, y: Float): Float {
         var tx = x; var ty = y
         val rot = data.rotation
