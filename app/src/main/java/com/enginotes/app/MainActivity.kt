@@ -497,6 +497,32 @@ class MainActivity : AppCompatActivity() {
 
         drawingView     = findViewById(R.id.drawingView)
         drawingView.inputMode = try { InputMode.valueOf(getPrefs().getString("input_mode", "AUTO") ?: "AUTO") } catch (e: Exception) { InputMode.AUTO }
+
+        // iOS-style toolbar look: rounded top corners, soft border, subtle shadow — closer to
+        // an iOS tab bar / toolbar than a flat rectangular Android bar.
+        findViewById<View?>(R.id.primaryToolbarScroll)?.apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.WHITE)
+                cornerRadii = floatArrayOf(dp(18).toFloat(), dp(18).toFloat(), dp(18).toFloat(), dp(18).toFloat(), 0f, 0f, 0f, 0f)
+                setStroke(dp(1) / 2, Color.parseColor("#1F000000"))
+            }
+            elevation = dp(6).toFloat()
+        }
+        findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.WHITE)
+                cornerRadius = dp(14).toFloat()
+                setStroke(dp(1) / 2, Color.parseColor("#1F000000"))
+            }
+            elevation = dp(4).toFloat()
+        }
+
+        // Apply iOS-style tactile press feedback to every primary toolbar button.
+        for (id in listOf(R.id.btnSelect, R.id.btnText, R.id.btnDraw, R.id.btnHighlighter, R.id.btnBrush,
+                           R.id.btnQuickEraser, R.id.btnQuickFill, R.id.btnTools, R.id.btnInsert,
+                           R.id.btnUndo, R.id.btnRedo)) {
+            findViewById<View?>(id)?.addPressAnimation()
+        }
         canvasContainer = findViewById(R.id.canvasContainer)
         canvasContainer.clipChildren = false
         canvasContainer.clipToPadding = false
@@ -739,7 +765,11 @@ class MainActivity : AppCompatActivity() {
     private fun setupBottomToolbar() {
         findViewById<ImageButton>(R.id.btnUndo).setOnClickListener { closeInlineEditor(true); drawingView.undo() }
         findViewById<ImageButton>(R.id.btnRedo).setOnClickListener { closeInlineEditor(true); drawingView.redo() }
-        findViewById<ImageButton>(R.id.btnDraw).setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.PEN) }
+        findViewById<ImageButton>(R.id.btnDraw).setOnClickListener {
+            closeInlineEditor(true)
+            if (drawingView.currentTool == Tool.PEN) showPenOptionsPanel()
+            else setActiveTool(it as ImageButton, Tool.PEN)
+        }
         findViewById<ImageButton>(R.id.btnDraw).setOnLongClickListener { showPenOptionsPanel(); true }
         findViewById<ImageButton>(R.id.btnQuickEraser).setOnClickListener { btn ->
             closeInlineEditor(true)
@@ -754,7 +784,11 @@ class MainActivity : AppCompatActivity() {
             if (drawingView.currentTool == Tool.SELECT) showSelectModePopup(btn)
             else setActiveTool(btn as ImageButton, Tool.SELECT)
         }
-        findViewById<ImageButton>(R.id.btnText).setOnClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.TEXT) }
+        findViewById<ImageButton>(R.id.btnText).setOnClickListener {
+            closeInlineEditor(true)
+            if (drawingView.currentTool == Tool.TEXT) showTextOptionsPanel()
+            else setActiveTool(it as ImageButton, Tool.TEXT)
+        }
         findViewById<ImageButton>(R.id.btnText).setOnLongClickListener { showTextOptionsPanel(); true }
         findViewById<ImageButton>(R.id.btnInsert).setOnClickListener { showInsertMenu() }
 
@@ -818,11 +852,23 @@ class MainActivity : AppCompatActivity() {
         btnExpand.visibility = View.GONE // no longer needed
 
         // Old secondary bar buttons wired below via rebuildContextBar
-        findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.HIGHLIGHTER) }
+        findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnClickListener { btn ->
+            closeInlineEditor(true)
+            if (drawingView.currentTool == Tool.HIGHLIGHTER) showHighlighterOptionsPanel()
+            else setActiveTool(btn as ImageButton, Tool.HIGHLIGHTER)
+        }
         findViewById<ImageButton?>(R.id.btnHighlighter)?.setOnLongClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.HIGHLIGHTER); true }
-        findViewById<ImageButton?>(R.id.btnBrush)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.BRUSH) }
+        findViewById<ImageButton?>(R.id.btnBrush)?.setOnClickListener { btn ->
+            closeInlineEditor(true)
+            if (drawingView.currentTool == Tool.BRUSH) showBrushOptionsPanel()
+            else setActiveTool(btn as ImageButton, Tool.BRUSH)
+        }
         findViewById<ImageButton?>(R.id.btnBrush)?.setOnLongClickListener { closeInlineEditor(true); setActiveTool(it as ImageButton, Tool.BRUSH); true }
-        findViewById<ImageButton?>(R.id.btnQuickFill)?.setOnClickListener { btn -> closeInlineEditor(true); setActiveTool(btn as ImageButton, Tool.FILL) }
+        findViewById<ImageButton?>(R.id.btnQuickFill)?.setOnClickListener { btn ->
+            closeInlineEditor(true)
+            if (drawingView.currentTool == Tool.FILL) showHatchPicker()
+            else setActiveTool(btn as ImageButton, Tool.FILL)
+        }
         findViewById<ImageButton?>(R.id.btnQuickFill)?.setOnLongClickListener { showHatchPicker(); true }
         // Long-press on draw/eraser now just activates the tool and shows context bar (no floating panel)
         findViewById<ImageButton>(R.id.btnDraw).setOnLongClickListener { closeInlineEditor(true); showPenOptionsPanel(); true }
@@ -927,6 +973,40 @@ class MainActivity : AppCompatActivity() {
     }
     private fun setActiveToolbarBtn(btn: ImageButton?) { activeToolbarButton?.isSelected = false; activeToolbarButton = btn; btn?.isSelected = true }
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    // iOS-style press feedback: scales down slightly on touch-down, springs back on release.
+    // Applied broadly to toolbar buttons for a tactile, "butter smooth" feel instead of the
+    // flat instant on/off of a default Android click.
+    private fun View.addPressAnimation() {
+        setOnTouchListener { v, ev ->
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    v.animate().scaleX(0.90f).scaleY(0.90f).setDuration(90)
+                        .setInterpolator(android.view.animation.DecelerateInterpolator()).start()
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(180)
+                        .setInterpolator(android.view.animation.OvershootInterpolator(3f)).start()
+                }
+            }
+            false  // never consume — let the normal click/long-click listeners still fire
+        }
+    }
+
+    // Fade + slide-up entrance for floating panels, matching iOS sheet-presentation feel.
+    private fun animatePanelIn(panel: View) {
+        panel.alpha = 0f; panel.translationY = dp(24).toFloat()
+        panel.animate().alpha(1f).translationY(0f).setDuration(220)
+            .setInterpolator(android.view.animation.DecelerateInterpolator(1.5f)).start()
+    }
+
+    // Fade + slide-down exit; calls onEnd (typically the actual removeView) once the animation
+    // finishes so the view doesn't just vanish instantly.
+    private fun animatePanelOut(panel: View, onEnd: () -> Unit) {
+        panel.animate().alpha(0f).translationY(dp(24).toFloat()).setDuration(160)
+            .setInterpolator(android.view.animation.AccelerateInterpolator())
+            .withEndAction { onEnd() }.start()
+    }
 
     private fun rebuildContextBar() {
         val contextBar = findViewById<HorizontalScrollView>(R.id.toolbarScroll) ?: return
@@ -2267,7 +2347,9 @@ class MainActivity : AppCompatActivity() {
 
     private var textOptionsPanel: View? = null
     private fun dismissTextOptionsPanel() {
-        textOptionsPanel?.let { canvasContainer.removeView(it) }; textOptionsPanel = null
+        val p = textOptionsPanel ?: return
+        textOptionsPanel = null
+        animatePanelOut(p) { canvasContainer.removeView(p) }
         findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
     }
 
@@ -2380,18 +2462,25 @@ class MainActivity : AppCompatActivity() {
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
         canvasContainer.addView(scroll, lp)
         textOptionsPanel = scroll
+        animatePanelIn(scroll)
     }
 
     private fun dismissPenOptionsPanel() {
-        penOptionsPanel?.let { canvasContainer.removeView(it) }; penOptionsPanel = null
+        val p = penOptionsPanel ?: return
+        penOptionsPanel = null
+        animatePanelOut(p) { canvasContainer.removeView(p) }
         findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
     }
     private fun dismissShapeOptionsPanel() {
-        shapeOptionsPanel?.let { canvasContainer.removeView(it) }; shapeOptionsPanel = null
+        val p = shapeOptionsPanel ?: return
+        shapeOptionsPanel = null
+        animatePanelOut(p) { canvasContainer.removeView(p) }
         findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
     }
     private fun dismissSnapOptionsPanel() {
-        snapOptionsPanel?.let { canvasContainer.removeView(it) }; snapOptionsPanel = null
+        val p = snapOptionsPanel ?: return
+        snapOptionsPanel = null
+        animatePanelOut(p) { canvasContainer.removeView(p) }
     }
 
     // Shows/hides the floating "Snap ⚙" button above the bottom toolbar based on snapEnabled
@@ -2459,8 +2548,9 @@ class MainActivity : AppCompatActivity() {
         lp.bottomMargin = dp(50); lp.leftMargin = dp(12)
         canvasContainer.addView(panel, lp)
         snapOptionsPanel = panel
+        animatePanelIn(panel)
     }
-    private fun dismissEraserOptionsPanel() { eraserOptionsPanel?.let { canvasContainer.removeView(it) }; eraserOptionsPanel = null; findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE }
+    private fun dismissEraserOptionsPanel() { val p = eraserOptionsPanel ?: return; eraserOptionsPanel = null; animatePanelOut(p) { canvasContainer.removeView(p) }; findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE }
 
     // Adds a "Line Type" section into an existing panel LinearLayout.
     // onSelect is called whenever the user picks a type — caller updates drawingView.currentLineType.
@@ -2575,7 +2665,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         // Line type section
-        addLineTypeSection(panel, { sectionLabel(it) }) { lt -> drawingView.currentLineType = lt }
+        addLineTypeSection(panel, { sectionLabel(it) }) { lt -> drawingView.currentLineType = lt; dismissShapeOptionsPanel() }
 
         // Arc settings (only relevant when Arc tool is active, but shown always for quick access)
         sectionLabel("Arc Control Points")
@@ -2621,6 +2711,7 @@ class MainActivity : AppCompatActivity() {
         lp.gravity = android.view.Gravity.BOTTOM
         canvasContainer.addView(scroll, lp)
         shapeOptionsPanel = scroll
+        animatePanelIn(scroll)
     }
 
     // ── Dimension mode ─────────────────────────────────────────────────────
@@ -2994,7 +3085,7 @@ class MainActivity : AppCompatActivity() {
         snapRowP.addView(snapDescP); snapRowP.addView(snapSwitchP); panel.addView(snapRowP)
 
         // Line type section
-        addLineTypeSection(panel, { sectionLabel(it) }) { lt -> drawingView.currentLineType = lt }
+        addLineTypeSection(panel, { sectionLabel(it) }) { lt -> drawingView.currentLineType = lt; dismissPenOptionsPanel() }
 
         // Color row
         sectionLabel("Color")
@@ -3023,6 +3114,7 @@ class MainActivity : AppCompatActivity() {
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
         canvasContainer.addView(scroll, lp)
         penOptionsPanel = scroll
+        animatePanelIn(scroll)
     }
 
     private fun showEraserOptionsPanel() { findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
@@ -3128,10 +3220,11 @@ class MainActivity : AppCompatActivity() {
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
         canvasContainer.addView(panel, lp)
         eraserOptionsPanel = panel
+        animatePanelIn(panel)
     }
 
     private var highlighterOptionsPanel: View? = null
-    private fun dismissHighlighterOptionsPanel() { highlighterOptionsPanel?.let { canvasContainer.removeView(it) }; highlighterOptionsPanel = null; findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE }
+    private fun dismissHighlighterOptionsPanel() { val p = highlighterOptionsPanel ?: return; highlighterOptionsPanel = null; animatePanelOut(p) { canvasContainer.removeView(p) }; findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE }
 
     private fun showHighlighterOptionsPanel() { findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
         if (highlighterOptionsPanel != null) { dismissHighlighterOptionsPanel(); return }
@@ -3211,10 +3304,11 @@ class MainActivity : AppCompatActivity() {
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
         canvasContainer.addView(scroll, lp)
         highlighterOptionsPanel = scroll
+        animatePanelIn(scroll)
     }
 
     private var brushOptionsPanel: View? = null
-    private fun dismissBrushOptionsPanel() { brushOptionsPanel?.let { canvasContainer.removeView(it) }; brushOptionsPanel = null; findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE }
+    private fun dismissBrushOptionsPanel() { val p = brushOptionsPanel ?: return; brushOptionsPanel = null; animatePanelOut(p) { canvasContainer.removeView(p) }; findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE }
 
     private fun showBrushOptionsPanel() { findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
         if (brushOptionsPanel != null) { dismissBrushOptionsPanel(); return }
@@ -3318,6 +3412,7 @@ class MainActivity : AppCompatActivity() {
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
         canvasContainer.addView(scroll, lp)
         brushOptionsPanel = scroll
+        animatePanelIn(scroll)
     }
 
     private fun showColorGridDialog(onPicked: (Int) -> Unit) {
