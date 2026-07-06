@@ -745,6 +745,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val _handleFill = Paint().apply { style = Paint.Style.FILL; isAntiAlias = true }
     private val _handleStroke = Paint().apply { style = Paint.Style.STROKE; isAntiAlias = true }
     private val _holePaint = Paint().apply { style = Paint.Style.FILL; xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR); isAntiAlias = true }
+    private val _fillErasePaint = Paint().apply { color = Color.TRANSPARENT; style = Paint.Style.FILL; xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR) }
     private val _cursorPaint = Paint().apply { isAntiAlias = true }
 
     // Lock/unlock — called from MainActivity lock button
@@ -4854,16 +4855,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val bex = ((ex - item.x) * scaleX).toInt(); val bey = ((ey - item.y) * scaleY).toInt()
         val brx = (r * scaleX).toInt().coerceAtLeast(1); val bry = (r * scaleY).toInt().coerceAtLeast(1)
 
-        // Cheap early-out: sample a sparse grid of points within the erase circle for any
-        // opaque pixel before touching the bitmap at all.
+        // Cheap early-out: ONE batched getPixels() read over the erase circle's bounding box,
+        // then scan the returned array in pure Kotlin. Previously this looped up to ~169
+        // individual getPixel() calls per tick — each one a separate JNI round-trip into native
+        // Skia code — which was still adding measurable overhead during a drag even after the
+        // disk-write fix. A single batched read is dramatically cheaper than many small ones.
+        val rx0 = (bex - brx).coerceAtLeast(0); val ry0 = (bey - bry).coerceAtLeast(0)
+        val rx1 = (bex + brx).coerceAtMost(bw - 1); val ry1 = (bey + bry).coerceAtMost(bh - 1)
+        if (rx1 < rx0 || ry1 < ry0) return item
+        val rw = rx1 - rx0 + 1; val rh = ry1 - ry0 + 1
+        val region = IntArray(rw * rh)
+        cached.getPixels(region, 0, rw, rx0, ry0, rw, rh)
         var anyOpaqueHit = false
-        val stepX = maxOf(1, brx / 6); val stepY = maxOf(1, bry / 6)
-        outer@ for (sy in -bry..bry step stepY) {
-            for (sx in -brx..brx step stepX) {
-                val nx = sx.toFloat() / brx.coerceAtLeast(1); val ny = sy.toFloat() / bry.coerceAtLeast(1)
+        outer@ for (yy in 0 until rh) {
+            val py = ry0 + yy
+            val ny = (py - bey).toFloat() / bry.coerceAtLeast(1)
+            for (xx in 0 until rw) {
+                val px = rx0 + xx
+                val nx = (px - bex).toFloat() / brx.coerceAtLeast(1)
                 if (nx*nx + ny*ny > 1f) continue
-                val px = bex + sx; val py = bey + sy
-                if (px in 0 until bw && py in 0 until bh && (cached.getPixel(px, py) ushr 24) != 0) { anyOpaqueHit = true; break@outer }
+                if ((region[yy * rw + xx] ushr 24) != 0) { anyOpaqueHit = true; break@outer }
             }
         }
         if (!anyOpaqueHit) return item
@@ -4884,8 +4895,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             dirtyFillItems.add(item)
         }
         val cv = Canvas(bmp)
-        val p = Paint(); p.color = Color.TRANSPARENT; p.style = Paint.Style.FILL
-        p.xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR)
+        val p = _fillErasePaint
         cv.drawOval(RectF((bex - brx).toFloat(), (bey - bry).toFloat(), (bex + brx).toFloat(), (bey + bry).toFloat()), p)
         return item
     }
@@ -5048,6 +5058,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Returns null for anything curve-like (dense point count, or a genuine curve/circle type).
     private fun extractStraightVertices(data: StrokeData): Pair<List<Pair<Float, Float>>, Boolean>? {
         if (data.type == Tool.CURVE || data.type == Tool.ARC || data.type == Tool.CIRCLE || data.type == Tool.ELLIPSE || data.type == Tool.ROUNDED_RECT) return null
+
+        // Rotates a vertex list around the shape's own bounding-box center by data.rotation.
+        // Tool.PEN items don't need this (already rotation-baked at conversion time), but
+        // LINE/ARROW and typed shapes store rotation SEPARATELY from their raw points — without
+        // baking it in here, offset/explode would silently operate on the unrotated geometry.
+        fun bakeRotation(verts: List<Pair<Float, Float>>): List<Pair<Float, Float>> {
+            val rot = data.rotation
+            if (rot == 0f || verts.isEmpty()) return verts
+            var minX = verts[0].first; var maxX = verts[0].first; var minY = verts[0].second; var maxY = verts[0].second
+            for ((vx, vy) in verts) { if (vx < minX) minX = vx; if (vx > maxX) maxX = vx; if (vy < minY) minY = vy; if (vy > maxY) maxY = vy }
+            val cx = (minX + maxX) / 2f; val cy = (minY + maxY) / 2f
+            val rad = Math.toRadians(rot.toDouble())
+            val cos = kotlin.math.cos(rad).toFloat(); val sin = kotlin.math.sin(rad).toFloat()
+            return verts.map { (vx, vy) -> val dx = vx - cx; val dy = vy - cy; Pair(cx + dx * cos - dy * sin, cy + dx * sin + dy * cos) }
+        }
+
         if (data.type == Tool.PEN) {
             val pts = data.points
             if (pts.size < 4 || pts.size > 42) return null  // too many points = curve/freehand, unsupported
@@ -5058,12 +5084,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         if (data.type == Tool.LINE || data.type == Tool.ARROW) {
             val pts = data.points; if (pts.size < 4) return null
-            return Pair(listOf(Pair(pts[0], pts[1]), Pair(pts[2], pts[3])), false)
+            return Pair(bakeRotation(listOf(Pair(pts[0], pts[1]), Pair(pts[2], pts[3]))), false)
         }
         if (EXPLICIT_VERTEX_SHAPES.contains(data.type) || CLOSED_SHAPES.contains(data.type)) {
             val verts = shapeEndpoints(data.points, data.type)
             if (verts.size < 2) return null
-            return Pair(verts, CLOSED_SHAPES.contains(data.type))
+            return Pair(bakeRotation(verts), CLOSED_SHAPES.contains(data.type))
         }
         return null
     }
@@ -5851,9 +5877,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // stroke after tapping fill and expects it to stay on top.
         val fillInsertionIndex = actions.size
         val scale = 2.0f
-        val w = (width * scale).toInt().coerceAtLeast(1); val h = (height * scale).toInt().coerceAtLeast(1)
+        // Expand the fill-detection area beyond the exact visible viewport (a fixed margin on
+        // each side, ~1.5x viewport width/height total) so a boundary just off-screen still
+        // gets detected — without ballooning to full-page size, which for a large document could
+        // mean a bitmap tens of MB in size and a proportionally slower flood-fill on every tap.
+        // This is a deliberate middle ground: better reach than viewport-only, but bounded cost.
+        val marginX = (width * 0.75f); val marginY = (height * 0.75f)
+        val viewW = width + marginX * 2f; val viewH = height + marginY * 2f
+        val w = (viewW * scale).toInt().coerceAtLeast(1); val h = (viewH * scale).toInt().coerceAtLeast(1)
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); val cv = Canvas(bmp)
-        cv.save(); cv.scale(scale, scale); cv.translate(translateX, translateY); cv.scale(scaleFactor, scaleFactor)
+        cv.save(); cv.scale(scale, scale); cv.translate(translateX + marginX, translateY + marginY); cv.scale(scaleFactor, scaleFactor)
         for (a in actions) {
             if (a is StrokeItem) {
                 val thickPaint = Paint(a.paint).apply {
@@ -5870,7 +5903,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         cv.restore()
 
-        val px = (screenX * scale).toInt().coerceIn(0, w - 1); val py = (screenY * scale).toInt().coerceIn(0, h - 1)
+        val px = ((screenX + marginX) * scale).toInt().coerceIn(0, w - 1); val py = ((screenY + marginY) * scale).toInt().coerceIn(0, h - 1)
         val pixels = IntArray(w * h); bmp.getPixels(pixels, 0, w, 0, 0, w, h)
         fun isWall(x: Int, y: Int): Boolean = ((pixels[y * w + x] ushr 24) and 0xFF) > 25
         if (isWall(px, py)) { invalidate(); return }
@@ -5896,7 +5929,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             if (leaked) {
                 val clusters = clusterEdgePoints(edgeHits)
-                post { if (clusters.isNotEmpty()) { val (cx, cy) = clusters[0]; zoomTo(screenToWorldX(cx/scale), screenToWorldY(cy/scale), (scaleFactor*2.5f).coerceAtMost(6f)) }; invalidate() }
+                post { if (clusters.isNotEmpty()) { val (cx, cy) = clusters[0]; zoomTo(screenToWorldX(cx/scale - marginX), screenToWorldY(cy/scale - marginY), (scaleFactor*2.5f).coerceAtMost(6f)) }; invalidate() }
             } else {
                 val cw = maxX - minX + 1; val ch = maxY - minY + 1
                 val fp = IntArray(cw * ch) { i -> val gx=minX+i%cw; val gy=minY+i/cw; if(visited[gy*w+gx]) fillColor else Color.TRANSPARENT }
@@ -5904,8 +5937,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val folder = File(ctx.filesDir, "images"); if (!folder.exists()) folder.mkdirs()
                 val outFile = File(folder, "fill_${System.currentTimeMillis()}.png")
                 try { FileOutputStream(outFile).use { fb.compress(Bitmap.CompressFormat.PNG, 100, it) } } catch (e: Exception) { post { invalidate() }; return@execute }
-                val wx0 = screenToWorldX(minX / scale); val wy0 = screenToWorldY(minY / scale)
-                val wx1 = screenToWorldX((minX + cw) / scale); val wy1 = screenToWorldY((minY + ch) / scale)
+                val wx0 = screenToWorldX(minX / scale - marginX); val wy0 = screenToWorldY(minY / scale - marginY)
+                val wx1 = screenToWorldX((minX + cw) / scale - marginX); val wy1 = screenToWorldY((minY + ch) / scale - marginY)
                 post {
                     val fi = FillItem(outFile.absolutePath, wx0, wy0, wx1 - wx0, wy1 - wy0)
                     if (pendingHatchPattern != null) { fi.hatchPattern = pendingHatchPattern; fi.hatchColor = pendingHatchColor }
