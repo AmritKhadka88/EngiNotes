@@ -878,6 +878,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var eraserOpacity: Int = 255 // 255 = full erase, lower = partial erase
     var eraserSize: Float = 40f
     var eraserMode: EraserMode = EraserMode.OBJECT
+    var eraserAffectsFill: Boolean = true  // when false, eraser skips FillItems entirely (leaves colour fills untouched)
     var eraserShape: EraserShape = EraserShape.ROUND
     var fillShapes: Boolean = false
     var fillColor: Int = Color.RED
@@ -4823,7 +4824,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     is StrokeItem -> strokeHitTest(a.data, x, y, r)
                     is TextItem -> distance(x, y, a.x, a.y) <= r + a.size
                     is ImageItem -> distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) <= r + maxOf(a.w, a.h) / 2f
-                    is FillItem -> distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) <= r + maxOf(a.w, a.h) / 2f
+                    is FillItem -> eraserAffectsFill && distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) <= r + maxOf(a.w, a.h) / 2f
                     is AudioItem -> distance(x, y, a.x, a.y) <= r + a.radius; else -> false
                 }
                 if (hit) {
@@ -4871,7 +4872,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     is TextItem -> { if (distance(x, y, a.x, a.y) > r + a.size) newActions.add(a) }
                     is ImageItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) }
                     is FillItem -> {
-                        if (eraserMode == EraserMode.AREA) {
+                        if (eraserMode == EraserMode.AREA && eraserAffectsFill) {
                             // Erase only the pixels the eraser circle touches in the fill bitmap
                             val erased = eraseFillItemRegion(a, x, y, r)
                             if (erased != null) newActions.add(erased) // null = fully erased
@@ -4989,6 +4990,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (cp >= tapArcPos) { upperBound = cp; break }
         }
 
+        // Safety guard: TRIM should remove a SMALL, precisely-bounded segment near the tap —
+        // never the majority of the object. If the computed range is degenerate (inverted) or
+        // would remove most of the stroke's length, something went wrong in bound-finding
+        // (e.g. dense/near-duplicate crossings from a wobbly hand-drawn cutting edge). Abort
+        // and leave the object untouched rather than risk silently deleting the whole thing.
+        if (upperBound <= lowerBound) return
+        val removedLen = upperBound - lowerBound
+        if (totalLen > 0f && removedLen > totalLen * 0.5f) return
+
         val keepBefore = mutableListOf<Float>(); val keepAfter = mutableListOf<Float>()
         i = 0
         while (i < allPts.size) {
@@ -5000,6 +5010,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val toAdd = mutableListOf<StrokeItem>()
         if (keepBefore.size >= 4) { val d = StrokeData(t.data.type, keepBefore, t.data.color, t.data.strokeWidth, false, penStyle = t.data.penStyle, opacity = t.data.opacity, lineType = t.data.lineType); toAdd.add(StrokeItem(d, d.buildPath(), d.toPaint())) }
         if (keepAfter.size >= 4) { val d = StrokeData(t.data.type, keepAfter, t.data.color, t.data.strokeWidth, false, penStyle = t.data.penStyle, opacity = t.data.opacity, lineType = t.data.lineType); toAdd.add(StrokeItem(d, d.buildPath(), d.toPaint())) }
+
+        // Final guard: if the "trim" computed nothing surviving (both fragments too small),
+        // do NOT remove the original — that would delete the whole object with no replacement.
+        if (toAdd.isEmpty()) return
 
         actions.remove(t); actions.addAll(toAdd)
         redoStack.clear(); markSpatialDirty(); invalidate()

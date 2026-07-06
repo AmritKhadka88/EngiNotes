@@ -2978,6 +2978,18 @@ class MainActivity : AppCompatActivity() {
         }
         panel.addView(modeRow)
 
+        // Toggle: whether the eraser also touches colour fills
+        val fillToggleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(10), 0, 0) }
+        fillToggleRow.addView(TextView(this).apply {
+            text = "Erase colour fills too"; textSize = 13f; setTextColor(Color.parseColor("#4A4A4A"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        fillToggleRow.addView(android.widget.Switch(this).apply {
+            isChecked = drawingView.eraserAffectsFill
+            setOnCheckedChangeListener { _, isOn -> drawingView.eraserAffectsFill = isOn }
+        })
+        panel.addView(fillToggleRow)
+
         sectionLabel("Shape")
         val shapeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val shapeButtons = mutableListOf<TextView>()
