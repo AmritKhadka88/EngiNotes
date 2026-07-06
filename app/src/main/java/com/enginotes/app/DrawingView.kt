@@ -5876,15 +5876,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // append itself AFTER that stroke — landing on top of it, even though the user drew the
         // stroke after tapping fill and expects it to stay on top.
         val fillInsertionIndex = actions.size
-        val scale = 2.0f
         // Expand the fill-detection area beyond the exact visible viewport (a fixed margin on
         // each side, ~1.5x viewport width/height total) so a boundary just off-screen still
         // gets detected — without ballooning to full-page size, which for a large document could
         // mean a bitmap tens of MB in size and a proportionally slower flood-fill on every tap.
         // This is a deliberate middle ground: better reach than viewport-only, but bounded cost.
-        val marginX = (width * 0.75f); val marginY = (height * 0.75f)
+        val marginX = (width * 0.3f); val marginY = (height * 0.3f)
         val viewW = width + marginX * 2f; val viewH = height + marginY * 2f
-        val w = (viewW * scale).toInt().coerceAtLeast(1); val h = (viewH * scale).toInt().coerceAtLeast(1)
+        // Hard safety cap: never allocate more than ~16M pixels (~64MB ARGB_8888) regardless of
+        // screen size or margin — a previous version of this margin+scale combination produced
+        // a ~247MB single bitmap allocation on a typical phone screen, which reliably crashes
+        // with OutOfMemoryError, especially on lower-RAM devices. If the requested area would
+        // exceed the budget, the SUPERSAMPLING scale shrinks (never the margin reach) to fit.
+        val maxPixels = 16_000_000L
+        var scale = 2.0f
+        var w = (viewW * scale).toInt().coerceAtLeast(1); var h = (viewH * scale).toInt().coerceAtLeast(1)
+        if (w.toLong() * h.toLong() > maxPixels) {
+            val shrink = kotlin.math.sqrt(maxPixels.toDouble() / (w.toLong() * h.toLong())).toFloat()
+            scale = (scale * shrink).coerceAtLeast(0.5f)
+            w = (viewW * scale).toInt().coerceAtLeast(1); h = (viewH * scale).toInt().coerceAtLeast(1)
+        }
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); val cv = Canvas(bmp)
         cv.save(); cv.scale(scale, scale); cv.translate(translateX + marginX, translateY + marginY); cv.scale(scaleFactor, scaleFactor)
         for (a in actions) {
