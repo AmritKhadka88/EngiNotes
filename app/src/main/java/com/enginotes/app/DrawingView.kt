@@ -73,7 +73,7 @@ enum class Tool {
     DIMENSION
 }
 enum class PaperType { BLANK, BLANK_COLORED, LINED, GRID, DOTS, ENGINEERING }
-enum class EraserMode { OBJECT, AREA, TRIM }
+enum class EraserMode { OBJECT, AREA }
 enum class CanvasMode { INFINITE, FIXED, PAGINATED, CONVENIENT }
 enum class HatchPattern {
     // Lines
@@ -888,14 +888,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Fill items currently mutated in-memory during an active erase drag, not yet written to
     // disk. Flushed once on ACTION_UP instead of on every touch tick — see eraseFillItemRegion.
     private val dirtyFillItems = mutableSetOf<FillItem>()
-    private var trimLastX = Float.NaN; private var trimLastY = Float.NaN  // throttle tracking for drag-to-trim
-    // Objects (including any fragments produced) already trimmed during the CURRENT gesture.
-    // Without this, a single drag that crosses the same object's boundary at multiple points
-    // (very common with overlapping/nested shapes) would trim it again and again as the finger
-    // moves — each individual cut looking "safe" in isolation, but cumulatively consuming the
-    // entire object down to a near-invisible sliver that's still technically present and
-    // selectable. Each object should be trimmed AT MOST ONCE per drag gesture.
-    private val trimmedThisGesture = mutableSetOf<StrokeItem>()
+    private var eraserLastX = Float.NaN; private var eraserLastY = Float.NaN  // persists ACROSS ACTION_MOVE calls for gap-free interpolation
     var eraserShape: EraserShape = EraserShape.ROUND
     var fillShapes: Boolean = false
     var fillColor: Int = Color.RED
@@ -3914,17 +3907,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         when (currentTool) {
             Tool.PEN -> { p.color = currentColor; p.style = Paint.Style.FILL; canvas.drawCircle(hx, hy, (currentStrokeWidth * scaleFactor / 2f).coerceAtLeast(2f), p) }
             Tool.ERASER -> {
-                when (eraserMode) {
-                    EraserMode.OBJECT -> { p.color = Color.DKGRAY; p.style = Paint.Style.STROKE; p.strokeWidth = 2f; val half = eraserSize * scaleFactor / 2f; canvas.drawRect(hx - half, hy - half, hx + half, hy + half, p) }
-                    EraserMode.AREA -> { p.color = Color.RED; p.style = Paint.Style.STROKE; p.strokeWidth = 2f; val half = eraserSize * scaleFactor / 2f; canvas.drawCircle(hx, hy, half, p) }
-                    EraserMode.TRIM -> {
-                        // Crosshair cursor — trim is a precise tap-to-cut action, not a radius brush
-                        p.color = Color.parseColor("#FF9800"); p.style = Paint.Style.STROKE; p.strokeWidth = 2.5f
-                        val s = 14f
-                        canvas.drawLine(hx - s, hy, hx + s, hy, p); canvas.drawLine(hx, hy - s, hx, hy + s, p)
-                        canvas.drawCircle(hx, hy, s * 0.6f, p)
-                    }
-                }
+                if (eraserMode == EraserMode.OBJECT) { p.color = Color.DKGRAY; p.style = Paint.Style.STROKE; p.strokeWidth = 2f; val half = eraserSize * scaleFactor / 2f; canvas.drawRect(hx - half, hy - half, hx + half, hy + half, p) }
+                else { p.color = Color.RED; p.style = Paint.Style.STROKE; p.strokeWidth = 2f; val half = eraserSize * scaleFactor / 2f; canvas.drawCircle(hx, hy, half, p) }
             }
             else -> { p.color = Color.DKGRAY; p.style = Paint.Style.FILL; canvas.drawCircle(hx, hy, 5f, p) }
         }
@@ -4550,8 +4534,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val pressure = event.pressure.coerceIn(0.3f, 1.5f)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (currentTool == Tool.ERASER && eraserMode == EraserMode.TRIM) { trimLastX = wx; trimLastY = wy; trimmedThisGesture.clear(); trimAt(wx, wy); invalidate(); return }
-                if (currentTool == Tool.ERASER) { eraseAt(wx, wy); invalidate(); return }
+                if (currentTool == Tool.ERASER) { eraserLastX = wx; eraserLastY = wy; eraseAt(wx, wy); invalidate(); return }
                 // Snap start point to nearest existing endpoint if snap is enabled
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
                     val snap = findSnapTarget(wx, wy)
@@ -4577,26 +4560,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 onDrawingStarted?.invoke()
             }
             MotionEvent.ACTION_MOVE -> {
-                if (currentTool == Tool.ERASER && eraserMode == EraserMode.TRIM) {
-                    val stride = (eraserSize / 2f / scaleFactor).coerceAtLeast(1f)
-                    var lastTx = trimLastX; var lastTy = trimLastY
-                    for (h in 0 until event.historySize) {
-                        val hx = screenToWorldX(event.getHistoricalX(h)); val hy = screenToWorldY(event.getHistoricalY(h))
-                        if (lastTx.isNaN() || distance(hx, hy, lastTx, lastTy) >= stride) { trimAt(hx, hy); lastTx = hx; lastTy = hy }
-                    }
-                    trimAt(wx, wy); trimLastX = wx; trimLastY = wy
-                    invalidate(); return
-                }
                 if (currentTool == Tool.ERASER) {
-                    // Process historical positions but skip some for performance — eraser stride
-                    // = half the eraser diameter so we never miss a gap but skip redundant samples
-                    val stride = (eraserSize / 2f / scaleFactor).coerceAtLeast(1f)
-                    var lastEx = Float.NaN; var lastEy = Float.NaN
-                    for (h in 0 until event.historySize) {
-                        val hx = screenToWorldX(event.getHistoricalX(h)); val hy = screenToWorldY(event.getHistoricalY(h))
-                        if (lastEx.isNaN() || distance(hx, hy, lastEx, lastEy) >= stride) { eraseAt(hx, hy); lastEx=hx; lastEy=hy }
+                    val spacing = (eraserSize / 3f / scaleFactor).coerceAtLeast(1f)
+                    fun eraseTo(nx: Float, ny: Float) {
+                        if (eraserLastX.isNaN()) { eraseAt(nx, ny); eraserLastX = nx; eraserLastY = ny; return }
+                        val d = distance(nx, ny, eraserLastX, eraserLastY)
+                        if (d < spacing) return  // too close — skip to avoid redundant work on slow movement
+                        val steps = (d / spacing).toInt().coerceAtLeast(1)
+                        for (s in 1..steps) {
+                            val frac = s.toFloat() / steps
+                            eraseAt(eraserLastX + (nx - eraserLastX) * frac, eraserLastY + (ny - eraserLastY) * frac)
+                        }
+                        eraserLastX = nx; eraserLastY = ny
                     }
-                    eraseAt(wx, wy); invalidate(); return
+                    for (h in 0 until event.historySize) {
+                        eraseTo(screenToWorldX(event.getHistoricalX(h)), screenToWorldY(event.getHistoricalY(h)))
+                    }
+                    eraseTo(wx, wy)
+                    invalidate(); return
                 }
                 // Update snap indicator and apply magnetic pull during live drawing.
                 // For shapes with computed vertices (TRIANGLE etc.), check ALL vertices
@@ -4734,7 +4715,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 item.path = item.data.buildPath(); invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                if (currentTool == Tool.ERASER) { flushDirtyFillItems(); trimLastX = Float.NaN; trimLastY = Float.NaN; trimmedThisGesture.clear() }
+                if (currentTool == Tool.ERASER) { flushDirtyFillItems(); eraserLastX = Float.NaN; eraserLastY = Float.NaN }
                 // Snap end point to nearest existing endpoint if snap is enabled
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
                     val pts0 = currentItem?.data?.points
@@ -4917,161 +4898,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             actions.clear(); actions.addAll(newActions); markSpatialDirty()
         }
-    }
-
-    // ── TRIM tool (AutoCAD-style) ────────────────────────────────────────────
-    // Unlike the circle-brush erasers, TRIM removes exactly the bounded segment of the tapped
-    // stroke between its two nearest intersections with OTHER strokes ("cutting edges"), leaving
-    // the rest of the stroke intact. If no intersecting strokes are found on a side, that side's
-    // bound falls back to the stroke's own start/end. Fires once per tap, not during drags.
-    private fun segSegIntersectionT(ax1: Float, ay1: Float, ax2: Float, ay2: Float, bx1: Float, by1: Float, bx2: Float, by2: Float): Float? {
-        val d1x = ax2 - ax1; val d1y = ay2 - ay1
-        val d2x = bx2 - bx1; val d2y = by2 - by1
-        val denom = d1x * d2y - d1y * d2x
-        if (kotlin.math.abs(denom) < 1e-6f) return null
-        val dx = bx1 - ax1; val dy = by1 - ay1
-        val t = (dx * d2y - dy * d2x) / denom
-        val u = (dx * d1y - dy * d1x) / denom
-        return if (t in 0f..1f && u in 0f..1f) t else null
-    }
-
-    // Returns a copy of the item's path transformed into its actual VISUAL (rotated) position.
-    // item.path is always stored unrotated — rotation is applied only at draw-time via
-    // canvas.rotate() — so anything sampling the path directly (like TRIM) must apply this
-    // same transform first, or it compares world-space coordinates against unrotated-local
-    // sample points whenever the item has any rotation.
-    private fun rotatedPathFor(item: StrokeItem): Path {
-        val rot = item.data.rotation
-        if (rot == 0f) return item.path
-        val b = getBoundsRaw(item) ?: return item.path
-        val p = Path(item.path)
-        val m = android.graphics.Matrix()
-        m.setRotate(rot, (b[0]+b[2])/2f, (b[1]+b[3])/2f)
-        p.transform(m)
-        return p
-    }
-
-    // One sampled point along a target's path, tagged with which CONTOUR it belongs to and its
-    // arc-length position WITHIN that contour (not mixed with other contours' arc-lengths).
-    private data class TrimSample(val x: Float, val y: Float, val contourIdx: Int, val localArc: Float)
-
-    private fun trimAt(x: Float, y: Float) {
-        val r = eraserSize / 2f
-        val allNearby = itemsNear(x, y, r * 4f).filterIsInstance<StrokeItem>().filter { !it.data.isLocked }
-        val targetCandidates = allNearby.filter { it !in trimmedThisGesture }
-        if (targetCandidates.isEmpty()) return
-
-        var target: StrokeItem? = null; var bestDist = Float.MAX_VALUE
-        for (c in targetCandidates) {
-            val d = distanceToShapeOutline(c.data, x, y)
-            if (d < bestDist) { bestDist = d; target = c }
-        }
-        val t = target ?: return
-        if (bestDist > r * 2.5f) return
-
-        // Sample the target's VISUAL path CONTOUR-AWARE: each sample knows which contour it
-        // belongs to and its arc-length position WITHIN that contour only. Some shapes (e.g.
-        // Tool.CROSS, built from two separate moveTo() calls) are genuinely made of multiple
-        // disconnected pieces in one Path. Treating them as one flat continuous sequence — as
-        // the previous version did — mixed points from disconnected pieces into one garbled
-        // output object: still technically present and selectable, but rendering wrong or not
-        // at all, which looked like "the whole shape got erased" while it was actually just
-        // corrupted.
-        val allSamples = mutableListOf<TrimSample>()
-        val contourLens = mutableListOf<Float>()
-        run {
-            val measure = android.graphics.PathMeasure(rotatedPathFor(t), false)
-            var contourIdx = 0
-            do {
-                val len = measure.length
-                if (len > 0f) {
-                    val segCount = maxOf(150, (len / 2f).toInt())
-                    val step = (len / segCount).coerceAtLeast(0.25f)
-                    var dist = 0f
-                    val pos = FloatArray(2)
-                    while (dist <= len) { measure.getPosTan(dist, pos, null); allSamples.add(TrimSample(pos[0], pos[1], contourIdx, dist)); dist += step }
-                    contourLens.add(len)
-                } else contourLens.add(0f)
-                contourIdx++
-            } while (measure.nextContour())
-        }
-        if (allSamples.isEmpty()) return
-
-        // Nearest sample overall determines WHICH contour the tap landed on, and the tap's
-        // arc position within just that contour.
-        var tapContour = 0; var tapArcPos = 0f; var tapNearest = Float.MAX_VALUE
-        for (s in allSamples) { val d = distance(x, y, s.x, s.y); if (d < tapNearest) { tapNearest = d; tapContour = s.contourIdx; tapArcPos = s.localArc } }
-        val contourSamples = allSamples.filter { it.contourIdx == tapContour }
-        if (contourSamples.size < 2) return
-
-        // Find intersections with OTHER strokes, but ONLY test segments within the tapped
-        // contour — never a fake "segment" bridging two disconnected pieces of the same shape.
-        val cutPositions = mutableListOf<Float>()
-        for (other in allNearby) {
-            if (other === t) continue
-            val om = android.graphics.PathMeasure(rotatedPathFor(other), false)
-            val oPts = mutableListOf<Float>()
-            val opos = FloatArray(2)
-            do {
-                val olen = om.length
-                if (olen <= 0f) continue
-                val ostep = (olen / 100f).coerceAtLeast(0.5f)
-                var od = 0f
-                while (od <= olen) { om.getPosTan(od, opos, null); oPts.add(opos[0]); oPts.add(opos[1]); od += ostep }
-            } while (om.nextContour())
-            if (oPts.size < 4) continue
-            var ti = 0
-            while (ti + 1 < contourSamples.size) {
-                val a1 = contourSamples[ti]; val a2 = contourSamples[ti + 1]
-                var oi = 0
-                while (oi + 3 < oPts.size) {
-                    val segT = segSegIntersectionT(a1.x, a1.y, a2.x, a2.y, oPts[oi], oPts[oi+1], oPts[oi+2], oPts[oi+3])
-                    if (segT != null) cutPositions.add(a1.localArc + segT * (a2.localArc - a1.localArc))
-                    oi += 2
-                }
-                ti++
-            }
-        }
-        if (cutPositions.isEmpty()) return
-        cutPositions.sort()
-
-        val contourTotalLen = contourLens.getOrElse(tapContour) { 0f }
-        var lowerBound = 0f; var upperBound = contourTotalLen
-        for (cp in cutPositions) {
-            if (cp <= tapArcPos) lowerBound = maxOf(lowerBound, cp)
-            if (cp >= tapArcPos) { upperBound = cp; break }
-        }
-
-        // Safety guard: never remove more than half of the TAPPED CONTOUR (not the whole
-        // multi-part shape) — a degenerate bracket should abort, not silently wipe everything.
-        if (upperBound <= lowerBound) return
-        val removedLen = upperBound - lowerBound
-        if (contourTotalLen > 0f && removedLen > contourTotalLen * 0.5f) return
-
-        val toAdd = mutableListOf<StrokeItem>()
-        val keepBefore = mutableListOf<Float>(); val keepAfter = mutableListOf<Float>()
-        for (s in contourSamples) {
-            if (s.localArc <= lowerBound) { keepBefore.add(s.x); keepBefore.add(s.y) }
-            else if (s.localArc >= upperBound) { keepAfter.add(s.x); keepAfter.add(s.y) }
-        }
-        if (keepBefore.size >= 4) { val d = StrokeData(t.data.type, keepBefore, t.data.color, t.data.strokeWidth, false, penStyle = t.data.penStyle, opacity = t.data.opacity, lineType = t.data.lineType); toAdd.add(StrokeItem(d, d.buildPath(), d.toPaint())) }
-        if (keepAfter.size >= 4) { val d = StrokeData(t.data.type, keepAfter, t.data.color, t.data.strokeWidth, false, penStyle = t.data.penStyle, opacity = t.data.opacity, lineType = t.data.lineType); toAdd.add(StrokeItem(d, d.buildPath(), d.toPaint())) }
-
-        // Any OTHER contours (disconnected pieces the tap didn't touch, e.g. the vertical bar
-        // of a "+" when only the horizontal bar was trimmed) survive completely untouched, as
-        // their own separate items — never merged into the trimmed contour's output.
-        for (ci in contourLens.indices) {
-            if (ci == tapContour) continue
-            val cpts = mutableListOf<Float>()
-            for (s in allSamples) if (s.contourIdx == ci) { cpts.add(s.x); cpts.add(s.y) }
-            if (cpts.size >= 4) { val d = StrokeData(t.data.type, cpts, t.data.color, t.data.strokeWidth, false, penStyle = t.data.penStyle, opacity = t.data.opacity, lineType = t.data.lineType); toAdd.add(StrokeItem(d, d.buildPath(), d.toPaint())) }
-        }
-
-        if (toAdd.isEmpty()) return
-
-        actions.remove(t); actions.addAll(toAdd)
-        trimmedThisGesture.addAll(toAdd)
-        redoStack.clear(); markSpatialDirty(); invalidate()
     }
 
     private fun eraseFillItemRegion(item: FillItem, ex: Float, ey: Float, r: Float): FillItem? {
