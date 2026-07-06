@@ -889,6 +889,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // disk. Flushed once on ACTION_UP instead of on every touch tick — see eraseFillItemRegion.
     private val dirtyFillItems = mutableSetOf<FillItem>()
     private var trimLastX = Float.NaN; private var trimLastY = Float.NaN  // throttle tracking for drag-to-trim
+    // Objects (including any fragments produced) already trimmed during the CURRENT gesture.
+    // Without this, a single drag that crosses the same object's boundary at multiple points
+    // (very common with overlapping/nested shapes) would trim it again and again as the finger
+    // moves — each individual cut looking "safe" in isolation, but cumulatively consuming the
+    // entire object down to a near-invisible sliver that's still technically present and
+    // selectable. Each object should be trimmed AT MOST ONCE per drag gesture.
+    private val trimmedThisGesture = mutableSetOf<StrokeItem>()
     var eraserShape: EraserShape = EraserShape.ROUND
     var fillShapes: Boolean = false
     var fillColor: Int = Color.RED
@@ -4543,7 +4550,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val pressure = event.pressure.coerceIn(0.3f, 1.5f)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (currentTool == Tool.ERASER && eraserMode == EraserMode.TRIM) { trimLastX = wx; trimLastY = wy; trimAt(wx, wy); invalidate(); return }
+                if (currentTool == Tool.ERASER && eraserMode == EraserMode.TRIM) { trimLastX = wx; trimLastY = wy; trimmedThisGesture.clear(); trimAt(wx, wy); invalidate(); return }
                 if (currentTool == Tool.ERASER) { eraseAt(wx, wy); invalidate(); return }
                 // Snap start point to nearest existing endpoint if snap is enabled
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
@@ -4727,7 +4734,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 item.path = item.data.buildPath(); invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                if (currentTool == Tool.ERASER) { flushDirtyFillItems(); trimLastX = Float.NaN; trimLastY = Float.NaN }
+                if (currentTool == Tool.ERASER) { flushDirtyFillItems(); trimLastX = Float.NaN; trimLastY = Float.NaN; trimmedThisGesture.clear() }
                 // Snap end point to nearest existing endpoint if snap is enabled
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
                     val pts0 = currentItem?.data?.points
@@ -4950,11 +4957,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun trimAt(x: Float, y: Float) {
         val r = eraserSize / 2f
-        val candidates = itemsNear(x, y, r * 4f).filterIsInstance<StrokeItem>().filter { !it.data.isLocked }
-        if (candidates.isEmpty()) return
+        val allNearby = itemsNear(x, y, r * 4f).filterIsInstance<StrokeItem>().filter { !it.data.isLocked }
+        val targetCandidates = allNearby.filter { it !in trimmedThisGesture }
+        if (targetCandidates.isEmpty()) return
 
         var target: StrokeItem? = null; var bestDist = Float.MAX_VALUE
-        for (c in candidates) {
+        for (c in targetCandidates) {
             val d = distanceToShapeOutline(c.data, x, y)
             if (d < bestDist) { bestDist = d; target = c }
         }
@@ -4999,7 +5007,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // Find intersections with OTHER strokes, but ONLY test segments within the tapped
         // contour — never a fake "segment" bridging two disconnected pieces of the same shape.
         val cutPositions = mutableListOf<Float>()
-        for (other in candidates) {
+        for (other in allNearby) {
             if (other === t) continue
             val om = android.graphics.PathMeasure(rotatedPathFor(other), false)
             val oPts = mutableListOf<Float>()
@@ -5062,6 +5070,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (toAdd.isEmpty()) return
 
         actions.remove(t); actions.addAll(toAdd)
+        trimmedThisGesture.addAll(toAdd)
         redoStack.clear(); markSpatialDirty(); invalidate()
     }
 
