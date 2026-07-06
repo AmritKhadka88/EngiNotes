@@ -110,6 +110,12 @@ val SHAPE_TOOLS = setOf(
     Tool.RING, Tool.BLOCK_ARROW_RIGHT, Tool.BLOCK_ARROW_LEFT, Tool.BLOCK_ARROW_UP, Tool.BLOCK_ARROW_DOWN,
     Tool.SQUARE_ROUNDED_SMALL, Tool.BURST, Tool.FRAME, Tool.PLAQUE, Tool.FIVE_POINT_BURST
 )
+val EXPLICIT_VERTEX_SHAPES = setOf(
+    Tool.LINE, Tool.ARROW, Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.CIRCLE, Tool.ELLIPSE,
+    Tool.TRIANGLE, Tool.ISOSCELES_TRIANGLE, Tool.TRIANGLE_DOWN, Tool.RIGHT_TRIANGLE, Tool.DIAMOND,
+    Tool.TRAPEZOID, Tool.PARALLELOGRAM, Tool.PENTAGON, Tool.HEXAGON, Tool.HEPTAGON, Tool.OCTAGON,
+    Tool.NONAGON, Tool.DECAGON, Tool.STAR, Tool.CROSS, Tool.PEN, Tool.CURVE, Tool.ARC
+)
 val CLOSED_SHAPES = setOf(
     Tool.RECTANGLE, Tool.ROUNDED_RECT, Tool.CIRCLE, Tool.ELLIPSE,
     Tool.TRIANGLE, Tool.DIAMOND, Tool.STAR, Tool.PENTAGON, Tool.HEXAGON,
@@ -4938,42 +4944,60 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return p
     }
 
+    // One sampled point along a target's path, tagged with which CONTOUR it belongs to and its
+    // arc-length position WITHIN that contour (not mixed with other contours' arc-lengths).
+    private data class TrimSample(val x: Float, val y: Float, val contourIdx: Int, val localArc: Float)
+
     private fun trimAt(x: Float, y: Float) {
         val r = eraserSize / 2f
         val candidates = itemsNear(x, y, r * 4f).filterIsInstance<StrokeItem>().filter { !it.data.isLocked }
         if (candidates.isEmpty()) return
 
-        // Target = the stroke whose outline is closest to the tap
         var target: StrokeItem? = null; var bestDist = Float.MAX_VALUE
         for (c in candidates) {
             val d = distanceToShapeOutline(c.data, x, y)
             if (d < bestDist) { bestDist = d; target = c }
         }
         val t = target ?: return
-        if (bestDist > r * 2.5f) return  // tap wasn't close enough to any stroke to trim it
+        if (bestDist > r * 2.5f) return
 
-        // Densely sample the target's VISUAL (rotated) path, tracking cumulative arc-length.
-        val measure = android.graphics.PathMeasure(rotatedPathFor(t), false)
-        val allPts = mutableListOf<Float>(); val cumLen = mutableListOf<Float>()
-        val pos = FloatArray(2); var totalLen = 0f
-        do {
-            val len = measure.length
-            if (len <= 0f) continue
-            val segCount = maxOf(150, (len / 2f).toInt())
-            val step = (len / segCount).coerceAtLeast(0.25f)
-            var dist = 0f
-            while (dist <= len) { measure.getPosTan(dist, pos, null); allPts.add(pos[0]); allPts.add(pos[1]); cumLen.add(totalLen + dist); dist += step }
-            totalLen += len
-        } while (measure.nextContour())
-        if (allPts.size < 4) return
+        // Sample the target's VISUAL path CONTOUR-AWARE: each sample knows which contour it
+        // belongs to and its arc-length position WITHIN that contour only. Some shapes (e.g.
+        // Tool.CROSS, built from two separate moveTo() calls) are genuinely made of multiple
+        // disconnected pieces in one Path. Treating them as one flat continuous sequence — as
+        // the previous version did — mixed points from disconnected pieces into one garbled
+        // output object: still technically present and selectable, but rendering wrong or not
+        // at all, which looked like "the whole shape got erased" while it was actually just
+        // corrupted.
+        val allSamples = mutableListOf<TrimSample>()
+        val contourLens = mutableListOf<Float>()
+        run {
+            val measure = android.graphics.PathMeasure(rotatedPathFor(t), false)
+            var contourIdx = 0
+            do {
+                val len = measure.length
+                if (len > 0f) {
+                    val segCount = maxOf(150, (len / 2f).toInt())
+                    val step = (len / segCount).coerceAtLeast(0.25f)
+                    var dist = 0f
+                    val pos = FloatArray(2)
+                    while (dist <= len) { measure.getPosTan(dist, pos, null); allSamples.add(TrimSample(pos[0], pos[1], contourIdx, dist)); dist += step }
+                    contourLens.add(len)
+                } else contourLens.add(0f)
+                contourIdx++
+            } while (measure.nextContour())
+        }
+        if (allSamples.isEmpty()) return
 
-        // Tap's own arc-length position (nearest sampled point)
-        var tapArcPos = 0f; var tapNearest = Float.MAX_VALUE
-        var i = 0
-        while (i < allPts.size) { val d = distance(x, y, allPts[i], allPts[i+1]); if (d < tapNearest) { tapNearest = d; tapArcPos = cumLen[i/2] }; i += 2 }
+        // Nearest sample overall determines WHICH contour the tap landed on, and the tap's
+        // arc position within just that contour.
+        var tapContour = 0; var tapArcPos = 0f; var tapNearest = Float.MAX_VALUE
+        for (s in allSamples) { val d = distance(x, y, s.x, s.y); if (d < tapNearest) { tapNearest = d; tapContour = s.contourIdx; tapArcPos = s.localArc } }
+        val contourSamples = allSamples.filter { it.contourIdx == tapContour }
+        if (contourSamples.size < 2) return
 
-        // Find all intersections with OTHER nearby strokes, recording their arc-length position
-        // along the TARGET path.
+        // Find intersections with OTHER strokes, but ONLY test segments within the tapped
+        // contour — never a fake "segment" bridging two disconnected pieces of the same shape.
         val cutPositions = mutableListOf<Float>()
         for (other in candidates) {
             if (other === t) continue
@@ -4989,49 +5013,52 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             } while (om.nextContour())
             if (oPts.size < 4) continue
             var ti = 0
-            while (ti + 3 < allPts.size) {
-                val ax1=allPts[ti]; val ay1=allPts[ti+1]; val ax2=allPts[ti+2]; val ay2=allPts[ti+3]
+            while (ti + 1 < contourSamples.size) {
+                val a1 = contourSamples[ti]; val a2 = contourSamples[ti + 1]
                 var oi = 0
                 while (oi + 3 < oPts.size) {
-                    val segT = segSegIntersectionT(ax1,ay1,ax2,ay2,oPts[oi],oPts[oi+1],oPts[oi+2],oPts[oi+3])
-                    if (segT != null) cutPositions.add(cumLen[ti/2] + segT * (cumLen[ti/2+1] - cumLen[ti/2]))
+                    val segT = segSegIntersectionT(a1.x, a1.y, a2.x, a2.y, oPts[oi], oPts[oi+1], oPts[oi+2], oPts[oi+3])
+                    if (segT != null) cutPositions.add(a1.localArc + segT * (a2.localArc - a1.localArc))
                     oi += 2
                 }
-                ti += 2
+                ti++
             }
         }
-        if (cutPositions.isEmpty()) return  // no cutting edge found — do nothing rather than surprise-delete
+        if (cutPositions.isEmpty()) return
         cutPositions.sort()
 
-        var lowerBound = 0f; var upperBound = totalLen
+        val contourTotalLen = contourLens.getOrElse(tapContour) { 0f }
+        var lowerBound = 0f; var upperBound = contourTotalLen
         for (cp in cutPositions) {
             if (cp <= tapArcPos) lowerBound = maxOf(lowerBound, cp)
             if (cp >= tapArcPos) { upperBound = cp; break }
         }
 
-        // Safety guard: TRIM should remove a SMALL, precisely-bounded segment near the tap —
-        // never the majority of the object. If the computed range is degenerate (inverted) or
-        // would remove most of the stroke's length, something went wrong in bound-finding
-        // (e.g. dense/near-duplicate crossings from a wobbly hand-drawn cutting edge). Abort
-        // and leave the object untouched rather than risk silently deleting the whole thing.
+        // Safety guard: never remove more than half of the TAPPED CONTOUR (not the whole
+        // multi-part shape) — a degenerate bracket should abort, not silently wipe everything.
         if (upperBound <= lowerBound) return
         val removedLen = upperBound - lowerBound
-        if (totalLen > 0f && removedLen > totalLen * 0.5f) return
+        if (contourTotalLen > 0f && removedLen > contourTotalLen * 0.5f) return
 
-        val keepBefore = mutableListOf<Float>(); val keepAfter = mutableListOf<Float>()
-        i = 0
-        while (i < allPts.size) {
-            val p2 = cumLen[i/2]
-            if (p2 <= lowerBound) { keepBefore.add(allPts[i]); keepBefore.add(allPts[i+1]) }
-            else if (p2 >= upperBound) { keepAfter.add(allPts[i]); keepAfter.add(allPts[i+1]) }
-            i += 2
-        }
         val toAdd = mutableListOf<StrokeItem>()
+        val keepBefore = mutableListOf<Float>(); val keepAfter = mutableListOf<Float>()
+        for (s in contourSamples) {
+            if (s.localArc <= lowerBound) { keepBefore.add(s.x); keepBefore.add(s.y) }
+            else if (s.localArc >= upperBound) { keepAfter.add(s.x); keepAfter.add(s.y) }
+        }
         if (keepBefore.size >= 4) { val d = StrokeData(t.data.type, keepBefore, t.data.color, t.data.strokeWidth, false, penStyle = t.data.penStyle, opacity = t.data.opacity, lineType = t.data.lineType); toAdd.add(StrokeItem(d, d.buildPath(), d.toPaint())) }
         if (keepAfter.size >= 4) { val d = StrokeData(t.data.type, keepAfter, t.data.color, t.data.strokeWidth, false, penStyle = t.data.penStyle, opacity = t.data.opacity, lineType = t.data.lineType); toAdd.add(StrokeItem(d, d.buildPath(), d.toPaint())) }
 
-        // Final guard: if the "trim" computed nothing surviving (both fragments too small),
-        // do NOT remove the original — that would delete the whole object with no replacement.
+        // Any OTHER contours (disconnected pieces the tap didn't touch, e.g. the vertical bar
+        // of a "+" when only the horizontal bar was trimmed) survive completely untouched, as
+        // their own separate items — never merged into the trimmed contour's output.
+        for (ci in contourLens.indices) {
+            if (ci == tapContour) continue
+            val cpts = mutableListOf<Float>()
+            for (s in allSamples) if (s.contourIdx == ci) { cpts.add(s.x); cpts.add(s.y) }
+            if (cpts.size >= 4) { val d = StrokeData(t.data.type, cpts, t.data.color, t.data.strokeWidth, false, penStyle = t.data.penStyle, opacity = t.data.opacity, lineType = t.data.lineType); toAdd.add(StrokeItem(d, d.buildPath(), d.toPaint())) }
+        }
+
         if (toAdd.isEmpty()) return
 
         actions.remove(t); actions.addAll(toAdd)
@@ -5659,12 +5686,52 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
             }
             else -> {
-                // All polygon shapes (rectangle, triangle, star, etc.): build ONE unified
-                // multi-vertex pline (Tool.PEN) walking through all vertices in order, closing
-                // the loop back to vertex 0 for closed shapes. This matches the same object
-                // model as the dedicated Polyline tool — a single connected stroke, not N
-                // separate LINE items — so unrelated edges stay joined as one object and the
-                // eraser (via splitStrokeAroundEraser) naturally produces correctly-connected
+                if (!EXPLICIT_VERTEX_SHAPES.contains(data.type)) {
+                    // Complex/unhandled shape (RING, GEAR, CLOUD, SPEECH_BUBBLE, HEART, BURST,
+                    // etc.) — shapeEndpoints() has no correct vertex list for these, so using it
+                    // silently produced a "4 bounding-box corners" rectangle approximation that
+                    // looked nothing like the original shape. Sample the ACTUAL rendered path
+                    // directly instead — the same reliable technique already used for circles —
+                    // emitting ONE fragment PER CONTOUR so genuinely multi-part shapes (anything
+                    // built from multiple moveTo() calls) don't get their disconnected pieces
+                    // incorrectly merged into a single connected pline.
+                    val path = data.buildPath()
+                    if (rot != 0f) {
+                        val b = getBoundsRaw(StrokeItem(data, path, data.toPaint()))
+                        if (b != null) {
+                            val m = android.graphics.Matrix()
+                            m.setRotate(rot, (b[0]+b[2])/2f, (b[1]+b[3])/2f)
+                            path.transform(m)
+                        }
+                    }
+                    val result = mutableListOf<StrokeItem>()
+                    val measure = android.graphics.PathMeasure(path, false)
+                    do {
+                        val len = measure.length
+                        if (len > 0f) {
+                            val segPts = mutableListOf<Float>()
+                            val segments = maxOf(24, (len / 4f).toInt())
+                            val pos = FloatArray(2)
+                            for (k in 0..segments) {
+                                val dist = (len * k / segments).coerceAtMost(len)
+                                measure.getPosTan(dist, pos, null)
+                                segPts.add(pos[0]); segPts.add(pos[1])
+                            }
+                            if (segPts.size >= 4) {
+                                val d = StrokeData(Tool.PEN, segPts, data.color, data.strokeWidth, false,
+                                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity)
+                                result.add(StrokeItem(d, d.buildPath(), d.toPaint()))
+                            }
+                        }
+                    } while (measure.nextContour())
+                    return result
+                }
+                // All simple straight-edged polygon shapes (rectangle, triangle, star, etc.):
+                // build ONE unified multi-vertex pline (Tool.PEN) walking through all vertices in
+                // order, closing the loop back to vertex 0 for closed shapes. This matches the
+                // same object model as the dedicated Polyline tool — a single connected stroke,
+                // not N separate LINE items — so unrelated edges stay joined as one object and
+                // the eraser (via splitStrokeAroundEraser) naturally produces correctly-connected
                 // pline fragments around whatever was actually erased.
                 val closed = CLOSED_SHAPES.contains(data.type)
                 val plinePts = mutableListOf<Float>()
