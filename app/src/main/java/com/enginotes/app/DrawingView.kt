@@ -882,6 +882,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Fill items currently mutated in-memory during an active erase drag, not yet written to
     // disk. Flushed once on ACTION_UP instead of on every touch tick — see eraseFillItemRegion.
     private val dirtyFillItems = mutableSetOf<FillItem>()
+    private var trimLastX = Float.NaN; private var trimLastY = Float.NaN  // throttle tracking for drag-to-trim
     var eraserShape: EraserShape = EraserShape.ROUND
     var fillShapes: Boolean = false
     var fillColor: Int = Color.RED
@@ -4536,7 +4537,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val pressure = event.pressure.coerceIn(0.3f, 1.5f)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (currentTool == Tool.ERASER && eraserMode == EraserMode.TRIM) { trimAt(wx, wy); invalidate(); return }
+                if (currentTool == Tool.ERASER && eraserMode == EraserMode.TRIM) { trimLastX = wx; trimLastY = wy; trimAt(wx, wy); invalidate(); return }
                 if (currentTool == Tool.ERASER) { eraseAt(wx, wy); invalidate(); return }
                 // Snap start point to nearest existing endpoint if snap is enabled
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
@@ -4563,7 +4564,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 onDrawingStarted?.invoke()
             }
             MotionEvent.ACTION_MOVE -> {
-                if (currentTool == Tool.ERASER && eraserMode == EraserMode.TRIM) { invalidate(); return }
+                if (currentTool == Tool.ERASER && eraserMode == EraserMode.TRIM) {
+                    val stride = (eraserSize / 2f / scaleFactor).coerceAtLeast(1f)
+                    var lastTx = trimLastX; var lastTy = trimLastY
+                    for (h in 0 until event.historySize) {
+                        val hx = screenToWorldX(event.getHistoricalX(h)); val hy = screenToWorldY(event.getHistoricalY(h))
+                        if (lastTx.isNaN() || distance(hx, hy, lastTx, lastTy) >= stride) { trimAt(hx, hy); lastTx = hx; lastTy = hy }
+                    }
+                    trimAt(wx, wy); trimLastX = wx; trimLastY = wy
+                    invalidate(); return
+                }
                 if (currentTool == Tool.ERASER) {
                     // Process historical positions but skip some for performance — eraser stride
                     // = half the eraser diameter so we never miss a gap but skip redundant samples
@@ -4711,7 +4721,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 item.path = item.data.buildPath(); invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                if (currentTool == Tool.ERASER) { flushDirtyFillItems() }
+                if (currentTool == Tool.ERASER) { flushDirtyFillItems(); trimLastX = Float.NaN; trimLastY = Float.NaN }
                 // Snap end point to nearest existing endpoint if snap is enabled
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
                     val pts0 = currentItem?.data?.points
