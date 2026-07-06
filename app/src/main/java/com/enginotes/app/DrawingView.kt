@@ -879,6 +879,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var eraserSize: Float = 40f
     var eraserMode: EraserMode = EraserMode.OBJECT
     var eraserAffectsFill: Boolean = true  // when false, eraser skips FillItems entirely (leaves colour fills untouched)
+    // Fill items currently mutated in-memory during an active erase drag, not yet written to
+    // disk. Flushed once on ACTION_UP instead of on every touch tick — see eraseFillItemRegion.
+    private val dirtyFillItems = mutableSetOf<FillItem>()
     var eraserShape: EraserShape = EraserShape.ROUND
     var fillShapes: Boolean = false
     var fillColor: Int = Color.RED
@@ -4520,6 +4523,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun handleDrawing(event: MotionEvent) {
+        // Narrow safety net: if the eraser gesture gets interrupted (e.g. a parent view steals
+        // the touch), flush any in-memory-only fill edits rather than leaving them stranded
+        // until some later gesture happens to trigger a flush. Scoped ONLY to this case so it
+        // never affects any other tool's cancel/up behavior.
+        if (event.actionMasked == MotionEvent.ACTION_CANCEL && currentTool == Tool.ERASER) { flushDirtyFillItems(); return }
         hoverX = event.x; hoverY = event.y
         var wx = screenToWorldX(event.x); var wy = screenToWorldY(event.y)
         if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH || SHAPE_TOOLS.contains(currentTool)) {
@@ -4703,6 +4711,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 item.path = item.data.buildPath(); invalidate()
             }
             MotionEvent.ACTION_UP -> {
+                if (currentTool == Tool.ERASER) { flushDirtyFillItems() }
                 // Snap end point to nearest existing endpoint if snap is enabled
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
                     val pts0 = currentItem?.data?.points
@@ -5026,12 +5035,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val bex = ((ex - item.x) * scaleX).toInt(); val bey = ((ey - item.y) * scaleY).toInt()
         val brx = (r * scaleX).toInt().coerceAtLeast(1); val bry = (r * scaleY).toInt().coerceAtLeast(1)
 
-        // Cheap early-out: sample a sparse grid of points within the erase circle in the
-        // CACHED (unmodified) bitmap for any opaque pixel, before doing the expensive
-        // copy+modify+PNG-encode+disk-write cycle below. This was previously running in full
-        // on EVERY erase tick merely near the fill's bounding box — even when the eraser never
-        // touched a single visible pixel — writing a full PNG to disk each time and making
-        // erasing near any filled shape progressively slower and less responsive.
+        // Cheap early-out: sample a sparse grid of points within the erase circle for any
+        // opaque pixel before touching the bitmap at all.
         var anyOpaqueHit = false
         val stepX = maxOf(1, brx / 6); val stepY = maxOf(1, bry / 6)
         outer@ for (sy in -bry..bry step stepY) {
@@ -5042,20 +5047,49 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (px in 0 until bw && py in 0 until bh && (cached.getPixel(px, py) ushr 24) != 0) { anyOpaqueHit = true; break@outer }
             }
         }
-        if (!anyOpaqueHit) return item  // eraser isn't actually touching any visible fill pixel — skip entirely
+        if (!anyOpaqueHit) return item
 
-        val bmp = cached.copy(Bitmap.Config.ARGB_8888, true)
+        // Make ONE mutable copy per gesture (tracked via dirtyFillItems), then draw directly
+        // onto that SAME bitmap for every subsequent tick in this gesture — no repeated
+        // allocation, no repeated full-bitmap pixel scan, and critically NO disk write here at
+        // all. The expensive PNG encode + FileOutputStream write (and the full-transparency
+        // check that decides whether to remove the item) are deferred to flushDirtyFillItems(),
+        // called once on ACTION_UP. This was previously the main cause of erasing becoming
+        // slow/jammed near any filled shape — a full copy+scan+disk-write on every touch tick.
+        val bmp: Bitmap
+        if (dirtyFillItems.contains(item)) {
+            bmp = item.bitmap ?: cached.copy(Bitmap.Config.ARGB_8888, true).also { item.bitmap = it }
+        } else {
+            bmp = cached.copy(Bitmap.Config.ARGB_8888, true)
+            item.bitmap = bmp
+            dirtyFillItems.add(item)
+        }
         val cv = Canvas(bmp)
         val p = Paint(); p.color = Color.TRANSPARENT; p.style = Paint.Style.FILL
         p.xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR)
         cv.drawOval(RectF((bex - brx).toFloat(), (bey - bry).toFloat(), (bex + brx).toFloat(), (bey + bry).toFloat()), p)
-        // Check if anything remains
-        val pixels = IntArray(bw * bh); bmp.getPixels(pixels, 0, bw, 0, 0, bw, bh)
-        if (pixels.all { (it ushr 24) == 0 }) return null // fully transparent - remove item
-        // Save updated bitmap back to file
-        try { FileOutputStream(item.path).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) } } catch (e: Exception) { return item }
-        synchronized(bitmapCache) { bitmapCache.remove(item.path) } // invalidate so it reloads
         return item
+    }
+
+    // Flushes all in-memory-only fill edits from the current erase gesture: checks each dirty
+    // FillItem for full transparency (removing it if so) and writes the rest to disk exactly
+    // once. Called on ACTION_UP for the eraser, never during ACTION_MOVE.
+    private fun flushDirtyFillItems() {
+        if (dirtyFillItems.isEmpty()) return
+        var removedAny = false
+        for (item in dirtyFillItems) {
+            val bmp = item.bitmap ?: continue
+            val bw = bmp.width; val bh = bmp.height
+            val pixels = IntArray(bw * bh); bmp.getPixels(pixels, 0, bw, 0, 0, bw, bh)
+            if (pixels.all { (it ushr 24) == 0 }) {
+                actions.remove(item); removedAny = true; continue
+            }
+            try { FileOutputStream(item.path).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) } } catch (e: Exception) { }
+            synchronized(bitmapCache) { bitmapCache.remove(item.path) }
+        }
+        dirtyFillItems.clear()
+        if (removedAny) markSpatialDirty()
+        invalidate()
     }
     // sample-point distance), so erasing is accurate to what's visually under the eraser circle
     // regardless of how sparse the stroke's recorded points are.
@@ -5876,6 +5910,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // ── Serialize / Deserialize ─────────────────────────────────────
 
     fun serialize(): String {
+        flushDirtyFillItems()  // safety net: never save with fill edits still only in memory
         val sb = StringBuilder()
         sb.append("META\u0001${paperType.name}\u0001${canvasMode.name}\u0001${paperSize.name}\u0001${pageOrientation.name}\u0001$paperColor\n")
         for (a in actions) when (a) {
