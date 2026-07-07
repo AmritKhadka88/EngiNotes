@@ -964,27 +964,56 @@ class MainActivity : AppCompatActivity() {
 
     private fun applyToolbarTheme() {
         val theme = currentAppTheme()
-        val bars = listOf(findViewById<View?>(R.id.primaryToolbarScroll), findViewById<HorizontalScrollView?>(R.id.toolbarScroll))
-        for (bar in bars) {
-            bar ?: continue
-            val radius = dp(28).toFloat()  // full capsule — comfortably more than half typical bar height
-            val (fillColor, elev) = when (theme) {
-                "TRANSLUCENT" -> Color.parseColor("#B3FFFFFF") to dp(3)
-                "GLASS" -> Color.parseColor("#8CFFFFFF") to dp(2)
-                else -> Color.parseColor("#FFFFFFFF") to dp(6)
-            }
-            bar.background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(fillColor)
-                cornerRadius = radius
-                setStroke(dp(1) / 2, Color.parseColor(if (theme == "ORIGINAL") "#1F000000" else "#33FFFFFF"))
-            }
-            bar.elevation = elev.toFloat()
-            if (theme == "GLASS" && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                bar.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(dp(14).toFloat(), dp(14).toFloat(), android.graphics.Shader.TileMode.CLAMP))
-            } else {
-                bar.setRenderEffect(null)
+        // The bar itself is now just an invisible container — no background, no shadow of its
+        // own. Each individual button gets its OWN pill-shaped background, so the buttons are
+        // the visible surface (as requested), not one big bar behind them.
+        for (barId in listOf(R.id.primaryToolbarScroll, R.id.toolbarScroll)) {
+            findViewById<View?>(barId)?.apply { background = null; elevation = 0f }
+        }
+        val primaryIds = listOf(R.id.btnSelect, R.id.btnText, R.id.btnDraw, R.id.btnHighlighter, R.id.btnBrush,
+                                 R.id.btnQuickEraser, R.id.btnQuickFill, R.id.btnTools, R.id.btnInsert,
+                                 R.id.btnUndo, R.id.btnRedo)
+        for (id in primaryIds) {
+            findViewById<View?>(id)?.apply {
+                background = themedPillDrawable(theme); elevation = themedPillElevation(theme)
+                (layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+                    lp.marginStart = dp(3); lp.marginEnd = dp(3); layoutParams = lp
+                }
             }
         }
+    }
+
+    // Builds a pill-shaped background whose LOOK actually differs per theme, not just its alpha:
+    // ORIGINAL is a solid, opaque, popped-out button (like a real physical key). TRANSLUCENT is a
+    // flat, uniform semi-transparent pill (canvas shows through evenly). GLASS adds a diagonal
+    // gradient sheen (lighter top-left fading to more transparent bottom-right) plus a fine top
+    // highlight, approximating a glossy glass surface without relying on a real background blur
+    // (which isn't achievable this way — RenderEffect blurs the view's own content, not what's
+    // behind it, which is what broke the buttons last time).
+    private fun themedPillDrawable(theme: String): android.graphics.drawable.Drawable {
+        val radius = dp(20).toFloat()
+        return when (theme) {
+            "TRANSLUCENT" -> android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#99FFFFFF")); cornerRadius = radius
+                setStroke(dp(1) / 2, Color.parseColor("#33FFFFFF"))
+            }
+            "GLASS" -> android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+                intArrayOf(Color.parseColor("#B3FFFFFF"), Color.parseColor("#5CFFFFFF"))
+            ).apply {
+                cornerRadius = radius
+                setStroke(dp(1) / 2, Color.parseColor("#66FFFFFF"))
+            }
+            else -> android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.WHITE); cornerRadius = radius
+                setStroke(dp(1) / 2, Color.parseColor("#1F000000"))
+            }
+        }
+    }
+    private fun themedPillElevation(theme: String): Float = when (theme) {
+        "TRANSLUCENT" -> dp(2).toFloat()
+        "GLASS" -> dp(3).toFloat()
+        else -> dp(5).toFloat()
     }
 
     private fun setAppTheme(theme: String) {

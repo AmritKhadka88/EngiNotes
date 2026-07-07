@@ -2531,6 +2531,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         minX = minOf(minX, pts[i]); maxX = maxOf(maxX, pts[i])
                         minY = minOf(minY, pts[i + 1]); maxY = maxOf(maxY, pts[i + 1]); i += 2
                     }
+                    if (item.data.type == Tool.BRUSH && item.data.brushStyle in setOf(BrushStyle.SPRAY, BrushStyle.FIRE, BrushStyle.GRASS)) {
+                        val pad = item.data.strokeWidth * 2.5f
+                        minX -= pad; maxX += pad; minY -= pad; maxY += pad
+                    }
                     floatArrayOf(minX, minY, maxX, maxY)
                 }.let { b ->
                     // If item has a rotation angle, expand to axis-aligned bbox of the ROTATED shape
@@ -2789,7 +2793,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // being nearby — even when a fill/hatch was drawn on top of it and should have won.
         for (a in candidates.sortedByDescending { orderMap[it] ?: -1 }) {
             when (a) {
-                is StrokeItem -> { if (pathHitTest(a, x, y, pad + a.data.strokeWidth * 0.5f)) return a }
+                is StrokeItem -> {
+                    val hitPad = if (a.data.type == Tool.BRUSH && a.data.brushStyle in setOf(BrushStyle.SPRAY, BrushStyle.FIRE, BrushStyle.GRASS))
+                        pad + a.data.strokeWidth * 2.5f  // scattered dots/flames/blades land well off the raw anchor path
+                    else pad + a.data.strokeWidth * 0.5f
+                    if (pathHitTest(a, x, y, hitPad)) return a
+                }
                 is FillItem -> {
                     // Bbox check first (cheap), then actual pixel alpha at the tap point so
                     // tapping empty space just outside an irregular fill shape's bounding box
@@ -3456,7 +3465,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val group = mutableListOf<Any>()
         val rl = regionBounds[0]; val rt = regionBounds[1]; val rr = regionBounds[2]; val rb = regionBounds[3]
         for (action in actions) {
-            if (action is FillItem) continue
             val b = getBounds(action) ?: continue
             val matches = if (windowMode) {
                 // Window select (L→R): item's full bbox must be completely inside the rectangle
@@ -3466,10 +3474,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // Pure bbox overlap is NOT enough — a large outer shape whose outline is outside
                 // the rect but whose interior contains the rect would incorrectly be selected.
                 // Test: any of the item's actual line segments cross any edge of the selection rect.
-                if (action is StrokeItem) {
+                // Exception: particle-style brushes (SPRAY/FIRE/GRASS) render scattered dots well
+                // off their raw anchor path, so path-crossing doesn't represent what's actually
+                // visible — bbox overlap (already padded for scatter in getBounds) is used instead.
+                val isParticleBrush = action is StrokeItem && action.data.type == Tool.BRUSH &&
+                    action.data.brushStyle in setOf(BrushStyle.SPRAY, BrushStyle.FIRE, BrushStyle.GRASS)
+                if (action is StrokeItem && !isParticleBrush) {
                     pathIntersectsRect(action, rl, rt, rr, rb)
                 } else {
-                    // Non-stroke: use bbox intersection (images, tables etc. have solid bboxes)
+                    // Non-stroke items and particle brushes: use bbox intersection
                     b[0] <= rr && b[2] >= rl && b[1] <= rb && b[3] >= rt
                 }
             }
