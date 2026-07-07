@@ -2769,7 +2769,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // Non-stroke items
         for (a in candidates.sortedByDescending { orderMap[it] ?: -1 }) {
             when (a) {
-                is StrokeItem, is FillItem -> continue
+                is StrokeItem -> continue
+                is FillItem -> {
+                    // Bbox check first (cheap), then actual pixel alpha at the tap point so
+                    // tapping empty space just outside an irregular fill shape's bounding box
+                    // doesn't accidentally select it.
+                    if (x < a.x - pad || x > a.x + a.w + pad || y < a.y - pad || y > a.y + a.h + pad) continue
+                    val bmp = a.bitmap ?: getOrLoadFillBitmap(a) ?: continue
+                    val bx = ((x - a.x) / a.w * bmp.width).toInt().coerceIn(0, bmp.width - 1)
+                    val by = ((y - a.y) / a.h * bmp.height).toInt().coerceIn(0, bmp.height - 1)
+                    if ((bmp.getPixel(bx, by) ushr 24) != 0) return a
+                }
                 is AudioItem -> { if (distance(x, y, a.x, a.y) <= (a.radius + 12f) / scaleFactor) return a }
                 is TableItem, is TextItem, is ImageItem, is DimensionItem -> {
                     val b = getBounds(a) ?: continue
