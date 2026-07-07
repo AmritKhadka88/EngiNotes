@@ -154,7 +154,11 @@ private val PAPER_BASE_COLOR = Color.parseColor("#FFFDF6")
 private val bitmapCache = object : LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
     private val MAX_SIZE = 80 * 1024 * 1024L
     private var currentSize = 0L
-    override fun removeEldestEntry(eldest: Map.Entry<String, Bitmap>): Boolean = currentSize > MAX_SIZE
+    override fun removeEldestEntry(eldest: Map.Entry<String, Bitmap>): Boolean {
+        val over = currentSize > MAX_SIZE
+        if (over) currentSize -= eldest.value.byteCount  // was never decremented — cache became useless after ~80MB of cumulative historical inserts, regardless of current actual size
+        return over
+    }
     fun putBitmap(key: String, bmp: Bitmap) { currentSize += bmp.byteCount; put(key, bmp) }
     fun getBitmap(key: String): Bitmap? = get(key)
 }
@@ -1876,6 +1880,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 freed += s.cachedBitmap!!.byteCount.toLong()
                 s.invalidateCache()
             }
+        }
+        pruneFillBitmaps()
+    }
+
+    // Releases in-memory bitmaps for FillItems well outside the current viewport, so a document
+    // with thousands of fills/hatches doesn't grow unbounded in memory as the user scrolls
+    // around during a session. The disk-backed bitmapCache still holds recently-used bitmaps
+    // and reloads them quickly if scrolled back into view — this only clears each FillItem's
+    // OWN direct reference, which otherwise bypasses that cache entirely once set.
+    private fun pruneFillBitmaps() {
+        val fills = actions.filterIsInstance<FillItem>().filter { it.bitmap != null }
+        if (fills.size <= 40) return  // small documents: no need to churn memory at all
+        val vl = -translateX / scaleFactor; val vt = -translateY / scaleFactor
+        val vr = vl + width / scaleFactor; val vb = vt + height / scaleFactor
+        val marginX = (vr - vl) * 1.5f; val marginY = (vb - vt) * 1.5f
+        for (f in fills) {
+            val outside = f.x + f.w < vl - marginX || f.x > vr + marginX || f.y + f.h < vt - marginY || f.y > vb + marginY
+            if (outside && !dirtyFillItems.contains(f)) f.bitmap = null  // never release a fill mid-erase-gesture
         }
     }
     private fun drawBrushStrokeWithCache(canvas: Canvas, item: StrokeItem) {

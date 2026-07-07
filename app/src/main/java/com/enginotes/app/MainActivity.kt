@@ -498,24 +498,7 @@ class MainActivity : AppCompatActivity() {
         drawingView     = findViewById(R.id.drawingView)
         drawingView.inputMode = try { InputMode.valueOf(getPrefs().getString("input_mode", "AUTO") ?: "AUTO") } catch (e: Exception) { InputMode.AUTO }
 
-        // iOS-style toolbar look: rounded top corners, soft border, subtle shadow — closer to
-        // an iOS tab bar / toolbar than a flat rectangular Android bar.
-        findViewById<View?>(R.id.primaryToolbarScroll)?.apply {
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.WHITE)
-                cornerRadii = floatArrayOf(dp(18).toFloat(), dp(18).toFloat(), dp(18).toFloat(), dp(18).toFloat(), 0f, 0f, 0f, 0f)
-                setStroke(dp(1) / 2, Color.parseColor("#1F000000"))
-            }
-            elevation = dp(6).toFloat()
-        }
-        findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.apply {
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.WHITE)
-                cornerRadius = dp(14).toFloat()
-                setStroke(dp(1) / 2, Color.parseColor("#1F000000"))
-            }
-            elevation = dp(4).toFloat()
-        }
+        applyToolbarTheme()
 
         // Apply iOS-style tactile press feedback to every primary toolbar button.
         for (id in listOf(R.id.btnSelect, R.id.btnText, R.id.btnDraw, R.id.btnHighlighter, R.id.btnBrush,
@@ -973,6 +956,53 @@ class MainActivity : AppCompatActivity() {
     }
     private fun setActiveToolbarBtn(btn: ImageButton?) { activeToolbarButton?.isSelected = false; activeToolbarButton = btn; btn?.isSelected = true }
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    // iOS-style capsule toolbar with soft shadow, in one of three user-selectable themes.
+    // GLASS uses a real frosted blur (RenderEffect) on Android 12+ and falls back to a more
+    // translucent capsule on older versions where live background blur isn't available.
+    private fun currentAppTheme(): String = getPrefs().getString("app_theme", "ORIGINAL") ?: "ORIGINAL"
+
+    private fun applyToolbarTheme() {
+        val theme = currentAppTheme()
+        val bars = listOf(findViewById<View?>(R.id.primaryToolbarScroll), findViewById<HorizontalScrollView?>(R.id.toolbarScroll))
+        for (bar in bars) {
+            bar ?: continue
+            val radius = dp(28).toFloat()  // full capsule — comfortably more than half typical bar height
+            val (fillColor, elev) = when (theme) {
+                "TRANSLUCENT" -> Color.parseColor("#B3FFFFFF") to dp(3)
+                "GLASS" -> Color.parseColor("#8CFFFFFF") to dp(2)
+                else -> Color.parseColor("#FFFFFFFF") to dp(6)
+            }
+            bar.background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(fillColor)
+                cornerRadius = radius
+                setStroke(dp(1) / 2, Color.parseColor(if (theme == "ORIGINAL") "#1F000000" else "#33FFFFFF"))
+            }
+            bar.elevation = elev.toFloat()
+            if (theme == "GLASS" && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                bar.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(dp(14).toFloat(), dp(14).toFloat(), android.graphics.Shader.TileMode.CLAMP))
+            } else {
+                bar.setRenderEffect(null)
+            }
+        }
+    }
+
+    private fun setAppTheme(theme: String) {
+        getPrefs().edit().putString("app_theme", theme).apply()
+        applyToolbarTheme()
+    }
+
+    private fun showThemePickerDialog() {
+        val options = listOf("ORIGINAL" to "Original", "TRANSLUCENT" to "Translucent", "GLASS" to "Glass")
+        val current = currentAppTheme()
+        val labels = options.map { it.second }.toTypedArray()
+        val checkedIndex = options.indexOfFirst { it.first == current }.coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("App theme")
+            .setSingleChoiceItems(labels, checkedIndex) { dialog, which -> setAppTheme(options[which].first); dialog.dismiss() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
 
     // iOS-style press feedback: scales down slightly on touch-down, springs back on release.
     // Applied broadly to toolbar buttons for a tactile, "butter smooth" feel instead of the
@@ -2060,6 +2090,31 @@ class MainActivity : AppCompatActivity() {
             }
         }
         container.addView(bottomBarCb)
+
+        div(); hdr("APPEARANCE")
+        val themeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, dp(6)) }
+        val themeButtons = mutableListOf<TextView>()
+        for ((key, label) in listOf("ORIGINAL" to "Original", "TRANSLUCENT" to "Translucent", "GLASS" to "Glass")) {
+            val b = TextView(this).apply {
+                text = label; textSize = 13f; gravity = Gravity.CENTER
+                setPadding(dp(6), dp(10), dp(6), dp(10))
+                val p = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f); p.setMargins(dp(2), 0, dp(2), 0)
+                layoutParams = p
+                setOnClickListener {
+                    setAppTheme(key)
+                    themeButtons.forEach { tb -> tb.setBackgroundColor(Color.parseColor("#F0EBE0")); tb.setTextColor(Color.parseColor("#4A4A4A")) }
+                    setBackgroundColor(Color.parseColor("#7B61FF")); setTextColor(Color.WHITE)
+                }
+            }
+            if (key == currentAppTheme()) { b.setBackgroundColor(Color.parseColor("#7B61FF")); b.setTextColor(Color.WHITE) }
+            else { b.setBackgroundColor(Color.parseColor("#F0EBE0")); b.setTextColor(Color.parseColor("#4A4A4A")) }
+            themeButtons.add(b); themeRow.addView(b)
+        }
+        container.addView(themeRow)
+        container.addView(TextView(this).apply {
+            text = "Glass gives a real frosted-blur toolbar on Android 12+; older versions fall back to a translucent look."
+            textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(4), 0, 0)
+        })
 
         div(); hdr("INPUT")
         val inputRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, dp(6)) }
