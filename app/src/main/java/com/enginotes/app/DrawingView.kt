@@ -2761,15 +2761,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // Build order map once for efficient sorting (avoid O(n) indexOf per candidate)
         val orderMap = HashMap<Any, Int>(candidates.size * 2)
         for (i in actions.indices) orderMap[actions[i]] = i
-        // Test strokes top-to-bottom (highest index = drawn last = on top)
-        for (a in candidates.sortedByDescending { orderMap[it] ?: -1 }) {
-            if (a !is StrokeItem) continue
-            if (pathHitTest(a, x, y, pad + a.data.strokeWidth * 0.5f)) return a
-        }
-        // Non-stroke items
+        // Single top-to-bottom pass (highest index = drawn last = on top) so whichever item is
+        // ACTUALLY on top visually wins the tap. Previously strokes were tested in their own
+        // pass before fills were even considered, so an outline stroke could "win" a tap just by
+        // being nearby — even when a fill/hatch was drawn on top of it and should have won.
         for (a in candidates.sortedByDescending { orderMap[it] ?: -1 }) {
             when (a) {
-                is StrokeItem -> continue
+                is StrokeItem -> { if (pathHitTest(a, x, y, pad + a.data.strokeWidth * 0.5f)) return a }
                 is FillItem -> {
                     // Bbox check first (cheap), then actual pixel alpha at the tap point so
                     // tapping empty space just outside an irregular fill shape's bounding box
