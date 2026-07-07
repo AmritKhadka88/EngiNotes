@@ -994,19 +994,25 @@ class MainActivity : AppCompatActivity() {
         val radius = dp(20).toFloat()
         return when (theme) {
             "TRANSLUCENT" -> android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.parseColor("#99FFFFFF")); cornerRadius = radius
-                setStroke(dp(1) / 2, Color.parseColor("#33FFFFFF"))
+                // Much lower opacity than before — the canvas should clearly show through
+                setColor(Color.parseColor("#4DFFFFFF"))  // ~30% white
+                cornerRadius = radius
+                setStroke(dp(1), Color.parseColor("#80FFFFFF"))
             }
             "GLASS" -> android.graphics.drawable.GradientDrawable(
                 android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
-                intArrayOf(Color.parseColor("#B3FFFFFF"), Color.parseColor("#5CFFFFFF"))
+                // Cool blue-tinted glass sheen, low opacity, strong contrast between corners —
+                // reads unmistakably as "glass" rather than just another translucent white
+                intArrayOf(Color.parseColor("#66D8E8FF"), Color.parseColor("#1A6B8FBF"))
             ).apply {
                 cornerRadius = radius
-                setStroke(dp(1) / 2, Color.parseColor("#66FFFFFF"))
+                setStroke(dp(1), Color.parseColor("#99FFFFFF"))
             }
             else -> android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.WHITE); cornerRadius = radius
-                setStroke(dp(1) / 2, Color.parseColor("#1F000000"))
+                // Light warm gray (not pure white) so it visibly stands out from a white/cream canvas
+                setColor(Color.parseColor("#FAF7F2"))
+                cornerRadius = radius
+                setStroke(dp(1), Color.parseColor("#D8D2C4"))
             }
         }
     }
