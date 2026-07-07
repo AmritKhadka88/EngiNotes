@@ -5993,14 +5993,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 try { FileOutputStream(outFile).use { fb.compress(Bitmap.CompressFormat.PNG, 100, it) } } catch (e: Exception) { post { invalidate() }; return@execute }
                 val wx0 = screenToWorldX(minX / scale - marginX); val wy0 = screenToWorldY(minY / scale - marginY)
                 val wx1 = screenToWorldX((minX + cw) / scale - marginX); val wy1 = screenToWorldY((minY + ch) / scale - marginY)
+                val newArea = (wx1 - wx0) * (wy1 - wy0)
                 post {
                     val fi = FillItem(outFile.absolutePath, wx0, wy0, wx1 - wx0, wy1 - wy0)
                     if (pendingHatchPattern != null) { fi.hatchPattern = pendingHatchPattern; fi.hatchColor = pendingHatchColor }
                     fi.bitmap = fb
-                    // Only remove an existing FillItem if the tap pixel lands inside it —
-                    // meaning the user re-tapped the same closed region to replace its fill.
-                    // We check pixel-level: the existing fill bitmap must be non-transparent
-                    // at the tap location. This way adjacent closed regions never erase each other.
+                    // Only remove an existing FillItem if the tap pixel lands inside it AND the
+                    // new fill is roughly the same size as the existing one — meaning the user
+                    // re-tapped the same closed region to replace its color. If the new fill is
+                    // MUCH SMALLER (e.g. the intersection between this shape and an overlapping
+                    // one), it's a separate, more localized fill that should layer on top instead
+                    // of destroying the larger existing fill underneath it.
                     val tapWx = tapWorldX; val tapWy = tapWorldY
                     actions.removeAll { existing ->
                         if (existing !is FillItem) return@removeAll false
@@ -6012,7 +6015,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val bx = ((tapWx - existing.x) / existing.w * existBmp.width).toInt().coerceIn(0, existBmp.width - 1)
                         val by = ((tapWy - existing.y) / existing.h * existBmp.height).toInt().coerceIn(0, existBmp.height - 1)
                         val alpha = (existBmp.getPixel(bx, by) ushr 24) and 0xFF
-                        alpha > 25  // non-transparent = tap was inside this fill region
+                        if (alpha <= 25) return@removeAll false  // tap wasn't actually inside this fill
+                        val existingArea = existing.w * existing.h
+                        newArea >= existingArea * 0.7f  // only replace if roughly the same region, not a smaller sub-region
                     }
                     // Insert at the position captured when the fill was initiated, not the end —
                     // so strokes drawn while this fill was still computing correctly stay on top.
