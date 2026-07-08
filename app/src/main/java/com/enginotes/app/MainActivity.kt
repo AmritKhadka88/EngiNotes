@@ -696,6 +696,10 @@ class MainActivity : AppCompatActivity() {
                             drawingView.applyExplodeResult(item, pieces)
                         }
                     }
+                    lBtn("Copy") {
+                        val copy = drawingView.duplicateStrokeItem(item)
+                        drawingView.applyDuplicateResult(copy)
+                    }
                 }
                 canvasContainer.addView(scroll)
                 layerToolbar = scroll
@@ -2508,18 +2512,35 @@ class MainActivity : AppCompatActivity() {
         updateFontChips(fontRow)
         panel.addView(fontScroll)
 
-        // Size slider
-        panel.addView(TextView(this).apply { text = "Size: ${editSize.toInt()}pt"; textSize = 13f; setTextColor(Color.parseColor("#8A8580")); setPadding(0, dp(12), 0, dp(4)) })
-        panel.addView(SeekBar(this).apply {
-            max = 120; progress = editSize.toInt().coerceIn(8, 120)
-            progressTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#26A69A"))
-            thumbTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#26A69A"))
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { if(f) { editSize = v.coerceAtLeast(8).toFloat(); rebuildContextBar() } }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
-        })
+        // Size: numeric input matching MS Word's point-size convention, not a slider —
+        // direct entry lets the user type any exact size (including sizing down further than a
+        // slider's granularity would comfortably allow), with -/+ steppers for quick adjustment.
+        panel.addView(TextView(this).apply { text = "Size (pt)"; textSize = 13f; setTextColor(Color.parseColor("#8A8580")); setPadding(0, dp(12), 0, dp(4)) })
+        val sizeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val sizeInput = android.widget.EditText(this).apply {
+            setText(editSize.toInt().toString())
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dp(70), LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+        fun applySizeInput() {
+            val v = sizeInput.text.toString().toIntOrNull()?.coerceIn(1, 400) ?: editSize.toInt()
+            editSize = v.toFloat(); sizeInput.setText(v.toString()); rebuildContextBar()
+        }
+        sizeInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) { applySizeInput(); true } else false
+        }
+        sizeInput.onFocusChangeListener = android.view.View.OnFocusChangeListener { _, hasFocus -> if (!hasFocus) applySizeInput() }
+        val minusBtn = TextView(this).apply {
+            text = "−"; textSize = 20f; gravity = Gravity.CENTER; setPadding(dp(16), dp(6), dp(16), dp(6))
+            setOnClickListener { editSize = (editSize - 1f).coerceAtLeast(1f); sizeInput.setText(editSize.toInt().toString()); rebuildContextBar() }
+        }
+        val plusBtn = TextView(this).apply {
+            text = "+"; textSize = 20f; gravity = Gravity.CENTER; setPadding(dp(16), dp(6), dp(16), dp(6))
+            setOnClickListener { editSize = (editSize + 1f).coerceAtMost(400f); sizeInput.setText(editSize.toInt().toString()); rebuildContextBar() }
+        }
+        sizeRow.addView(minusBtn); sizeRow.addView(sizeInput); sizeRow.addView(plusBtn)
+        panel.addView(sizeRow)
 
         // Opacity slider
         panel.addView(TextView(this).apply { text = "Opacity: ${editOpacity * 100 / 255}%"; textSize = 13f; setTextColor(Color.parseColor("#8A8580")); setPadding(0, dp(10), 0, dp(4)) })
@@ -3521,8 +3542,29 @@ class MainActivity : AppCompatActivity() {
         val current: Float; val maxSize: Int; val label: String
         when(tool){ Tool.ERASER->{ current=drawingView.eraserSize; maxSize=200; label="Eraser Size" }; Tool.TEXT->{ current=drawingView.defaultTextSize/PT_TO_PX; maxSize=144; label="Font Size (pt)" }; else->{ current=drawingView.currentStrokeWidth; maxSize=100; label="Stroke Width" } }
         val container=LinearLayout(this).apply{ orientation=LinearLayout.VERTICAL; setPadding(50,30,50,10) }
+        if (tool == Tool.TEXT) {
+            // Numeric input matching MS Word's point-size convention — type any exact size,
+            // with -/+ steppers, instead of a slider that can't express precise or very small values.
+            container.addView(TextView(this).apply { text = "$label"; textSize = 16f })
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(12), 0, 0) }
+            val input = android.widget.EditText(this).apply {
+                setText(current.toInt().toString()); inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(dp(80), LinearLayout.LayoutParams.WRAP_CONTENT)
+            }
+            fun apply() { val v = input.text.toString().toIntOrNull()?.coerceIn(1, 400) ?: current.toInt(); drawingView.defaultTextSize = v * PT_TO_PX; input.setText(v.toString()) }
+            input.setOnEditorActionListener { _, actionId, _ -> if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) { apply(); true } else false }
+            input.onFocusChangeListener = android.view.View.OnFocusChangeListener { _, hasFocus -> if (!hasFocus) apply() }
+            val minus = TextView(this).apply { text = "−"; textSize = 22f; gravity = Gravity.CENTER; setPadding(dp(18), dp(8), dp(18), dp(8))
+                setOnClickListener { val v = (input.text.toString().toIntOrNull() ?: current.toInt()) - 1; val cv = v.coerceAtLeast(1); drawingView.defaultTextSize = cv * PT_TO_PX; input.setText(cv.toString()) } }
+            val plus = TextView(this).apply { text = "+"; textSize = 22f; gravity = Gravity.CENTER; setPadding(dp(18), dp(8), dp(18), dp(8))
+                setOnClickListener { val v = (input.text.toString().toIntOrNull() ?: current.toInt()) + 1; val cv = v.coerceAtMost(400); drawingView.defaultTextSize = cv * PT_TO_PX; input.setText(cv.toString()) } }
+            row.addView(minus); row.addView(input); row.addView(plus)
+            container.addView(row)
+            AlertDialog.Builder(this).setTitle(label).setView(container).setPositiveButton("Done", null).show()
+            return
+        }
         val tv=TextView(this).apply{ text="$label: ${current.toInt()}"; textSize=16f }; container.addView(tv)
-        val seek=SeekBar(this).apply{ max=maxSize; progress=current.toInt().coerceIn(1,maxSize); setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(sb:SeekBar?,v:Int,f:Boolean){ val vv=v.coerceAtLeast(1); tv.text="$label: $vv"; when(tool){ Tool.ERASER->drawingView.eraserSize=vv.toFloat(); Tool.TEXT->drawingView.defaultTextSize=vv*PT_TO_PX; else->drawingView.currentStrokeWidth=vv.toFloat() } }; override fun onStartTrackingTouch(sb:SeekBar?){}; override fun onStopTrackingTouch(sb:SeekBar?){} }) }; container.addView(seek)
+        val seek=SeekBar(this).apply{ max=maxSize; progress=current.toInt().coerceIn(1,maxSize); setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(sb:SeekBar?,v:Int,f:Boolean){ val vv=v.coerceAtLeast(1); tv.text="$label: $vv"; when(tool){ Tool.ERASER->drawingView.eraserSize=vv.toFloat(); else->drawingView.currentStrokeWidth=vv.toFloat() } }; override fun onStartTrackingTouch(sb:SeekBar?){}; override fun onStopTrackingTouch(sb:SeekBar?){} }) }; container.addView(seek)
         AlertDialog.Builder(this).setTitle(label).setView(container).setPositiveButton("Done",null).show()
     }
 

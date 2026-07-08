@@ -5258,6 +5258,31 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         selectedItem = null
     }
 
+    // Creates a copy of the item, shifted to sit beside the original (not overlapping it) —
+    // offset by the item's own width plus a small gap, so the copy is always fully clear of
+    // the original regardless of the shape's size.
+    fun duplicateStrokeItem(item: StrokeItem): StrokeItem {
+        val b = getBoundsRaw(item) ?: getBounds(item)
+        val w = if (b != null) (b[2] - b[0]) else item.data.strokeWidth * 4f
+        val gap = (w * 0.15f).coerceAtLeast(20f)
+        val dx = w + gap
+        val newPoints = mutableListOf<Float>()
+        var i = 0
+        while (i + 1 < item.data.points.size) { newPoints.add(item.data.points[i] + dx); newPoints.add(item.data.points[i + 1]); i += 2 }
+        val newClipHoles = item.data.clipHoles.map { floatArrayOf(it[0] + dx, it[1], it[2]) }.toMutableList()
+        val d = StrokeData(item.data.type, newPoints, item.data.color, item.data.strokeWidth, item.data.fill,
+            rotation = item.data.rotation, fillColorVal = item.data.fillColorVal, penStyle = item.data.penStyle,
+            opacity = item.data.opacity, brushStyle = item.data.brushStyle, lineType = item.data.lineType,
+            widths = item.data.widths.toMutableList())
+        d.clipHoles.addAll(newClipHoles)
+        d.isLocked = false
+        return StrokeItem(d, d.buildPath(), d.toPaint())
+    }
+    fun applyDuplicateResult(copy: StrokeItem) {
+        actions.add(copy); redoStack.clear(); markSpatialDirty(); invalidate()
+        selectedItem = copy
+    }
+
     private fun distanceToShapeOutline(data: StrokeData, x: Float, y: Float): Float {
         var tx = x; var ty = y
         val rot = data.rotation
