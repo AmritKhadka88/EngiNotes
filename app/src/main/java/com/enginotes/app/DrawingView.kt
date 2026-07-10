@@ -404,7 +404,13 @@ class StrokeData(
     fun buildCalligraphySegmentQuads(): List<Path> {
         val quads = mutableListOf<Path>()
         if (points.size < 4) return quads
-        val nibAngle = Math.toRadians(45.0) // nib held at 45 degrees, like a real chisel-tip pen
+        // NOTE: Android's canvas has Y increasing DOWNWARD, unlike standard math coordinates.
+        // A "+45 degree" angle computed via plain cos/sin here actually points along the "\"
+        // diagonal on screen, not "/" — flipping the whole thick/thin mapping 90 degrees from
+        // the intended chisel-nib orientation. Using -45 degrees corrects for the Y-flip so the
+        // nib's heavy axis actually lands along "/" as intended, matching standard calligraphy
+        // pen behavior (thick strokes drawn bottom-left to top-right, thin along "\").
+        val nibAngle = Math.toRadians(-45.0) // nib held at 45 degrees, like a real chisel-tip pen
         val nibDirX = kotlin.math.cos(nibAngle).toFloat(); val nibDirY = kotlin.math.sin(nibAngle).toFloat()
         val halfNib = strokeWidth * 0.65f
         var i = 0
@@ -435,7 +441,7 @@ class StrokeData(
     fun buildCalligraphyRibbonPath(): Path {
         val ribbon = Path()
         if (points.size < 4) return buildPath()
-        val nibAngle = Math.toRadians(45.0)
+        val nibAngle = Math.toRadians(-45.0) // corrected for Android's Y-down canvas coordinate flip
         val nibDirX = kotlin.math.cos(nibAngle).toFloat(); val nibDirY = kotlin.math.sin(nibAngle).toFloat()
         val halfNib = strokeWidth * 0.65f
         val px = points[0]; val py = points[1]
