@@ -171,6 +171,11 @@ class StrokeData(
     var widths: MutableList<Float> = mutableListOf(),
     var lineType: LineType = LineType.CONTINUOUS,
     var isLocked: Boolean = false,
+    // Multiplier controlling how thick the calligraphy nib's heavy (perpendicular) axis gets,
+    // relative to strokeWidth. 1.0 = same as strokeWidth at its thickest point; higher values
+    // exaggerate the calligraphic contrast. Stored per-stroke like strokeWidth itself, so
+    // existing strokes keep whatever slant thickness they were drawn with.
+    var calligraphySlantThickness: Float = 1.6f,
     // Pixel-erase holes: each entry is [cx, cy, radius] in world units.
     // Rendered by punching transparent circles out of the shape via PorterDuff.CLEAR.
     val clipHoles: MutableList<FloatArray> = mutableListOf()
@@ -412,7 +417,7 @@ class StrokeData(
         // pen behavior (thick strokes drawn bottom-left to top-right, thin along "\").
         val nibAngle = Math.toRadians(-45.0) // nib held at 45 degrees, like a real chisel-tip pen
         val nibDirX = kotlin.math.cos(nibAngle).toFloat(); val nibDirY = kotlin.math.sin(nibAngle).toFloat()
-        val halfNib = strokeWidth * 0.65f
+        val halfNib = strokeWidth * calligraphySlantThickness
         var i = 0
         while (i + 3 < points.size) {
             val x1 = points[i]; val y1 = points[i + 1]; val x2 = points[i + 2]; val y2 = points[i + 3]
@@ -443,7 +448,7 @@ class StrokeData(
         if (points.size < 4) return buildPath()
         val nibAngle = Math.toRadians(-45.0) // corrected for Android's Y-down canvas coordinate flip
         val nibDirX = kotlin.math.cos(nibAngle).toFloat(); val nibDirY = kotlin.math.sin(nibAngle).toFloat()
-        val halfNib = strokeWidth * 0.65f
+        val halfNib = strokeWidth * calligraphySlantThickness
         val px = points[0]; val py = points[1]
         val nx = nibDirX * halfNib; val ny = nibDirY * halfNib
         ribbon.moveTo(px - nx, py - ny); ribbon.lineTo(points[2] - nx, points[3] - ny)
@@ -818,6 +823,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var currentColor: Int = Color.BLACK
     var currentStrokeWidth: Float = 6f
     var currentPenStyle: PenStyle = PenStyle.FOUNTAIN
+    var currentCalligraphySlant: Float = 1.6f  // applied to new fountain-pen strokes; adjustable separately from base thickness
     var currentLineType: LineType = LineType.CONTINUOUS
     // Snap-to-endpoint: snaps stroke start/end to nearby existing endpoints within snapRadius world units.
     // snapRadius is in screen pixels and converted to world space on use, so it stays consistent at any zoom.
@@ -4542,12 +4548,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     currentTool == Tool.PEN -> {
                         // Ball pen is strictly uniform - no pressure or speed sensitivity, per spec.
                         val baseW = if (currentPenStyle == PenStyle.BALL) currentStrokeWidth else currentStrokeWidth * pressure
-                        StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, baseW, false, rotation = 0f, penStyle = currentPenStyle, opacity = if (currentPenStyle == PenStyle.BALL) 255 else brushOpacity, lineType = currentLineType)
+                        StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, baseW, false, rotation = 0f, penStyle = currentPenStyle, opacity = if (currentPenStyle == PenStyle.BALL) 255 else brushOpacity, lineType = currentLineType, calligraphySlantThickness = currentCalligraphySlant)
                     }
                     currentTool == Tool.HIGHLIGHTER -> StrokeData(Tool.HIGHLIGHTER, mutableListOf(wx, wy), currentColor, highlighterThickness, false, rotation = 0f, penStyle = PenStyle.MARKER, opacity = (highlighterOpacity * 255 / 100))
                     currentTool == Tool.BRUSH -> StrokeData(Tool.BRUSH, mutableListOf(wx, wy), currentColor, brushThickness * pressure, false, rotation = 0f, brushStyle = currentBrushStyle, opacity = brushOpacity)
                     SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, fillShapes, lineType = currentLineType)
-                    else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = brushOpacity, lineType = currentLineType)
+                    else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = brushOpacity, lineType = currentLineType, calligraphySlantThickness = currentCalligraphySlant)
                 }
                 if (currentTool == Tool.PEN && currentPenStyle == PenStyle.FOUNTAIN) data.widths.add(currentStrokeWidth)
                 if (currentTool == Tool.PEN && currentPenStyle == PenStyle.PENCIL) data.widths.add(1f)
@@ -6067,7 +6073,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         sb.append("META\u0001${paperType.name}\u0001${canvasMode.name}\u0001${paperSize.name}\u0001${pageOrientation.name}\u0001$paperColor\n")
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
-            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}\n")
+            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\n")
@@ -6156,7 +6162,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val locked = if (p.size >= 13) p[12] == "true" else false
                                 val holes = mutableListOf<FloatArray>()
                                 if (p.size >= 14 && p[13].isNotBlank()) for (h in p[13].split(";")) { val hv = h.split(","); if (hv.size == 3) holes.add(floatArrayOf(hv[0].toFloat(), hv[1].toFloat(), hv[2].toFloat())) }
-                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, holes); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
+                                val slant = if (p.size >= 15) p[14].toFloatOrNull() ?: 1.6f else 1.6f
+                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
                             } else {
                                 val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
                                 val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
