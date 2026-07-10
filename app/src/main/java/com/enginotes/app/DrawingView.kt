@@ -175,7 +175,7 @@ class StrokeData(
     // relative to strokeWidth. 1.0 = same as strokeWidth at its thickest point; higher values
     // exaggerate the calligraphic contrast. Stored per-stroke like strokeWidth itself, so
     // existing strokes keep whatever slant thickness they were drawn with.
-    var calligraphySlantThickness: Float = 1.6f,
+    var calligraphySlantThickness: Float = 0.65f,
     // Pixel-erase holes: each entry is [cx, cy, radius] in world units.
     // Rendered by punching transparent circles out of the shape via PorterDuff.CLEAR.
     val clipHoles: MutableList<FloatArray> = mutableListOf()
@@ -427,7 +427,11 @@ class StrokeData(
             // Width at this segment: how perpendicular the stroke direction is to the nib's fixed
             // axis. Horizontal motion (perpendicular to a 45-degree nib) reads thick; motion along
             // the nib axis reads thin - the classic chisel-tip behavior.
-            val widthFactor = kotlin.math.abs(ndx * nibDirY - ndy * nibDirX).coerceIn(0.18f, 1f)
+            // Floor raised from the original 0.18 to 0.42: the thin-direction stroke previously
+            // dropped to near-hairline width, which read as too thin relative to the (already
+            // correct) thick direction. The ceiling of 1.0 is untouched since that's what
+            // controls the thick direction, which was already right.
+            val widthFactor = kotlin.math.abs(ndx * nibDirY - ndy * nibDirX).coerceIn(0.42f, 1f)
             val nx = nibDirX * halfNib * widthFactor; val ny = nibDirY * halfNib * widthFactor
             val quad = Path()
             quad.moveTo(x1 - nx, y1 - ny)
@@ -823,7 +827,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var currentColor: Int = Color.BLACK
     var currentStrokeWidth: Float = 6f
     var currentPenStyle: PenStyle = PenStyle.FOUNTAIN
-    var currentCalligraphySlant: Float = 1.6f  // applied to new fountain-pen strokes; adjustable separately from base thickness
+    var currentCalligraphySlant: Float = 0.65f  // applied to new fountain-pen strokes; adjustable separately from base thickness
     var currentLineType: LineType = LineType.CONTINUOUS
     // Snap-to-endpoint: snaps stroke start/end to nearby existing endpoints within snapRadius world units.
     // snapRadius is in screen pixels and converted to world space on use, so it stays consistent at any zoom.
@@ -6162,7 +6166,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val locked = if (p.size >= 13) p[12] == "true" else false
                                 val holes = mutableListOf<FloatArray>()
                                 if (p.size >= 14 && p[13].isNotBlank()) for (h in p[13].split(";")) { val hv = h.split(","); if (hv.size == 3) holes.add(floatArrayOf(hv[0].toFloat(), hv[1].toFloat(), hv[2].toFloat())) }
-                                val slant = if (p.size >= 15) p[14].toFloatOrNull() ?: 1.6f else 1.6f
+                                val slant = if (p.size >= 15) p[14].toFloatOrNull() ?: 0.65f else 0.65f
                                 val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
                             } else {
                                 val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
