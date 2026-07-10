@@ -1271,6 +1271,70 @@ class MainActivity : AppCompatActivity() {
             row.addView(btn)
         }
 
+        // Slant-thickness button for calligraphy (Fountain pen only) — deliberately shaped
+        // differently from the normal size button (a diagonal wedge instead of a round dot) so
+        // it's visually obvious this controls the calligraphic slant, not the base line weight.
+        // Range is 0.5x-4.0x, stored as slant*10 internally for slider granularity.
+        fun slantSizeButton(currentSlant: Float, onChange: (Float) -> Unit) {
+            var currentVal = (currentSlant * 10f).coerceIn(5f, 40f)
+            val btn = FrameLayout(this).apply {
+                val lp = LinearLayout.LayoutParams(BAR_H, BAR_H); lp.setMargins(dp(2),0,dp(2),0); layoutParams = lp
+                background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(11).toFloat() }
+            }
+            val preview = object : android.view.View(this) {
+                override fun onDraw(c: Canvas) {
+                    // Diagonal wedge: widens toward one end, visually distinct from the round
+                    // dot used for normal thickness — reads as "slanted nib" at a glance.
+                    val cx = width / 2f; val cy = height / 2f
+                    val halfLen = width * 0.32f
+                    val thick = (currentVal / 40f * width * 0.22f).coerceIn(2f, width * 0.22f)
+                    val p = Paint(Paint.ANTI_ALIAS_FLAG); p.color = Color.parseColor("#1C1C1E"); p.style = Paint.Style.FILL
+                    val path = android.graphics.Path()
+                    val dx = halfLen * 0.707f; val dy = halfLen * 0.707f  // 45-degree diagonal
+                    val nx = -dy / halfLen * thick; val ny = dx / halfLen * thick
+                    path.moveTo(cx - dx - nx * 0.15f, cy + dy - ny * 0.15f)
+                    path.lineTo(cx + dx - nx, cy - dy - ny)
+                    path.lineTo(cx + dx + nx, cy - dy + ny)
+                    path.lineTo(cx - dx + nx * 0.15f, cy + dy + ny * 0.15f)
+                    path.close()
+                    c.drawPath(path, p)
+                }
+            }
+            btn.addView(preview, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            btn.setOnClickListener { v ->
+                val popup = android.widget.PopupWindow(this)
+                val pLayout = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14))
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat() }
+                }
+                pLayout.addView(TextView(this).apply { text = "Slant Thickness"; textSize = 12f; setTextColor(Color.parseColor("#8A8580")); setPadding(0,0,0,dp(6)) })
+                val sliderView = object : android.view.View(this) {
+                    val trackH = dp(14).toFloat()
+                    override fun onDraw(c: Canvas) {
+                        val tw = width.toFloat(); val ty = (height - trackH) / 2f
+                        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+                        p.color = Color.parseColor("#E0E0E0"); c.drawRoundRect(android.graphics.RectF(0f,ty,tw,ty+trackH), trackH/2f, trackH/2f, p)
+                        val prog = (currentVal - 5f) / 35f * tw
+                        p.color = Color.parseColor("#1C1C1E"); c.drawRoundRect(android.graphics.RectF(0f,ty,prog,ty+trackH), trackH/2f, trackH/2f, p)
+                        p.color = Color.WHITE; c.drawCircle(prog, height/2f, trackH/2f+dp(3).toFloat(), p)
+                        p.color = Color.parseColor("#1C1C1E"); p.style = Paint.Style.STROKE; p.strokeWidth = dp(1).toFloat(); c.drawCircle(prog, height/2f, trackH/2f+dp(3).toFloat(), p)
+                    }
+                    override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+                        if (e.actionMasked == android.view.MotionEvent.ACTION_DOWN || e.actionMasked == android.view.MotionEvent.ACTION_MOVE) {
+                            currentVal = (5f + e.x / width * 35f).coerceIn(5f, 40f)
+                            onChange(currentVal / 10f); preview.invalidate(); invalidate()
+                        }; return true
+                    }
+                }
+                sliderView.layoutParams = LinearLayout.LayoutParams(dp(220), dp(40))
+                pLayout.addView(sliderView)
+                popup.contentView = pLayout; popup.width = dp(256); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+                popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
+                popup.showAsDropDown(v, -dp(100), -dp(90))
+            }
+            row.addView(btn)
+        }
+
         fun opacityButton(currentOpacity: Int, onChange: (Int) -> Unit) {
             var currentVal = currentOpacity
             val btn = object : android.view.View(this) {
@@ -1378,6 +1442,9 @@ class MainActivity : AppCompatActivity() {
                 }
                 divider()
                 sizeButton(drawingView.currentStrokeWidth, 60) { drawingView.currentStrokeWidth = it }
+                if (drawingView.currentPenStyle == PenStyle.FOUNTAIN) {
+                    slantSizeButton(drawingView.currentCalligraphySlant) { drawingView.currentCalligraphySlant = it }
+                }
                 opacityButton(drawingView.brushOpacity) { drawingView.brushOpacity = it; drawingView.invalidate() }
                 divider()
                 eightColors(drawingView.currentColor) { c -> drawingView.currentColor = c }
