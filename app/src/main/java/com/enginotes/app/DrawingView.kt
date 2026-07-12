@@ -433,22 +433,6 @@ class StrokeData(
         return out
     }
 
-    // Merges all per-segment nib quads into a SINGLE path via boolean union before drawing, so
-    // the stroke gets one continuous antialiased outline instead of many small overlapping
-    // quads each getting their own antialiased edge. Drawing quads individually (the old
-    // behavior) left a visible stitched/hatched texture along the stroke silhouette wherever
-    // two adjacent quads' edges didn't land exactly flush — union removes every internal seam
-    // while keeping the same self-intersection-safe geometry (each source quad is still a
-    // simple, non-self-intersecting shape; union just fuses their overlapping regions into one
-    // clean outline instead of relying on a single path's winding rule, which is what caused
-    // the original black-blob bug on cursive loops).
-    fun buildCalligraphyUnionPath(): Path {
-        val quads = buildCalligraphySegmentQuads()
-        val union = Path()
-        for (q in quads) union.op(q, Path.Op.UNION)
-        return union
-    }
-
     // Builds the calligraphy nib as a LIST of small per-segment quads instead of one giant
     // polygon for the whole stroke. This is the robust fix for the self-erasure bug: a single
     // closed polygon traced as "all left edge points then all right edge points reversed" will
@@ -473,6 +457,7 @@ class StrokeData(
         val nibDirX = kotlin.math.cos(nibAngle).toFloat(); val nibDirY = kotlin.math.sin(nibAngle).toFloat()
         val halfNib = strokeWidth * calligraphySlantThickness
         var i = 0
+        var prevNx = 0f; var prevNy = 0f; var havePrev = false
         while (i + 3 < pts.size) {
             val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
             val dx = x2 - x1; val dy = y2 - y1
@@ -494,6 +479,21 @@ class StrokeData(
             quad.lineTo(x1 + nx, y1 + ny)
             quad.close()
             quads.add(quad)
+            // Consecutive quads share the exact point (x1,y1) but each computes its OWN
+            // perpendicular nib offset from its own segment's direction — so wherever the
+            // nib's effective width/angle changes between two segments, their edges only
+            // touch at that one shared corner, leaving a tiny wedge-shaped gap at the joint.
+            // That's what was reading as fine hairline hatching along the stroke. A small
+            // filled circle at the joint, sized to the wider of the two adjacent half-widths,
+            // plugs that gap for free — no path boolean ops, no caching, same O(n) cost as
+            // before.
+            if (havePrev) {
+                val jointRadius = kotlin.math.max(kotlin.math.hypot(nx.toDouble(), ny.toDouble()), kotlin.math.hypot(prevNx.toDouble(), prevNy.toDouble())).toFloat()
+                val joint = Path()
+                joint.addCircle(x1, y1, jointRadius, Path.Direction.CW)
+                quads.add(joint)
+            }
+            prevNx = nx; prevNy = ny; havePrev = true
             i += 2
         }
         return quads
@@ -1477,7 +1477,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val isPencilPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.PENCIL && action.data.widths.size >= 2
                 if (isPencilPen && action.data.rotation == 0f) { action.data.drawPencilStroke(canvas, action.paint); return }
                 if (isCalligraphyPen && action.data.rotation == 0f) {
-                    drawCalligraphyStrokeWithCache(canvas, action)
+                    val quadPaint = Paint(action.paint).apply { style = Paint.Style.FILL }
+                    for (quad in action.data.buildCalligraphySegmentQuads()) canvas.drawPath(quad, quadPaint)
                     return
                 }
                 val renderPath = when { isCalligraphyPen -> action.data.buildCalligraphyRibbonPath(); isFountainPen -> action.data.buildFountainRibbonPath(); else -> action.path }
@@ -1977,35 +1978,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (outside && !dirtyFillItems.contains(f)) f.bitmap = null  // never release a fill mid-erase-gesture
         }
     }
-    private fun drawCalligraphyStrokeWithCache(canvas: Canvas, item: StrokeItem) {
-        if (!item.cacheValid || item.cachedBitmap == null) {
-            val bounds = getBounds(item)
-            val unionPath = item.data.buildCalligraphyUnionPath()
-            if (bounds == null) { canvas.drawPath(unionPath, Paint(item.paint).apply { style = Paint.Style.FILL }); return }
-            val pad = item.data.strokeWidth * 2f
-            val wl = bounds[0] - pad; val wt = bounds[1] - pad
-            val wr = bounds[2] + pad; val wb = bounds[3] + pad
-            val bmpW = ((wr - wl) * CACHE_SCALE).toInt().coerceIn(1, 4096)
-            val bmpH = ((wb - wt) * CACHE_SCALE).toInt().coerceIn(1, 4096)
-            // Skip caching if bitmap would exceed 16 MB — fall back to a direct (uncached) draw
-            if (bmpW.toLong() * bmpH * 4 > 16L * 1024 * 1024) { canvas.drawPath(unionPath, Paint(item.paint).apply { style = Paint.Style.FILL }); return }
-            item.cachedBitmap?.recycle()
-            try {
-                val bmp = android.graphics.Bitmap.createBitmap(bmpW, bmpH, android.graphics.Bitmap.Config.ARGB_8888)
-                val bc = Canvas(bmp)
-                bc.translate(-wl * CACHE_SCALE, -wt * CACHE_SCALE)
-                bc.scale(CACHE_SCALE, CACHE_SCALE)  // render at fixed world scale, zoom-independent
-                bc.drawPath(unionPath, Paint(item.paint).apply { style = Paint.Style.FILL })
-                item.cachedBitmap = bmp
-                item.cacheLeft = wl; item.cacheTop = wt
-                item.cacheRight = wr; item.cacheBottom = wb
-                item.cacheValid = true
-            } catch (e: OutOfMemoryError) { canvas.drawPath(unionPath, Paint(item.paint).apply { style = Paint.Style.FILL }); return }
-        }
-        val bmp = item.cachedBitmap ?: return
-        val dst = android.graphics.RectF(item.cacheLeft, item.cacheTop, item.cacheRight, item.cacheBottom)
-        canvas.drawBitmap(bmp, null, dst, null)
-    }
 
     private fun drawBrushStrokeWithCache(canvas: Canvas, item: StrokeItem) {
         if (!CACHED_BRUSH_STYLES.contains(item.data.brushStyle)) {
@@ -2268,7 +2240,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val isFountainPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.FOUNTAIN && it.data.widths.size >= 2
             val isPencilPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.PENCIL && it.data.widths.size >= 2
             when {
-                isCalligraphyPen -> canvas.drawPath(it.data.buildCalligraphyUnionPath(), Paint(it.paint).apply { style = Paint.Style.FILL })
+                // Live preview (while still writing) uses the cheap per-quad draw, NOT the
+                // union path — buildCalligraphyUnionPath() recomputes a full boolean union of
+                // every quad in the stroke so far, and doing that from scratch on every single
+                // ACTION_MOVE frame made writing unusably laggy as the stroke grew. The seam
+                // artifact this reintroduces is only visible while actively drawing (moving
+                // fast, not being scrutinized) — the instant the stroke is finalized it's
+                // re-rendered via the cached union path in drawCalligraphyStrokeWithCache,
+                // which only pays the union cost once.
+                isCalligraphyPen -> { val qp = Paint(it.paint).apply { style = Paint.Style.FILL }; for (quad in it.data.buildCalligraphySegmentQuads()) canvas.drawPath(quad, qp) }
                 isFountainPen -> canvas.drawPath(it.data.buildFountainRibbonPath(), Paint(it.paint).apply { style = Paint.Style.FILL })
                 isPencilPen -> it.data.drawPencilStroke(canvas, it.paint)
                 else -> canvas.drawPath(it.path, it.paint)
