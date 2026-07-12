@@ -814,12 +814,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var lastMoveX = 0f; private var lastMoveY = 0f; private var lastMoveTime = 0L
 
     var currentTool: Tool = Tool.PEN
-    // Fired only when DrawingView switches tools ON ITS OWN (link-tap auto-selecting an item,
-    // exiting table-cell editing, finishing an export-window drag) — NOT when MainActivity sets
-    // currentTool directly via its own tool buttons. Without this, the toolbar highlight could
-    // show one tool active while the canvas was actually behaving as a different one, since
-    // these internal switches previously had no way to notify MainActivity at all.
-    var onInternalToolChange: ((Tool) -> Unit)? = null
         set(value) {
             if (field == Tool.SELECT && value != Tool.SELECT) selectedItem = null
             if (field == Tool.ARC && value != Tool.ARC) activeArcItem = null
@@ -829,6 +823,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             field = value; invalidate()
         }
+    // Fired only when DrawingView switches tools ON ITS OWN (link-tap auto-selecting an item,
+    // exiting table-cell editing, finishing an export-window drag) — NOT when MainActivity sets
+    // currentTool directly via its own tool buttons. Without this, the toolbar highlight could
+    // show one tool active while the canvas was actually behaving as a different one, since
+    // these internal switches previously had no way to notify MainActivity at all.
+    var onInternalToolChange: ((Tool) -> Unit)? = null
 
     var currentColor: Int = Color.BLACK
     var currentStrokeWidth: Float = 6f
