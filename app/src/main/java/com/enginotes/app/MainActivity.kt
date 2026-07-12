@@ -1947,7 +1947,15 @@ class MainActivity : AppCompatActivity() {
     // Settings — instead of the feature just silently breaking.
     private val aiExecutor = java.util.concurrent.Executors.newCachedThreadPool()
     private fun geminiApiKey(): String = getPrefs().getString("gemini_api_key", "") ?: ""
-    private fun geminiModel(): String = getPrefs().getString("gemini_model", "gemini-2.5-flash")?.trim()?.ifBlank { "gemini-2.5-flash" } ?: "gemini-2.5-flash"
+    // "gemini-flash-latest" is a Google-maintained ALIAS, not a pinned version — Google
+    // "hot-swaps" it to whichever current Flash model is live, so this never goes stale the
+    // way a specific version number (like the old "gemini-2.5-flash" default) eventually will.
+    // Anyone already saved on that old pinned default gets silently moved to the alias too —
+    // no reason to make existing users hit the same dead end this was just fixed for.
+    private fun geminiModel(): String {
+        val saved = getPrefs().getString("gemini_model", "gemini-flash-latest")?.trim()?.ifBlank { "gemini-flash-latest" } ?: "gemini-flash-latest"
+        return if (saved == "gemini-2.5-flash") "gemini-flash-latest" else saved
+    }
 
     // code: 0 = ok, 1 = not configured, 2 = model not found (likely renamed/retired), 3 = other error
     private fun askGeminiRaw(prompt: String, imageBytes: ByteArray?, onResult: (text: String?, code: Int) -> Unit) {
@@ -2716,7 +2724,7 @@ class MainActivity : AppCompatActivity() {
                     .putString("default_paper",selPaper)
                     .putInt("paper_color", selPaperColor)
                     .putFloat("hatch_scale", selHatchScale)
-                    .putString("gemini_model", modelInput.text.toString().trim().ifBlank { "gemini-2.5-flash" })
+                    .putString("gemini_model", modelInput.text.toString().trim().ifBlank { "gemini-flash-latest" })
                     .putInt("arc_divisions",(arcInput.text.toString().toIntOrNull()?:3).coerceIn(2,12))
                     .putInt("bar_icon_size", selBarSize)
                     .putFloat("dim_font_size", dimFontSz)
