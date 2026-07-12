@@ -441,7 +441,7 @@ class StrokeData(
         // smooth result over microscopically tracking every sampled point, which is exactly
         // what's wanted here even if the shakiness is coming from the finger/pen/digitizer
         // rather than the smoothing being too weak.
-        var smoothed = points
+        var smoothed: List<Float> = points
         repeat(5) { smoothed = onePass(smoothed) }
 
         // Straight-line snap: averaging can only ever soften wobble, never fully remove it —
