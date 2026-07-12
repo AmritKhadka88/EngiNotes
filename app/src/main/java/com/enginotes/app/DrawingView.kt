@@ -518,16 +518,24 @@ class StrokeData(
         val nibDirX = kotlin.math.cos(nibAngle).toFloat(); val nibDirY = kotlin.math.sin(nibAngle).toFloat()
         val segPaint = Paint(basePaint).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND; pathEffect = null }
         var i = 0
+        var smoothedWidth = -1f  // -1 sentinel: first segment sets it directly, no smoothing to blend from yet
         while (i + 3 < pts.size) {
             val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
             val dx = x2 - x1; val dy = y2 - y1
             val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(0.01f)
             val ndx = dx / len; val ndy = dy / len
             // Same width-factor formula as before: how perpendicular the stroke direction is
-            // to the nib's fixed 45-degree axis. Floor of 0.42 keeps the thin direction from
-            // dropping to a near-hairline width.
-            val widthFactor = kotlin.math.abs(ndx * nibDirY - ndy * nibDirX).coerceIn(0.42f, 1f)
-            segPaint.strokeWidth = strokeWidth * calligraphySlantThickness * 2f * widthFactor
+            // to the nib's fixed 45-degree axis. Floor brought back down to 0.15 (from 0.42) —
+            // raising it earlier had killed the dramatic bold/thin chisel contrast that a real
+            // calligraphy nib (and Notewise's rendering) shows; 0.15 restores that contrast.
+            val widthFactor = kotlin.math.abs(ndx * nibDirY - ndy * nibDirX).coerceIn(0.15f, 1f)
+            val targetWidth = strokeWidth * calligraphySlantThickness * 2f * widthFactor
+            // Blend toward the target rather than snapping straight to it each segment — this
+            // is what actually reads as "smooth": the nib width still swings from thin to bold
+            // across the stroke, just as a gradual taper instead of a visible step between two
+            // adjacent line segments.
+            smoothedWidth = if (smoothedWidth < 0f) targetWidth else smoothedWidth * 0.55f + targetWidth * 0.45f
+            segPaint.strokeWidth = smoothedWidth
             canvas.drawLine(x1, y1, x2, y2, segPaint)
             i += 2
         }
