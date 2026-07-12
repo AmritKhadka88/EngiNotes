@@ -4287,7 +4287,25 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     if (kotlin.math.abs(distRatio - 1f) > 0.12f) scaleDetector.onTouchEvent(event)
                 }
                 MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    twoFingerLastX = 0f; twoFingerLastY = 0f; twoFingerInitialDist = 0f
+                    // If exactly one finger will remain after this lifts and finger-pan mode is
+                    // on, that remaining finger's continued movement is handled by the
+                    // single-finger-pan branch at the top of this function, which computes its
+                    // delta against twoFingerLastX/Y — zeroing them here (the old behavior)
+                    // meant the very next move computed a delta against (0,0) instead of the
+                    // finger's actual position, producing one huge jump that slammed the view
+                    // against its scroll clamp (reported as "resets to the top"). Seeding them
+                    // with the remaining finger's current position instead makes that delta
+                    // start at ~0, so panning continues smoothly through the transition.
+                    if (event.actionMasked == MotionEvent.ACTION_POINTER_UP && event.pointerCount - 1 == 1 && fingerPanMode) {
+                        var seeded = false
+                        for (i in 0 until event.pointerCount) {
+                            if (i != event.actionIndex) { twoFingerLastX = event.getX(i); twoFingerLastY = event.getY(i); seeded = true; break }
+                        }
+                        if (!seeded) { twoFingerLastX = 0f; twoFingerLastY = 0f }
+                    } else {
+                        twoFingerLastX = 0f; twoFingerLastY = 0f
+                    }
+                    twoFingerInitialDist = 0f
                     scaleDetector.onTouchEvent(event)
                 }
                 else -> scaleDetector.onTouchEvent(event)
@@ -4777,13 +4795,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 // spans that full range directly, so slow strokes actually pool
                                 // thick and fast strokes actually go thin, not just mildly vary.
                                 val speedNorm = (speed / 2200f).coerceIn(0f, 1f)
-                                val targetWidth = (currentStrokeWidth * (0.4f + (1f - speedNorm) * 1.4f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
+                                val rawTarget = (currentStrokeWidth * (0.4f + (1f - speedNorm) * 1.4f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
+                                val prevWidth = item.data.widths.lastOrNull() ?: currentStrokeWidth
+                                // Rate-limit: cap how much the target can differ from the last
+                                // width in a single sample. A sharp turn/cusp forces the pen to
+                                // momentarily decelerate to change direction — without this cap,
+                                // that single-sample deceleration blip reads as "slowed down to
+                                // pool more ink" and balloons into a visible blob right at the
+                                // turn, even though the hand never actually paused there.
+                                val maxDelta = currentStrokeWidth * 0.10f
+                                val targetWidth = rawTarget.coerceIn(prevWidth - maxDelta, prevWidth + maxDelta)
                                 // Was 0.8/0.2 — so heavily damped that a normal-speed signature
                                 // finished before the width ever caught up to how fast the pen
                                 // was actually moving, reading as flat/unfluid instead of a
                                 // nib that responds to your hand. 0.45/0.55 still smooths raw
                                 // per-sample jitter but lets the ink weight actually track speed.
-                                item.data.widths.add((item.data.widths.lastOrNull() ?: currentStrokeWidth) * 0.45f + targetWidth * 0.55f)
+                                item.data.widths.add(prevWidth * 0.45f + targetWidth * 0.55f)
                             } else {
                                 val targetIntensity = (1f - (speed / 1800f).coerceIn(0f, 0.75f)).coerceIn(0.25f, 1f)
                                 item.data.widths.add((item.data.widths.lastOrNull() ?: 1f) * 0.7f + targetIntensity * 0.3f)
@@ -4806,10 +4833,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val speed = dist / dt * 1000f
                         if (currentPenStyle == PenStyle.FOUNTAIN) {
                             val speedNorm = (speed / 2200f).coerceIn(0f, 1f)
-                            val targetWidth = (currentStrokeWidth * (0.4f + (1f - speedNorm) * 1.4f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
+                            val rawTarget = (currentStrokeWidth * (0.4f + (1f - speedNorm) * 1.4f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
+                            val prevWidth = item.data.widths.lastOrNull() ?: currentStrokeWidth
+                            val maxDelta = currentStrokeWidth * 0.10f
+                            val targetWidth = rawTarget.coerceIn(prevWidth - maxDelta, prevWidth + maxDelta)
                             // 0.45/0.55: still smooths raw jitter but tracks actual pen speed
                             // closely enough to read as fluent rather than lagging behind it.
-                            item.data.widths.add((item.data.widths.lastOrNull() ?: currentStrokeWidth) * 0.45f + targetWidth * 0.55f)
+                            item.data.widths.add(prevWidth * 0.45f + targetWidth * 0.55f)
                         } else {
                             val targetIntensity = (1f - (speed / 1800f).coerceIn(0f, 0.75f)).coerceIn(0.25f, 1f)
                             item.data.widths.add((item.data.widths.lastOrNull() ?: 1f) * 0.7f + targetIntensity * 0.3f)
