@@ -511,19 +511,30 @@ class StrokeData(
         if (points.size < 4) return buildPath()
         val pts = smoothedPoints()
         val left = mutableListOf<Pair<Float, Float>>(); val right = mutableListOf<Pair<Float, Float>>()
+        // Segment count, used below to taper width at both ends of the stroke — without this,
+        // the very first/last sample already carries near-full width, so the ribbon starts and
+        // ends as an abrupt blunt blob instead of tapering to a point like a real nib lifting
+        // on/off the page.
+        val totalSegments = ((pts.size - 2) / 2).coerceAtLeast(1)
+        val taperCount = 4
+        fun endTaper(segIndex: Int): Float {
+            val fadeIn = ((segIndex + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
+            val fadeOut = ((totalSegments - segIndex).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
+            return minOf(fadeIn, fadeOut).coerceIn(0.12f, 1f)
+        }
         var i = 0; var wi = 0
         while (i + 3 < pts.size) {
             val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
             val dx = x2 - x1; val dy = y2 - y1
             val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(0.01f)
             val nx = -dy / len; val ny = dx / len
-            val w = (if (wi < widths.size) widths[wi] else strokeWidth) / 2f
+            val w = (if (wi < widths.size) widths[wi] else strokeWidth) * endTaper(wi) / 2f
             left.add(Pair(x1 + nx * w, y1 + ny * w)); right.add(Pair(x1 - nx * w, y1 - ny * w))
             i += 2; wi++
         }
-        // Cap the final point with the last known width
+        // Cap the final point with the last known width, also tapered
         val lastIdx = pts.size - 2
-        val lastW = (if (widths.isNotEmpty()) widths.last() else strokeWidth) / 2f
+        val lastW = (if (widths.isNotEmpty()) widths.last() else strokeWidth) * endTaper(totalSegments) / 2f
         if (i >= 2) {
             val px = pts[lastIdx]; val py = pts[lastIdx + 1]
             val pdx = px - pts[i - 2]; val pdy = py - pts[i - 1]
@@ -585,7 +596,19 @@ class StrokeData(
         val nibAngle = Math.toRadians(-45.0) // corrected for Android's Y-down canvas coordinate flip
         val nibDirX = kotlin.math.cos(nibAngle).toFloat(); val nibDirY = kotlin.math.sin(nibAngle).toFloat()
         val segPaint = Paint(basePaint).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND; pathEffect = null }
+        // Segment count, used to taper the nib width at both ends — otherwise the very first
+        // segment already carries near-full width, and with a round cap that's an abrupt round
+        // blob right at the stroke's start (same for the end) instead of a nib tapering to a
+        // point the way it lifts on/off the page in real handwriting.
+        val totalSegments = ((pts.size - 2) / 2).coerceAtLeast(1)
+        val taperCount = 4
+        fun endTaper(segIndex: Int): Float {
+            val fadeIn = ((segIndex + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
+            val fadeOut = ((totalSegments - segIndex).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
+            return minOf(fadeIn, fadeOut).coerceIn(0.12f, 1f)
+        }
         var i = 0
+        var segIndex = 0
         var smoothedWidth = -1f  // -1 sentinel: first segment sets it directly, no smoothing to blend from yet
         while (i + 3 < pts.size) {
             val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
@@ -597,7 +620,7 @@ class StrokeData(
             // raising it earlier had killed the dramatic bold/thin chisel contrast that a real
             // calligraphy nib (and Notewise's rendering) shows; 0.15 restores that contrast.
             val widthFactor = kotlin.math.abs(ndx * nibDirY - ndy * nibDirX).coerceIn(0.15f, 1f)
-            val targetWidth = strokeWidth * calligraphySlantThickness * 2f * widthFactor
+            val targetWidth = strokeWidth * calligraphySlantThickness * 2f * widthFactor * endTaper(segIndex)
             // Blend toward the target rather than snapping straight to it each segment — this
             // is what actually reads as "smooth": the nib width still swings from thin to bold
             // across the stroke, just as a gradual taper instead of a visible step between two
@@ -605,7 +628,7 @@ class StrokeData(
             smoothedWidth = if (smoothedWidth < 0f) targetWidth else smoothedWidth * 0.55f + targetWidth * 0.45f
             segPaint.strokeWidth = smoothedWidth
             canvas.drawLine(x1, y1, x2, y2, segPaint)
-            i += 2
+            i += 2; segIndex++
         }
     }
 
@@ -2282,6 +2305,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 isCalligraphyPen -> it.data.drawCalligraphyStroke(canvas, it.paint)
                 isFountainPen -> canvas.drawPath(it.data.buildFountainRibbonPath(), Paint(it.paint).apply { style = Paint.Style.FILL; pathEffect = null })
                 isPencilPen -> it.data.drawPencilStroke(canvas, it.paint)
+                // Was falling through to the flat-width `else` below, so Brush strokes only
+                // showed their real per-point width variation once finalized (via
+                // drawBrushStrokeWithCache) — the live stroke looked uniform-width the whole
+                // time you were actually drawing it, then visibly "changed" the instant you
+                // lifted the pen. Calling the same drawBrushStroke used for the finalized
+                // render (not the cached version — caching a stroke that's still changing every
+                // frame would be pointless) makes the live preview match from the first pixel.
+                // invalidateCache() first: drawBrushStroke reads item.getPoints(), which caches
+                // its result — without invalidating every frame here, it'd keep returning
+                // whatever the point list looked like on the very first frame of the stroke.
+                it.data.type == Tool.BRUSH -> { it.invalidateCache(); drawBrushStroke(canvas, it) }
                 else -> canvas.drawPath(it.path, it.paint)
             }
         }
