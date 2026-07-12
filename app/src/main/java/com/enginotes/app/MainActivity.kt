@@ -568,7 +568,16 @@ class MainActivity : AppCompatActivity() {
         if (prefs.contains("paper_color")) drawingView.paperColor = prefs.getInt("paper_color", drawingView.paperColor)
         pendingFontFamily = prefs.getString("last_font", "sans-serif") ?: "sans-serif"
 
-        val fileName = intent.getStringExtra("filename")
+        // Checked BEFORE the intent extra: if this Activity instance is being recreated after
+        // a configuration change (e.g. screen rotation) rather than freshly launched, the
+        // ORIGINAL intent (still "no filename" for a note that was brand new/unsaved at the
+        // time it was first opened) gets redelivered unchanged — onPause()'s autoSave() may
+        // have since assigned this note a real filename and written it to disk, but without
+        // this check onCreate() would have no way to know that happened, would take the "New
+        // Note" branch below, and load nothing — even though the content is sitting safely on
+        // disk. This is what was actually causing "rotating the screen erases the canvas".
+        val restoredFileName = savedInstanceState?.getString("pending_file_name")
+        val fileName = restoredFileName ?: intent.getStringExtra("filename")
         if (fileName != null) {
             currentFileName = fileName; tvTitle.text = fileName
             val file = File(getDrawingsFolder(),"$fileName.eng")
@@ -4589,6 +4598,12 @@ class MainActivity : AppCompatActivity() {
     private fun autoSave() {
         if(!drawingView.hasContent()) return
         if(currentFileName==null){ val name=nextAutoName(); currentFileName=name; tvTitle.text=name }
+        // Keep the Activity's own intent in sync with whatever filename this note now has.
+        // Belt-and-suspenders alongside onSaveInstanceState below: if a config change ever
+        // recreates this Activity from the intent rather than a saved Bundle for any reason,
+        // this ensures it still resolves to the file that was actually just written to disk
+        // instead of quietly treating a now-saved note as a blank "New Note" again.
+        intent.putExtra("filename", currentFileName)
         writeCurrentFile()
     }
 
@@ -4641,6 +4656,17 @@ class MainActivity : AppCompatActivity() {
         autoSave()
         if(isRecording){ AudioHelper.stopRecording(); isRecording=false }
         blurHandler.removeCallbacksAndMessages(null); blurUpdateScheduled = false
+    }
+
+    // Saved BEFORE the system tears this Activity down for a configuration change (rotation,
+    // etc.) — onPause() above has already written the current content to disk by this point
+    // (autoSave runs there), but this note's filename only exists in memory as currentFileName.
+    // Without persisting it here too, the recreated Activity would have no way to find the
+    // file it just saved and would come back up as a blank "New Note" — this is the fix for
+    // "rotating mid-note erases the canvas".
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        currentFileName?.let { outState.putString("pending_file_name", it) }
     }
 
     override fun onResume() {
