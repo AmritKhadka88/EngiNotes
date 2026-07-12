@@ -958,7 +958,12 @@ class MainActivity : AppCompatActivity() {
         contextBarPage = 0
         rebuildContextBar()
     }
-    private fun setActiveToolbarBtn(btn: ImageButton?) { activeToolbarButton?.isSelected = false; activeToolbarButton = btn; btn?.isSelected = true }
+    private fun setActiveToolbarBtn(btn: ImageButton?) {
+        val theme = currentAppTheme()
+        activeToolbarButton?.let { it.isSelected = false; it.background = themedPillDrawable(theme, selected = false) }
+        activeToolbarButton = btn
+        btn?.let { it.isSelected = true; it.background = themedPillDrawable(theme, selected = true) }
+    }
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     // iOS-style capsule toolbar with soft shadow, in one of three user-selectable themes.
@@ -968,7 +973,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun applyToolbarTheme() {
         val theme = currentAppTheme()
-        // The bar itself is now just an invisible container — no background, no shadow of its
+        // The bottom bars are now invisible containers — no background, no shadow of their
         // own. Each individual button gets its OWN pill-shaped background, so the buttons are
         // the visible surface (as requested), not one big bar behind them.
         for (barId in listOf(R.id.primaryToolbarScroll, R.id.toolbarScroll)) {
@@ -978,12 +983,28 @@ class MainActivity : AppCompatActivity() {
                                  R.id.btnQuickEraser, R.id.btnQuickFill, R.id.btnTools, R.id.btnInsert,
                                  R.id.btnUndo, R.id.btnRedo)
         for (id in primaryIds) {
+            val isActive = activeToolbarButton?.id == id
             findViewById<View?>(id)?.apply {
-                background = themedPillDrawable(theme); elevation = themedPillElevation(theme)
+                background = themedPillDrawable(theme, selected = isActive); elevation = themedPillElevation(theme)
                 (layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
                     lp.marginStart = dp(3); lp.marginEnd = dp(3); layoutParams = lp
                 }
             }
+        }
+        // Top bar (back/undo-redo/link/palm/menu row) — previously untouched by theming since
+        // it had no view ID to target from code. Styled as a single bar (matching its existing
+        // flat-bar look) rather than per-button pills, since its icons/spacing are different
+        // from the main toolbar.
+        findViewById<View?>(R.id.topBarContainer)?.apply {
+            background = when (theme) {
+                "TRANSLUCENT" -> android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#4DFFFFFF")) }
+                "GLASS" -> android.graphics.drawable.GradientDrawable(
+                    android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
+                    intArrayOf(Color.parseColor("#66D8E8FF"), Color.parseColor("#1A6B8FBF"))
+                )
+                else -> android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#FFFFFF")) }
+            }
+            elevation = themedPillElevation(theme)
         }
     }
 
@@ -994,8 +1015,20 @@ class MainActivity : AppCompatActivity() {
     // highlight, approximating a glossy glass surface without relying on a real background blur
     // (which isn't achievable this way — RenderEffect blurs the view's own content, not what's
     // behind it, which is what broke the buttons last time).
-    private fun themedPillDrawable(theme: String): android.graphics.drawable.Drawable {
+    private fun themedPillDrawable(theme: String, selected: Boolean = false): android.graphics.drawable.Drawable {
         val radius = dp(20).toFloat()
+        if (selected) {
+            // Clear accent-colored highlight for the active tool, regardless of theme — this
+            // replaces the old StateListDrawable-based highlight, which relied on isSelected
+            // driving a selector background. Plain GradientDrawables (used for per-button pills
+            // since the theme rework) don't respond to that, so the active tool now gets an
+            // explicit, unmistakable highlighted background instead.
+            return android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#7B61FF"))
+                cornerRadius = radius
+                setStroke(dp(1), Color.parseColor("#5B3FE0"))
+            }
+        }
         return when (theme) {
             "TRANSLUCENT" -> android.graphics.drawable.GradientDrawable().apply {
                 // Much lower opacity than before — the canvas should clearly show through
