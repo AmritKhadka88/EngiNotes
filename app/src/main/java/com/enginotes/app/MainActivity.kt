@@ -611,37 +611,8 @@ class MainActivity : AppCompatActivity() {
         drawingView.onPageSwipe             = { dir -> drawingView.scrollPage(dir) }
         drawingView.onDimensionCreated      = { dim -> showDimensionLabelDialog(dim) }
         drawingView.onDimensionEdit         = { dim -> showDimensionStylePanel(dim) }
-        drawingView.onDrawingStarted        = {
-            if (drawingView.isDrawingTool() && getPrefs().getBoolean("auto_hide_toolbar", true)) {
-                runOnUiThread {
-                    val primary = findViewById<View?>(R.id.primaryToolbarScroll)
-                    val context = findViewById<HorizontalScrollView?>(R.id.toolbarScroll)
-                    primary?.animate()?.translationY(primary.height.toFloat())?.setDuration(120)?.withEndAction { primary.visibility = View.GONE; primary.translationY = 0f }?.start()
-                    context?.animate()?.translationY(context.height.toFloat())?.setDuration(120)?.withEndAction { context.visibility = View.GONE; context.translationY = 0f }?.start()
-                }
-            }
-        }
-        drawingView.onDrawingEnded          = {
-            runOnUiThread {
-                if (getPrefs().getBoolean("auto_hide_toolbar", true)) {
-                    android.os.Handler(mainLooper).postDelayed({
-                        val primary = findViewById<View?>(R.id.primaryToolbarScroll)
-                        val context = findViewById<HorizontalScrollView?>(R.id.toolbarScroll)
-                        if (getPrefs().getBoolean("show_bottom_toolbar", true)) {
-                            primary?.visibility = View.VISIBLE
-                            primary?.translationY = primary?.height?.toFloat() ?: 0f
-                            primary?.animate()?.translationY(0f)?.setDuration(160)?.start()
-                        }
-                        if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
-                            context?.visibility = View.VISIBLE
-                            context?.translationY = context?.height?.toFloat() ?: 0f
-                            context?.animate()?.translationY(0f)?.setDuration(160)?.start()
-                        }
-                    }, 250)
-                }
-                // Auto handwriting-to-text if toggle is on
-            }
-        }
+        drawingView.onDrawingStarted        = {}
+        drawingView.onDrawingEnded          = {}
         drawingView.onPolylineUpdated = {
             runOnUiThread { updatePolylineBar() }
         }
@@ -894,6 +865,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         btnLayoutToggle.setOnClickListener { showLayoutMenu(it) }
+        addFullscreenToggleButton()
 
         // Scale ratio button — always visible in top bar
         val btnScaleRatio = findViewById<TextView>(R.id.btnScaleRatio)
@@ -1814,6 +1786,59 @@ class MainActivity : AppCompatActivity() {
         findViewById<View?>(R.id.primaryToolbarScroll)?.visibility = if (visible) View.VISIBLE else View.GONE
     }
     private fun setBottomToolbarVisible(visible: Boolean) = setBottomBarVisible(visible)
+
+    // Replaces the old auto-hide-while-drawing behavior with a manual toggle: nothing hides
+    // or shows itself automatically anymore, the person decides. Whatever tool was active
+    // when this is tapped stays active — this only ever touches view visibility, never
+    // drawingView.currentTool, so there's nothing here that could reset it.
+    private var fullscreenRestoreBtn: View? = null
+    private fun addFullscreenToggleButton() {
+        val topBar = findViewById<LinearLayout?>(R.id.topBarContainer) ?: return
+        val outValue = android.util.TypedValue()
+        theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, outValue, true)
+        val btn = TextView(this).apply {
+            text = "⛶"; textSize = 16f; gravity = Gravity.CENTER
+            setTextColor(Color.parseColor("#1C1C1E"))
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+            setBackgroundResource(outValue.resourceId)
+            contentDescription = "Fullscreen"
+            setOnClickListener { enterFullscreen() }
+        }
+        val menuBtn = findViewById<View?>(R.id.btnMenu)
+        val idx = if (menuBtn != null) topBar.indexOfChild(menuBtn) else topBar.childCount
+        topBar.addView(btn, idx.coerceAtLeast(0))
+    }
+    private fun enterFullscreen() {
+        findViewById<View?>(R.id.topBarContainer)?.visibility = View.GONE
+        findViewById<View?>(R.id.primaryToolbarScroll)?.visibility = View.GONE
+        findViewById<View?>(R.id.toolbarScroll)?.visibility = View.GONE
+        if (fullscreenRestoreBtn != null) return
+        val btn = TextView(this).apply {
+            text = "⛶"; textSize = 16f; gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#991C1C1E")); cornerRadius = dp(20).toFloat()
+            }
+            elevation = dp(6).toFloat()
+            contentDescription = "Exit fullscreen"
+            setOnClickListener { exitFullscreen() }
+        }
+        val lp = FrameLayout.LayoutParams(dp(40), dp(40))
+        lp.gravity = Gravity.TOP or Gravity.END
+        lp.topMargin = dp(14); lp.rightMargin = dp(14)
+        canvasContainer.addView(btn, lp)
+        fullscreenRestoreBtn = btn
+    }
+    private fun exitFullscreen() {
+        findViewById<View?>(R.id.topBarContainer)?.visibility = View.VISIBLE
+        if (getPrefs().getBoolean("show_bottom_toolbar", true)) findViewById<View?>(R.id.primaryToolbarScroll)?.visibility = View.VISIBLE
+        if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
+            findViewById<View?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
+        }
+        fullscreenRestoreBtn?.let { canvasContainer.removeView(it) }
+        fullscreenRestoreBtn = null
+    }
+
     private fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
 
     private fun showOffsetDialog(item: StrokeItem) {
@@ -2424,19 +2449,6 @@ class MainActivity : AppCompatActivity() {
         div(); hdr("GENERAL")
         val confirmCb = CheckBox(this).apply{ text="Confirm before exit or clear canvas"; isChecked=prefs.getBoolean("confirm_exit_clear",true) }; container.addView(confirmCb)
         val autosaveCb = CheckBox(this).apply{ text="Autosave every 10 seconds"; isChecked=prefs.getBoolean("autosave",true) }; container.addView(autosaveCb)
-        val bottomBarCb = CheckBox(this).apply{
-            text="Auto-hide toolbar while drawing"
-            isChecked = prefs.getBoolean("auto_hide_toolbar", true)
-            setOnCheckedChangeListener { _, on ->
-                prefs.edit().putBoolean("auto_hide_toolbar", on).apply()
-                // If turning off, make sure bars are visible
-                if (!on) {
-                    if (prefs.getBoolean("show_bottom_toolbar", true)) setBottomToolbarVisible(true)
-                    if (penOptionsPanel == null) findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
-                }
-            }
-        }
-        container.addView(bottomBarCb)
 
         div(); hdr("APPEARANCE")
         val themeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, dp(6)) }
