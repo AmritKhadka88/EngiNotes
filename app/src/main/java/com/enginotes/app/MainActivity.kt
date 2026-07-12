@@ -565,6 +565,7 @@ class MainActivity : AppCompatActivity() {
 
         val prefs = getPrefs()
         try { drawingView.paperType = PaperType.valueOf(prefs.getString("default_paper","LINED") ?: "LINED") } catch(e:Exception){}
+        if (prefs.contains("paper_color")) drawingView.paperColor = prefs.getInt("paper_color", drawingView.paperColor)
         pendingFontFamily = prefs.getString("last_font", "sans-serif") ?: "sans-serif"
 
         val fileName = intent.getStringExtra("filename")
@@ -2482,10 +2483,37 @@ class MainActivity : AppCompatActivity() {
         val paperLabels = arrayOf("Blank","Lined","Graph Grid","Dot Grid","Engineering","Coloured")
         val paperValues = arrayOf("BLANK","LINED","GRID","DOTS","ENGINEERING","BLANK_COLORED")
         var selPaper = prefs.getString("default_paper","LINED") ?: "LINED"
+        var selPaperColor = prefs.getInt("paper_color", drawingView.paperColor)
         val paperLbl = TextView(this).apply{ textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(8),0,dp(8)) }
         fun refP(){ paperLbl.text = "Default: ${paperLabels[paperValues.indexOf(selPaper).coerceAtLeast(0)]}  (tap)" }
-        refP(); paperLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Default Paper").setItems(paperLabels){ _,i-> selPaper=paperValues[i]; refP() }.show() }
-        container.addView(paperLbl)
+        refP(); container.addView(paperLbl)
+
+        // Colour swatch + label — only relevant (and only shown) once "Coloured" is picked.
+        // Previously choosing "Coloured" just applied a single fixed default colour with no
+        // way to change it; this lets the person actually pick which colour.
+        val paperColorRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(8)) }
+        val paperColorSwatch = View(this).apply {
+            val p = LinearLayout.LayoutParams(dp(28), dp(28)); p.setMargins(0, 0, dp(10), 0); layoutParams = p
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(selPaperColor); cornerRadius = dp(6).toFloat(); setStroke(dp(1), Color.parseColor("#D8D2C4")) }
+        }
+        val paperColorLbl = TextView(this).apply { text = "Page colour  (tap swatch to change)"; textSize = 14f; setTextColor(Color.parseColor("#4A4A4A")) }
+        fun refPaperColorRow() {
+            (paperColorSwatch.background as? android.graphics.drawable.GradientDrawable)?.setColor(selPaperColor)
+            paperColorRow.visibility = if (selPaper == "BLANK_COLORED") View.VISIBLE else View.GONE
+        }
+        paperColorSwatch.setOnClickListener { showColorGridDialog { c -> selPaperColor = c; refPaperColorRow() } }
+        paperColorRow.addView(paperColorSwatch); paperColorRow.addView(paperColorLbl)
+        refPaperColorRow()
+        container.addView(paperColorRow)
+
+        paperLbl.setOnClickListener{
+            AlertDialog.Builder(this).setTitle("Default Paper").setItems(paperLabels){ _,i->
+                selPaper=paperValues[i]; refP(); refPaperColorRow()
+                // Picking "Coloured" with nothing chosen yet should immediately prompt for a
+                // colour rather than silently falling back to whatever the old fixed default was.
+                if (selPaper == "BLANK_COLORED") showColorGridDialog { c -> selPaperColor = c; refPaperColorRow() }
+            }.show()
+        }
 
         div(); hdr("DRAWING")
         val arcDivPref = prefs.getInt("arc_divisions",3)
@@ -2541,6 +2569,7 @@ class MainActivity : AppCompatActivity() {
                     .putBoolean("confirm_exit_clear",confirmCb.isChecked)
                     .putBoolean("autosave",autosaveCb.isChecked)
                     .putString("default_paper",selPaper)
+                    .putInt("paper_color", selPaperColor)
                     .putInt("arc_divisions",(arcInput.text.toString().toIntOrNull()?:3).coerceIn(2,12))
                     .putInt("bar_icon_size", selBarSize)
                     .putFloat("dim_font_size", dimFontSz)
@@ -2550,6 +2579,7 @@ class MainActivity : AppCompatActivity() {
                 drawingView.defaultDimFontSize = dimFontSz
                 drawingView.defaultDimArrowSize = dimArrowSz
                 try { drawingView.paperType = PaperType.valueOf(selPaper) } catch(e:Exception){}
+                drawingView.paperColor = selPaperColor
                 drawingView.invalidate()
                 val sz = dp(selBarSize)
                 val primaryBar = findViewById<HorizontalScrollView?>(R.id.primaryToolbarScroll)

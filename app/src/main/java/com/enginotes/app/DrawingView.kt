@@ -433,12 +433,16 @@ class StrokeData(
             }
             return out
         }
-        // Two passes: a single pass still left a faceted look on longer strokes. Each pass
-        // only nudges a point toward its neighbors' midpoint, so genuine corners/curves
-        // survive — it's specifically small back-and-forth jitter that gets absorbed, and
-        // that keeps absorbing more of it on the second pass.
-        var smoothed = onePass(points)
-        smoothed = onePass(smoothed)
+        // Five passes now, not two — the circled bumps in testing showed two passes still
+        // wasn't enough to fully absorb real-world hand tremor / touch-sensor noise. Each pass
+        // only pulls a point toward its neighbors' midpoint, so it can only ever erode small
+        // back-and-forth jitter, not a genuine corner or the overall shape of a letterform —
+        // repeating it more times just keeps eroding whatever jitter is left, favoring a
+        // smooth result over microscopically tracking every sampled point, which is exactly
+        // what's wanted here even if the shakiness is coming from the finger/pen/digitizer
+        // rather than the smoothing being too weak.
+        var smoothed = points
+        repeat(5) { smoothed = onePass(smoothed) }
 
         // Straight-line snap: averaging can only ever soften wobble, never fully remove it —
         // but a stroke the person clearly INTENDED as straight (an underline, a ruled line)
