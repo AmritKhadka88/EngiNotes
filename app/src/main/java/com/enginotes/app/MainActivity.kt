@@ -1221,13 +1221,13 @@ class MainActivity : AppCompatActivity() {
                 setStroke(dp(2), Color.parseColor("#CCFFFFFF"))  // thicker, brighter edge
             }
             "GLASS" -> Glass3DEdgeDrawable(
-                // Cool blue-tinted glass sheen, low opacity, strong contrast between corners —
-                // reads unmistakably as "glass" rather than just another translucent white
-                fillColors = intArrayOf(Color.parseColor("#66D8E8FF"), Color.parseColor("#1A6B8FBF")),
+                // Less saturated than before — a soft neutral gray-white sheen instead of a
+                // strong blue tint, while still reading clearly as glass via the bevel edges.
+                fillColors = intArrayOf(Color.parseColor("#66EEF1F5"), Color.parseColor("#1A8A96A6")),
                 radiusPx = radius,
                 strokeWidthPx = dp(2).toFloat(),
-                highlightColor = Color.parseColor("#F5FFFFFF"),
-                shadowColor = Color.parseColor("#664A6B85")
+                highlightColor = Color.parseColor("#E6FFFFFF"),
+                shadowColor = Color.parseColor("#3D4A5666")
             )
             else -> android.graphics.drawable.GradientDrawable().apply {
                 // Light warm gray (not pure white) so it visibly stands out from a white/cream canvas
@@ -1256,11 +1256,11 @@ class MainActivity : AppCompatActivity() {
                 setStroke(dp(2), Color.parseColor("#B3FFFFFF"))
             }
             "GLASS" -> Glass3DEdgeDrawable(
-                fillColors = intArrayOf(Color.parseColor("#59D8E8FF"), Color.parseColor("#2E6B8FBF")),
+                fillColors = intArrayOf(Color.parseColor("#59EEF1F5"), Color.parseColor("#2E8A96A6")),
                 radiusPx = radius,
-                strokeWidthPx = dp(3).toFloat(),
-                highlightColor = Color.parseColor("#F5FFFFFF"),
-                shadowColor = Color.parseColor("#664A6B85")
+                strokeWidthPx = dp(2).toFloat(),
+                highlightColor = Color.parseColor("#E6FFFFFF"),
+                shadowColor = Color.parseColor("#334A5666")
             )
             else -> android.graphics.drawable.GradientDrawable().apply {
                 setColor(Color.parseColor("#FAF7F2"))
@@ -1268,6 +1268,39 @@ class MainActivity : AppCompatActivity() {
                 setStroke(dp(1), Color.parseColor("#D8D2C4"))
             }
         }
+    }
+
+    // Mode-picker chips (Select/Lasso/Rect/Multi, pen type, etc. in the context bar) previously
+    // ignored the app theme entirely — always a flat solid black/gray box, regardless of GLASS
+    // or Translucent being active. That's why they looked like opaque tiles sitting on top of
+    // the glass shell instead of belonging to it. These give the unselected chip state a
+    // translucent glass-consistent look per theme, while the selected chip stays a clear,
+    // unambiguous accent color in all themes (it needs to stay readable, not blend in).
+    private fun themedChipDrawable(theme: String, active: Boolean): android.graphics.drawable.Drawable {
+        val radius = dp(11).toFloat()
+        if (active) {
+            return android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#7B61FF")); cornerRadius = radius
+                if (theme != "ORIGINAL") setStroke(dp(1), Color.parseColor("#5B3FE0"))
+            }
+        }
+        return when (theme) {
+            "TRANSLUCENT" -> android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#4DFFFFFF")); cornerRadius = radius
+                setStroke(dp(1), Color.parseColor("#80FFFFFF"))
+            }
+            "GLASS" -> android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#40FFFFFF")); cornerRadius = radius
+                setStroke(dp(1), Color.parseColor("#66FFFFFF"))
+            }
+            else -> android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#ECEAE7")); cornerRadius = radius
+            }
+        }
+    }
+    private fun themedChipTextColor(theme: String, active: Boolean): Int {
+        if (active) return Color.WHITE
+        return if (theme == "GLASS" || theme == "TRANSLUCENT") Color.parseColor("#2A2A2E") else Color.parseColor("#3C3C3E")
     }
 
     private fun setAppTheme(theme: String) {
@@ -1366,8 +1399,9 @@ class MainActivity : AppCompatActivity() {
                     text = lbl; textSize = 10.5f; gravity = Gravity.CENTER
                     setPadding(dp(10), dp(3), dp(10), dp(3))
                     val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, CHIP_H); lp.setMargins(dp(2),dp(3),dp(2),dp(3)); layoutParams = lp
-                    background = android.graphics.drawable.GradientDrawable().apply { setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")); cornerRadius = dp(11).toFloat() }
-                    setTextColor(if (active) Color.WHITE else Color.parseColor("#3C3C3E"))
+                    val theme = currentAppTheme()
+                    background = themedChipDrawable(theme, active)
+                    setTextColor(themedChipTextColor(theme, active))
                     setOnClickListener { onSelect(i) }
                 })
             }
