@@ -499,6 +499,7 @@ class MainActivity : AppCompatActivity() {
         drawingView.inputMode = try { InputMode.valueOf(getPrefs().getString("input_mode", "AUTO") ?: "AUTO") } catch (e: Exception) { InputMode.AUTO }
 
         applyToolbarTheme()
+        repositionContextBar()
 
         // Apply iOS-style tactile press feedback to every primary toolbar button.
         for (id in listOf(R.id.btnSelect, R.id.btnText, R.id.btnDraw, R.id.btnHighlighter, R.id.btnBrush,
@@ -965,11 +966,34 @@ class MainActivity : AppCompatActivity() {
     }
     private fun setActiveToolbarBtn(btn: ImageButton?) {
         val theme = currentAppTheme()
-        activeToolbarButton?.let { it.isSelected = false; it.background = themedPillDrawable(theme, selected = false) }
+        activeToolbarButton?.let { it.isSelected = false; it.background = null; it.elevation = 0f }
         activeToolbarButton = btn
-        btn?.let { it.isSelected = true; it.background = themedPillDrawable(theme, selected = true) }
+        btn?.let { it.isSelected = true; it.background = themedPillDrawable(theme, selected = true); it.elevation = themedPillElevation(theme) }
     }
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    // Keeps the context (color/size) bar glued to the top edge of the primary toolbar, no
+    // matter what size the primary toolbar's buttons currently are. Previously this gap was
+    // a fixed 58dp set once in the XML, which only matched the DEFAULT medium icon size —
+    // shrinking or growing icons via Settings > Toolbar > Icon size left this margin
+    // unchanged, so the two bars drifted apart (small icons) or started overlapping (large
+    // icons). Also forces the context bar's own height to wrap its (now size-aware) content
+    // instead of a fixed 46dp, so it visually shrinks/grows in step with the primary bar.
+    private fun repositionContextBar() {
+        val primary = findViewById<View?>(R.id.primaryToolbarScroll) ?: return
+        val context = findViewById<HorizontalScrollView?>(R.id.toolbarScroll) ?: return
+        (context.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+            if (lp.height != FrameLayout.LayoutParams.WRAP_CONTENT) {
+                lp.height = FrameLayout.LayoutParams.WRAP_CONTENT; context.layoutParams = lp
+            }
+        }
+        primary.post {
+            val lp = context.layoutParams as? FrameLayout.LayoutParams ?: return@post
+            val gap = dp(6)
+            val newMargin = (primary.height.takeIf { it > 0 } ?: dp(54)) + gap
+            if (lp.bottomMargin != newMargin) { lp.bottomMargin = newMargin; context.layoutParams = lp }
+        }
+    }
 
     // iOS-style capsule toolbar with soft shadow, in one of three user-selectable themes.
     // GLASS uses a real frosted blur (RenderEffect) on Android 12+ and falls back to a more
@@ -978,11 +1002,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun applyToolbarTheme() {
         val theme = currentAppTheme()
-        // The bottom bars are now invisible containers — no background, no shadow of their
-        // own. Each individual button gets its OWN pill-shaped background, so the buttons are
-        // the visible surface (as requested), not one big bar behind them.
+        // Each bar now gets its OWN capsule "shell" background (visible fill + edge stroke),
+        // so the row of buttons reads as one enclosed navigation bar — like an iOS Control
+        // Center grouping — instead of icons floating with nothing behind them.
         for (barId in listOf(R.id.primaryToolbarScroll, R.id.toolbarScroll)) {
-            findViewById<View?>(barId)?.apply { background = null; elevation = 0f }
+            findViewById<View?>(barId)?.apply {
+                background = themedBarShellDrawable(theme)
+                elevation = themedPillElevation(theme)
+            }
         }
         val primaryIds = listOf(R.id.btnSelect, R.id.btnText, R.id.btnDraw, R.id.btnHighlighter, R.id.btnBrush,
                                  R.id.btnQuickEraser, R.id.btnQuickFill, R.id.btnTools, R.id.btnInsert,
@@ -990,7 +1017,12 @@ class MainActivity : AppCompatActivity() {
         for (id in primaryIds) {
             val isActive = activeToolbarButton?.id == id
             findViewById<View?>(id)?.apply {
-                background = themedPillDrawable(theme, selected = isActive); elevation = themedPillElevation(theme)
+                // Only the ACTIVE tool gets its own filled pill now (matching the Control
+                // Center reference: one shell holding plain icons, with the selected one
+                // highlighted). Unselected buttons sit transparently on top of the shell
+                // instead of stacking a second faint pill on top of it.
+                background = if (isActive) themedPillDrawable(theme, selected = true) else null
+                elevation = if (isActive) themedPillElevation(theme) else 0f
                 (layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
                     lp.marginStart = dp(3); lp.marginEnd = dp(3); layoutParams = lp
                 }
@@ -1118,7 +1150,7 @@ class MainActivity : AppCompatActivity() {
                 // Much lower opacity than before — the canvas should clearly show through
                 setColor(Color.parseColor("#4DFFFFFF"))  // ~30% white
                 cornerRadius = radius
-                setStroke(dp(1), Color.parseColor("#80FFFFFF"))
+                setStroke(dp(2), Color.parseColor("#CCFFFFFF"))  // thicker, brighter edge
             }
             "GLASS" -> android.graphics.drawable.GradientDrawable(
                 android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
@@ -1127,7 +1159,7 @@ class MainActivity : AppCompatActivity() {
                 intArrayOf(Color.parseColor("#66D8E8FF"), Color.parseColor("#1A6B8FBF"))
             ).apply {
                 cornerRadius = radius
-                setStroke(dp(1), Color.parseColor("#99FFFFFF"))
+                setStroke(dp(2), Color.parseColor("#E6FFFFFF"))  // crisper glass rim
             }
             else -> android.graphics.drawable.GradientDrawable().apply {
                 // Light warm gray (not pure white) so it visibly stands out from a white/cream canvas
@@ -1141,6 +1173,33 @@ class MainActivity : AppCompatActivity() {
         "TRANSLUCENT" -> dp(2).toFloat()
         "GLASS" -> dp(3).toFloat()
         else -> dp(5).toFloat()
+    }
+
+    // Outer "shell" background for a whole toolbar row — gives the row itself a visible,
+    // enclosed navigation-bar boundary (rounded capsule + edge stroke), independent of
+    // whatever the individual button pills inside it are doing. This is what was missing
+    // before: bars had no background at all, so only isolated icons were visible.
+    private fun themedBarShellDrawable(theme: String): android.graphics.drawable.Drawable {
+        val radius = dp(24).toFloat()
+        return when (theme) {
+            "TRANSLUCENT" -> android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#59FFFFFF"))
+                cornerRadius = radius
+                setStroke(dp(2), Color.parseColor("#B3FFFFFF"))
+            }
+            "GLASS" -> android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+                intArrayOf(Color.parseColor("#59D8E8FF"), Color.parseColor("#2E6B8FBF"))
+            ).apply {
+                cornerRadius = radius
+                setStroke(dp(2), Color.parseColor("#CCFFFFFF"))
+            }
+            else -> android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#FAF7F2"))
+                cornerRadius = radius
+                setStroke(dp(1), Color.parseColor("#D8D2C4"))
+            }
+        }
     }
 
     private fun setAppTheme(theme: String) {
@@ -1201,7 +1260,9 @@ class MainActivity : AppCompatActivity() {
             it.setPadding(dp(8), 0, dp(8), 0); contextBar.addView(it)
         }
         row.removeAllViews()
-        val BAR_H = dp(38)
+        // Scales with the user's icon-size preference instead of a fixed 38dp, so the
+        // context (color/size) row grows and shrinks in step with the primary toolbar above it.
+        val BAR_H = (dp(getPrefs().getInt("bar_icon_size", 44)) * 0.86f).toInt().coerceAtLeast(dp(30))
         val CHIP_H = BAR_H - dp(6)
 
         fun divider() { row.addView(View(this).apply {
@@ -2448,6 +2509,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 rebuildContextBar()
+                repositionContextBar()
             }.show()
     }
 
