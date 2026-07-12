@@ -1,17 +1,42 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
     android:fitsSystemWindows="true"
     android:clipChildren="false"
     android:background="#FAF6EF">
 
-    <!-- Top bar -->
+    <!-- Canvas now fills the ENTIRE screen — the bars below float on top of it as overlays,
+         instead of squeezing it into a middle row. This is what makes real backdrop blur (and
+         the floating "glass panel over content" look) possible in the first place. -->
+    <FrameLayout
+        android:id="@+id/canvasContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <com.enginotes.app.DrawingView
+            android:id="@+id/drawingView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <View
+            android:id="@+id/pageScrollThumb"
+            android:layout_width="6dp"
+            android:layout_height="40dp"
+            android:layout_gravity="end|top"
+            android:layout_marginEnd="2dp"
+            android:layout_marginTop="60dp"
+            android:background="#44000000"
+            android:visibility="visible" />
+
+    </FrameLayout>
+
+    <!-- Top bar: now a floating overlay pinned to the top instead of a separate row. -->
     <LinearLayout
         android:id="@+id/topBarContainer"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_gravity="top"
         android:orientation="horizontal"
         android:background="#FFFFFF"
         android:paddingTop="10dp"
@@ -19,7 +44,7 @@
         android:paddingStart="6dp"
         android:paddingEnd="6dp"
         android:gravity="center_vertical"
-        android:elevation="2dp">
+        android:elevation="4dp">
 
         <ImageButton
             android:id="@+id/btnBack"
@@ -131,74 +156,17 @@
 
     </LinearLayout>
 
-    <!-- Canvas -->
-    <FrameLayout
-        android:id="@+id/canvasContainer"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
-
-        <com.enginotes.app.DrawingView
-            android:id="@+id/drawingView"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent" />
-
-        <View
-            android:id="@+id/pageScrollThumb"
-            android:layout_width="6dp"
-            android:layout_height="40dp"
-            android:layout_gravity="end|top"
-            android:layout_marginEnd="2dp"
-            android:layout_marginTop="60dp"
-            android:background="#44000000"
-            android:visibility="visible" />
-
-    </FrameLayout>
-
-    <!-- Secondary/context toolbar row -->
-    <HorizontalScrollView
-        android:id="@+id/toolbarScroll"
-        android:layout_width="match_parent"
-        android:layout_height="46dp"
-        android:background="#FFFFFF"
-        android:scrollbars="none"
-        android:visibility="visible"
-        android:paddingTop="4dp"
-        android:paddingBottom="4dp">
-
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:paddingStart="8dp"
-            android:paddingEnd="8dp"
-            android:gravity="center_vertical">
-
-            <ImageButton android:id="@+id/btnQuickColor"
-                android:layout_width="38dp" android:layout_height="38dp"
-                android:layout_marginEnd="2dp"
-                android:src="@drawable/ic_color" android:scaleType="centerInside" android:padding="7dp"
-                android:background="@drawable/btn_toolbar_selector" />
-
-            <ImageButton android:id="@+id/btnQuickSize"
-                android:layout_width="38dp" android:layout_height="38dp"
-                android:layout_marginEnd="2dp"
-                android:src="@drawable/ic_size" android:scaleType="centerInside" android:padding="8dp"
-                android:background="@drawable/btn_toolbar_selector" />
-
-        </LinearLayout>
-    </HorizontalScrollView>
-
-    <!-- Primary toolbar at bottom -->
+    <!-- Primary toolbar: floating overlay pinned to the bottom. -->
     <HorizontalScrollView
         android:id="@+id/primaryToolbarScroll"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
         android:background="#FFFFFF"
         android:scrollbars="none"
         android:paddingTop="5dp"
         android:paddingBottom="5dp"
-        android:elevation="4dp">
+        android:elevation="6dp">
 
         <LinearLayout
             android:layout_width="wrap_content"
@@ -282,4 +250,44 @@
         </LinearLayout>
     </HorizontalScrollView>
 
-</LinearLayout>
+    <!-- Secondary/context toolbar row: floating overlay pinned to the bottom, sitting directly
+         above the primary toolbar (58dp margin ~ primary toolbar's rendered height: 44dp buttons
+         + 5dp top/bottom padding). MainActivity.kt already repositions this dynamically when the
+         primary toolbar is hidden/shown, so this margin is just the correct default resting spot. -->
+    <HorizontalScrollView
+        android:id="@+id/toolbarScroll"
+        android:layout_width="match_parent"
+        android:layout_height="46dp"
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="58dp"
+        android:background="#FFFFFF"
+        android:scrollbars="none"
+        android:visibility="visible"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp"
+        android:elevation="5dp">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:gravity="center_vertical">
+
+            <ImageButton android:id="@+id/btnQuickColor"
+                android:layout_width="38dp" android:layout_height="38dp"
+                android:layout_marginEnd="2dp"
+                android:src="@drawable/ic_color" android:scaleType="centerInside" android:padding="7dp"
+                android:background="@drawable/btn_toolbar_selector" />
+
+            <ImageButton android:id="@+id/btnQuickSize"
+                android:layout_width="38dp" android:layout_height="38dp"
+                android:layout_marginEnd="2dp"
+                android:src="@drawable/ic_size" android:scaleType="centerInside" android:padding="8dp"
+                android:background="@drawable/btn_toolbar_selector" />
+
+        </LinearLayout>
+    </HorizontalScrollView>
+
+</FrameLayout>
