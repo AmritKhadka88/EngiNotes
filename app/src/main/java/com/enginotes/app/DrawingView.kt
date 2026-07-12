@@ -187,19 +187,19 @@ class StrokeData(
                 path.moveTo(points[0], points[1])
                 if (type == Tool.PEN) {
                     // Smooth the line by drawing a quadratic Bezier curve through the midpoint
-                    // of each consecutive pair of raw touch points, using the raw point itself
-                    // as the curve's control point. Straight lineTo segments between every
-                    // tiny sampled point (still used below for eraser/highlighter/brush) render
-                    // each little hand tremor / digitizer-jitter direction change as a visible
-                    // facet — this is what was making pen strokes look wavy and rough.
+                    // of each consecutive pair of points, using the point itself as the curve's
+                    // control point — on top of smoothedPoints()'s own two-pass averaging and
+                    // straight-line snap, so Ball/Pencil/Marker get the same wobble-removal as
+                    // Fountain/Calligraphy instead of only smoothing the raw jittery samples.
+                    val pts = smoothedPoints()
                     var i = 2
-                    while (i + 3 < points.size) {
-                        val midX = (points[i] + points[i + 2]) / 2f
-                        val midY = (points[i + 1] + points[i + 3]) / 2f
-                        path.quadTo(points[i], points[i + 1], midX, midY)
+                    while (i + 3 < pts.size) {
+                        val midX = (pts[i] + pts[i + 2]) / 2f
+                        val midY = (pts[i + 1] + pts[i + 3]) / 2f
+                        path.quadTo(pts[i], pts[i + 1], midX, midY)
                         i += 2
                     }
-                    if (i + 1 < points.size) path.lineTo(points[i], points[i + 1])
+                    if (i + 1 < pts.size) path.lineTo(pts[i], pts[i + 1])
                 } else {
                     var i = 2
                     while (i + 1 < points.size) { path.lineTo(points[i], points[i + 1]); i += 2 }
@@ -413,8 +413,8 @@ class StrokeData(
         return path
     }
 
-    // Smooths the raw touch-point list with a simple weighted moving average before it's used
-    // to build a nib/ribbon outline. drawCalligraphyStroke/buildCalligraphyRibbonPath/
+    // Smooths the raw touch-point list with a weighted moving average before it's used to
+    // build a nib/ribbon outline. drawCalligraphyStroke/buildCalligraphyRibbonPath/
     // buildFountainRibbonPath below turn every pair of consecutive points into its own little
     // segment — so without this, the exact same per-sample jitter that used to show up as
     // faceted lineTo segments in a plain path instead shows up as a rough, hairy-looking edge
@@ -423,14 +423,62 @@ class StrokeData(
     // in lockstep with the `widths` samples used for fountain-pen thickness.
     private fun smoothedPoints(): List<Float> {
         if (points.size < 6) return points
-        val out = points.toMutableList()
-        var i = 2
-        while (i + 3 < points.size) {
-            out[i] = (points[i - 2] + points[i] * 2f + points[i + 2]) / 4f
-            out[i + 1] = (points[i - 1] + points[i + 1] * 2f + points[i + 3]) / 4f
-            i += 2
+        fun onePass(src: List<Float>): List<Float> {
+            val out = src.toMutableList()
+            var i = 2
+            while (i + 3 < src.size) {
+                out[i] = (src[i - 2] + src[i] * 2f + src[i + 2]) / 4f
+                out[i + 1] = (src[i - 1] + src[i + 1] * 2f + src[i + 3]) / 4f
+                i += 2
+            }
+            return out
         }
-        return out
+        // Two passes: a single pass still left a faceted look on longer strokes. Each pass
+        // only nudges a point toward its neighbors' midpoint, so genuine corners/curves
+        // survive — it's specifically small back-and-forth jitter that gets absorbed, and
+        // that keeps absorbing more of it on the second pass.
+        var smoothed = onePass(points)
+        smoothed = onePass(smoothed)
+
+        // Straight-line snap: averaging can only ever soften wobble, never fully remove it —
+        // but a stroke the person clearly INTENDED as straight (an underline, a ruled line)
+        // has no reason to keep any deviation at all. If the whole stroke barely strays from
+        // the direct line between its first and last point, snap every point exactly onto
+        // that line instead of just smoothing around it.
+        val x0 = smoothed[0]; val y0 = smoothed[1]
+        val xn = smoothed[smoothed.size - 2]; val yn = smoothed[smoothed.size - 1]
+        val dx = xn - x0; val dy = yn - y0
+        val lineLen = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+        if (lineLen > 8f) {  // too short to judge straightness (a dot, a tiny flick) — skip
+            val ux = dx / lineLen; val uy = dy / lineLen
+            var maxDeviation = 0f
+            var i = 0
+            while (i + 1 < smoothed.size) {
+                val px = smoothed[i] - x0; val py = smoothed[i + 1] - y0
+                val proj = px * ux + py * uy
+                val perpX = px - proj * ux; val perpY = py - proj * uy
+                val dev = kotlin.math.hypot(perpX.toDouble(), perpY.toDouble()).toFloat()
+                if (dev > maxDeviation) maxDeviation = dev
+                i += 2
+            }
+            // Tolerance scales with stroke length so a long confident line is allowed a touch
+            // more absolute wobble than a short one, but stays capped so this never triggers
+            // on anything actually curved (letterforms deviate far more than this).
+            val tolerance = (lineLen * 0.035f).coerceIn(1.5f, 6f)
+            if (maxDeviation <= tolerance) {
+                val snapped = smoothed.toMutableList()
+                var j = 0
+                while (j + 1 < snapped.size) {
+                    val px = smoothed[j] - x0; val py = smoothed[j + 1] - y0
+                    val proj = (px * ux + py * uy).coerceIn(0f, lineLen)
+                    snapped[j] = x0 + ux * proj
+                    snapped[j + 1] = y0 + uy * proj
+                    j += 2
+                }
+                return snapped
+            }
+        }
+        return smoothed
     }
 
     // Legacy single-polygon path - kept only as a fallback for very short strokes (under 2
