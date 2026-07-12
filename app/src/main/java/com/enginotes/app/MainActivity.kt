@@ -1009,6 +1009,16 @@ class MainActivity : AppCompatActivity() {
             findViewById<View?>(barId)?.apply {
                 background = themedBarShellDrawable(theme)
                 elevation = themedPillElevation(theme)
+                // Without this, the row's rectangular content just paints over the shell's
+                // rounded corners instead of being cropped by them — which is why buttons and
+                // color chips were poking straight past the curved ends of the bar.
+                clipToOutline = true
+            }
+            // Give the inner row enough start/end padding that a button's own corner never sits
+            // inside the shell's curved zone (the 8dp set in XML was tuned for the old
+            // square/borderless bars, not this rounded shell).
+            ((findViewById<View?>(barId) as? HorizontalScrollView)?.getChildAt(0) as? LinearLayout)?.let { row ->
+                row.setPadding(dp(14), row.paddingTop, dp(14), row.paddingBottom)
             }
         }
         val primaryIds = listOf(R.id.btnSelect, R.id.btnText, R.id.btnDraw, R.id.btnHighlighter, R.id.btnBrush,
@@ -1257,8 +1267,12 @@ class MainActivity : AppCompatActivity() {
         val contextBar = findViewById<HorizontalScrollView>(R.id.toolbarScroll) ?: return
         val row = (contextBar.getChildAt(0) as? LinearLayout) ?: LinearLayout(this).also {
             it.orientation = LinearLayout.HORIZONTAL; it.gravity = Gravity.CENTER_VERTICAL
-            it.setPadding(dp(8), 0, dp(8), 0); contextBar.addView(it)
+            contextBar.addView(it)
         }
+        // Set every rebuild (not just on first creation) so it stays correct even if this bar's
+        // row existed before the rounded shell background was applied. Matches the padding used
+        // for the primary toolbar so content never sits inside the shell's curved corner zone.
+        row.setPadding(dp(14), 0, dp(14), 0)
         row.removeAllViews()
         // Scales with the user's icon-size preference instead of a fixed 38dp, so the
         // context (color/size) row grows and shrinks in step with the primary toolbar above it.
