@@ -178,19 +178,28 @@ class StrokeData(
     var calligraphySlantThickness: Float = 0.65f,
     // Pixel-erase holes: each entry is [cx, cy, radius] in world units.
     // Rendered by punching transparent circles out of the shape via PorterDuff.CLEAR.
-    val clipHoles: MutableList<FloatArray> = mutableListOf()
+    val clipHoles: MutableList<FloatArray> = mutableListOf(),
+    // True for a stroke committed by the AutoCAD-style Polyline tool. Polyline vertices are
+    // deliberately placed exact points, not freehand samples — smoothing/curve-fitting them
+    // (which every Tool.PEN render path below does, to remove hand tremor from natural
+    // handwriting) would round off intentional sharp corners into a curve, which is wrong for
+    // a tool whose entire purpose is precise straight segments.
+    var isPolyline: Boolean = false
 ) {
     fun buildPath(): Path {
         val path = Path()
         if (type == Tool.PEN || type == Tool.ERASER || type == Tool.HIGHLIGHTER || type == Tool.BRUSH) {
             if (points.size >= 2) {
                 path.moveTo(points[0], points[1])
-                if (type == Tool.PEN) {
+                if (type == Tool.PEN && !isPolyline) {
                     // Smooth the line by drawing a quadratic Bezier curve through the midpoint
                     // of each consecutive pair of points, using the point itself as the curve's
                     // control point — on top of smoothedPoints()'s own two-pass averaging and
                     // straight-line snap, so Ball/Pencil/Marker get the same wobble-removal as
                     // Fountain/Calligraphy instead of only smoothing the raw jittery samples.
+                    // Skipped for polylines: quadTo would round off intentional sharp vertices
+                    // into a curve even with unsmoothed points, since it's the curve-fitting
+                    // itself (not just point smoothing) that removes corners.
                     val pts = smoothedPoints()
                     var i = 2
                     while (i + 3 < pts.size) {
@@ -422,6 +431,7 @@ class StrokeData(
     // still starts/ends exactly where drawn, and the point count/order is unchanged so it stays
     // in lockstep with the `widths` samples used for fountain-pen thickness.
     private fun smoothedPoints(): List<Float> {
+        if (isPolyline) return points
         if (points.size < 6) return points
         fun onePass(src: List<Float>): List<Float> {
             val out = src.toMutableList()
@@ -546,11 +556,12 @@ class StrokeData(
         // Curve through the offset points instead of connecting them with straight lineTo
         // segments (the polygon-edge look was part of why the ribbon read as faceted rather
         // than a fluently tapering nib stroke) — same midpoint-quadTo technique already used
-        // to smooth plain pen strokes in buildPath().
+        // to smooth plain pen strokes in buildPath(). Skipped for polylines, same reason as
+        // there: quadTo would round off intentional sharp vertices into a curve.
         fun addSmoothed(path: Path, pts: List<Pair<Float, Float>>, moveToFirst: Boolean) {
             if (pts.isEmpty()) return
             if (moveToFirst) path.moveTo(pts[0].first, pts[0].second)
-            if (pts.size < 3) { for (p in pts.drop(1)) path.lineTo(p.first, p.second); return }
+            if (isPolyline || pts.size < 3) { for (p in pts.drop(1)) path.lineTo(p.first, p.second); return }
             var j = 1
             while (j + 1 < pts.size) {
                 val midX = (pts[j].first + pts[j + 1].first) / 2f
@@ -977,7 +988,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // selected pen style so drawn thickness matches the thickness slider (PenStyle.BALL
         // renders at 0.65x strokeWidth, which was silently shrinking every polyline).
         val d = StrokeData(Tool.PEN, polylinePoints.toMutableList(),
-            currentColor, currentStrokeWidth, false, lineType = currentLineType, penStyle = currentPenStyle)
+            currentColor, currentStrokeWidth, false, lineType = currentLineType, penStyle = currentPenStyle, isPolyline = true)
         val si = StrokeItem(d, d.buildPath(), d.toPaint())
         actions.add(si)
         redoStack.clear(); markSpatialDirty()
@@ -1540,7 +1551,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val isFountainPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.FOUNTAIN && action.data.widths.size >= 2
                 val isPencilPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.PENCIL && action.data.widths.size >= 2
                 if (isPencilPen && action.data.rotation == 0f) { action.data.drawPencilStroke(canvas, action.paint); return }
-                if (isCalligraphyPen && action.data.rotation == 0f) { action.data.drawCalligraphyStroke(canvas, action.paint); return }
+                if (isCalligraphyPen && action.data.rotation == 0f) {
+                    drawWithBitmapCache(canvas, action, action.data.strokeWidth * 2f) { c, item -> item.data.drawCalligraphyStroke(c, item.paint) }
+                    return
+                }
+                // clipHoles (pixel-eraser holes) and rotation both need the shared handling
+                // further below, so only the common case — no rotation, nothing erased out of
+                // it — takes the fast cached path here.
+                if (isFountainPen && action.data.rotation == 0f && action.data.clipHoles.isEmpty()) {
+                    drawWithBitmapCache(canvas, action, action.data.strokeWidth * 2f) { c, item ->
+                        c.drawPath(item.data.buildFountainRibbonPath(), Paint(item.paint).apply { style = Paint.Style.FILL; pathEffect = null })
+                    }
+                    return
+                }
                 val renderPath = when { isCalligraphyPen -> action.data.buildCalligraphyRibbonPath(); isFountainPen -> action.data.buildFountainRibbonPath(); else -> action.path }
                 val renderPaint = if (isCalligraphyPen || isFountainPen) Paint(action.paint).apply { style = Paint.Style.FILL; pathEffect = null } else action.paint
                 if (action.data.rotation != 0f) {
@@ -2037,6 +2060,40 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val outside = f.x + f.w < vl - marginX || f.x > vr + marginX || f.y + f.h < vt - marginY || f.y > vb + marginY
             if (outside && !dirtyFillItems.contains(f)) f.bitmap = null  // never release a fill mid-erase-gesture
         }
+    }
+
+    // Generic version of the brush-cache pattern above, for any stroke type whose render is
+    // expensive to recompute every frame. Without this, a finalized Calligraphy/Fountain
+    // stroke was rebuilding its entire smoothed ribbon geometry from scratch on EVERY single
+    // onDraw call — which fires constantly (panning, zooming, or just drawing anything else
+    // anywhere on the page) — so cost grew with (stroke count × frame rate), which is exactly
+    // what "gets extremely slow after a few strokes" means. Render happens once into an
+    // off-screen bitmap; every frame after that is a single drawBitmap call regardless of how
+    // complex the underlying geometry was.
+    private fun drawWithBitmapCache(canvas: Canvas, item: StrokeItem, pad: Float, render: (Canvas, StrokeItem) -> Unit) {
+        if (!item.cacheValid || item.cachedBitmap == null) {
+            val bounds = getBounds(item) ?: run { render(canvas, item); return }
+            val wl = bounds[0] - pad; val wt = bounds[1] - pad
+            val wr = bounds[2] + pad; val wb = bounds[3] + pad
+            val bmpW = ((wr - wl) * CACHE_SCALE).toInt().coerceIn(1, 4096)
+            val bmpH = ((wb - wt) * CACHE_SCALE).toInt().coerceIn(1, 4096)
+            if (bmpW.toLong() * bmpH * 4 > 16L * 1024 * 1024) { render(canvas, item); return }
+            item.cachedBitmap?.recycle()
+            try {
+                val bmp = android.graphics.Bitmap.createBitmap(bmpW, bmpH, android.graphics.Bitmap.Config.ARGB_8888)
+                val bc = Canvas(bmp)
+                bc.translate(-wl * CACHE_SCALE, -wt * CACHE_SCALE)
+                bc.scale(CACHE_SCALE, CACHE_SCALE)
+                render(bc, item)
+                item.cachedBitmap = bmp
+                item.cacheLeft = wl; item.cacheTop = wt
+                item.cacheRight = wr; item.cacheBottom = wb
+                item.cacheValid = true
+            } catch (e: OutOfMemoryError) { render(canvas, item); return }
+        }
+        val bmp = item.cachedBitmap ?: return
+        val dst = android.graphics.RectF(item.cacheLeft, item.cacheTop, item.cacheRight, item.cacheBottom)
+        canvas.drawBitmap(bmp, null, dst, null)
     }
 
     private fun drawBrushStrokeWithCache(canvas: Canvas, item: StrokeItem) {
@@ -6256,7 +6313,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         sb.append("META\u0001${paperType.name}\u0001${canvasMode.name}\u0001${paperSize.name}\u0001${pageOrientation.name}\u0001$paperColor\n")
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
-            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}\n")
+            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\n")
@@ -6346,7 +6403,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val holes = mutableListOf<FloatArray>()
                                 if (p.size >= 14 && p[13].isNotBlank()) for (h in p[13].split(";")) { val hv = h.split(","); if (hv.size == 3) holes.add(floatArrayOf(hv[0].toFloat(), hv[1].toFloat(), hv[2].toFloat())) }
                                 val slant = if (p.size >= 15) p[14].toFloatOrNull() ?: 0.65f else 0.65f
-                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
+                                val isPoly = if (p.size >= 16) p[15] == "true" else false
+                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
                             } else {
                                 val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
                                 val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
