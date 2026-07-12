@@ -566,6 +566,7 @@ class MainActivity : AppCompatActivity() {
         val prefs = getPrefs()
         try { drawingView.paperType = PaperType.valueOf(prefs.getString("default_paper","LINED") ?: "LINED") } catch(e:Exception){}
         if (prefs.contains("paper_color")) drawingView.paperColor = prefs.getInt("paper_color", drawingView.paperColor)
+        if (prefs.contains("hatch_scale")) drawingView.pendingHatchScale = prefs.getFloat("hatch_scale", drawingView.pendingHatchScale)
         pendingFontFamily = prefs.getString("last_font", "sans-serif") ?: "sans-serif"
 
         // Checked BEFORE the intent extra: if this Activity instance is being recreated after
@@ -2545,6 +2546,34 @@ class MainActivity : AppCompatActivity() {
         sizeLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Paper Size").setItems(PaperSizeOption.values().map{it.name}.toTypedArray()){ _,i-> drawingView.paperSize=PaperSizeOption.values()[i]; drawingView.invalidate(); refPage() }.show() }
         orientLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Orientation").setItems(arrayOf("Portrait","Landscape")){ _,i-> drawingView.pageOrientation=if(i==0)Orientation.PORTRAIT else Orientation.LANDSCAPE; drawingView.invalidate(); refPage() }.show() }
 
+        div(); hdr("HATCHING")
+        // hatchScale is a spacing MULTIPLIER (see `s = 8f * hatchScale` in drawHatchPattern),
+        // so smaller = tighter spacing = more lines drawn per area = more expensive to
+        // first-render (after that it's cached — see drawHatchPattern's caching fix — but the
+        // one-time render cost for a large area with tight spacing is still real).
+        val hatchLabels = arrayOf("Fine (dense)", "Normal", "Coarse (sparse)")
+        val hatchValues = arrayOf(0.5f, 1f, 2f)
+        var selHatchScale = prefs.getFloat("hatch_scale", 1f)
+        val hatchLbl = TextView(this).apply { textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(8),0,dp(8)) }
+        fun closestHatchIndex() = hatchValues.indices.minByOrNull { kotlin.math.abs(hatchValues[it] - selHatchScale) } ?: 1
+        fun refHatch() { hatchLbl.text = "Density: ${hatchLabels[closestHatchIndex()]}  (tap)" }
+        refHatch()
+        hatchLbl.setOnClickListener {
+            AlertDialog.Builder(this).setTitle("Hatch Density").setItems(hatchLabels) { _, i ->
+                val applyChoice = { selHatchScale = hatchValues[i]; refHatch() }
+                if (hatchValues[i] < 1f) {
+                    // Fine hatches on a large filled area mean a lot of lines get drawn the
+                    // first time that fill is rendered — warn before committing to it as the
+                    // default rather than let it be a surprise on a big table/hatch later.
+                    AlertDialog.Builder(this).setTitle("Fine Hatching")
+                        .setMessage("Fine, densely-spaced hatches take longer to render the first time a large filled area is drawn. Once drawn, it's cached and stays fast — but the initial render on a big area may be noticeably slower. Use Fine hatching?")
+                        .setPositiveButton("Use Fine") { _, _ -> applyChoice() }
+                        .setNegativeButton("Cancel", null).show()
+                } else applyChoice()
+            }.show()
+        }
+        container.addView(hatchLbl)
+
         div(); hdr("TOOLBAR")
         val barSizeLabels = arrayOf("Small (36dp)", "Medium (44dp)", "Large (52dp)", "Extra Large (60dp)")
         val barSizeValues = arrayOf(36, 44, 52, 60)
@@ -2579,6 +2608,7 @@ class MainActivity : AppCompatActivity() {
                     .putBoolean("autosave",autosaveCb.isChecked)
                     .putString("default_paper",selPaper)
                     .putInt("paper_color", selPaperColor)
+                    .putFloat("hatch_scale", selHatchScale)
                     .putInt("arc_divisions",(arcInput.text.toString().toIntOrNull()?:3).coerceIn(2,12))
                     .putInt("bar_icon_size", selBarSize)
                     .putFloat("dim_font_size", dimFontSz)
@@ -2587,6 +2617,7 @@ class MainActivity : AppCompatActivity() {
                 drawingView.arcDivisions = prefs.getInt("arc_divisions",3)
                 drawingView.defaultDimFontSize = dimFontSz
                 drawingView.defaultDimArrowSize = dimArrowSz
+                drawingView.pendingHatchScale = selHatchScale
                 try { drawingView.paperType = PaperType.valueOf(selPaper) } catch(e:Exception){}
                 drawingView.paperColor = selPaperColor
                 drawingView.invalidate()

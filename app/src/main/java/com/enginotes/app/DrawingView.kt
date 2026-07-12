@@ -787,6 +787,10 @@ class FillItem(var path: String, var x: Float, var y: Float, var w: Float, var h
     var hatchPattern: HatchPattern? = null
     var hatchColor: Int = android.graphics.Color.BLACK
     var hatchScale: Float = 1f
+    // Separate from `bitmap` above (which holds the flood-fill SHAPE mask) — this holds the
+    // fully-rendered, already-masked hatch pattern itself, computed once and reused every
+    // frame after that. See drawHatchPattern().
+    @Volatile var hatchRenderCache: Bitmap? = null
 }
 
 enum class DimMode { AUTO, MANUAL }
@@ -1295,7 +1299,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             when (currentTool) {
                 Tool.TEXT -> {
                     val hit = findTextItemAt(wx, wy)
-                    if (hit != null) { selectedItem = hit; currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT); invalidate() }
+                    if (hit != null) {
+                        // Was missing the onTextSelectRequest call that the identical case in
+                        // the Tool.SELECT branch below has — so this correctly switched to
+                        // Select (so the text becomes draggable/resizable) but never told
+                        // MainActivity to actually show the font/size/color options panel,
+                        // leaving the person looking at a plain Select toolbar with no way to
+                        // change what they just tapped.
+                        selectedItem = hit; currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT)
+                        onTextSelectRequest?.invoke(hit, e.x, e.y, e.rawX, e.rawY)
+                        invalidate()
+                    }
                     else if (isTextEditorOpen) {
                         // An editor is already open and the user tapped empty space - this means
                         // "I'm done typing," not "start a new text box here." Close/commit the
@@ -1878,7 +1892,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun drawHatchPattern(canvas: Canvas, item: FillItem) {
         val hp = item.hatchPattern ?: return
         val l = item.x; val t = item.y; val r = item.x + item.w; val b = item.y + item.h
-        // s is in world coordinates — fixed size regardless of zoom
+        // Was rebuilding the entire hatch (potentially thousands of drawLine/drawCircle calls
+        // for dense/small hatch spacing, PLUS a fresh Bitmap.createBitmap allocation) on every
+        // single frame this fill was on screen — exactly the same "recompute forever" mistake
+        // fixed earlier for Calligraphy/Fountain strokes. hatchPattern/hatchColor/hatchScale
+        // are only ever set once at creation (no live hatch-editing exists), so caching the
+        // final composited result is safe indefinitely.
+        item.hatchRenderCache?.let { canvas.drawBitmap(it, null, RectF(l, t, r, b), null); return }
         val s = 8f * item.hatchScale
         val sw = 1.5f  // stroke width in world coords
         val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = item.hatchColor; style = Paint.Style.STROKE; strokeWidth = sw; strokeCap = Paint.Cap.ROUND }
@@ -1898,9 +1918,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // Use flood-fill bitmap as alpha mask: multiply alpha channels
             val maskPaint = Paint().apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN) }
             hc.drawBitmap(bmp, null, android.graphics.Rect(0, 0, bw, bh), maskPaint)
+            item.hatchRenderCache = hatchBmp
             canvas.drawBitmap(hatchBmp, null, RectF(l, t, r, b), null)
         } else {
-            // Fallback: clip to rect
+            // Shape mask still loading asynchronously — draw directly this one time WITHOUT
+            // caching (caching now would lock in a render made before the mask was ready).
             canvas.save(); canvas.clipRect(l, t, r, b)
             drawHatchLocal(canvas, hp, l, t, r, b, s, p, sp)
             canvas.restore()
@@ -2058,14 +2080,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // and reloads them quickly if scrolled back into view — this only clears each FillItem's
     // OWN direct reference, which otherwise bypasses that cache entirely once set.
     private fun pruneFillBitmaps() {
-        val fills = actions.filterIsInstance<FillItem>().filter { it.bitmap != null }
+        val fills = actions.filterIsInstance<FillItem>().filter { it.bitmap != null || it.hatchRenderCache != null }
         if (fills.size <= 40) return  // small documents: no need to churn memory at all
         val vl = -translateX / scaleFactor; val vt = -translateY / scaleFactor
         val vr = vl + width / scaleFactor; val vb = vt + height / scaleFactor
         val marginX = (vr - vl) * 1.5f; val marginY = (vb - vt) * 1.5f
         for (f in fills) {
             val outside = f.x + f.w < vl - marginX || f.x > vr + marginX || f.y + f.h < vt - marginY || f.y > vb + marginY
-            if (outside && !dirtyFillItems.contains(f)) f.bitmap = null  // never release a fill mid-erase-gesture
+            if (outside && !dirtyFillItems.contains(f)) { f.bitmap = null; f.hatchRenderCache = null }  // never release a fill mid-erase-gesture
         }
     }
 
@@ -3105,6 +3127,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var isDimDrawing = false
     var pendingHatchPattern: HatchPattern? = null
     var pendingHatchColor: Int = android.graphics.Color.BLACK
+    // Default density for newly-created hatches, set from the Settings > Hatch Density
+    // picker in MainActivity. Smaller = tighter spacing = more lines drawn per area (see the
+    // `s = 8f * hatchScale` spacing calc in drawHatchPattern), which is what makes a "Fine"
+    // hatch genuinely more expensive to first-render than a "Coarse" one, though after the
+    // caching fix above that cost is only ever paid once per fill, not every frame.
+    var pendingHatchScale: Float = 1f
     private var fillScrollGuard = false
     var onDimensionCreated: ((DimensionItem) -> Unit)? = null
     var onDimensionEdit: ((DimensionItem) -> Unit)? = null
@@ -6293,7 +6321,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val newArea = (wx1 - wx0) * (wy1 - wy0)
                 post {
                     val fi = FillItem(outFile.absolutePath, wx0, wy0, wx1 - wx0, wy1 - wy0)
-                    if (pendingHatchPattern != null) { fi.hatchPattern = pendingHatchPattern; fi.hatchColor = pendingHatchColor }
+                    if (pendingHatchPattern != null) { fi.hatchPattern = pendingHatchPattern; fi.hatchColor = pendingHatchColor; fi.hatchScale = pendingHatchScale }
                     fi.bitmap = fb
                     // Only remove an existing FillItem if the tap pixel lands inside it AND the
                     // new fill is roughly the same size as the existing one — meaning the user
