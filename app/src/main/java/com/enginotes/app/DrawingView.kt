@@ -934,8 +934,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         for (key in boundsToGridCells(vl - pad, vt - pad, vr + pad, vb + pad)) {
             spatialGrid[key]?.forEach { a -> if (seen.add(a)) result.add(a) }
         }
-        // Always include non-stroke items (cheap, complex bounds)
-        for (a in actions) { if ((a is TextItem || a is TableItem || a is AudioItem || a is DimensionItem) && seen.add(a)) result.add(a) }
+        // Previously also unconditionally scanned every TextItem/TableItem/AudioItem/
+        // DimensionItem in the WHOLE document here, regardless of whether they were anywhere
+        // near the viewport — meant a document with thousands of text boxes or tables spent
+        // real work "including" (and then drawing) all of them, every single frame, no matter
+        // how far away you'd scrolled. That existed because DimensionItem had no real bounds
+        // (see getBounds() above) so it couldn't be trusted to show up in the spatial query on
+        // its own. Now that every type has real bounds and is correctly indexed by
+        // rebuildSpatialIndex(), the grid query above already finds all of them — this is now
+        // genuinely just "items on screen" regardless of how large the document is.
         return result
     }
     fun removeDimensionItem(d: DimensionItem) { actions.remove(d); selectedItem = null; redoStack.clear(); markSpatialDirty(); invalidate() }
@@ -2761,6 +2768,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                 }
             }
+            is DimensionItem -> {
+                // Was missing entirely — fell through to `else -> null`, which
+                // rebuildSpatialIndex() below silently treated as bounds (0,0,0,0). Every
+                // dimension line in the document, no matter where it actually was, got filed
+                // into the spatial grid cell at the world origin — meaning the normal viewport
+                // query could never find them there, which is exactly why itemsInViewport()
+                // below had a separate unconditional "just include every DimensionItem"
+                // fallback. With real bounds here, that workaround is no longer needed.
+                val minX = minOf(item.x1, item.x2); val maxX = maxOf(item.x1, item.x2)
+                val minY = minOf(item.y1, item.y2); val maxY = maxOf(item.y1, item.y2)
+                val pad = kotlin.math.abs(item.offset) + item.fontSize * 2f + item.arrowSize * 2f + 20f
+                floatArrayOf(minX - pad, minY - pad, maxX + pad, maxY + pad)
+            }
             else -> null
         }
     }
@@ -4529,7 +4549,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     dimFingerDown = false
                     val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
                     if (dimDraggingItem != null) {
-                        dimDraggingItem = null; redoStack.clear()
+                        dimDraggingItem = null; redoStack.clear(); markSpatialDirty()
                     } else if (dimAngular) {
                         // Each UP commits the current sliding position as the confirmed point
                         when (dimAngPhase) {
@@ -4554,7 +4574,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                     fontSize = defaultDimFontSize, arrowSize = defaultDimArrowSize, textColor = currentColor
                                 )
                                 newDim.unit = "${dimAngP3wx},${dimAngP3wy},false"
-                                actions.add(newDim); redoStack.clear(); invalidate()
+                                actions.add(newDim); redoStack.clear(); markSpatialDirty(); invalidate()
                             }
                         }
                         invalidate()
@@ -4576,7 +4596,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             if (dimMode == DimMode.AUTO) {
                                 newDim.refLength = autoRefRealLen; newDim.unit = autoRefUnit
                             }
-                            actions.add(newDim); redoStack.clear()
+                            actions.add(newDim); redoStack.clear(); markSpatialDirty()
                             onDimensionCreated?.invoke(newDim)
                         }
                         dimPhase = DimPhase.IDLE; invalidate()
