@@ -185,8 +185,25 @@ class StrokeData(
         if (type == Tool.PEN || type == Tool.ERASER || type == Tool.HIGHLIGHTER || type == Tool.BRUSH) {
             if (points.size >= 2) {
                 path.moveTo(points[0], points[1])
-                var i = 2
-                while (i + 1 < points.size) { path.lineTo(points[i], points[i + 1]); i += 2 }
+                if (type == Tool.PEN) {
+                    // Smooth the line by drawing a quadratic Bezier curve through the midpoint
+                    // of each consecutive pair of raw touch points, using the raw point itself
+                    // as the curve's control point. Straight lineTo segments between every
+                    // tiny sampled point (still used below for eraser/highlighter/brush) render
+                    // each little hand tremor / digitizer-jitter direction change as a visible
+                    // facet — this is what was making pen strokes look wavy and rough.
+                    var i = 2
+                    while (i + 3 < points.size) {
+                        val midX = (points[i] + points[i + 2]) / 2f
+                        val midY = (points[i + 1] + points[i + 3]) / 2f
+                        path.quadTo(points[i], points[i + 1], midX, midY)
+                        i += 2
+                    }
+                    if (i + 1 < points.size) path.lineTo(points[i], points[i + 1])
+                } else {
+                    var i = 2
+                    while (i + 1 < points.size) { path.lineTo(points[i], points[i + 1]); i += 2 }
+                }
             }
             return path
         }
