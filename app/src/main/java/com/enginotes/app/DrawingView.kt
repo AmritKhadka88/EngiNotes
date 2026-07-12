@@ -814,6 +814,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var lastMoveX = 0f; private var lastMoveY = 0f; private var lastMoveTime = 0L
 
     var currentTool: Tool = Tool.PEN
+    // Fired only when DrawingView switches tools ON ITS OWN (link-tap auto-selecting an item,
+    // exiting table-cell editing, finishing an export-window drag) — NOT when MainActivity sets
+    // currentTool directly via its own tool buttons. Without this, the toolbar highlight could
+    // show one tool active while the canvas was actually behaving as a different one, since
+    // these internal switches previously had no way to notify MainActivity at all.
+    var onInternalToolChange: ((Tool) -> Unit)? = null
         set(value) {
             if (field == Tool.SELECT && value != Tool.SELECT) selectedItem = null
             if (field == Tool.ARC && value != Tool.ARC) activeArcItem = null
@@ -1151,7 +1157,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             when (currentTool) {
                 Tool.TEXT -> {
                     val hit = findTextItemAt(wx, wy)
-                    if (hit != null) { selectedItem = hit; currentTool = Tool.SELECT; invalidate() }
+                    if (hit != null) { selectedItem = hit; currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT); invalidate() }
                     else if (isTextEditorOpen) {
                         // An editor is already open and the user tapped empty space - this means
                         // "I'm done typing," not "start a new text box here." Close/commit the
@@ -2907,7 +2913,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; return }
                     if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; return }
                     val cell = table.hitTestCell(wx, wy)
-                    if (cell == null) { tableIsActive = false; tableSelStart = null; tableSelEnd = null; activeTableItem = null; currentTool = Tool.SELECT; invalidate(); return }
+                    if (cell == null) { tableIsActive = false; tableSelStart = null; tableSelEnd = null; activeTableItem = null; currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT); invalidate(); return }
                     // Excel-like: a single tap on a cell immediately opens it for editing
                     tableSelStart = cell; tableSelEnd = null
                     val rect = table.cellRect(cell.first, cell.second)
@@ -4492,7 +4498,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val s = exportWindowStart ?: return; val e = exportWindowEnd ?: return
                 val left = minOf(s.first, e.first); val top = minOf(s.second, e.second); val right = maxOf(s.first, e.first); val bottom = maxOf(s.second, e.second)
                 if (right - left > 20f && bottom - top > 20f) onExportWindowSelected?.invoke(left, top, right, bottom)
-                exportWindowStart = null; exportWindowEnd = null; currentTool = Tool.SELECT; invalidate()
+                exportWindowStart = null; exportWindowEnd = null; currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT); invalidate()
             }
         }
     }
@@ -4505,7 +4511,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_UP -> {
                 val s = exportWindowStart ?: return; val e = exportWindowEnd ?: return
                 val left = minOf(s.first, e.first); val top = minOf(s.second, e.second); val right = maxOf(s.first, e.first); val bottom = maxOf(s.second, e.second)
-                exportWindowStart = null; exportWindowEnd = null; currentTool = Tool.SELECT; invalidate()
+                exportWindowStart = null; exportWindowEnd = null; currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT); invalidate()
                 if (right - left > 20f && bottom - top > 20f) {
                     val bmp = exportWindow(left, top, right, bottom)
                     onOcrSnipSelected?.invoke(bmp)

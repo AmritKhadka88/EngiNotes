@@ -639,6 +639,11 @@ class MainActivity : AppCompatActivity() {
             drawingView.post { setActiveTool(null, Tool.SELECT) }
             showDimButton()
         }
+        drawingView.onInternalToolChange = { tool ->
+            runOnUiThread {
+                if (tool == Tool.SELECT) setActiveToolbarBtn(findViewById(R.id.btnSelect))
+            }
+        }
         drawingView.onItemSelected          = { item ->
             layerToolbar?.let { canvasContainer.removeView(it) }; layerToolbar = null
             // Show/hide lock button based on selection
