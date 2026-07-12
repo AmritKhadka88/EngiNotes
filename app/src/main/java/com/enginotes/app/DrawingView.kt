@@ -480,9 +480,25 @@ class StrokeData(
             left.add(Pair(px + nx * lastW, py + ny * lastW)); right.add(Pair(px - nx * lastW, py - ny * lastW))
         }
         if (left.isEmpty() || right.isEmpty()) return buildPath()
-        ribbon.moveTo(left[0].first, left[0].second)
-        for (p in left.drop(1)) ribbon.lineTo(p.first, p.second)
-        for (p in right.reversed()) ribbon.lineTo(p.first, p.second)
+        // Curve through the offset points instead of connecting them with straight lineTo
+        // segments (the polygon-edge look was part of why the ribbon read as faceted rather
+        // than a fluently tapering nib stroke) — same midpoint-quadTo technique already used
+        // to smooth plain pen strokes in buildPath().
+        fun addSmoothed(path: Path, pts: List<Pair<Float, Float>>, moveToFirst: Boolean) {
+            if (pts.isEmpty()) return
+            if (moveToFirst) path.moveTo(pts[0].first, pts[0].second)
+            if (pts.size < 3) { for (p in pts.drop(1)) path.lineTo(p.first, p.second); return }
+            var j = 1
+            while (j + 1 < pts.size) {
+                val midX = (pts[j].first + pts[j + 1].first) / 2f
+                val midY = (pts[j].second + pts[j + 1].second) / 2f
+                path.quadTo(pts[j].first, pts[j].second, midX, midY)
+                j++
+            }
+            path.lineTo(pts.last().first, pts.last().second)
+        }
+        addSmoothed(ribbon, left, true)
+        addSmoothed(ribbon, right.reversed(), false)
         ribbon.close()
         return ribbon
     }
@@ -4703,8 +4719,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             val dist = distance(hx, hy, lastMoveX, lastMoveY)
                             val speed = dist / dt * 1000f
                             if (currentPenStyle == PenStyle.FOUNTAIN) {
-                                val targetWidth = (currentStrokeWidth * (0.55f + (1f - (speed / 2200f).coerceIn(0f, 0.7f)) * 0.9f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
-                                item.data.widths.add((item.data.widths.lastOrNull() ?: currentStrokeWidth) * 0.8f + targetWidth * 0.2f)
+                                // Was 0.55 + (1-speedNorm)*0.9 with speedNorm capped at 0.7 — that
+                                // formula only ever produced widths between ~0.82x-1.45x, well
+                                // short of the 0.4x-1.8x range it was supposedly clamped to. This
+                                // spans that full range directly, so slow strokes actually pool
+                                // thick and fast strokes actually go thin, not just mildly vary.
+                                val speedNorm = (speed / 2200f).coerceIn(0f, 1f)
+                                val targetWidth = (currentStrokeWidth * (0.4f + (1f - speedNorm) * 1.4f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
+                                // Was 0.8/0.2 — so heavily damped that a normal-speed signature
+                                // finished before the width ever caught up to how fast the pen
+                                // was actually moving, reading as flat/unfluid instead of a
+                                // nib that responds to your hand. 0.45/0.55 still smooths raw
+                                // per-sample jitter but lets the ink weight actually track speed.
+                                item.data.widths.add((item.data.widths.lastOrNull() ?: currentStrokeWidth) * 0.45f + targetWidth * 0.55f)
                             } else {
                                 val targetIntensity = (1f - (speed / 1800f).coerceIn(0f, 0.75f)).coerceIn(0.25f, 1f)
                                 item.data.widths.add((item.data.widths.lastOrNull() ?: 1f) * 0.7f + targetIntensity * 0.3f)
@@ -4726,9 +4753,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val dist = distance(wx, wy, lastMoveX, lastMoveY)
                         val speed = dist / dt * 1000f
                         if (currentPenStyle == PenStyle.FOUNTAIN) {
-                            val targetWidth = (currentStrokeWidth * (0.55f + (1f - (speed / 2200f).coerceIn(0f, 0.7f)) * 0.9f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
-                            // 0.8/0.2 heavy smoothing to eliminate digitizer jitter
-                            item.data.widths.add((item.data.widths.lastOrNull() ?: currentStrokeWidth) * 0.8f + targetWidth * 0.2f)
+                            val speedNorm = (speed / 2200f).coerceIn(0f, 1f)
+                            val targetWidth = (currentStrokeWidth * (0.4f + (1f - speedNorm) * 1.4f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
+                            // 0.45/0.55: still smooths raw jitter but tracks actual pen speed
+                            // closely enough to read as fluent rather than lagging behind it.
+                            item.data.widths.add((item.data.widths.lastOrNull() ?: currentStrokeWidth) * 0.45f + targetWidth * 0.55f)
                         } else {
                             val targetIntensity = (1f - (speed / 1800f).coerceIn(0f, 0.75f)).coerceIn(0.25f, 1f)
                             item.data.widths.add((item.data.widths.lastOrNull() ?: 1f) * 0.7f + targetIntensity * 0.3f)
