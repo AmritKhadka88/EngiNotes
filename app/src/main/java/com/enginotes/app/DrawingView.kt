@@ -414,11 +414,11 @@ class StrokeData(
     }
 
     // Smooths the raw touch-point list with a simple weighted moving average before it's used
-    // to build a nib/ribbon outline. buildCalligraphySegmentQuads/buildCalligraphyRibbonPath/
+    // to build a nib/ribbon outline. drawCalligraphyStroke/buildCalligraphyRibbonPath/
     // buildFountainRibbonPath below turn every pair of consecutive points into its own little
-    // polygon edge — so without this, the exact same per-sample jitter that used to show up as
+    // segment — so without this, the exact same per-sample jitter that used to show up as
     // faceted lineTo segments in a plain path instead shows up as a rough, hairy-looking edge
-    // where each tiny quad's angle jumps around. Endpoints are left untouched so the stroke
+    // where each tiny segment's angle jumps around. Endpoints are left untouched so the stroke
     // still starts/ends exactly where drawn, and the point count/order is unchanged so it stays
     // in lockstep with the `widths` samples used for fountain-pen thickness.
     private fun smoothedPoints(): List<Float> {
@@ -431,72 +431,6 @@ class StrokeData(
             i += 2
         }
         return out
-    }
-
-    // Builds the calligraphy nib as a LIST of small per-segment quads instead of one giant
-    // polygon for the whole stroke. This is the robust fix for the self-erasure bug: a single
-    // closed polygon traced as "all left edge points then all right edge points reversed" will
-    // self-intersect at any sharp reversal (loops in cursive letters, backstrokes, crossing
-    // strokes), and Android's winding-rule fill turns those self-intersections into holes -
-    // which is exactly the black-blob/erasure artifact seen when writing cursive signatures.
-    // Drawing each segment as its own small filled quad sidesteps the problem entirely: each
-    // quad is independently solid, overlapping quads just alpha-composite normally (like real
-    // ink laid down stroke by stroke), and there is no shared winding state across the stroke
-    // for a reversal to corrupt.
-    fun buildCalligraphySegmentQuads(): List<Path> {
-        val quads = mutableListOf<Path>()
-        if (points.size < 4) return quads
-        val pts = smoothedPoints()
-        // NOTE: Android's canvas has Y increasing DOWNWARD, unlike standard math coordinates.
-        // A "+45 degree" angle computed via plain cos/sin here actually points along the "\"
-        // diagonal on screen, not "/" — flipping the whole thick/thin mapping 90 degrees from
-        // the intended chisel-nib orientation. Using -45 degrees corrects for the Y-flip so the
-        // nib's heavy axis actually lands along "/" as intended, matching standard calligraphy
-        // pen behavior (thick strokes drawn bottom-left to top-right, thin along "\").
-        val nibAngle = Math.toRadians(-45.0) // nib held at 45 degrees, like a real chisel-tip pen
-        val nibDirX = kotlin.math.cos(nibAngle).toFloat(); val nibDirY = kotlin.math.sin(nibAngle).toFloat()
-        val halfNib = strokeWidth * calligraphySlantThickness
-        var i = 0
-        var prevNx = 0f; var prevNy = 0f; var havePrev = false
-        while (i + 3 < pts.size) {
-            val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
-            val dx = x2 - x1; val dy = y2 - y1
-            val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(0.01f)
-            val ndx = dx / len; val ndy = dy / len
-            // Width at this segment: how perpendicular the stroke direction is to the nib's fixed
-            // axis. Horizontal motion (perpendicular to a 45-degree nib) reads thick; motion along
-            // the nib axis reads thin - the classic chisel-tip behavior.
-            // Floor raised from the original 0.18 to 0.42: the thin-direction stroke previously
-            // dropped to near-hairline width, which read as too thin relative to the (already
-            // correct) thick direction. The ceiling of 1.0 is untouched since that's what
-            // controls the thick direction, which was already right.
-            val widthFactor = kotlin.math.abs(ndx * nibDirY - ndy * nibDirX).coerceIn(0.42f, 1f)
-            val nx = nibDirX * halfNib * widthFactor; val ny = nibDirY * halfNib * widthFactor
-            val quad = Path()
-            quad.moveTo(x1 - nx, y1 - ny)
-            quad.lineTo(x2 - nx, y2 - ny)
-            quad.lineTo(x2 + nx, y2 + ny)
-            quad.lineTo(x1 + nx, y1 + ny)
-            quad.close()
-            quads.add(quad)
-            // Consecutive quads share the exact point (x1,y1) but each computes its OWN
-            // perpendicular nib offset from its own segment's direction — so wherever the
-            // nib's effective width/angle changes between two segments, their edges only
-            // touch at that one shared corner, leaving a tiny wedge-shaped gap at the joint.
-            // That's what was reading as fine hairline hatching along the stroke. A small
-            // filled circle at the joint, sized to the wider of the two adjacent half-widths,
-            // plugs that gap for free — no path boolean ops, no caching, same O(n) cost as
-            // before.
-            if (havePrev) {
-                val jointRadius = kotlin.math.max(kotlin.math.hypot(nx.toDouble(), ny.toDouble()), kotlin.math.hypot(prevNx.toDouble(), prevNy.toDouble())).toFloat()
-                val joint = Path()
-                joint.addCircle(x1, y1, jointRadius, Path.Direction.CW)
-                quads.add(joint)
-            }
-            prevNx = nx; prevNy = ny; havePrev = true
-            i += 2
-        }
-        return quads
     }
 
     // Legacy single-polygon path - kept only as a fallback for very short strokes (under 2
@@ -565,6 +499,37 @@ class StrokeData(
             segPaint.alpha = (basePaint.alpha * intensity).toInt()
             canvas.drawLine(points[i], points[i + 1], points[i + 2], points[i + 3], segPaint)
             i += 2; wi++
+        }
+    }
+
+    // Draws a Calligraphy stroke segment-by-segment as native stroked lines with a per-segment
+    // chisel-nib width, using ROUND caps/joins — the same proven technique already used above
+    // for Pencil. This replaces an earlier per-segment-quad + joint-circle approach that turned
+    // out fragile through several iterations (visible gaps, then a slow path-union fix, then a
+    // dotted/fragmented-fill rendering bug caused by an inherited LineType dash/discrete
+    // pathEffect corrupting the filled quads). Native Paint.Style.STROKE with ROUND caps is
+    // what Android itself uses to guarantee gap-free joins between segments — there's no custom
+    // polygon geometry left to get subtly wrong, and pathEffect is explicitly stripped so no
+    // inherited dash/dotted line-type setting can ever corrupt the stroke body again.
+    fun drawCalligraphyStroke(canvas: Canvas, basePaint: Paint) {
+        if (points.size < 4) { canvas.drawPath(buildPath(), basePaint); return }
+        val pts = smoothedPoints()
+        val nibAngle = Math.toRadians(-45.0) // corrected for Android's Y-down canvas coordinate flip
+        val nibDirX = kotlin.math.cos(nibAngle).toFloat(); val nibDirY = kotlin.math.sin(nibAngle).toFloat()
+        val segPaint = Paint(basePaint).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND; pathEffect = null }
+        var i = 0
+        while (i + 3 < pts.size) {
+            val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
+            val dx = x2 - x1; val dy = y2 - y1
+            val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(0.01f)
+            val ndx = dx / len; val ndy = dy / len
+            // Same width-factor formula as before: how perpendicular the stroke direction is
+            // to the nib's fixed 45-degree axis. Floor of 0.42 keeps the thin direction from
+            // dropping to a near-hairline width.
+            val widthFactor = kotlin.math.abs(ndx * nibDirY - ndy * nibDirX).coerceIn(0.42f, 1f)
+            segPaint.strokeWidth = strokeWidth * calligraphySlantThickness * 2f * widthFactor
+            canvas.drawLine(x1, y1, x2, y2, segPaint)
+            i += 2
         }
     }
 
@@ -1476,13 +1441,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val isFountainPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.FOUNTAIN && action.data.widths.size >= 2
                 val isPencilPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.PENCIL && action.data.widths.size >= 2
                 if (isPencilPen && action.data.rotation == 0f) { action.data.drawPencilStroke(canvas, action.paint); return }
-                if (isCalligraphyPen && action.data.rotation == 0f) {
-                    val quadPaint = Paint(action.paint).apply { style = Paint.Style.FILL }
-                    for (quad in action.data.buildCalligraphySegmentQuads()) canvas.drawPath(quad, quadPaint)
-                    return
-                }
+                if (isCalligraphyPen && action.data.rotation == 0f) { action.data.drawCalligraphyStroke(canvas, action.paint); return }
                 val renderPath = when { isCalligraphyPen -> action.data.buildCalligraphyRibbonPath(); isFountainPen -> action.data.buildFountainRibbonPath(); else -> action.path }
-                val renderPaint = if (isCalligraphyPen || isFountainPen) Paint(action.paint).apply { style = Paint.Style.FILL } else action.paint
+                val renderPaint = if (isCalligraphyPen || isFountainPen) Paint(action.paint).apply { style = Paint.Style.FILL; pathEffect = null } else action.paint
                 if (action.data.rotation != 0f) {
                     val b = getBounds(action)
                     if (b != null) {
@@ -2240,16 +2201,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val isFountainPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.FOUNTAIN && it.data.widths.size >= 2
             val isPencilPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.PENCIL && it.data.widths.size >= 2
             when {
-                // Live preview (while still writing) uses the cheap per-quad draw, NOT the
-                // union path — buildCalligraphyUnionPath() recomputes a full boolean union of
-                // every quad in the stroke so far, and doing that from scratch on every single
-                // ACTION_MOVE frame made writing unusably laggy as the stroke grew. The seam
-                // artifact this reintroduces is only visible while actively drawing (moving
-                // fast, not being scrutinized) — the instant the stroke is finalized it's
-                // re-rendered via the cached union path in drawCalligraphyStrokeWithCache,
-                // which only pays the union cost once.
-                isCalligraphyPen -> { val qp = Paint(it.paint).apply { style = Paint.Style.FILL }; for (quad in it.data.buildCalligraphySegmentQuads()) canvas.drawPath(quad, qp) }
-                isFountainPen -> canvas.drawPath(it.data.buildFountainRibbonPath(), Paint(it.paint).apply { style = Paint.Style.FILL })
+                // Same native-stroke renderer used for the finalized stroke, so live preview
+                // and final look match exactly with no separate code path to drift out of sync.
+                isCalligraphyPen -> it.data.drawCalligraphyStroke(canvas, it.paint)
+                isFountainPen -> canvas.drawPath(it.data.buildFountainRibbonPath(), Paint(it.paint).apply { style = Paint.Style.FILL; pathEffect = null })
                 isPencilPen -> it.data.drawPencilStroke(canvas, it.paint)
                 else -> canvas.drawPath(it.path, it.paint)
             }

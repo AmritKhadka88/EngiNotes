@@ -38,63 +38,6 @@ import org.apache.poi.xwpf.usermodel.XWPFDocument
 import java.io.File
 import java.io.FileOutputStream
 
-// A rounded-rect/pill drawable that gives the GLASS theme a genuine beveled 3D edge instead of
-// a single flat-colored stroke on all four sides (which reads as 2D no matter how thick it's
-// made). It draws a bright highlight arc along the top-left half of the outline — as if light
-// is catching a raised glass rim — and a darker shadow arc along the bottom-right half, as if
-// that rim casts a shadow. The fill itself is a diagonal gradient for the glass tint.
-private class Glass3DEdgeDrawable(
-    private val fillColors: IntArray,
-    private val radiusPx: Float,
-    private val strokeWidthPx: Float,
-    private val highlightColor: Int,
-    private val shadowColor: Int
-) : android.graphics.drawable.Drawable() {
-    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-    private val highlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeWidth = strokeWidthPx; strokeCap = Paint.Cap.ROUND; color = highlightColor
-    }
-    private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeWidth = strokeWidthPx; strokeCap = Paint.Cap.ROUND; color = shadowColor
-    }
-
-    override fun draw(canvas: Canvas) {
-        val b = bounds
-        if (b.width() <= 0 || b.height() <= 0) return
-        val inset = strokeWidthPx / 2f
-        val rect = RectF(b.left + inset, b.top + inset, (b.right - inset).coerceAtLeast(b.left + inset + 1f), (b.bottom - inset).coerceAtLeast(b.top + inset + 1f))
-        val r = radiusPx.coerceAtMost(minOf(rect.width(), rect.height()) / 2f)
-
-        fillPaint.shader = android.graphics.LinearGradient(
-            rect.left, rect.top, rect.right, rect.bottom, fillColors[0], fillColors[1], android.graphics.Shader.TileMode.CLAMP
-        )
-        canvas.drawRoundRect(rect, r, r, fillPaint)
-
-        // Split the outline into two arcs via PathMeasure rather than manual trig — a CW
-        // rounded-rect path traverses top edge -> right side -> bottom edge -> left side, so a
-        // 0%-50% segment is roughly "right + bottom-right" and 50%-100% is roughly "left +
-        // top-left". Small gaps trimmed at the split points avoid a hard seam between the two.
-        val outline = android.graphics.Path().apply { addRoundRect(rect, r, r, android.graphics.Path.Direction.CW) }
-        val pm = android.graphics.PathMeasure(outline, true)
-        val len = pm.length
-        if (len <= 0f) return
-        val shadowPath = android.graphics.Path(); pm.getSegment(len * 0.02f, len * 0.52f, shadowPath, true)
-        val highlightPath = android.graphics.Path(); pm.getSegment(len * 0.52f, len * 0.98f, highlightPath, true)
-        canvas.drawPath(shadowPath, shadowPaint)
-        canvas.drawPath(highlightPath, highlightPaint)
-    }
-
-    override fun setAlpha(alpha: Int) { fillPaint.alpha = alpha; highlightPaint.alpha = alpha; shadowPaint.alpha = alpha; invalidateSelf() }
-    override fun setColorFilter(cf: android.graphics.ColorFilter?) { fillPaint.colorFilter = cf; highlightPaint.colorFilter = cf; shadowPaint.colorFilter = cf; invalidateSelf() }
-    @Deprecated("Deprecated in Java") override fun getOpacity(): Int = android.graphics.PixelFormat.TRANSLUCENT
-    // Drawable's default getOutline() only reports a shape when getOpacity() == OPAQUE — since
-    // this is intentionally translucent (glass alpha), that would leave clipToOutline with
-    // nothing to clip against, silently undoing the "content must not overflow the rounded
-    // shell" fix from earlier. Providing the outline explicitly keeps that clipping working.
-    override fun getOutline(outline: android.graphics.Outline) {
-        outline.setRoundRect(bounds, radiusPx)
-    }
-}
 
 class MainActivity : AppCompatActivity() {
 
@@ -1105,7 +1048,7 @@ class MainActivity : AppCompatActivity() {
                 "TRANSLUCENT" -> android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#4DFFFFFF")) }
                 "GLASS" -> android.graphics.drawable.GradientDrawable(
                     android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
-                    intArrayOf(Color.parseColor("#66D8E8FF"), Color.parseColor("#1A6B8FBF"))
+                    intArrayOf(Color.parseColor("#66E1ECFB"), Color.parseColor("#1A7792B5"))
                 )
                 else -> android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#FFFFFF")) }
             }
@@ -1220,15 +1163,18 @@ class MainActivity : AppCompatActivity() {
                 cornerRadius = radius
                 setStroke(dp(2), Color.parseColor("#CCFFFFFF"))  // thicker, brighter edge
             }
-            "GLASS" -> Glass3DEdgeDrawable(
-                // Less saturated than before — a soft neutral gray-white sheen instead of a
-                // strong blue tint, while still reading clearly as glass via the bevel edges.
-                fillColors = intArrayOf(Color.parseColor("#66EEF1F5"), Color.parseColor("#1A8A96A6")),
-                radiusPx = radius,
-                strokeWidthPx = dp(2).toFloat(),
-                highlightColor = Color.parseColor("#E6FFFFFF"),
-                shadowColor = Color.parseColor("#3D4A5666")
-            )
+            "GLASS" -> android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+                // Restored the blue-tinted glass sheen (the neutral gray-white version read as
+                // too washed out), but softened from the original saturation — and back to a
+                // single uniform-color stroke instead of a two-tone bevel, since the bevel's
+                // highlight/shadow arcs on two closely-stacked bars were creating a visible
+                // seam line right in the gap between them.
+                intArrayOf(Color.parseColor("#66E1ECFB"), Color.parseColor("#1A7792B5"))
+            ).apply {
+                cornerRadius = radius
+                setStroke(dp(2), Color.parseColor("#E0FFFFFF"))
+            }
             else -> android.graphics.drawable.GradientDrawable().apply {
                 // Light warm gray (not pure white) so it visibly stands out from a white/cream canvas
                 setColor(Color.parseColor("#FAF7F2"))
@@ -1255,13 +1201,13 @@ class MainActivity : AppCompatActivity() {
                 cornerRadius = radius
                 setStroke(dp(2), Color.parseColor("#B3FFFFFF"))
             }
-            "GLASS" -> Glass3DEdgeDrawable(
-                fillColors = intArrayOf(Color.parseColor("#59EEF1F5"), Color.parseColor("#2E8A96A6")),
-                radiusPx = radius,
-                strokeWidthPx = dp(2).toFloat(),
-                highlightColor = Color.parseColor("#E6FFFFFF"),
-                shadowColor = Color.parseColor("#334A5666")
-            )
+            "GLASS" -> android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+                intArrayOf(Color.parseColor("#59E1ECFB"), Color.parseColor("#2E7792B5"))
+            ).apply {
+                cornerRadius = radius
+                setStroke(dp(2), Color.parseColor("#D9FFFFFF"))
+            }
             else -> android.graphics.drawable.GradientDrawable().apply {
                 setColor(Color.parseColor("#FAF7F2"))
                 cornerRadius = radius
