@@ -413,6 +413,26 @@ class StrokeData(
         return path
     }
 
+    // Smooths the raw touch-point list with a simple weighted moving average before it's used
+    // to build a nib/ribbon outline. buildCalligraphySegmentQuads/buildCalligraphyRibbonPath/
+    // buildFountainRibbonPath below turn every pair of consecutive points into its own little
+    // polygon edge — so without this, the exact same per-sample jitter that used to show up as
+    // faceted lineTo segments in a plain path instead shows up as a rough, hairy-looking edge
+    // where each tiny quad's angle jumps around. Endpoints are left untouched so the stroke
+    // still starts/ends exactly where drawn, and the point count/order is unchanged so it stays
+    // in lockstep with the `widths` samples used for fountain-pen thickness.
+    private fun smoothedPoints(): List<Float> {
+        if (points.size < 6) return points
+        val out = points.toMutableList()
+        var i = 2
+        while (i + 3 < points.size) {
+            out[i] = (points[i - 2] + points[i] * 2f + points[i + 2]) / 4f
+            out[i + 1] = (points[i - 1] + points[i + 1] * 2f + points[i + 3]) / 4f
+            i += 2
+        }
+        return out
+    }
+
     // Builds the calligraphy nib as a LIST of small per-segment quads instead of one giant
     // polygon for the whole stroke. This is the robust fix for the self-erasure bug: a single
     // closed polygon traced as "all left edge points then all right edge points reversed" will
@@ -426,6 +446,7 @@ class StrokeData(
     fun buildCalligraphySegmentQuads(): List<Path> {
         val quads = mutableListOf<Path>()
         if (points.size < 4) return quads
+        val pts = smoothedPoints()
         // NOTE: Android's canvas has Y increasing DOWNWARD, unlike standard math coordinates.
         // A "+45 degree" angle computed via plain cos/sin here actually points along the "\"
         // diagonal on screen, not "/" — flipping the whole thick/thin mapping 90 degrees from
@@ -436,8 +457,8 @@ class StrokeData(
         val nibDirX = kotlin.math.cos(nibAngle).toFloat(); val nibDirY = kotlin.math.sin(nibAngle).toFloat()
         val halfNib = strokeWidth * calligraphySlantThickness
         var i = 0
-        while (i + 3 < points.size) {
-            val x1 = points[i]; val y1 = points[i + 1]; val x2 = points[i + 2]; val y2 = points[i + 3]
+        while (i + 3 < pts.size) {
+            val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
             val dx = x2 - x1; val dy = y2 - y1
             val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(0.01f)
             val ndx = dx / len; val ndy = dy / len
@@ -467,13 +488,14 @@ class StrokeData(
     fun buildCalligraphyRibbonPath(): Path {
         val ribbon = Path()
         if (points.size < 4) return buildPath()
+        val pts = smoothedPoints()
         val nibAngle = Math.toRadians(-45.0) // corrected for Android's Y-down canvas coordinate flip
         val nibDirX = kotlin.math.cos(nibAngle).toFloat(); val nibDirY = kotlin.math.sin(nibAngle).toFloat()
         val halfNib = strokeWidth * calligraphySlantThickness
-        val px = points[0]; val py = points[1]
+        val px = pts[0]; val py = pts[1]
         val nx = nibDirX * halfNib; val ny = nibDirY * halfNib
-        ribbon.moveTo(px - nx, py - ny); ribbon.lineTo(points[2] - nx, points[3] - ny)
-        ribbon.lineTo(points[2] + nx, points[3] + ny); ribbon.lineTo(px + nx, py + ny)
+        ribbon.moveTo(px - nx, py - ny); ribbon.lineTo(pts[2] - nx, pts[3] - ny)
+        ribbon.lineTo(pts[2] + nx, pts[3] + ny); ribbon.lineTo(px + nx, py + ny)
         ribbon.close()
         return ribbon
     }
@@ -485,10 +507,11 @@ class StrokeData(
     fun buildFountainRibbonPath(): Path {
         val ribbon = Path()
         if (points.size < 4) return buildPath()
+        val pts = smoothedPoints()
         val left = mutableListOf<Pair<Float, Float>>(); val right = mutableListOf<Pair<Float, Float>>()
         var i = 0; var wi = 0
-        while (i + 3 < points.size) {
-            val x1 = points[i]; val y1 = points[i + 1]; val x2 = points[i + 2]; val y2 = points[i + 3]
+        while (i + 3 < pts.size) {
+            val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
             val dx = x2 - x1; val dy = y2 - y1
             val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(0.01f)
             val nx = -dy / len; val ny = dx / len
@@ -497,11 +520,11 @@ class StrokeData(
             i += 2; wi++
         }
         // Cap the final point with the last known width
-        val lastIdx = points.size - 2
+        val lastIdx = pts.size - 2
         val lastW = (if (widths.isNotEmpty()) widths.last() else strokeWidth) / 2f
         if (i >= 2) {
-            val px = points[lastIdx]; val py = points[lastIdx + 1]
-            val pdx = px - points[i - 2]; val pdy = py - points[i - 1]
+            val px = pts[lastIdx]; val py = pts[lastIdx + 1]
+            val pdx = px - pts[i - 2]; val pdy = py - pts[i - 1]
             val plen = kotlin.math.hypot(pdx.toDouble(), pdy.toDouble()).toFloat().coerceAtLeast(0.01f)
             val nx = -pdy / plen; val ny = pdx / plen
             left.add(Pair(px + nx * lastW, py + ny * lastW)); right.add(Pair(px - nx * lastW, py - ny * lastW))
