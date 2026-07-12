@@ -1011,6 +1011,85 @@ class MainActivity : AppCompatActivity() {
             }
             elevation = themedPillElevation(theme)
         }
+        if (theme == "GLASS") scheduleBlurUpdate() else clearBlurBackdrops()
+    }
+
+    // ── Real backdrop blur (Glass theme only, API 31+) ──────────────────────────
+    // Android has no built-in "blur what's behind this view" for standard XML/View UI — the
+    // RenderEffect API blurs a view's OWN rendered content (including its children), which is
+    // why applying it directly to a toolbar earlier blurred the icons themselves into unusable
+    // blobs. The correct approach: manually snapshot the canvas content that's actually behind
+    // each bar into a plain Bitmap, blur THAT bitmap via an ImageView with no children (safe,
+    // since there's nothing else in it to blur), and place it as a backdrop layer behind the
+    // bar's real buttons. Updates are throttled (250ms) since re-snapshotting and re-blurring on
+    // every touch/draw event would be wasteful — a real drawing surface doesn't need to look
+    // freshly blurred within milliseconds of a pan/zoom, a brief lag behind is imperceptible.
+    private var blurBackdropTop: ImageView? = null
+    private var blurBackdropPrimary: ImageView? = null
+    private var blurBackdropContext: ImageView? = null
+    private val blurHandler = Handler(Looper.getMainLooper())
+    private var blurUpdateScheduled = false
+
+    private fun scheduleBlurUpdate() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S) return
+        if (blurUpdateScheduled) return
+        blurUpdateScheduled = true
+        blurHandler.postDelayed({
+            blurUpdateScheduled = false
+            if (currentAppTheme() == "GLASS") { updateBlurBackdrops(); scheduleBlurUpdate() }
+        }, 400L)
+    }
+
+    private fun clearBlurBackdrops() {
+        blurBackdropTop?.let { canvasContainer.removeView(it) }; blurBackdropTop = null
+        blurBackdropPrimary?.let { canvasContainer.removeView(it) }; blurBackdropPrimary = null
+        blurBackdropContext?.let { canvasContainer.removeView(it) }; blurBackdropContext = null
+    }
+
+    private fun updateBlurBackdrops() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S) return
+        try {
+            val dv = drawingView
+            if (dv.width <= 0 || dv.height <= 0) return
+            val full = Bitmap.createBitmap(dv.width, dv.height, Bitmap.Config.ARGB_8888)
+            val c = Canvas(full)
+            dv.draw(c)
+            val dvLoc = IntArray(2); dv.getLocationInWindow(dvLoc)
+
+            fun applyBackdrop(target: View?, existing: ImageView?): ImageView? {
+                target ?: return existing
+                if (target.width <= 0 || target.height <= 0) return existing
+                val loc = IntArray(2); target.getLocationInWindow(loc)
+                val relY = (loc[1] - dvLoc[1]).coerceIn(0, (full.height - 1).coerceAtLeast(0))
+                val h = target.height.coerceAtMost((full.height - relY).coerceAtLeast(1))
+                val w = target.width.coerceAtMost(full.width)
+                if (h <= 0 || w <= 0) return existing
+                val cropped = Bitmap.createBitmap(full, 0, relY, w, h)
+                val iv = existing ?: ImageView(this).also {
+                    it.scaleType = ImageView.ScaleType.FIT_XY
+                    val targetIndex = canvasContainer.indexOfChild(target).coerceAtLeast(0)
+                    canvasContainer.addView(it, targetIndex, FrameLayout.LayoutParams(target.width, target.height))
+                }
+                (iv.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+                    lp.width = target.width; lp.height = target.height
+                    lp.gravity = (target.layoutParams as? FrameLayout.LayoutParams)?.gravity ?: 0
+                    lp.topMargin = (target.layoutParams as? FrameLayout.LayoutParams)?.topMargin ?: 0
+                    lp.bottomMargin = (target.layoutParams as? FrameLayout.LayoutParams)?.bottomMargin ?: 0
+                    iv.layoutParams = lp
+                }
+                iv.setImageBitmap(cropped)
+                iv.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(24f, 24f, android.graphics.Shader.TileMode.CLAMP))
+                return iv
+            }
+            blurBackdropTop = applyBackdrop(findViewById(R.id.topBarContainer), blurBackdropTop)
+            blurBackdropPrimary = applyBackdrop(findViewById(R.id.primaryToolbarScroll), blurBackdropPrimary)
+            blurBackdropContext = applyBackdrop(findViewById(R.id.toolbarScroll), blurBackdropContext)
+        } catch (e: Exception) {
+            // Any failure here (view not laid out yet, OOM on a huge canvas, etc.) — silently
+            // fall back to the existing tint-only glass look rather than crash the app over a
+            // decorative effect.
+            clearBlurBackdrops()
+        }
     }
 
     // Builds a pill-shaped background whose LOOK actually differs per theme, not just its alpha:
@@ -4417,6 +4496,12 @@ class MainActivity : AppCompatActivity() {
         closeInlineEditor(true)
         autoSave()
         if(isRecording){ AudioHelper.stopRecording(); isRecording=false }
+        blurHandler.removeCallbacksAndMessages(null); blurUpdateScheduled = false
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (currentAppTheme() == "GLASS") scheduleBlurUpdate()
     }
 
     override fun onDestroy() {
