@@ -608,6 +608,7 @@ class MainActivity : AppCompatActivity() {
             setBottomBarVisible(true)
         }
         drawingView.onLinkTap               = { target -> navigateToLink(target) }
+        drawingView.onOcrSnipSelected       = { bmp, l, t, r, b -> handleGeminiImageSnip(bmp, l, t, r, b) }
         drawingView.onPageSwipe             = { dir -> drawingView.scrollPage(dir) }
         drawingView.onDimensionCreated      = { dim -> showDimensionLabelDialog(dim) }
         drawingView.onDimensionEdit         = { dim -> showDimensionStylePanel(dim) }
@@ -1484,70 +1485,6 @@ class MainActivity : AppCompatActivity() {
             row.addView(btn)
         }
 
-        // Slant-thickness button for calligraphy (Fountain pen only) — deliberately shaped
-        // differently from the normal size button (a diagonal wedge instead of a round dot) so
-        // it's visually obvious this controls the calligraphic slant, not the base line weight.
-        // Range is 0.5x-4.0x, stored as slant*10 internally for slider granularity.
-        fun slantSizeButton(currentSlant: Float, onChange: (Float) -> Unit) {
-            var currentVal = (currentSlant * 10f).coerceIn(5f, 40f)
-            val btn = FrameLayout(this).apply {
-                val lp = LinearLayout.LayoutParams(BAR_H, BAR_H); lp.setMargins(dp(2),0,dp(2),0); layoutParams = lp
-                background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(11).toFloat() }
-            }
-            val preview = object : android.view.View(this) {
-                override fun onDraw(c: Canvas) {
-                    // Diagonal wedge: widens toward one end, visually distinct from the round
-                    // dot used for normal thickness — reads as "slanted nib" at a glance.
-                    val cx = width / 2f; val cy = height / 2f
-                    val halfLen = width * 0.32f
-                    val thick = (currentVal / 40f * width * 0.22f).coerceIn(2f, width * 0.22f)
-                    val p = Paint(Paint.ANTI_ALIAS_FLAG); p.color = Color.parseColor("#1C1C1E"); p.style = Paint.Style.FILL
-                    val path = android.graphics.Path()
-                    val dx = halfLen * 0.707f; val dy = halfLen * 0.707f  // 45-degree diagonal
-                    val nx = -dy / halfLen * thick; val ny = dx / halfLen * thick
-                    path.moveTo(cx - dx - nx * 0.15f, cy + dy - ny * 0.15f)
-                    path.lineTo(cx + dx - nx, cy - dy - ny)
-                    path.lineTo(cx + dx + nx, cy - dy + ny)
-                    path.lineTo(cx - dx + nx * 0.15f, cy + dy + ny * 0.15f)
-                    path.close()
-                    c.drawPath(path, p)
-                }
-            }
-            btn.addView(preview, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            btn.setOnClickListener { v ->
-                val popup = android.widget.PopupWindow(this)
-                val pLayout = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14))
-                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat() }
-                }
-                pLayout.addView(TextView(this).apply { text = "Slant Thickness"; textSize = 12f; setTextColor(Color.parseColor("#8A8580")); setPadding(0,0,0,dp(6)) })
-                val sliderView = object : android.view.View(this) {
-                    val trackH = dp(14).toFloat()
-                    override fun onDraw(c: Canvas) {
-                        val tw = width.toFloat(); val ty = (height - trackH) / 2f
-                        val p = Paint(Paint.ANTI_ALIAS_FLAG)
-                        p.color = Color.parseColor("#E0E0E0"); c.drawRoundRect(android.graphics.RectF(0f,ty,tw,ty+trackH), trackH/2f, trackH/2f, p)
-                        val prog = (currentVal - 5f) / 35f * tw
-                        p.color = Color.parseColor("#1C1C1E"); c.drawRoundRect(android.graphics.RectF(0f,ty,prog,ty+trackH), trackH/2f, trackH/2f, p)
-                        p.color = Color.WHITE; c.drawCircle(prog, height/2f, trackH/2f+dp(3).toFloat(), p)
-                        p.color = Color.parseColor("#1C1C1E"); p.style = Paint.Style.STROKE; p.strokeWidth = dp(1).toFloat(); c.drawCircle(prog, height/2f, trackH/2f+dp(3).toFloat(), p)
-                    }
-                    override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
-                        if (e.actionMasked == android.view.MotionEvent.ACTION_DOWN || e.actionMasked == android.view.MotionEvent.ACTION_MOVE) {
-                            currentVal = (5f + e.x / width * 35f).coerceIn(5f, 40f)
-                            onChange(currentVal / 10f); preview.invalidate(); invalidate()
-                        }; return true
-                    }
-                }
-                sliderView.layoutParams = LinearLayout.LayoutParams(dp(220), dp(40))
-                pLayout.addView(sliderView)
-                popup.contentView = pLayout; popup.width = dp(256); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-                popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
-                popup.showAsDropDown(v, -dp(100), -dp(90))
-            }
-            row.addView(btn)
-        }
-
         fun opacityButton(currentOpacity: Int, onChange: (Int) -> Unit) {
             var currentVal = currentOpacity
             val btn = object : android.view.View(this) {
@@ -1655,9 +1592,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 divider()
                 sizeButton(drawingView.currentStrokeWidth, 60) { drawingView.currentStrokeWidth = it }
-                if (drawingView.currentPenStyle == PenStyle.FOUNTAIN) {
-                    slantSizeButton(drawingView.currentCalligraphySlant) { drawingView.currentCalligraphySlant = it }
-                }
                 opacityButton(drawingView.brushOpacity) { drawingView.brushOpacity = it; drawingView.invalidate() }
                 divider()
                 eightColors(drawingView.currentColor) { c -> drawingView.currentColor = c }
@@ -1953,7 +1887,7 @@ class MainActivity : AppCompatActivity() {
         listOf("Save","Save As","Export","Export Window","Clear Canvas").forEach { popup.menu.add(it) }
         if (currentFileName != null) popup.menu.add("Delete This Note")
         popup.menu.add("Add to Book")
-        listOf("Open PDF","Chart Builder","Handwriting to Text","Settings","About","Exit").forEach { popup.menu.add(it) }
+        listOf("Open PDF","Chart Builder","Handwriting to Text","Ask Gemini about Drawing","Settings","About","Exit").forEach { popup.menu.add(it) }
         popup.setOnMenuItemClickListener { item ->
             when {
                 item.title.toString().startsWith("Note:") -> showRenameDialog()
@@ -1972,6 +1906,10 @@ class MainActivity : AppCompatActivity() {
                 item.title == "Open PDF" -> pickPdfLauncher.launch("application/pdf")
                 item.title == "Chart Builder" -> chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java))
                 item.title == "Handwriting to Text" -> convertHandwritingInPlace()
+                item.title == "Ask Gemini about Drawing" -> {
+                    Toast.makeText(this,"Drag a box around the area to ask about",Toast.LENGTH_SHORT).show()
+                    setActiveTool(null, Tool.OCR_SNIP)
+                }
                 item.title == "Settings" -> showSettingsDialog()
                 item.title == "About" -> showAboutDialog()
                 item.title == "Exit" -> confirmThenExit()
@@ -1999,6 +1937,143 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Converted!", Toast.LENGTH_SHORT).show()
             }
             .addOnFailureListener { Toast.makeText(this, "OCR failed: ${it.message}", Toast.LENGTH_SHORT).show() }
+    }
+
+    // ═══════════════════════════ Ask Gemini ═══════════════════════════
+    // Bring-your-own-API-key: each student pastes their OWN free key from Google AI Studio
+    // (Settings > AI Assistant). No server, no shared quota, no cost to us. If Google ever
+    // renames/retires the configured model, generateContent fails with HTTP 404 and the
+    // error path below tells the person exactly what to do — update the model name in
+    // Settings — instead of the feature just silently breaking.
+    private val aiExecutor = java.util.concurrent.Executors.newCachedThreadPool()
+    private fun geminiApiKey(): String = getPrefs().getString("gemini_api_key", "") ?: ""
+    private fun geminiModel(): String = getPrefs().getString("gemini_model", "gemini-2.5-flash")?.trim()?.ifBlank { "gemini-2.5-flash" } ?: "gemini-2.5-flash"
+
+    // code: 0 = ok, 1 = not configured, 2 = model not found (likely renamed/retired), 3 = other error
+    private fun askGeminiRaw(prompt: String, imageBytes: ByteArray?, onResult: (text: String?, code: Int) -> Unit) {
+        val key = geminiApiKey()
+        if (key.isBlank()) { onResult(null, 1); return }
+        val model = geminiModel()
+        aiExecutor.execute {
+            var conn: java.net.HttpURLConnection? = null
+            try {
+                val url = java.net.URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$key")
+                conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                    requestMethod = "POST"; doOutput = true
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    connectTimeout = 20000; readTimeout = 30000
+                }
+                val parts = org.json.JSONArray()
+                parts.put(org.json.JSONObject().put("text",
+                    "You are a study assistant helping a student directly inside their handwritten/digital notes. " +
+                    "Answer clearly and concisely, formatted for a notebook (short paragraphs or bullet points, no filler). " +
+                    "Question: $prompt"))
+                if (imageBytes != null) {
+                    val b64 = android.util.Base64.encodeToString(imageBytes, android.util.Base64.NO_WRAP)
+                    parts.put(org.json.JSONObject().put("inline_data", org.json.JSONObject().apply {
+                        put("mime_type", "image/jpeg"); put("data", b64)
+                    }))
+                }
+                val payload = org.json.JSONObject().put("contents", org.json.JSONArray().put(org.json.JSONObject().put("parts", parts)))
+                conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+
+                val code = conn.responseCode
+                val bodyText = (if (code in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
+                if (code !in 200..299) {
+                    runOnUiThread { onResult(null, if (code == 404) 2 else 3) }
+                    return@execute
+                }
+                val json = org.json.JSONObject(bodyText)
+                val answer = json.getJSONArray("candidates").getJSONObject(0)
+                    .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
+                runOnUiThread { onResult(answer, 0) }
+            } catch (e: Exception) {
+                runOnUiThread { onResult(null, 3) }
+            } finally {
+                conn?.disconnect()
+            }
+        }
+    }
+
+    // Handles the whole "select something -> get an answer inserted below it" flow: places a
+    // placeholder, fires the request, and updates the placeholder in place with the real
+    // answer (or a specific, actionable error) when it comes back.
+    private fun runGeminiQuery(prompt: String, imageBytes: ByteArray?, worldX: Float, worldY: Float) {
+        if (geminiApiKey().isBlank()) { showGeminiSetupDialog { runGeminiQuery(prompt, imageBytes, worldX, worldY) }; return }
+        val placeholder = drawingView.addText("✨ Asking Gemini...", worldX, worldY, drawingView.defaultTextSize, 0f, Color.GRAY) ?: return
+        askGeminiRaw(prompt, imageBytes) { answer, code ->
+            if (answer != null) {
+                insertGeminiAnswer(placeholder, answer)
+            } else {
+                placeholder.text = when (code) {
+                    2 -> "⚠️ Gemini model not found — it may have been renamed. Open Settings > AI Assistant and update the model name."
+                    else -> "⚠️ Couldn't reach Gemini. Check your connection and try again."
+                }
+                placeholder.color = Color.parseColor("#C62828")
+                drawingView.invalidate()
+            }
+        }
+    }
+
+    // Splits out any Markdown image link Gemini included in its answer, shows the text part
+    // immediately, and tries to fetch the image in the background. LLMs frequently include
+    // links to images that don't actually exist (hallucinated URLs) — if the fetch fails,
+    // this fails silently and just leaves the text answer as-is, rather than showing a
+    // broken-image placeholder or blocking on it.
+    private fun insertGeminiAnswer(placeholder: TextItem, rawAnswer: String) {
+        val imgRegex = Regex("""!\[(.*?)\]\((https?://[^\s)]+)\)""")
+        val match = imgRegex.find(rawAnswer)
+        val textOnly = rawAnswer.replace(imgRegex, "").trim().ifBlank { "(see image below)" }
+        placeholder.text = textOnly; placeholder.color = Color.BLACK
+        drawingView.invalidate()
+        val imageUrl = match?.groupValues?.get(2) ?: return
+        aiExecutor.execute {
+            try {
+                val conn = (java.net.URL(imageUrl).openConnection() as java.net.HttpURLConnection).apply { connectTimeout = 15000; readTimeout = 20000 }
+                val bytes = conn.inputStream.use { it.readBytes() }; conn.disconnect()
+                val folder = File(filesDir, "images").also { it.mkdirs() }
+                val file = File(folder, "gemini_${System.currentTimeMillis()}.jpg")
+                FileOutputStream(file).use { it.write(bytes) }
+                runOnUiThread {
+                    val w = (drawingView.width / drawingView.getScaleFactor() * 0.4f).coerceAtLeast(60f)
+                    drawingView.addImage(file.absolutePath, placeholder.x + w / 2f, placeholder.y + w * 0.33f + 24f, w, w * 0.66f)
+                }
+            } catch (e: Exception) { /* hallucinated/broken link - text answer is already shown, nothing to fall back to */ }
+        }
+    }
+
+    // First-run (or "update my key") setup — kept to the minimum a student needs: paste key,
+    // done. The "Get a free key" link opens Google AI Studio's key page directly.
+    private fun showGeminiSetupDialog(onConfigured: () -> Unit) {
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(16), dp(24), dp(8)) }
+        container.addView(TextView(this).apply {
+            text = "Paste a free Gemini API key to turn on \"Ask Gemini\" in your notes. It's tied to your own Google account — free, and only you use it."
+            textSize = 13f; setTextColor(Color.parseColor("#4A4A4A")); setPadding(0, 0, 0, dp(12))
+        })
+        val keyInput = EditText(this).apply { hint = "Paste API key here"; setText(geminiApiKey()) }
+        container.addView(keyInput)
+        container.addView(TextView(this).apply {
+            text = "Get a free key →"; textSize = 13f; setTextColor(Color.parseColor("#1565C0")); setPadding(0, dp(10), 0, 0)
+            setOnClickListener { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse("https://aistudio.google.com/apikey"))) }
+        })
+        AlertDialog.Builder(this).setTitle("Set Up Gemini").setView(container)
+            .setPositiveButton("Save") { _, _ ->
+                val k = keyInput.text.toString().trim()
+                if (k.isNotEmpty()) { getPrefs().edit().putString("gemini_api_key", k).apply(); onConfigured() }
+            }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    // Entry point for "ask about a drawing/diagram/handwritten note" — reuses the existing
+    // region-snip tool (Tool.OCR_SNIP) purely for its "drag a box, get a cropped bitmap back"
+    // mechanics; onOcrSnipSelected was declared but never actually wired up anywhere before this.
+    private fun handleGeminiImageSnip(bmp: Bitmap, left: Float, top: Float, right: Float, bottom: Float) {
+        val stream = java.io.ByteArrayOutputStream()
+        bmp.compress(Bitmap.CompressFormat.JPEG, 85, stream)
+        runGeminiQuery(
+            "Explain what's shown in this image (diagram, equation, or handwritten note) clearly for a student's notes.",
+            stream.toByteArray(), (left + right) / 2f, bottom + 30f
+        )
     }
 
     private fun showRenameDialog() {
@@ -2586,6 +2661,26 @@ class MainActivity : AppCompatActivity() {
         }
         container.addView(hatchLbl)
 
+        div(); hdr("AI ASSISTANT")
+        container.addView(TextView(this).apply {
+            text = "Bring your own free Gemini API key — nothing is shared between students, nothing costs you anything."
+            textSize = 12f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0,0,0,dp(6))
+        })
+        val keyLbl = TextView(this).apply { textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(6),0,dp(4)) }
+        fun refKeyLbl() { keyLbl.text = if (geminiApiKey().isBlank()) "API Key: not set  (tap)" else "API Key: •••• saved  (tap to change)" }
+        refKeyLbl()
+        keyLbl.setOnClickListener { showGeminiSetupDialog { refKeyLbl() } }
+        container.addView(keyLbl)
+        val modelRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0,dp(4),0,dp(4)) }
+        modelRow.addView(TextView(this).apply { text = "Model:"; textSize=14f; setTextColor(Color.parseColor("#4A4A4A")) })
+        val modelInput = EditText(this).apply { setText(geminiModel()); textSize = 14f; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
+        modelRow.addView(modelInput)
+        container.addView(modelRow)
+        container.addView(TextView(this).apply {
+            text = "If \"Ask Gemini\" stops working after a Google update, this is usually why — check aistudio.google.com/models for the current free model name and paste it above."
+            textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0,0,0,dp(4))
+        })
+
         div(); hdr("TOOLBAR")
         val barSizeLabels = arrayOf("Small (36dp)", "Medium (44dp)", "Large (52dp)", "Extra Large (60dp)")
         val barSizeValues = arrayOf(36, 44, 52, 60)
@@ -2621,6 +2716,7 @@ class MainActivity : AppCompatActivity() {
                     .putString("default_paper",selPaper)
                     .putInt("paper_color", selPaperColor)
                     .putFloat("hatch_scale", selHatchScale)
+                    .putString("gemini_model", modelInput.text.toString().trim().ifBlank { "gemini-2.5-flash" })
                     .putInt("arc_divisions",(arcInput.text.toString().toIntOrNull()?:3).coerceIn(2,12))
                     .putInt("bar_icon_size", selBarSize)
                     .putFloat("dim_font_size", dimFontSz)
@@ -4499,6 +4595,16 @@ class MainActivity : AppCompatActivity() {
         ibtn(R.drawable.ic_text_underline){btn-> if(et.selectionStart!=et.selectionEnd) toggleUnderlineOnSelection(et) else{ pendingUnderline=!pendingUnderline; setToggleStateIcon(btn,pendingUnderline) } }
         ibtn(R.drawable.ic_text_check){ closeInlineEditor(true) }
         ibtn(R.drawable.ic_text_delete){ closeInlineEditor(false,delete=true) }
+        tbtnText("✨"){ _ ->
+            val selStart = et.selectionStart; val selEnd = et.selectionEnd
+            val query = (if (selStart != selEnd && selStart >= 0 && selEnd >= 0) et.text.toString().substring(minOf(selStart,selEnd), maxOf(selStart,selEnd)) else et.text.toString()).trim()
+            if (query.isEmpty()) { Toast.makeText(this,"Type or select something first",Toast.LENGTH_SHORT).show() }
+            else {
+                val qx = editWorldX; val qy = editWorldY; val qsize = editSize
+                closeInlineEditor(true)
+                runGeminiQuery(query, null, qx, qy + qsize + 30f)
+            }
+        }
 
         // Position the toolbar's horizontal scroll bar just above the box (falls back to top of screen if no room)
         val toolbarScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(toolbar) }

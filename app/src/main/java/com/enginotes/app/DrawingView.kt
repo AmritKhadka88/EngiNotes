@@ -1209,7 +1209,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var exportWindowStart: Pair<Float, Float>? = null
     private var exportWindowEnd: Pair<Float, Float>? = null
     var onExportWindowSelected: ((Float, Float, Float, Float) -> Unit)? = null
-    var onOcrSnipSelected: ((Bitmap) -> Unit)? = null  // cropped bitmap ready for OCR
+    var onOcrSnipSelected: ((Bitmap, Float, Float, Float, Float) -> Unit)? = null  // cropped bitmap + world bounds (left, top, right, bottom), ready for OCR or any other per-region use
 
     private var scaleFactor = 1f
     private var translateX = 0f; private var translateY = 0f
@@ -4767,7 +4767,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 exportWindowStart = null; exportWindowEnd = null; currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT); invalidate()
                 if (right - left > 20f && bottom - top > 20f) {
                     val bmp = exportWindow(left, top, right, bottom)
-                    onOcrSnipSelected?.invoke(bmp)
+                    onOcrSnipSelected?.invoke(bmp, left, top, right, bottom)
                 }
             }
         }
@@ -6101,11 +6101,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return distance(px, py, x1 + t * dx, y1 + t * dy)
     }
 
-    fun addText(text: String, x: Float, y: Float, size: Float, rotation: Float, color: Int, spans: MutableList<TextSpanData> = mutableListOf(), fontFamily: String = "sans-serif", opacity: Int = 255) {
-        if (text.isBlank()) return
+    fun addText(text: String, x: Float, y: Float, size: Float, rotation: Float, color: Int, spans: MutableList<TextSpanData> = mutableListOf(), fontFamily: String = "sans-serif", opacity: Int = 255): TextItem? {
+        if (text.isBlank()) return null
         val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPage(x, y) else Pair(x, y)
         val item = TextItem(text, cx, cy, color, size, rotation); item.spans = spans; item.fontFamily = fontFamily; item.opacity = opacity
         actions.add(item); redoStack.clear(); markSpatialDirty(); invalidate()
+        return item
     }
 
     // Inserts a fully pre-built TextItem (used for link creation, where linkTarget is already
