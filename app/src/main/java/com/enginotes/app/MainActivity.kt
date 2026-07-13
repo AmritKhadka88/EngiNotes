@@ -114,7 +114,7 @@ class MainActivity : AppCompatActivity() {
     private var onImeBottomChanged: ((Int) -> Unit)? = null  // piggybacked onto the working content-view insets listener
     private var activeEditorHandles: List<View> = emptyList()
     private var editingItem: TextItem? = null
-    private var editWorldX = 0f; private var editWorldY = 0f
+    private var editWorldX = 0f; private var editWorldY = 0f; private var editTopAnchorY = 0f
     private var editRotation = 0f; private var editColor = Color.BLACK
     private var editSize = 12f * 1.333f
     private var editOpacity = 255
@@ -2115,15 +2115,24 @@ class MainActivity : AppCompatActivity() {
     // answer and dropping it in all at once.
     private fun runGeminiQuery(prompt: String, imageBytes: ByteArray?, worldX: Float, worldY: Float) {
         if (geminiApiKey().isBlank()) { showGeminiSetupDialog { runGeminiQuery(prompt, imageBytes, worldX, worldY) }; return }
+        // worldY is meant to be the desired TOP of the answer (just below the question) — but
+        // TextItem.y means the BOTTOM of the text everywhere in DrawingView (drawTextItem/
+        // getBounds/findTextItemAt all compute top = item.y - height). Left alone, that
+        // mismatch means the rendered top keeps climbing back UP toward (and past) the
+        // question as the streamed answer grows, since the same fixed "bottom" now has more
+        // height above it every time a new chunk arrives — that's the actual "text goes up /
+        // out of bounds" bug. Fix: after every change, explicitly reposition using the real
+        // current height so the TOP stays where it should and the bottom is what moves.
+        val desiredTopY = worldY
         val placeholder = drawingView.addText("✨", worldX, worldY, drawingView.defaultTextSize, 0f, Color.GRAY) ?: return
+        drawingView.repositionTextItemTop(placeholder, desiredTopY)
         val accumulated = StringBuilder()
-        var startedReceiving = false
         askGeminiStreaming(prompt, imageBytes,
             onChunk = { piece ->
-                if (!startedReceiving) { startedReceiving = true }
                 accumulated.append(piece)
                 placeholder.text = accumulated.toString()
                 placeholder.color = Color.BLACK
+                drawingView.repositionTextItemTop(placeholder, desiredTopY)
                 drawingView.invalidate()
             },
             onDone = { code, finishReason, errorDetail ->
@@ -2143,6 +2152,7 @@ class MainActivity : AppCompatActivity() {
                         finalText += "\n\n[Cut short by $why — try rephrasing the question if you need the full answer.]"
                     }
                     insertGeminiAnswer(placeholder, finalText)
+                    drawingView.repositionTextItemTop(placeholder, desiredTopY)
                 } else if (code != 0) {
                     val baseMsg = when (code) {
                         2 -> "⚠️ Gemini model not found — it may have been renamed. Open Settings > AI Assistant and tap \"Check for Update\", or update the model name manually."
@@ -2161,6 +2171,7 @@ class MainActivity : AppCompatActivity() {
                     val detail = if (!errorDetail.isNullOrBlank()) "\n($errorDetail)" else ""
                     placeholder.text = baseMsg + detail + preserved
                     placeholder.color = Color.parseColor("#C62828")
+                    drawingView.repositionTextItemTop(placeholder, desiredTopY)
                     drawingView.invalidate()
                 }
             }
@@ -4582,6 +4593,14 @@ class MainActivity : AppCompatActivity() {
         val layoutDefaultSize = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 50f * PT_TO_PX else 12f * PT_TO_PX
         editingItem=item; editWorldX=item?.x?:worldX; editWorldY=item?.y?:worldY; editRotation=item?.rotation?:0f; editColor=item?.color?:drawingView.currentColor; editSize=item?.size?:layoutDefaultSize
         editOpacity = item?.opacity ?: 255
+        // editWorldY (like TextItem.y) means BOTTOM everywhere else in this app — but what we
+        // actually want while typing/pasting is for the TOP to stay fixed and the box to grow
+        // DOWNWARD as content is added, the way any normal text editor behaves. Without this
+        // anchor, a fixed "bottom" with growing height means the rendered top keeps climbing
+        // further up the screen the more text goes in — which is exactly the "text goes up"
+        // bug on a large paste. For an existing item, back-calculate its current top from its
+        // stored bottom+height; for a brand new one, the tap position IS the intended top.
+        editTopAnchorY = if (item != null) item.y - drawingView.textItemHeight(item) else worldY
         // For new text: use last-saved font from prefs (most reliable — survives any intermediate resets)
         // For existing text: load that item's own font
         pendingFontFamily = item?.fontFamily ?: (getPrefs().getString("last_font", pendingFontFamily) ?: pendingFontFamily)
@@ -4674,6 +4693,9 @@ class MainActivity : AppCompatActivity() {
                     val realHeight = boxContainer.height.takeIf { it > 0 } ?: screenSizePx.toInt()
                     val newScreenX = lp.leftMargin + dp(6); val newScreenY = lp.topMargin + dp(6) + realHeight
                     editWorldX = drawingView.screenToWorldX(newScreenX.toFloat()); editWorldY = drawingView.screenToWorldY(newScreenY.toFloat())
+                    // Keep the top anchor in sync with a manual drag too, so subsequent typing/
+                    // pasting keeps growing downward from THIS new position, not the original one.
+                    editTopAnchorY = drawingView.screenToWorldY((lp.topMargin + dp(6)).toFloat())
                     onBoxMoved?.invoke()
                     true
                 }
@@ -4864,12 +4886,16 @@ class MainActivity : AppCompatActivity() {
         }
         drawingView.onScaleChanged={ updateET() }; drawingView.onCanvasTransformed={ updateET() }
         onBoxMoved = { layoutEditorHandles(); updateET() }  // assigned here so updateET is in scope
-        // When the box's SIZE changes from typing/pasting (not from dragging it), reposition it
-        // the same way — this is the actual fix for text appearing to "jump up" on a large
-        // paste: previously nothing recalculated position when content grew, only when the
-        // move handle was dragged, so a paste left the box positioned as if it were still the
-        // old (much shorter) size.
-        onBoxResized = { updateET() }
+        // When the box's SIZE changes from typing/pasting (not from dragging it), recompute
+        // editWorldY (the BOTTOM) from the fixed TOP anchor plus the real current height —
+        // this is the actual fix for text appearing to "jump up" on a large paste: previously
+        // nothing kept the top anchored as content grew, so the same fixed bottom just meant a
+        // higher and higher top the more text went in.
+        onBoxResized = {
+            val heightWorld = (boxContainer.height.takeIf { it > 0 } ?: dp(48)) / drawingView.getScaleFactor()
+            editWorldY = editTopAnchorY + heightWorld
+            updateET()
+        }
         activeEditText=et; activeToolbar=toolbarScroll; activeEditBox=boxContainer
         activeEditorHandles = listOf(moveHandle, resizeHandle, rotateHandle, deleteHandle)
         et.requestFocus()
