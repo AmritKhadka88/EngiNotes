@@ -4606,6 +4606,18 @@ class MainActivity : AppCompatActivity() {
         et.textSize=(screenSizePx/density).coerceAtLeast(8f)
         et.setBackgroundColor(Color.TRANSPARENT)
         et.setPadding(dp(8),dp(8),dp(8),dp(8)); et.minWidth=dp(140); et.maxWidth=maxEditorWidthPx; et.minHeight=dp(48)
+        // Bounded height with internal scrolling once text grows past it. Without this the box
+        // grew completely unbounded with however much text was pasted/typed in — which is what
+        // was actually behind "can't double-tap to edit," "can't move it," and the outright
+        // crash on more text: position math elsewhere assumed a roughly single-line-sized box,
+        // the floating handles can only physically reach so far up/down a screen, and Android
+        // itself has real rendering-size limits for an unboundedly tall View. Capping this and
+        // letting the EditText scroll internally past that point keeps the box itself always a
+        // sane, always on-screen, always reachable size — no matter how much text is inside it.
+        val maxEditorHeightPx = (resources.displayMetrics.heightPixels * 2.2f).toInt()
+        et.maxHeight = maxEditorHeightPx
+        et.isVerticalScrollBarEnabled = true
+        et.movementMethod = android.text.method.ScrollingMovementMethod.getInstance()
         et.typeface = typefaceFromFamily(pendingFontFamily)
         if(!useActualSize) et.rotation=editRotation
         et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } } }; override fun afterTextChanged(s:Editable?){} })
@@ -4637,6 +4649,7 @@ class MainActivity : AppCompatActivity() {
         var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
         // Forward reference: layoutEditorHandles is defined below but called from here
         var onBoxMoved: (() -> Unit)? = null
+        var onBoxResized: (() -> Unit)? = null
         // toolbarScroll is declared later in this function — use a forward ref so we can hide it during drag
         var editorToolbarRef: View? = null
         moveHandle.setOnTouchListener { _, ev ->
@@ -4653,8 +4666,14 @@ class MainActivity : AppCompatActivity() {
                     val lp = boxContainer.layoutParams as FrameLayout.LayoutParams
                     lp.leftMargin = (moveStartLeft + dx).coerceAtLeast(0); lp.topMargin = (moveStartTop + dy).coerceAtLeast(0)
                     boxContainer.layoutParams = lp
-                    val newScreenX = lp.leftMargin + dp(6); val newScreenY = lp.topMargin + dp(6) + screenSizePx
-                    editWorldX = drawingView.screenToWorldX(newScreenX.toFloat()); editWorldY = drawingView.screenToWorldY(newScreenY)
+                    // Real box height, not screenSizePx (one line's height) — using a one-line
+                    // stand-in only round-trips correctly through updateET()'s inverse formula
+                    // when the box actually IS one line tall. For anything longer this silently
+                    // drifted further wrong the taller the box got, which is what made a
+                    // multi-line box feel "stuck"/unresponsive to dragging.
+                    val realHeight = boxContainer.height.takeIf { it > 0 } ?: screenSizePx.toInt()
+                    val newScreenX = lp.leftMargin + dp(6); val newScreenY = lp.topMargin + dp(6) + realHeight
+                    editWorldX = drawingView.screenToWorldX(newScreenX.toFloat()); editWorldY = drawingView.screenToWorldY(newScreenY.toFloat())
                     onBoxMoved?.invoke()
                     true
                 }
@@ -4748,7 +4767,7 @@ class MainActivity : AppCompatActivity() {
             deleteHandle.layoutParams = dlp
         }
         boxContainer.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, or_, ob ->
-            if (r - l != or_ - ol || b - t != ob - ot) layoutEditorHandles()
+            if (r - l != or_ - ol || b - t != ob - ot) { layoutEditorHandles(); onBoxResized?.invoke() }
         }
         boxContainer.post { layoutEditorHandles() }
         // onBoxMoved is assigned after updateET() is defined below
@@ -4833,13 +4852,24 @@ class MainActivity : AppCompatActivity() {
         fun updateET(){
             val scale=drawingView.getScaleFactor();val nsp=editSize*scale*convenientBoost
             et.textSize=(nsp/density).coerceAtLeast(8f)
-            val sx=drawingView.worldToScreenX(editWorldX);val sy=drawingView.worldToScreenY(editWorldY)-nsp
+            // Same fix as the move handle above: real box height instead of nsp (one line's
+            // height), so this stays correct for multi-line content instead of only for
+            // single-line text. Falls back to nsp only on the very first call before the box
+            // has been measured yet (height still 0).
+            val realHeight = boxContainer.height.takeIf { it > 0 } ?: nsp.toInt()
+            val sx=drawingView.worldToScreenX(editWorldX);val sy=drawingView.worldToScreenY(editWorldY)-realHeight
             val lp=boxContainer.layoutParams as FrameLayout.LayoutParams; lp.leftMargin=(sx-dp(6)).toInt().coerceAtLeast(0); lp.topMargin=(sy-dp(6)).toInt(); boxContainer.layoutParams=lp
             val tlp=toolbarScroll.layoutParams as FrameLayout.LayoutParams; tlp.leftMargin=lp.leftMargin; tlp.topMargin=(lp.topMargin-toolbarHeightEstimate); toolbarScroll.layoutParams=tlp
             layoutEditorHandles()
         }
         drawingView.onScaleChanged={ updateET() }; drawingView.onCanvasTransformed={ updateET() }
         onBoxMoved = { layoutEditorHandles(); updateET() }  // assigned here so updateET is in scope
+        // When the box's SIZE changes from typing/pasting (not from dragging it), reposition it
+        // the same way — this is the actual fix for text appearing to "jump up" on a large
+        // paste: previously nothing recalculated position when content grew, only when the
+        // move handle was dragged, so a paste left the box positioned as if it were still the
+        // old (much shorter) size.
+        onBoxResized = { updateET() }
         activeEditText=et; activeToolbar=toolbarScroll; activeEditBox=boxContainer
         activeEditorHandles = listOf(moveHandle, resizeHandle, rotateHandle, deleteHandle)
         et.requestFocus()
