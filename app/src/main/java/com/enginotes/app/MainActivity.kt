@@ -2049,8 +2049,20 @@ class MainActivity : AppCompatActivity() {
                 }
                 val json = org.json.JSONObject(bodyText)
                 val answer = resolveJsonPath(json, geminiResponsePath())
-                    ?: throw Exception("Response shape didn't match geminiResponsePath()")
+                    ?: throw ResponseShapeException()
                 runOnUiThread { onResult(answer, 0) }
+            } catch (e: ResponseShapeException) {
+                // Got a real 200 response from Google, but couldn't find the answer where
+                // geminiResponsePath() expected it — this means the RESPONSE shape changed,
+                // a different failure than not being able to reach Gemini at all, and needs a
+                // different fix (Check for Update), so it gets its own code instead of being
+                // lumped in with genuine connectivity failures below.
+                runOnUiThread { onResult(null, 6) }
+            } catch (e: java.io.IOException) {
+                // Covers UnknownHostException (no internet / DNS failure) and a missing
+                // INTERNET permission (the request never leaves the device at all) — a real
+                // "couldn't reach Gemini" in the literal sense.
+                runOnUiThread { onResult(null, 3) }
             } catch (e: Exception) {
                 runOnUiThread { onResult(null, 3) }
             } finally {
@@ -2058,6 +2070,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+    private class ResponseShapeException : Exception()
 
     // Handles the whole "select something -> get an answer inserted below it" flow: places a
     // placeholder, fires the request, and updates the placeholder in place with the real
@@ -2073,6 +2086,7 @@ class MainActivity : AppCompatActivity() {
                     2 -> "⚠️ Gemini model not found — it may have been renamed. Open Settings > AI Assistant and tap \"Check for Update\", or update the model name manually."
                     4 -> "⚠️ Your API key isn't working. Open Settings > AI Assistant and check or replace it."
                     5 -> "⚠️ You've used up today's free Gemini limit. It resets at midnight Pacific time — try again after that."
+                    6 -> "⚠️ Got a response from Gemini but couldn't read it — Google may have changed something. Open Settings > AI Assistant and tap \"Check for Update\"."
                     else -> "⚠️ Couldn't reach Gemini. Check your connection and try again."
                 }
                 placeholder.color = Color.parseColor("#C62828")
