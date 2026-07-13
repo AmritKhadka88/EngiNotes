@@ -2009,20 +2009,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     // code: 0 = ok, 1 = not configured, 2 = model not found, 3 = other error, 4 = key invalid, 5 = quota hit
-    private fun askGeminiRaw(prompt: String, imageBytes: ByteArray?, onResult: (text: String?, code: Int) -> Unit) {
+    // code passed to onDone: 0 = ok, 1 = not configured, 2 = model not found, 3 = other error,
+    // 4 = key invalid, 5 = quota hit, 6 = got a response but couldn't parse any of it
+    private fun askGeminiStreaming(prompt: String, imageBytes: ByteArray?, onChunk: (String) -> Unit, onDone: (code: Int) -> Unit) {
         val key = geminiApiKey()
-        if (key.isBlank()) { onResult(null, 1); return }
+        if (key.isBlank()) { onDone(1); return }
         val model = geminiModel()
         aiExecutor.execute {
             var conn: java.net.HttpURLConnection? = null
             try {
-                val url = java.net.URL("${geminiBaseUrl()}/models/$model:generateContent")
+                // streamGenerateContent + alt=sse (as a URL query param, not a header — Google
+                // silently returns the old one-shot-JSON behavior without it, no error, just no
+                // streaming) is what actually delivers text as it's generated instead of only
+                // once the full answer is ready. This is the real fix for "why does it take so
+                // long to appear" — the total generation time doesn't change, but the FIRST
+                // words show up almost immediately instead of everything appearing at once at
+                // the very end.
+                val url = java.net.URL("${geminiBaseUrl()}/models/$model:streamGenerateContent?alt=sse")
                 conn = (url.openConnection() as java.net.HttpURLConnection).apply {
                     requestMethod = "POST"; doOutput = true
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                    // Header-based key instead of ?key= in the URL — Google's more secure
-                    // recommended pattern (URL query params tend to get logged in more places,
-                    // like proxies and server logs, than headers do).
                     setRequestProperty("x-goog-api-key", key)
                     connectTimeout = 20000; readTimeout = 30000
                 }
@@ -2042,72 +2048,76 @@ class MainActivity : AppCompatActivity() {
                 }
                 val payload = org.json.JSONObject()
                     .put("contents", org.json.JSONArray().put(org.json.JSONObject().put("parts", parts)))
-                    // Low thinking: Gemini 3+ models "think" before answering by default, which adds real
-                    // latency for what's usually a simple, direct question here. This trades a bit of depth on
-                    // genuinely hard multi-step reasoning for a much faster response on the common case — a
-                    // reasonable trade for "quick answer while taking notes," not for solving a hard problem set.
                     .put("generationConfig", org.json.JSONObject()
                         .put("thinkingConfig", org.json.JSONObject().put("thinkingLevel", "low"))
-                        // Caps how much it can generate — since generation is token-by-token,
-                        // this directly bounds worst-case response time, on top of also
-                        // reinforcing the single-paragraph note style already requested above
-                        // (a long response was never the goal here anyway).
                         .put("maxOutputTokens", 400))
                 conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
 
                 val code = conn.responseCode
-                val bodyText = (if (code in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
                 if (code !in 200..299) {
                     val resultCode = when (code) { 404 -> 2; 401, 403 -> 4; 429 -> 5; else -> 3 }
-                    runOnUiThread { onResult(null, resultCode) }
+                    runOnUiThread { onDone(resultCode) }
                     return@execute
                 }
-                val json = org.json.JSONObject(bodyText)
-                val answer = resolveJsonPath(json, geminiResponsePath())
-                    ?: throw ResponseShapeException()
-                runOnUiThread { onResult(answer, 0) }
-            } catch (e: ResponseShapeException) {
-                // Got a real 200 response from Google, but couldn't find the answer where
-                // geminiResponsePath() expected it — this means the RESPONSE shape changed,
-                // a different failure than not being able to reach Gemini at all, and needs a
-                // different fix (Check for Update), so it gets its own code instead of being
-                // lumped in with genuine connectivity failures below.
-                runOnUiThread { onResult(null, 6) }
+                // Each SSE line is "data: {...}" holding one incremental piece of the answer, in
+                // the exact same shape a normal (non-streaming) response has — so the same
+                // geminiResponsePath() config, and the same Check-for-Update recovery path,
+                // covers a response-shape change here too, not just the non-streaming call.
+                var gotAny = false
+                conn.inputStream.bufferedReader().forEachLine { line ->
+                    if (line.startsWith("data: ")) {
+                        try {
+                            val chunkJson = org.json.JSONObject(line.removePrefix("data: "))
+                            val piece = resolveJsonPath(chunkJson, geminiResponsePath())
+                            if (!piece.isNullOrEmpty()) { gotAny = true; runOnUiThread { onChunk(piece) } }
+                        } catch (e: Exception) { /* one malformed chunk shouldn't kill the whole stream */ }
+                    }
+                }
+                runOnUiThread { onDone(if (gotAny) 0 else 6) }
             } catch (e: java.io.IOException) {
                 // Covers UnknownHostException (no internet / DNS failure) and a missing
-                // INTERNET permission (the request never leaves the device at all) — a real
-                // "couldn't reach Gemini" in the literal sense.
-                runOnUiThread { onResult(null, 3) }
+                // INTERNET permission (the request never leaves the device at all).
+                runOnUiThread { onDone(3) }
             } catch (e: Exception) {
-                runOnUiThread { onResult(null, 3) }
+                runOnUiThread { onDone(3) }
             } finally {
                 conn?.disconnect()
             }
         }
     }
-    private class ResponseShapeException : Exception()
 
     // Handles the whole "select something -> get an answer inserted below it" flow: places a
-    // placeholder, fires the request, and updates the placeholder in place with the real
-    // answer (or a specific, actionable error) when it comes back.
+    // placeholder, then grows it live as text streams in, rather than waiting for the whole
+    // answer and dropping it in all at once.
     private fun runGeminiQuery(prompt: String, imageBytes: ByteArray?, worldX: Float, worldY: Float) {
         if (geminiApiKey().isBlank()) { showGeminiSetupDialog { runGeminiQuery(prompt, imageBytes, worldX, worldY) }; return }
-        val placeholder = drawingView.addText("✨ Asking Gemini...", worldX, worldY, drawingView.defaultTextSize, 0f, Color.GRAY) ?: return
-        askGeminiRaw(prompt, imageBytes) { answer, code ->
-            if (answer != null) {
-                insertGeminiAnswer(placeholder, answer)
-            } else {
-                placeholder.text = when (code) {
-                    2 -> "⚠️ Gemini model not found — it may have been renamed. Open Settings > AI Assistant and tap \"Check for Update\", or update the model name manually."
-                    4 -> "⚠️ Your API key isn't working. Open Settings > AI Assistant and check or replace it."
-                    5 -> "⚠️ You've used up today's free Gemini limit. It resets at midnight Pacific time — try again after that."
-                    6 -> "⚠️ Got a response from Gemini but couldn't read it — Google may have changed something. Open Settings > AI Assistant and tap \"Check for Update\"."
-                    else -> "⚠️ Couldn't reach Gemini. Check your connection and try again."
-                }
-                placeholder.color = Color.parseColor("#C62828")
+        val placeholder = drawingView.addText("✨", worldX, worldY, drawingView.defaultTextSize, 0f, Color.GRAY) ?: return
+        val accumulated = StringBuilder()
+        var startedReceiving = false
+        askGeminiStreaming(prompt, imageBytes,
+            onChunk = { piece ->
+                if (!startedReceiving) { startedReceiving = true }
+                accumulated.append(piece)
+                placeholder.text = accumulated.toString()
+                placeholder.color = Color.BLACK
                 drawingView.invalidate()
+            },
+            onDone = { code ->
+                if (code == 0 && accumulated.isNotEmpty()) {
+                    insertGeminiAnswer(placeholder, accumulated.toString())
+                } else if (code != 0) {
+                    placeholder.text = when (code) {
+                        2 -> "⚠️ Gemini model not found — it may have been renamed. Open Settings > AI Assistant and tap \"Check for Update\", or update the model name manually."
+                        4 -> "⚠️ Your API key isn't working. Open Settings > AI Assistant and check or replace it."
+                        5 -> "⚠️ You've used up today's free Gemini limit. It resets at midnight Pacific time — try again after that."
+                        6 -> "⚠️ Got a response from Gemini but couldn't read it — Google may have changed something. Open Settings > AI Assistant and tap \"Check for Update\"."
+                        else -> "⚠️ Couldn't reach Gemini. Check your connection and try again."
+                    }
+                    placeholder.color = Color.parseColor("#C62828")
+                    drawingView.invalidate()
+                }
             }
-        }
+        )
     }
 
     // Splits out any Markdown image link Gemini included in its answer, shows the text part
