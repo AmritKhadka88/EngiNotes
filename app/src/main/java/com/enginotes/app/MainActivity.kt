@@ -2046,7 +2046,13 @@ class MainActivity : AppCompatActivity() {
                     // latency for what's usually a simple, direct question here. This trades a bit of depth on
                     // genuinely hard multi-step reasoning for a much faster response on the common case — a
                     // reasonable trade for "quick answer while taking notes," not for solving a hard problem set.
-                    .put("generationConfig", org.json.JSONObject().put("thinkingConfig", org.json.JSONObject().put("thinkingLevel", "low")))
+                    .put("generationConfig", org.json.JSONObject()
+                        .put("thinkingConfig", org.json.JSONObject().put("thinkingLevel", "low"))
+                        // Caps how much it can generate — since generation is token-by-token,
+                        // this directly bounds worst-case response time, on top of also
+                        // reinforcing the single-paragraph note style already requested above
+                        // (a long response was never the goal here anyway).
+                        .put("maxOutputTokens", 400))
                 conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
 
                 val code = conn.responseCode
@@ -4663,17 +4669,24 @@ class MainActivity : AppCompatActivity() {
             val bx = containerLeft(); val by = containerTop()
             val w = boxContainer.width.toFloat(); val h = boxContainer.height.toFloat()
             val half = dp(16)
+            // Screen-space clamp so a handle can never scroll off-screen and become
+            // unreachable — this was the actual cause of "can't move text taller than one
+            // page": with no vertical clamp, a handle anchored to the (possibly far off-screen)
+            // top/middle/bottom of a tall text box could land somewhere the person could never
+            // actually tap, since only leftMargin had a coerceAtLeast(0) before, not topMargin.
+            val maxTop = (canvasContainer.height - dp(32)).coerceAtLeast(0)
+            fun clampTop(v: Float) = v.toInt().coerceIn(0, maxTop)
             val mlp = moveHandle.layoutParams as FrameLayout.LayoutParams
-            mlp.leftMargin = (bx - half).toInt().coerceAtLeast(0); mlp.topMargin = (by - half).toInt()
+            mlp.leftMargin = (bx - half).toInt().coerceAtLeast(0); mlp.topMargin = clampTop(by - half)
             moveHandle.layoutParams = mlp
             val rlp = resizeHandle.layoutParams as FrameLayout.LayoutParams
-            rlp.leftMargin = (bx + w - half).toInt(); rlp.topMargin = (by + h / 2f - half).toInt()
+            rlp.leftMargin = (bx + w - half).toInt(); rlp.topMargin = clampTop(by + h / 2f - half)
             resizeHandle.layoutParams = rlp
             val rolp = rotateHandle.layoutParams as FrameLayout.LayoutParams
-            rolp.leftMargin = (bx + w - half).toInt(); rolp.topMargin = (by + h - half).toInt()
+            rolp.leftMargin = (bx + w - half).toInt(); rolp.topMargin = clampTop(by + h - half)
             rotateHandle.layoutParams = rolp
             val dlp = deleteHandle.layoutParams as FrameLayout.LayoutParams
-            dlp.leftMargin = (bx + w - half).toInt(); dlp.topMargin = (by - half).toInt()
+            dlp.leftMargin = (bx + w - half).toInt(); dlp.topMargin = clampTop(by - half)
             deleteHandle.layoutParams = dlp
         }
         boxContainer.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, or_, ob ->
@@ -4703,9 +4716,14 @@ class MainActivity : AppCompatActivity() {
             val query = (if (selStart != selEnd && selStart >= 0 && selEnd >= 0) et.text.toString().substring(minOf(selStart,selEnd), maxOf(selStart,selEnd)) else et.text.toString()).trim()
             if (query.isEmpty()) { Toast.makeText(this,"Type or select something first",Toast.LENGTH_SHORT).show() }
             else {
-                val qx = editWorldX; val qy = editWorldY; val qsize = editSize
+                val qx = editWorldX; val qy = editWorldY
+                // et.height is the EditText's REAL on-screen height across every line it's
+                // currently wrapped to — using qsize (a single line's font size) badly
+                // undershot this for anything longer than one line, landing the answer
+                // overlapping the question instead of fully below it.
+                val fullHeightWorld = et.height / drawingView.getScaleFactor()
                 closeInlineEditor(true)
-                runGeminiQuery(query, null, qx, qy + qsize + 30f)
+                runGeminiQuery(query, null, qx, qy + fullHeightWorld + 30f)
             }
         }
 
