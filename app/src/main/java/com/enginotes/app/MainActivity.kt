@@ -2058,7 +2058,12 @@ class MainActivity : AppCompatActivity() {
                     .put("contents", org.json.JSONArray().put(org.json.JSONObject().put("parts", parts)))
                     .put("generationConfig", org.json.JSONObject()
                         .put("thinkingConfig", org.json.JSONObject().put("thinkingLevel", "low"))
-                        .put("maxOutputTokens", 400))
+                        // Was 400 — too tight in practice. Thinking tokens draw from this same
+                        // budget even at "low", so a chunk of it was being spent before any
+                        // visible answer text even started, leaving genuinely normal questions
+                        // (e.g. "what is photosynthesis") cut off mid-sentence instead of just
+                        // guarding against a runaway-long response, which was the actual intent.
+                        .put("maxOutputTokens", 800))
                 conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
 
                 val code = conn.responseCode
@@ -4582,9 +4587,10 @@ class MainActivity : AppCompatActivity() {
         pendingFontFamily = item?.fontFamily ?: (getPrefs().getString("last_font", pendingFontFamily) ?: pendingFontFamily)
         val density=resources.displayMetrics.density
         val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
-        // Convenient layout gets a generous size boost so typing feels big and comfortable,
-        // matching the large-font feel from the reference screenshot. Print/Infinite stay true-to-scale.
-        val convenientBoost = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 1.6f else 1f
+        // Was boosted 1.6x for Convenient mode to make typing feel bigger/easier — turned out
+        // to be the opposite of convenient in practice: a jarring size jump between what you're
+        // typing and what it actually looks like once committed. Matches final size exactly now.
+        val convenientBoost = 1f
         val screenSizePx=(if(useActualSize) editSize else editSize*drawingView.getScaleFactor()) * convenientBoost
 
         // Bordered editing box (matches the blue-bordered selection rectangle from the reference)
