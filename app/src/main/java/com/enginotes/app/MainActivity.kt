@@ -2028,16 +2028,25 @@ class MainActivity : AppCompatActivity() {
                 }
                 val parts = org.json.JSONArray()
                 parts.put(org.json.JSONObject().put("text",
-                    "You are a study assistant helping a student directly inside their handwritten/digital notes. " +
-                    "Answer clearly and concisely, formatted for a notebook (short paragraphs or bullet points, no filler). " +
-                    "Question: $prompt"))
+                    "Write the answer as a single flowing paragraph of clean study notes — the way a focused " +
+                    "student would jot the essential answer straight into their own notebook, not the way an AI " +
+                    "assistant replies in a chat window. No greetings, no \"Sure, here is...\", no meta-commentary " +
+                    "about being an AI, no bullet points or headers unless the question itself is a literal list " +
+                    "request, and no closing offer of further help. Just the direct, cohesive substance a student " +
+                    "would actually want written down.\n\nQuestion: $prompt"))
                 if (imageBytes != null) {
                     val b64 = android.util.Base64.encodeToString(imageBytes, android.util.Base64.NO_WRAP)
                     parts.put(org.json.JSONObject().put("inline_data", org.json.JSONObject().apply {
                         put("mime_type", "image/jpeg"); put("data", b64)
                     }))
                 }
-                val payload = org.json.JSONObject().put("contents", org.json.JSONArray().put(org.json.JSONObject().put("parts", parts)))
+                val payload = org.json.JSONObject()
+                    .put("contents", org.json.JSONArray().put(org.json.JSONObject().put("parts", parts)))
+                    // Low thinking: Gemini 3+ models "think" before answering by default, which adds real
+                    // latency for what's usually a simple, direct question here. This trades a bit of depth on
+                    // genuinely hard multi-step reasoning for a much faster response on the common case — a
+                    // reasonable trade for "quick answer while taking notes," not for solving a hard problem set.
+                    .put("generationConfig", org.json.JSONObject().put("thinkingConfig", org.json.JSONObject().put("thinkingLevel", "low")))
                 conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
 
                 val code = conn.responseCode
