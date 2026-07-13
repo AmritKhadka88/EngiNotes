@@ -2011,9 +2011,9 @@ class MainActivity : AppCompatActivity() {
     // code: 0 = ok, 1 = not configured, 2 = model not found, 3 = other error, 4 = key invalid, 5 = quota hit
     // code passed to onDone: 0 = ok, 1 = not configured, 2 = model not found, 3 = other error,
     // 4 = key invalid, 5 = quota hit, 6 = got a response but couldn't parse any of it
-    private fun askGeminiStreaming(prompt: String, imageBytes: ByteArray?, onChunk: (String) -> Unit, onDone: (code: Int) -> Unit) {
+    private fun askGeminiStreaming(prompt: String, imageBytes: ByteArray?, onChunk: (String) -> Unit, onDone: (code: Int, finishReason: String?, errorDetail: String?) -> Unit) {
         val key = geminiApiKey()
-        if (key.isBlank()) { onDone(1); return }
+        if (key.isBlank()) { onDone(1, null, null); return }
         val model = geminiModel()
         aiExecutor.execute {
             var conn: java.net.HttpURLConnection? = null
@@ -2030,6 +2030,14 @@ class MainActivity : AppCompatActivity() {
                     requestMethod = "POST"; doOutput = true
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
                     setRequestProperty("x-goog-api-key", key)
+                    setRequestProperty("Accept", "text/event-stream")
+                    // Android's HttpURLConnection has a known history of misbehaving on
+                    // long-lived streaming responses when it tries to cache them or reuse a
+                    // pooled keep-alive connection for the next request — neither makes sense
+                    // for a one-shot SSE stream, and disabling both removes a real, documented
+                    // source of streaming connections silently failing partway through.
+                    useCaches = false
+                    setRequestProperty("Connection", "close")
                     connectTimeout = 20000; readTimeout = 30000
                 }
                 val parts = org.json.JSONArray()
@@ -2056,7 +2064,8 @@ class MainActivity : AppCompatActivity() {
                 val code = conn.responseCode
                 if (code !in 200..299) {
                     val resultCode = when (code) { 404 -> 2; 401, 403 -> 4; 429 -> 5; else -> 3 }
-                    runOnUiThread { onDone(resultCode) }
+                    val errBody = conn.errorStream?.bufferedReader()?.use { it.readText() }?.take(150)
+                    runOnUiThread { onDone(resultCode, null, "HTTP $code${if (!errBody.isNullOrBlank()) ": $errBody" else ""}") }
                     return@execute
                 }
                 // Each SSE line is "data: {...}" holding one incremental piece of the answer, in
@@ -2064,22 +2073,32 @@ class MainActivity : AppCompatActivity() {
                 // geminiResponsePath() config, and the same Check-for-Update recovery path,
                 // covers a response-shape change here too, not just the non-streaming call.
                 var gotAny = false
+                // finishReason ("STOP" normally) shows up in the final chunk of a candidate.
+                // Anything else — most commonly "SAFETY" for sensitive topics, but also
+                // "RECITATION"/"PROHIBITED_CONTENT"/"OTHER" — means the model was cut off before
+                // it actually finished, which otherwise looks exactly like a bug: a sentence
+                // that just stops mid-word with no explanation.
+                var finishReason: String? = null
                 conn.inputStream.bufferedReader().forEachLine { line ->
                     if (line.startsWith("data: ")) {
                         try {
                             val chunkJson = org.json.JSONObject(line.removePrefix("data: "))
                             val piece = resolveJsonPath(chunkJson, geminiResponsePath())
                             if (!piece.isNullOrEmpty()) { gotAny = true; runOnUiThread { onChunk(piece) } }
+                            val fr = resolveJsonPath(chunkJson, "candidates.0.finishReason")
+                            if (!fr.isNullOrEmpty() && fr != "null") finishReason = fr
                         } catch (e: Exception) { /* one malformed chunk shouldn't kill the whole stream */ }
                     }
                 }
-                runOnUiThread { onDone(if (gotAny) 0 else 6) }
+                runOnUiThread { onDone(if (gotAny) 0 else 6, finishReason, null) }
             } catch (e: java.io.IOException) {
-                // Covers UnknownHostException (no internet / DNS failure) and a missing
-                // INTERNET permission (the request never leaves the device at all).
-                runOnUiThread { onDone(3) }
+                // Covers UnknownHostException (no internet / DNS failure), a missing INTERNET
+                // permission, and a connection that dies mid-stream. Real exception type+message
+                // included now instead of a generic guess, so a repeat failure is diagnosable
+                // instead of a mystery.
+                runOnUiThread { onDone(3, null, "${e.javaClass.simpleName}: ${e.message}") }
             } catch (e: Exception) {
-                runOnUiThread { onDone(3) }
+                runOnUiThread { onDone(3, null, "${e.javaClass.simpleName}: ${e.message}") }
             } finally {
                 conn?.disconnect()
             }
@@ -2102,17 +2121,40 @@ class MainActivity : AppCompatActivity() {
                 placeholder.color = Color.BLACK
                 drawingView.invalidate()
             },
-            onDone = { code ->
+            onDone = { code, finishReason, errorDetail ->
                 if (code == 0 && accumulated.isNotEmpty()) {
-                    insertGeminiAnswer(placeholder, accumulated.toString())
+                    var finalText = accumulated.toString()
+                    // finishReason other than STOP means the model was cut off before it
+                    // actually finished — most often "SAFETY" for sensitive topics (even
+                    // legitimate historical/factual ones). Without this note, a response like
+                    // that just looks like the app broke mid-sentence for no reason.
+                    if (finishReason != null && finishReason != "STOP") {
+                        val why = when (finishReason) {
+                            "SAFETY", "PROHIBITED_CONTENT" -> "Gemini's content filter"
+                            "RECITATION" -> "a copyright/citation check"
+                            "MAX_TOKENS" -> "the response length limit"
+                            else -> "Gemini ($finishReason)"
+                        }
+                        finalText += "\n\n[Cut short by $why — try rephrasing the question if you need the full answer.]"
+                    }
+                    insertGeminiAnswer(placeholder, finalText)
                 } else if (code != 0) {
-                    placeholder.text = when (code) {
+                    val baseMsg = when (code) {
                         2 -> "⚠️ Gemini model not found — it may have been renamed. Open Settings > AI Assistant and tap \"Check for Update\", or update the model name manually."
                         4 -> "⚠️ Your API key isn't working. Open Settings > AI Assistant and check or replace it."
                         5 -> "⚠️ You've used up today's free Gemini limit. It resets at midnight Pacific time — try again after that."
                         6 -> "⚠️ Got a response from Gemini but couldn't read it — Google may have changed something. Open Settings > AI Assistant and tap \"Check for Update\"."
                         else -> "⚠️ Couldn't reach Gemini. Check your connection and try again."
                     }
+                    // If any text HAD already streamed in before things failed, keep it instead
+                    // of silently throwing it away — the old behavior replaced whatever was
+                    // showing with just the error, which looked like the answer never existed
+                    // even when part of it genuinely did arrive.
+                    val preserved = if (accumulated.isNotEmpty()) "\n\n---\n${accumulated}" else ""
+                    // Real exception detail appended (small, at the end) instead of only a
+                    // guessed category — makes a repeat failure actually diagnosable.
+                    val detail = if (!errorDetail.isNullOrBlank()) "\n($errorDetail)" else ""
+                    placeholder.text = baseMsg + detail + preserved
                     placeholder.color = Color.parseColor("#C62828")
                     drawingView.invalidate()
                 }
