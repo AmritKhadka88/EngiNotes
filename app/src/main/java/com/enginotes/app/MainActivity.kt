@@ -4880,24 +4880,35 @@ class MainActivity : AppCompatActivity() {
             // has been measured yet (height still 0).
             val realHeight = boxContainer.height.takeIf { it > 0 } ?: nsp.toInt()
             val sx=drawingView.worldToScreenX(editWorldX);val sy=drawingView.worldToScreenY(editWorldY)-realHeight
-            val lp=boxContainer.layoutParams as FrameLayout.LayoutParams; lp.leftMargin=(sx-dp(6)).toInt().coerceAtLeast(0)
-            // topMargin previously had NO clamp at all (only leftMargin did) — for an item whose
-            // stored position is off (in particular anything edited before the top-anchor fix
-            // above existed), that meant the editor could open with a wildly negative or huge
-            // topMargin, landing the entire edit box off-screen — which is exactly what
-            // double-tapping to edit looked like: the text just vanished. Clamping this means
-            // the editor always opens somewhere visible and usable, regardless of how far off
-            // the underlying stored coordinates might be.
-            lp.topMargin=(sy-dp(6)).toInt().coerceIn(0, (canvasContainer.height - dp(48)).coerceAtLeast(0))
+            // Deliberately UNCLAMPED here — this runs on every drag frame and every content
+            // change, and a box taller than the screen legitimately needs its top to go
+            // negative (above the visible area) at some scroll positions. Clamping it here
+            // (an earlier attempt) fought the user's own drag on every single frame, snapping
+            // a large box back to a fixed boundary and making it look completely frozen. The
+            // "make sure it's visible" safety net now lives in ensureEditorOnScreen() below,
+            // which runs ONCE when the editor first opens, not on every recalculation.
+            val lp=boxContainer.layoutParams as FrameLayout.LayoutParams; lp.leftMargin=(sx-dp(6)).toInt().coerceAtLeast(0); lp.topMargin=(sy-dp(6)).toInt()
             boxContainer.layoutParams=lp
-            val tlp=toolbarScroll.layoutParams as FrameLayout.LayoutParams; tlp.leftMargin=lp.leftMargin
-            // Same clamp for the format toolbar (B/I/U/tick/delete/sparkle) — it was positioned
-            // purely as "box top minus toolbar height" with no bounds at all, so it could just
-            // as easily end up off-screen (reported as the tick/delete buttons being stuck
-            // "at the bottom" and unreachable) whenever the box itself was positioned awkwardly.
-            tlp.topMargin=(lp.topMargin-toolbarHeightEstimate).coerceIn(0, (canvasContainer.height - dp(48)).coerceAtLeast(0))
+            val tlp=toolbarScroll.layoutParams as FrameLayout.LayoutParams; tlp.leftMargin=lp.leftMargin; tlp.topMargin=(lp.topMargin-toolbarHeightEstimate)
             toolbarScroll.layoutParams=tlp
             layoutEditorHandles()
+        }
+        // Runs ONCE, right when the editor first opens — not on every drag/resize like the
+        // earlier (broken) attempt at this. If the box would open off-screen (the actual cause
+        // of double-tap making text "disappear"), this nudges editWorldY/editTopAnchorY
+        // themselves by the same on-screen correction, so the fix is baked into the anchor
+        // and free dragging afterward is completely unaffected by it.
+        fun ensureEditorOnScreen() {
+            updateET()
+            val lp = boxContainer.layoutParams as FrameLayout.LayoutParams
+            val maxTop = (canvasContainer.height - dp(48)).coerceAtLeast(0)
+            val clampedTop = lp.topMargin.coerceIn(0, maxTop)
+            if (clampedTop != lp.topMargin) {
+                val deltaScreenPx = (clampedTop - lp.topMargin).toFloat()
+                val deltaWorld = deltaScreenPx / drawingView.getScaleFactor()
+                editWorldY += deltaWorld; editTopAnchorY += deltaWorld
+                updateET()
+            }
         }
         drawingView.onScaleChanged={ updateET() }; drawingView.onCanvasTransformed={ updateET() }
         onBoxMoved = { layoutEditorHandles(); updateET() }  // assigned here so updateET is in scope
@@ -4913,6 +4924,7 @@ class MainActivity : AppCompatActivity() {
         }
         activeEditText=et; activeToolbar=toolbarScroll; activeEditBox=boxContainer
         activeEditorHandles = listOf(moveHandle, resizeHandle, rotateHandle, deleteHandle)
+        boxContainer.post { ensureEditorOnScreen() }
         et.requestFocus()
         et.post{ val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager; imm.showSoftInput(et,InputMethodManager.SHOW_IMPLICIT) }
     }
