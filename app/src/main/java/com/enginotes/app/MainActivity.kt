@@ -4880,8 +4880,23 @@ class MainActivity : AppCompatActivity() {
             // has been measured yet (height still 0).
             val realHeight = boxContainer.height.takeIf { it > 0 } ?: nsp.toInt()
             val sx=drawingView.worldToScreenX(editWorldX);val sy=drawingView.worldToScreenY(editWorldY)-realHeight
-            val lp=boxContainer.layoutParams as FrameLayout.LayoutParams; lp.leftMargin=(sx-dp(6)).toInt().coerceAtLeast(0); lp.topMargin=(sy-dp(6)).toInt(); boxContainer.layoutParams=lp
-            val tlp=toolbarScroll.layoutParams as FrameLayout.LayoutParams; tlp.leftMargin=lp.leftMargin; tlp.topMargin=(lp.topMargin-toolbarHeightEstimate); toolbarScroll.layoutParams=tlp
+            val lp=boxContainer.layoutParams as FrameLayout.LayoutParams; lp.leftMargin=(sx-dp(6)).toInt().coerceAtLeast(0)
+            // topMargin previously had NO clamp at all (only leftMargin did) — for an item whose
+            // stored position is off (in particular anything edited before the top-anchor fix
+            // above existed), that meant the editor could open with a wildly negative or huge
+            // topMargin, landing the entire edit box off-screen — which is exactly what
+            // double-tapping to edit looked like: the text just vanished. Clamping this means
+            // the editor always opens somewhere visible and usable, regardless of how far off
+            // the underlying stored coordinates might be.
+            lp.topMargin=(sy-dp(6)).toInt().coerceIn(0, (canvasContainer.height - dp(48)).coerceAtLeast(0))
+            boxContainer.layoutParams=lp
+            val tlp=toolbarScroll.layoutParams as FrameLayout.LayoutParams; tlp.leftMargin=lp.leftMargin
+            // Same clamp for the format toolbar (B/I/U/tick/delete/sparkle) — it was positioned
+            // purely as "box top minus toolbar height" with no bounds at all, so it could just
+            // as easily end up off-screen (reported as the tick/delete buttons being stuck
+            // "at the bottom" and unreachable) whenever the box itself was positioned awkwardly.
+            tlp.topMargin=(lp.topMargin-toolbarHeightEstimate).coerceIn(0, (canvasContainer.height - dp(48)).coerceAtLeast(0))
+            toolbarScroll.layoutParams=tlp
             layoutEditorHandles()
         }
         drawingView.onScaleChanged={ updateET() }; drawingView.onCanvasTransformed={ updateET() }
