@@ -4786,6 +4786,32 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return Pair(cx, cy)
     }
 
+    // Same idea as clampToPage, but for text items specifically — those can legitimately be
+    // taller than a single page (a long pasted block), unlike a stroke or shape. The plain
+    // clampToPage always squeezed the Y anchor into exactly one page's height (ph) no matter
+    // how tall the actual content was, which forced a tall text box's position back into a
+    // band it structurally couldn't fit inside — every move or paste-triggered reposition kept
+    // getting snapped back into that too-narrow range, which is what "stuck"/"jumps up" was.
+    private fun clampToPageForText(wx: Float, wy: Float, text: String, size: Float, fontFamily: String): Pair<Float, Float> {
+        if (canvasMode == CanvasMode.INFINITE) return Pair(wx, wy)
+        val pw = pageWidthPx(); val ph = pageHeightPx()
+        val tp = TextPaint().apply { textSize = size; try { typeface = typefaceFromFamily(fontFamily) } catch (e: Exception) {} }
+        val wrapW = (pw - 40f).coerceAtLeast(50f).toInt()
+        val estHeight = try {
+            android.text.StaticLayout.Builder.obtain(text, 0, text.length, tp, wrapW).build().height.toFloat()
+        } catch (e: Exception) { size }
+        val pageTop = if (canvasMode == CanvasMode.CONVENIENT || canvasMode == CanvasMode.PAGINATED) {
+            val gap = if (canvasMode == CanvasMode.CONVENIENT) 24f else 40f
+            val period = ph + gap
+            kotlin.math.floor(wy / period) * period
+        } else 0f
+        val cx = wx.coerceIn(0f, pw)
+        // Taller than one page: only clamp the top bound, let it extend downward across
+        // page/section boundaries as far as it actually needs instead of being squeezed.
+        val cy = if (estHeight > ph) wy.coerceAtLeast(pageTop) else wy.coerceIn(pageTop, pageTop + ph)
+        return Pair(cx, cy)
+    }
+
     private fun handleDrawing(event: MotionEvent) {
         // Narrow safety net: if the eraser gesture gets interrupted (e.g. a parent view steals
         // the touch), flush any in-memory-only fill edits rather than leaving them stranded
@@ -6103,7 +6129,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     fun addText(text: String, x: Float, y: Float, size: Float, rotation: Float, color: Int, spans: MutableList<TextSpanData> = mutableListOf(), fontFamily: String = "sans-serif", opacity: Int = 255): TextItem? {
         if (text.isBlank()) return null
-        val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPage(x, y) else Pair(x, y)
+        val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPageForText(x, y, text, size, fontFamily) else Pair(x, y)
         val item = TextItem(text, cx, cy, color, size, rotation); item.spans = spans; item.fontFamily = fontFamily; item.opacity = opacity
         actions.add(item); redoStack.clear(); markSpatialDirty(); invalidate()
         return item
@@ -6113,7 +6139,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // set on the item before insertion) - clamps position to the page like addText does.
     fun addLinkText(item: TextItem) {
         if (item.text.isBlank()) return
-        val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPage(item.x, item.y) else Pair(item.x, item.y)
+        val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPageForText(item.x, item.y, item.text, item.size, item.fontFamily) else Pair(item.x, item.y)
         item.x = cx; item.y = cy
         actions.add(item); redoStack.clear(); markSpatialDirty(); invalidate()
     }
