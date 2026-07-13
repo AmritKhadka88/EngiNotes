@@ -1,0 +1,5 @@
+{
+  "model": "gemini-flash-latest",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta",
+  "response_path": "candidates.0.content.parts.0.text"
+}
