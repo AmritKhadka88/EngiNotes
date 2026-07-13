@@ -2499,6 +2499,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return (pw - item.x - 16f).toInt().coerceAtLeast(80)
     }
 
+    // TextItem.y means the BOTTOM of the rendered text everywhere in this file (see
+    // drawTextItem/getBounds/findTextItemAt, which all compute top = item.y - height) — never
+    // the top. Any caller that wants to keep a text item's TOP fixed while its content (and
+    // therefore height) keeps changing — a streaming Gemini answer, a large paste — needs to
+    // recompute item.y = desiredTopY + currentHeight every time the content changes, rather
+    // than setting item.y once and leaving it. Otherwise the rendered top silently climbs
+    // upward as the content grows, since the same fixed "bottom" now has more height above it.
+    fun textItemHeight(item: TextItem): Float {
+        val tp = TextPaint(); tp.textSize = item.size
+        try { tp.typeface = typefaceFromFamily(item.fontFamily) } catch (e: Exception) {}
+        val ww = textWrapWidth(item)
+        return try {
+            StaticLayout.Builder.obtain(item.text, 0, item.text.length, tp, ww).setIncludePad(true).build().height.toFloat().coerceAtLeast(item.size * 1.2f)
+        } catch (e: Exception) { item.size * 1.2f }
+    }
+    fun repositionTextItemTop(item: TextItem, desiredTopY: Float) {
+        item.y = desiredTopY + textItemHeight(item)
+        markSpatialDirty()
+    }
+
     private fun drawTextItem(canvas: Canvas, item: TextItem) {
         val isLink = item.linkTarget != null
         val tp = TextPaint(); tp.color = if (isLink) Color.parseColor("#1565C0") else item.color; tp.alpha = item.opacity; tp.textSize = item.size; tp.isAntiAlias = true
