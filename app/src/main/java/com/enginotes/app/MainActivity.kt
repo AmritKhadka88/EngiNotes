@@ -1941,23 +1941,74 @@ class MainActivity : AppCompatActivity() {
 
     // ═══════════════════════════ Ask Gemini ═══════════════════════════
     // Bring-your-own-API-key: each student pastes their OWN free key from Google AI Studio
-    // (Settings > AI Assistant). No server, no shared quota, no cost to us. If Google ever
-    // renames/retires the configured model, generateContent fails with HTTP 404 and the
-    // error path below tells the person exactly what to do — update the model name in
-    // Settings — instead of the feature just silently breaking.
+    // (Settings > AI Assistant). No server, no shared quota, no cost to us.
     private val aiExecutor = java.util.concurrent.Executors.newCachedThreadPool()
     private fun geminiApiKey(): String = getPrefs().getString("gemini_api_key", "") ?: ""
     // "gemini-flash-latest" is a Google-maintained ALIAS, not a pinned version — Google
     // "hot-swaps" it to whichever current Flash model is live, so this never goes stale the
     // way a specific version number (like the old "gemini-2.5-flash" default) eventually will.
-    // Anyone already saved on that old pinned default gets silently moved to the alias too —
-    // no reason to make existing users hit the same dead end this was just fixed for.
+    // Anyone already saved on that old pinned default gets silently moved to the alias too.
     private fun geminiModel(): String {
         val saved = getPrefs().getString("gemini_model", "gemini-flash-latest")?.trim()?.ifBlank { "gemini-flash-latest" } ?: "gemini-flash-latest"
         return if (saved == "gemini-2.5-flash") "gemini-flash-latest" else saved
     }
+    private fun geminiBaseUrl(): String = getPrefs().getString("gemini_base_url", "https://generativelanguage.googleapis.com/v1beta")?.trim()?.ifBlank { "https://generativelanguage.googleapis.com/v1beta" } ?: "https://generativelanguage.googleapis.com/v1beta"
+    private fun geminiResponsePath(): String = getPrefs().getString("gemini_response_path", "candidates.0.content.parts.0.text")?.trim()?.ifBlank { "candidates.0.content.parts.0.text" } ?: "candidates.0.content.parts.0.text"
 
-    // code: 0 = ok, 1 = not configured, 2 = model not found (likely renamed/retired), 3 = other error
+    // Points at a single JSON file in the app's own GitHub repo (not a separate server) — lets
+    // model name / base URL / response-parsing path be corrected for every existing install
+    // without a Play Store update, if Google renames something or reshapes the API.
+    // IMPORTANT: base_url is only ever accepted if it's a *.googleapis.com address (checked
+    // below) — this is what stops a compromised GitHub account from turning this into a way
+    // to redirect requests (and everyone's real API key) to some other server. The file itself
+    // has nothing sensitive in it, but it DOES control where a real credential gets sent at
+    // request time, so that check matters regardless of what's visible in the repo.
+    private val REMOTE_CONFIG_URL = "https://raw.githubusercontent.com/AmritKhadka88/EngiNotes/main/gemini-config.json"
+    private fun refreshGeminiConfigFromRemote(onResult: (success: Boolean, message: String) -> Unit) {
+        aiExecutor.execute {
+            try {
+                val conn = (java.net.URL(REMOTE_CONFIG_URL).openConnection() as java.net.HttpURLConnection).apply {
+                    requestMethod = "GET"; connectTimeout = 15000; readTimeout = 15000
+                }
+                val text = conn.inputStream.bufferedReader().use { it.readText() }; conn.disconnect()
+                val json = org.json.JSONObject(text)
+                val newModel = json.optString("model", "").trim()
+                val newBaseUrl = json.optString("base_url", "").trim()
+                val newResponsePath = json.optString("response_path", "").trim()
+                val safeBaseUrl = if (newBaseUrl.matches(Regex("^https://[a-zA-Z0-9.\\-]+\\.googleapis\\.com(/.*)?$"))) newBaseUrl else null
+                if (newModel.isBlank() && safeBaseUrl == null && newResponsePath.isBlank()) {
+                    runOnUiThread { onResult(false, "Update file was empty or invalid.") }
+                    return@execute
+                }
+                val editor = getPrefs().edit()
+                if (newModel.isNotBlank()) editor.putString("gemini_model", newModel)
+                if (safeBaseUrl != null) editor.putString("gemini_base_url", safeBaseUrl)
+                if (newBaseUrl.isNotBlank() && safeBaseUrl == null) { /* rejected - not a googleapis.com address, silently ignored, keep old value */ }
+                if (newResponsePath.isNotBlank()) editor.putString("gemini_response_path", newResponsePath)
+                editor.apply()
+                runOnUiThread { onResult(true, "Updated — now using model: ${geminiModel()}") }
+            } catch (e: Exception) {
+                runOnUiThread { onResult(false, "Couldn't reach the update file. Check your connection.") }
+            }
+        }
+    }
+
+    // Walks a JSON structure by a dot-separated path (numeric segments = array index) — lets
+    // the response's answer field live wherever geminiResponsePath() says, instead of that
+    // location being hardcoded, so a response-shape change is also just a remote-config fix.
+    private fun resolveJsonPath(root: org.json.JSONObject, path: String): String? {
+        var current: Any? = root
+        for (seg in path.split(".")) {
+            current = when (val c = current) {
+                is org.json.JSONObject -> if (c.has(seg)) c.get(seg) else return null
+                is org.json.JSONArray -> { val idx = seg.toIntOrNull() ?: return null; if (idx < c.length()) c.get(idx) else return null }
+                else -> return null
+            }
+        }
+        return current?.toString()
+    }
+
+    // code: 0 = ok, 1 = not configured, 2 = model not found, 3 = other error, 4 = key invalid, 5 = quota hit
     private fun askGeminiRaw(prompt: String, imageBytes: ByteArray?, onResult: (text: String?, code: Int) -> Unit) {
         val key = geminiApiKey()
         if (key.isBlank()) { onResult(null, 1); return }
@@ -1965,10 +2016,14 @@ class MainActivity : AppCompatActivity() {
         aiExecutor.execute {
             var conn: java.net.HttpURLConnection? = null
             try {
-                val url = java.net.URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$key")
+                val url = java.net.URL("${geminiBaseUrl()}/models/$model:generateContent")
                 conn = (url.openConnection() as java.net.HttpURLConnection).apply {
                     requestMethod = "POST"; doOutput = true
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    // Header-based key instead of ?key= in the URL — Google's more secure
+                    // recommended pattern (URL query params tend to get logged in more places,
+                    // like proxies and server logs, than headers do).
+                    setRequestProperty("x-goog-api-key", key)
                     connectTimeout = 20000; readTimeout = 30000
                 }
                 val parts = org.json.JSONArray()
@@ -1988,12 +2043,13 @@ class MainActivity : AppCompatActivity() {
                 val code = conn.responseCode
                 val bodyText = (if (code in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
                 if (code !in 200..299) {
-                    runOnUiThread { onResult(null, if (code == 404) 2 else 3) }
+                    val resultCode = when (code) { 404 -> 2; 401, 403 -> 4; 429 -> 5; else -> 3 }
+                    runOnUiThread { onResult(null, resultCode) }
                     return@execute
                 }
                 val json = org.json.JSONObject(bodyText)
-                val answer = json.getJSONArray("candidates").getJSONObject(0)
-                    .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
+                val answer = resolveJsonPath(json, geminiResponsePath())
+                    ?: throw Exception("Response shape didn't match geminiResponsePath()")
                 runOnUiThread { onResult(answer, 0) }
             } catch (e: Exception) {
                 runOnUiThread { onResult(null, 3) }
@@ -2014,7 +2070,9 @@ class MainActivity : AppCompatActivity() {
                 insertGeminiAnswer(placeholder, answer)
             } else {
                 placeholder.text = when (code) {
-                    2 -> "⚠️ Gemini model not found — it may have been renamed. Open Settings > AI Assistant and update the model name."
+                    2 -> "⚠️ Gemini model not found — it may have been renamed. Open Settings > AI Assistant and tap \"Check for Update\", or update the model name manually."
+                    4 -> "⚠️ Your API key isn't working. Open Settings > AI Assistant and check or replace it."
+                    5 -> "⚠️ You've used up today's free Gemini limit. It resets at midnight Pacific time — try again after that."
                     else -> "⚠️ Couldn't reach Gemini. Check your connection and try again."
                 }
                 placeholder.color = Color.parseColor("#C62828")
@@ -2686,6 +2744,20 @@ class MainActivity : AppCompatActivity() {
         container.addView(modelRow)
         container.addView(TextView(this).apply {
             text = "If \"Ask Gemini\" stops working after a Google update, this is usually why — check aistudio.google.com/models for the current free model name and paste it above."
+            textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0,0,0,dp(4))
+        })
+        val updateLbl = TextView(this).apply { text = "Check for Update"; textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(6),0,dp(4)) }
+        updateLbl.setOnClickListener {
+            updateLbl.text = "Checking..."
+            refreshGeminiConfigFromRemote { success, message ->
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                updateLbl.text = "Check for Update"
+                if (success) modelInput.setText(geminiModel())
+            }
+        }
+        container.addView(updateLbl)
+        container.addView(TextView(this).apply {
+            text = "Pulls the current known-good settings from EngiNotes' GitHub repo — safe to tap anytime, does nothing if everything's already up to date."
             textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0,0,0,dp(4))
         })
 
