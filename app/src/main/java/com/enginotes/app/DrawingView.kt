@@ -774,6 +774,14 @@ class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var
     // of being editable like normal text. Format: "bookName/noteFileName" - empty bookName means
     // "General" book. Null = not a link (normal text behavior).
     var linkTarget: String? = null
+    // Cached StaticLayout, keyed by whatever actually affects wrapping/rendering (text, size,
+    // font, link state, wrap width). Rebuilding this from scratch is real work for a large
+    // paragraph — doing it on every single onDraw call while an item is being dragged (position
+    // changes, nothing else does) is what made big text feel laggy/unresponsive to move. Content
+    // only actually changes on an edit, not on a drag, so the cache key not matching is the
+    // signal to rebuild; otherwise the same layout is reused and only re-positioned.
+    @Volatile var cachedLayout: StaticLayout? = null
+    @Volatile var cachedLayoutKey: String? = null
 }
 
 class ImageItem(var path: String, var x: Float, var y: Float, var w: Float, var h: Float, var rotation: Float) {
@@ -2506,27 +2514,31 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // recompute item.y = desiredTopY + currentHeight every time the content changes, rather
     // than setting item.y once and leaving it. Otherwise the rendered top silently climbs
     // upward as the content grows, since the same fixed "bottom" now has more height above it.
-    fun textItemHeight(item: TextItem): Float {
-        val tp = TextPaint(); tp.textSize = item.size
-        try { tp.typeface = typefaceFromFamily(item.fontFamily) } catch (e: Exception) {}
-        val ww = textWrapWidth(item)
-        return try {
-            StaticLayout.Builder.obtain(item.text, 0, item.text.length, tp, ww).setIncludePad(true).build().height.toFloat().coerceAtLeast(item.size * 1.2f)
-        } catch (e: Exception) { item.size * 1.2f }
-    }
+    fun textItemHeight(item: TextItem): Float = getOrBuildLayout(item).height.toFloat().coerceAtLeast(item.size * 1.2f)
     fun repositionTextItemTop(item: TextItem, desiredTopY: Float) {
         item.y = desiredTopY + textItemHeight(item)
         markSpatialDirty()
     }
 
-    private fun drawTextItem(canvas: Canvas, item: TextItem) {
+    // Shared by drawTextItem/getBounds/findTextItemAt so all three ALWAYS agree on the exact
+    // same layout (a mismatch between them is what let a text item's hit-test/handles drift
+    // from where it visually rendered) — and, just as importantly, so a big paragraph's layout
+    // isn't rebuilt from scratch on every single onDraw call while it's just being dragged
+    // around. Content only actually changes on an edit; position changes (a drag) don't touch
+    // the cache key at all, so a drag reuses the exact same cached layout every frame instead
+    // of redoing real work for it. Includes the full spannable (bold/italic/color/highlight/
+    // link) in both the build and the cache key, so a cache hit never loses any formatting and
+    // a formatting change always correctly invalidates the cache.
+    private fun getOrBuildLayout(item: TextItem): StaticLayout {
+        val ww = textWrapWidth(item)
         val isLink = item.linkTarget != null
+        val spansKey = if (isLink) "LINK" else item.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }
+        val key = "${item.text.length}:${item.text.hashCode()}:${item.size}:${item.fontFamily}:$ww:$spansKey:${item.color}:${item.opacity}"
+        item.cachedLayout?.let { if (item.cachedLayoutKey == key) return it }
         val tp = TextPaint(); tp.color = if (isLink) Color.parseColor("#1565C0") else item.color; tp.alpha = item.opacity; tp.textSize = item.size; tp.isAntiAlias = true
         try { tp.typeface = typefaceFromFamily(item.fontFamily) } catch (e: Exception) {}
         val spannable = SpannableString(item.text)
         if (isLink) {
-            // Links always render blue + underlined, like a hyperlink, regardless of any manual
-            // formatting spans the user may have applied before turning the text into a link.
             spannable.setSpan(UnderlineSpan(), 0, item.text.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
         } else {
             for (sp in item.spans) {
@@ -2539,12 +2551,59 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
             }
         }
-        val w = textWrapWidth(item)
-        val layout = StaticLayout.Builder.obtain(spannable, 0, spannable.length, tp, w).setIncludePad(true).build()
+        val layout = StaticLayout.Builder.obtain(spannable, 0, spannable.length, tp, ww).setIncludePad(true).build()
+        item.cachedLayout = layout; item.cachedLayoutKey = key
+        return layout
+    }
+
+    private fun drawTextItem(canvas: Canvas, item: TextItem) {
+        val layout = getOrBuildLayout(item)
         // Actual content width = widest line, not the wrap width (which can be 4000 for infinite canvas)
         val contentW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
         val contentH = layout.height.toFloat()
-        canvas.save(); canvas.translate(item.x, item.y - contentH)
+        val topY = item.y - contentH
+
+        // Word-style pagination: if this item is taller than one page (and there ARE discrete
+        // pages to split across — not Infinite canvas, and not rotated, since a rotated item
+        // spanning a page break is an edge case not worth the extra complexity), draw it as
+        // separate per-page runs of lines instead of one continuous block that would otherwise
+        // render straight through the visual gap between pages. Each run is clipped to its own
+        // page's band and the next run picks up at the top of the following page — the same
+        // way a paragraph that doesn't fit on one page continues on the next in a word processor.
+        val ph = pageHeightPx()
+        if (canvasMode != CanvasMode.INFINITE && item.rotation == 0f && contentH > ph) {
+            val gap = if (canvasMode == CanvasMode.CONVENIENT) 24f else 40f
+            val period = ph + gap
+            var lineIdx = 0
+            var extraSkip = 0f
+            var guard = 0  // safety cap on iterations, in case of a pathological line-height edge case
+            while (lineIdx < layout.lineCount && guard < 10000) {
+                guard++
+                val lineTopAbs = topY + layout.getLineTop(lineIdx) + extraSkip
+                val pageIdx = kotlin.math.floor(lineTopAbs / period)
+                val pageBottomAbs = pageIdx * period + ph
+                var endLineIdx = lineIdx
+                while (endLineIdx < layout.lineCount && topY + layout.getLineBottom(endLineIdx) + extraSkip <= pageBottomAbs) endLineIdx++
+                if (endLineIdx == lineIdx) {
+                    // A single line taller than the remaining page space (rare) - push the
+                    // whole thing to the top of the next page rather than clipping mid-line.
+                    extraSkip += (pageIdx + 1) * period - lineTopAbs
+                    continue
+                }
+                val runTop = topY + layout.getLineTop(lineIdx) + extraSkip
+                val runBottom = topY + layout.getLineBottom(endLineIdx - 1) + extraSkip
+                canvas.save()
+                canvas.clipRect(item.x - 4f, runTop, item.x + contentW + 4f, runBottom)
+                canvas.translate(item.x, topY + extraSkip)
+                layout.draw(canvas)
+                canvas.restore()
+                lineIdx = endLineIdx
+                if (lineIdx < layout.lineCount) extraSkip += gap  // jump over the visual gap to the next page's top
+            }
+            return
+        }
+
+        canvas.save(); canvas.translate(item.x, topY)
         canvas.rotate(item.rotation, contentW / 2f, contentH / 2f); layout.draw(canvas); canvas.restore()
     }
 
@@ -2767,10 +2826,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is FillItem -> floatArrayOf(item.x, item.y, item.x + item.w, item.y + item.h)
             is AudioItem -> { val r = item.radius; floatArrayOf(item.x - r, item.y - r, item.x + r, item.y + r + 40f) }
             is TextItem -> {
-                val tp = TextPaint(); tp.textSize = item.size; tp.isAntiAlias = true
-                try { tp.typeface = typefaceFromFamily(item.fontFamily) } catch (e: Exception) {}
-                val ww = textWrapWidth(item)
-                val layout = StaticLayout.Builder.obtain(item.text, 0, item.text.length, tp, ww).setIncludePad(true).build()
+                val layout = getOrBuildLayout(item)
                 val w = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(10f) ?: 10f
                 val h = layout.height.toFloat().coerceAtLeast(item.size * 1.2f)
                 floatArrayOf(item.x, item.y - h, item.x + w, item.y)
@@ -3094,10 +3150,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun findTextItemAt(x: Float, y: Float): TextItem? {
         for (a in actions.reversed()) {
             if (a is TextItem) {
-                val tp = TextPaint(); tp.textSize = a.size
-                try { tp.typeface = typefaceFromFamily(a.fontFamily) } catch (e: Exception) {}
-                val wrapW = textWrapWidth(a)
-                val layout = android.text.StaticLayout.Builder.obtain(a.text, 0, a.text.length, tp, wrapW).setIncludePad(true).build()
+                val layout = getOrBuildLayout(a)
                 val cw = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
                 val ch = layout.height.toFloat()
                 val pad = 24f / scaleFactor
@@ -4806,29 +4859,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return Pair(cx, cy)
     }
 
-    // Same idea as clampToPage, but for text items specifically — those can legitimately be
-    // taller than a single page (a long pasted block), unlike a stroke or shape. The plain
-    // clampToPage always squeezed the Y anchor into exactly one page's height (ph) no matter
-    // how tall the actual content was, which forced a tall text box's position back into a
-    // band it structurally couldn't fit inside — every move or paste-triggered reposition kept
-    // getting snapped back into that too-narrow range, which is what "stuck"/"jumps up" was.
+    // Text should move freely through the whole multi-page document — bounded only by the
+    // very top of page 1 (can't go above where the document starts) and the page width on the
+    // sides (consistent across every page, since all pages share the same width). No per-page
+    // vertical band restriction at all: previously this squeezed the position into whichever
+    // single page's height it happened to overlap, which is exactly what made a tall or
+    // dragged text item feel "stuck" — it kept getting snapped back into a band it either
+    // didn't fit in or wasn't meant to be confined to in the first place.
     private fun clampToPageForText(wx: Float, wy: Float, text: String, size: Float, fontFamily: String): Pair<Float, Float> {
         if (canvasMode == CanvasMode.INFINITE) return Pair(wx, wy)
-        val pw = pageWidthPx(); val ph = pageHeightPx()
-        val tp = TextPaint().apply { textSize = size; try { typeface = typefaceFromFamily(fontFamily) } catch (e: Exception) {} }
-        val wrapW = (pw - 40f).coerceAtLeast(50f).toInt()
-        val estHeight = try {
-            android.text.StaticLayout.Builder.obtain(text, 0, text.length, tp, wrapW).build().height.toFloat()
-        } catch (e: Exception) { size }
-        val pageTop = if (canvasMode == CanvasMode.CONVENIENT || canvasMode == CanvasMode.PAGINATED) {
-            val gap = if (canvasMode == CanvasMode.CONVENIENT) 24f else 40f
-            val period = ph + gap
-            kotlin.math.floor(wy / period) * period
-        } else 0f
+        val pw = pageWidthPx()
         val cx = wx.coerceIn(0f, pw)
-        // Taller than one page: only clamp the top bound, let it extend downward across
-        // page/section boundaries as far as it actually needs instead of being squeezed.
-        val cy = if (estHeight > ph) wy.coerceAtLeast(pageTop) else wy.coerceIn(pageTop, pageTop + ph)
+        val cy = wy.coerceAtLeast(0f)
         return Pair(cx, cy)
     }
 
