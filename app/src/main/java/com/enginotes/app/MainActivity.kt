@@ -4625,18 +4625,14 @@ class MainActivity : AppCompatActivity() {
         et.textSize=(screenSizePx/density).coerceAtLeast(8f)
         et.setBackgroundColor(Color.TRANSPARENT)
         et.setPadding(dp(8),dp(8),dp(8),dp(8)); et.minWidth=dp(140); et.maxWidth=maxEditorWidthPx; et.minHeight=dp(48)
-        // Bounded height with internal scrolling once text grows past it. Without this the box
-        // grew completely unbounded with however much text was pasted/typed in — which is what
-        // was actually behind "can't double-tap to edit," "can't move it," and the outright
-        // crash on more text: position math elsewhere assumed a roughly single-line-sized box,
-        // the floating handles can only physically reach so far up/down a screen, and Android
-        // itself has real rendering-size limits for an unboundedly tall View. Capping this and
-        // letting the EditText scroll internally past that point keeps the box itself always a
-        // sane, always on-screen, always reachable size — no matter how much text is inside it.
-        val maxEditorHeightPx = (resources.displayMetrics.heightPixels * 2.2f).toInt()
-        et.maxHeight = maxEditorHeightPx
-        et.isVerticalScrollBarEnabled = true
-        et.movementMethod = android.text.method.ScrollingMovementMethod.getInstance()
+        // No max height here anymore. There used to be one (2.2 screens, with internal
+        // scrolling past that), added on a hypothesis that an unboundedly tall View might hit
+        // an Android rendering crash. That traded away exactly the behavior actually wanted —
+        // a box that grows freely and lets you pan the canvas to see the rest of it, the way
+        // Notewise does — for a bounded box with its own internal scrollbar, which just moved
+        // the problem instead of fixing it. The real bugs (position math using the wrong
+        // height, floating handles with no on-screen clamp) have since been fixed directly, so
+        // this cap wasn't buying anything anymore except a worse editing experience.
         et.typeface = typefaceFromFamily(pendingFontFamily)
         if(!useActualSize) et.rotation=editRotation
         et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } } }; override fun afterTextChanged(s:Editable?){} })
