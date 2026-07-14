@@ -4681,16 +4681,11 @@ class MainActivity : AppCompatActivity() {
                     val lp = boxContainer.layoutParams as FrameLayout.LayoutParams
                     lp.leftMargin = (moveStartLeft + dx).coerceAtLeast(0); lp.topMargin = (moveStartTop + dy).coerceAtLeast(0)
                     boxContainer.layoutParams = lp
-                    // Real box height, not screenSizePx (one line's height) — using a one-line
-                    // stand-in only round-trips correctly through updateET()'s inverse formula
-                    // when the box actually IS one line tall. For anything longer this silently
-                    // drifted further wrong the taller the box got, which is what made a
-                    // multi-line box feel "stuck"/unresponsive to dragging.
-                    val realHeight = boxContainer.height.takeIf { it > 0 } ?: screenSizePx.toInt()
-                    val newScreenX = lp.leftMargin + dp(6); val newScreenY = lp.topMargin + dp(6) + realHeight
-                    editWorldX = drawingView.screenToWorldX(newScreenX.toFloat()); editWorldY = drawingView.screenToWorldY(newScreenY.toFloat())
-                    // Keep the top anchor in sync with a manual drag too, so subsequent typing/
-                    // pasting keeps growing downward from THIS new position, not the original one.
+                    // Directly track top-left position — no more converting through a
+                    // "bottom" intermediate and back, which is what the earlier, more
+                    // complicated version of this did. A drag IS a top-left position update;
+                    // there's no need to round-trip that through height math at all.
+                    editWorldX = drawingView.screenToWorldX((lp.leftMargin + dp(6)).toFloat())
                     editTopAnchorY = drawingView.screenToWorldY((lp.topMargin + dp(6)).toFloat())
                     onBoxMoved?.invoke()
                     true
@@ -4811,14 +4806,16 @@ class MainActivity : AppCompatActivity() {
             val query = (if (selStart != selEnd && selStart >= 0 && selEnd >= 0) et.text.toString().substring(minOf(selStart,selEnd), maxOf(selStart,selEnd)) else et.text.toString()).trim()
             if (query.isEmpty()) { Toast.makeText(this,"Type or select something first",Toast.LENGTH_SHORT).show() }
             else {
-                val qx = editWorldX; val qy = editWorldY
+                val qx = editWorldX
                 // et.height is the EditText's REAL on-screen height across every line it's
-                // currently wrapped to — using qsize (a single line's font size) badly
-                // undershot this for anything longer than one line, landing the answer
-                // overlapping the question instead of fully below it.
+                // currently wrapped to. Using editTopAnchorY (the fixed top) plus this current
+                // height gives the box's actual current bottom — editWorldY itself is no longer
+                // kept in sync during live editing (see updateET), so reading it directly here
+                // would give a stale, pre-edit position instead of where the box actually is now.
                 val fullHeightWorld = et.height / drawingView.getScaleFactor()
+                val qy = editTopAnchorY + fullHeightWorld
                 closeInlineEditor(true)
-                runGeminiQuery(query, null, qx, qy + fullHeightWorld + 30f)
+                runGeminiQuery(query, null, qx, qy + 30f)
             }
         }
 
@@ -4870,12 +4867,16 @@ class MainActivity : AppCompatActivity() {
         fun updateET(){
             val scale=drawingView.getScaleFactor();val nsp=editSize*scale*convenientBoost
             et.textSize=(nsp/density).coerceAtLeast(8f)
-            // Same fix as the move handle above: real box height instead of nsp (one line's
-            // height), so this stays correct for multi-line content instead of only for
-            // single-line text. Falls back to nsp only on the very first call before the box
-            // has been measured yet (height still 0).
-            val realHeight = boxContainer.height.takeIf { it > 0 } ?: nsp.toInt()
-            val sx=drawingView.worldToScreenX(editWorldX);val sy=drawingView.worldToScreenY(editWorldY)-realHeight
+            // Positions directly from editTopAnchorY (the top-left corner) — no more computing
+            // through a "bottom minus height" formula at all. That indirection was the root of
+            // several rounds of the same bug: every layer that touched it (drag, resize,
+            // scale-change) had to independently get the height-and-direction math exactly
+            // right, and any one of them being slightly off desynced the whole chain. Since the
+            // box is positioned by its actual top-left margin anyway, there was never a real
+            // reason to convert through "bottom" during live editing in the first place —
+            // that conversion only matters once, at commit time, for TextItem.y's storage
+            // convention (see closeInlineEditor).
+            val sx=drawingView.worldToScreenX(editWorldX);val sy=drawingView.worldToScreenY(editTopAnchorY)
             // Deliberately UNCLAMPED here — this runs on every drag frame and every content
             // change, and a box taller than the screen legitimately needs its top to go
             // negative (above the visible area) at some scroll positions. Clamping it here
@@ -4891,9 +4892,9 @@ class MainActivity : AppCompatActivity() {
         }
         // Runs ONCE, right when the editor first opens — not on every drag/resize like the
         // earlier (broken) attempt at this. If the box would open off-screen (the actual cause
-        // of double-tap making text "disappear"), this nudges editWorldY/editTopAnchorY
-        // themselves by the same on-screen correction, so the fix is baked into the anchor
-        // and free dragging afterward is completely unaffected by it.
+        // of double-tap making text "disappear"), this nudges editTopAnchorY itself by the
+        // same on-screen correction, so the fix is baked into the anchor and free dragging
+        // afterward is completely unaffected by it.
         fun ensureEditorOnScreen() {
             updateET()
             val lp = boxContainer.layoutParams as FrameLayout.LayoutParams
@@ -4902,22 +4903,17 @@ class MainActivity : AppCompatActivity() {
             if (clampedTop != lp.topMargin) {
                 val deltaScreenPx = (clampedTop - lp.topMargin).toFloat()
                 val deltaWorld = deltaScreenPx / drawingView.getScaleFactor()
-                editWorldY += deltaWorld; editTopAnchorY += deltaWorld
+                editTopAnchorY += deltaWorld
                 updateET()
             }
         }
         drawingView.onScaleChanged={ updateET() }; drawingView.onCanvasTransformed={ updateET() }
+        drawingView.onEditorFrameSync = { updateET() }
         onBoxMoved = { layoutEditorHandles(); updateET() }  // assigned here so updateET is in scope
-        // When the box's SIZE changes from typing/pasting (not from dragging it), recompute
-        // editWorldY (the BOTTOM) from the fixed TOP anchor plus the real current height —
-        // this is the actual fix for text appearing to "jump up" on a large paste: previously
-        // nothing kept the top anchored as content grew, so the same fixed bottom just meant a
-        // higher and higher top the more text went in.
-        onBoxResized = {
-            val heightWorld = (boxContainer.height.takeIf { it > 0 } ?: dp(48)) / drawingView.getScaleFactor()
-            editWorldY = editTopAnchorY + heightWorld
-            updateET()
-        }
+        // The box's SIZE changing (typing/pasting) no longer needs to touch position at all —
+        // updateET() positions purely from editTopAnchorY now, which a resize doesn't change.
+        // Only the corner handles need to move to match the new size.
+        onBoxResized = { updateET() }
         activeEditText=et; activeToolbar=toolbarScroll; activeEditBox=boxContainer
         activeEditorHandles = listOf(moveHandle, resizeHandle, rotateHandle, deleteHandle)
         boxContainer.post { ensureEditorOnScreen() }
@@ -4936,8 +4932,17 @@ class MainActivity : AppCompatActivity() {
         val item=editingItem
         if(commit&&!delete&&text.isNotBlank()){
             drawingView.defaultTextSize=editSize
-            if(item!=null){ item.text=text;item.color=editColor;item.size=editSize;item.rotation=editRotation;item.spans=spans;item.isEditing=false;item.fontFamily=pendingFontFamily;item.opacity=editOpacity; drawingView.clampTextItemToPage(item) }
-            else drawingView.addText(text,editWorldX,editWorldY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
+            // The box's TOP has been kept fixed at editTopAnchorY this whole time (drag and
+            // resize both maintain it) — but TextItem.y's storage convention is BOTTOM, so it
+            // has to be converted here, exactly once, at the moment of actually saving. This
+            // was the real bug behind every round of "grows the wrong way": the careful top-
+            // anchor tracking during editing was never actually being applied here — an
+            // existing item kept its OLD item.y no matter how much taller editing made it, and
+            // a new item was saved with editWorldY, which doesn't track content growth at all.
+            val finalHeightWorld = (box?.height?.takeIf { it > 0 } ?: et.height.takeIf { it > 0 } ?: dp(48)) / drawingView.getScaleFactor()
+            val finalBottomY = editTopAnchorY + finalHeightWorld
+            if(item!=null){ item.text=text;item.color=editColor;item.size=editSize;item.rotation=editRotation;item.spans=spans;item.isEditing=false;item.fontFamily=pendingFontFamily;item.opacity=editOpacity; item.x=editWorldX; item.y=finalBottomY; drawingView.clampTextItemToPage(item) }
+            else drawingView.addText(text,editWorldX,finalBottomY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
         // Remove keyboard scroll listener
@@ -4946,7 +4951,7 @@ class MainActivity : AppCompatActivity() {
         }
         activeEditorKeyboardListener = null; activeEditorKeyboardObserver = null
         onImeBottomChanged = null
-        drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
+        drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; drawingView.onEditorFrameSync=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
     }
 
