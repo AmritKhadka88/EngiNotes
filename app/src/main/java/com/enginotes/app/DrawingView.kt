@@ -4469,6 +4469,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             isStylusDown = false; drawingPointerId = -1
             activeHandle = HandleType.NONE
             longPressRunnable?.let { longPressHandler.removeCallbacks(it) }; longPressRunnable = null
+            // A pinch-zoom's two fingers rarely land in the exact same instant — there's almost
+            // always a small gap. If that gap is long enough for the SELECT-tool hold-timer
+            // (400ms) to fire first, a text-selection box pops open right as the second finger
+            // arrives, and the user is left "stuck" with an unwanted box instead of a pinch.
+            // Clearing selectHoldItem/selectHoldTriggered below only prevents FUTURE triggers —
+            // it does nothing about a box that already opened moments ago. So: if the hold-select
+            // fired very recently (well within a pinch's typical finger-landing gap), treat this
+            // second finger as proof it was a false positive and close that box immediately.
+            if (selectHoldTriggered && System.currentTimeMillis() - selectHoldDownTime < 600L) {
+                onTextDeselectRequest?.invoke()
+            }
             selectHoldItem = null; selectHoldTriggered = false
             val cancel = MotionEvent.obtain(event); cancel.action = MotionEvent.ACTION_CANCEL
             gestureDetector.onTouchEvent(cancel); cancel.recycle()

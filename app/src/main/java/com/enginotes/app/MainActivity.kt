@@ -4621,18 +4621,26 @@ class MainActivity : AppCompatActivity() {
         // item's own drag, which is intentionally unclamped) — these are small UI controls, not
         // the thing being dragged, so they should never become unreachable off the edge of the screen.
         updateToolbarPos = {
+            // Ceiling clamp added: for a text item taller than the screen (a multi-page paste),
+            // item.y (its bottom) can be far below the visible area — worldToScreenY(item.y)
+            // is then a huge pixel value, and a floor-only clamp does nothing to stop the
+            // toolbar/rotate handle from being positioned thousands of px off the bottom of the
+            // screen, i.e. rendered but completely invisible ("single tap shows nothing").
+            // Clamping to a max keeps both controls reachable regardless of item height.
+            val maxTop = (canvasContainer.height - dp(48)).coerceAtLeast(dp(4))
             val sx = drawingView.worldToScreenX(item.x)
             val sy = drawingView.worldToScreenY(item.y)
             val lp = toolbar.layoutParams as FrameLayout.LayoutParams
             lp.leftMargin = sx.toInt().coerceIn(dp(4), canvasContainer.width - dp(200))
-            lp.topMargin = (sy - dp(100).toFloat()).coerceAtLeast(dp(4).toFloat()).toInt()
+            lp.topMargin = (sy - dp(100).toFloat()).toInt().coerceIn(dp(4), maxTop)
             toolbar.layoutParams = lp
             // Same anchor math the invisible hot-zone in moveSurface's touch listener uses
             // (dp(90) above item.x/item.y) — keeping this in one place so the visible handle
             // can never drift from the actual interactive zone.
             val rsx = drawingView.worldToScreenX(item.x); val rsy = drawingView.worldToScreenY(item.y) - dp(90)
             val rlp = rotateHandle.layoutParams as FrameLayout.LayoutParams
-            rlp.leftMargin = (rsx - dp(20)).toInt().coerceAtLeast(0); rlp.topMargin = (rsy - dp(20)).toInt().coerceAtLeast(0)
+            rlp.leftMargin = (rsx - dp(20)).toInt().coerceIn(0, canvasContainer.width - dp(40))
+            rlp.topMargin = (rsy - dp(20)).toInt().coerceIn(0, maxTop)
             rotateHandle.layoutParams = rlp
         }
         updateToolbarPos()
