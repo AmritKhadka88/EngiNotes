@@ -4638,6 +4638,18 @@ class MainActivity : AppCompatActivity() {
             val maxTop = (canvasContainer.height - dp(48)).coerceAtLeast(dp(4))
             val sx = drawingView.worldToScreenX(item.x)
             val sy = drawingView.worldToScreenY(item.y)
+            // The invisible draggable moveSurface itself was previously only ever positioned
+            // once at creation and during its own active drag — never on canvas pan/zoom, unlike
+            // the toolbar and rotate dot below. So panning the canvas after selecting an item
+            // (without dragging it) left the actual touch-catching surface frozen at its old
+            // screen coordinates while the item visually scrolled away underneath it — the
+            // toolbar/dot looked like they were following correctly, but touching the item where
+            // it now visually sits hit nothing, since the real interactive surface was left
+            // behind. Repositioning it here too, from the same item.x/item.y source of truth
+            // used everywhere else, keeps it glued to the item regardless of how much you scroll.
+            val mlp = moveSurface.layoutParams as FrameLayout.LayoutParams
+            mlp.leftMargin = sx.toInt(); mlp.topMargin = (sy - boxH).toInt()
+            moveSurface.layoutParams = mlp
             val lp = toolbar.layoutParams as FrameLayout.LayoutParams
             lp.leftMargin = sx.toInt().coerceIn(dp(4), canvasContainer.width - dp(200))
             lp.topMargin = (sy - dp(100).toFloat()).toInt().coerceIn(dp(4), maxTop)
