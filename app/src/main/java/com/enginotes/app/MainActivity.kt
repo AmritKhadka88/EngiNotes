@@ -4507,6 +4507,16 @@ class MainActivity : AppCompatActivity() {
         var dragStartWorldX2 = 0f; var dragStartWorldY2 = 0f
         var isDraggingRotate = false; var rotStartRawX2 = 0f; var rotStartRotation2 = 0f
 
+        // The rotate hit-zone in ACTION_DOWN below must test against the SAME (clamped) screen
+        // position the visible green dot actually renders at, updated by updateToolbarPos() —
+        // never recomputed independently there. Previously it re-derived an unclamped position
+        // (worldToScreenY(item.y) - dp(90)), which for a tall multi-page item can land far from
+        // where the on-screen-clamped dot actually is: an invisible "rotate zone" floating
+        // somewhere the user can't see, sometimes landing right where they'd naturally grab to
+        // drag the item — flipping an intended move into an unwanted (and, for a mostly-vertical
+        // drag, nearly invisible) rotation instead, which looked like the drag had simply stopped.
+        var rotateHandleScreenCx = 0f; var rotateHandleScreenCy = 0f
+
         // Hoisted above the touch listener (was previously defined after moveSurface/toolbar/
         // rotateHandle setup, and only ever invoked once at setup + on canvas pan/zoom) so that
         // ACTION_MOVE below can call it on every drag frame — otherwise the toolbar and rotate
@@ -4516,9 +4526,7 @@ class MainActivity : AppCompatActivity() {
         moveSurface.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
-                    val rotHandleSx = drawingView.worldToScreenX(item.x)
-                    val rotHandleSy = drawingView.worldToScreenY(item.y) - dp(90)
-                    val dist = kotlin.math.hypot((ev.rawX - rotHandleSx).toDouble(), (ev.rawY - rotHandleSy).toDouble()).toFloat()
+                    val dist = kotlin.math.hypot((ev.rawX - rotateHandleScreenCx).toDouble(), (ev.rawY - rotateHandleScreenCy).toDouble()).toFloat()
                     if (dist < dp(56)) {
                         isDraggingRotate = true; rotStartRawX2 = ev.rawX; rotStartRotation2 = item.rotation
                     } else {
@@ -4634,14 +4642,17 @@ class MainActivity : AppCompatActivity() {
             lp.leftMargin = sx.toInt().coerceIn(dp(4), canvasContainer.width - dp(200))
             lp.topMargin = (sy - dp(100).toFloat()).toInt().coerceIn(dp(4), maxTop)
             toolbar.layoutParams = lp
-            // Same anchor math the invisible hot-zone in moveSurface's touch listener uses
-            // (dp(90) above item.x/item.y) — keeping this in one place so the visible handle
-            // can never drift from the actual interactive zone.
+            // Anchor math (dp(90) above item.x/item.y) then clamped exactly like the dot's own
+            // layout below — and stored in rotateHandleScreenCx/Cy, the SAME values the
+            // ACTION_DOWN hit-test reads, so the touchable zone can never drift from the visible
+            // handle regardless of how tall/far-off-screen the item's true position is.
             val rsx = drawingView.worldToScreenX(item.x); val rsy = drawingView.worldToScreenY(item.y) - dp(90)
             val rlp = rotateHandle.layoutParams as FrameLayout.LayoutParams
             rlp.leftMargin = (rsx - dp(20)).toInt().coerceIn(0, canvasContainer.width - dp(40))
             rlp.topMargin = (rsy - dp(20)).toInt().coerceIn(0, maxTop)
             rotateHandle.layoutParams = rlp
+            rotateHandleScreenCx = rlp.leftMargin + dp(20).toFloat()
+            rotateHandleScreenCy = rlp.topMargin + dp(20).toFloat()
         }
         updateToolbarPos()
         drawingView.onCanvasTransformed = { updateToolbarPos() }
