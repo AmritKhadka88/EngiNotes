@@ -4702,7 +4702,15 @@ class MainActivity : AppCompatActivity() {
         // this cap wasn't buying anything anymore except a worse editing experience.
         et.typeface = typefaceFromFamily(pendingFontFamily)
         if(!useActualSize) et.rotation=editRotation
-        et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } } }; override fun afterTextChanged(s:Editable?){} })
+        et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } } }; override fun afterTextChanged(s:Editable?){
+            // Android moves the cursor to the end of any inserted text (a paste is one big
+            // insert) and auto-scrolls EditText's OWN internal viewport to keep that cursor
+            // visible — BEFORE the box has resized to its new full WRAP_CONTENT height. That
+            // leaves scrollY stuck showing only the tail of a large paste. et.post so this runs
+            // after Android's own post-triggered auto-scroll (which caused the problem) rather
+            // than racing it.
+            et.post { et.scrollTo(0, 0) }
+        } })
 
         // Visible border frame around the editable box, drawn via a GradientDrawable stroke.
         // Bigger padding and a thicker, more visible border than before per request.
@@ -4939,6 +4947,20 @@ class MainActivity : AppCompatActivity() {
         fun updateET(){
             val scale=drawingView.getScaleFactor();val nsp=editSize*scale*convenientBoost
             et.textSize=(nsp/density).coerceAtLeast(8f)
+            // EditText keeps its OWN internal scroll position (separate from boxContainer's
+            // on-screen margins) so it can auto-follow the cursor. Right after a paste, the
+            // cursor jumps to the end of the inserted text, and — for a moment before the box
+            // has finished growing to its new WRAP_CONTENT height — EditText scrolls its
+            // internal viewport down to keep that cursor visible within its OLD (smaller)
+            // bounds. That internal scrollY then stays stuck even once the box correctly
+            // resizes to its full multi-page height, so only the tail of a big paste renders
+            // and everything above it looks like it vanished — even though the box's own
+            // position/size (computed below from editTopAnchorY) was correct the whole time.
+            // Since this editor is always sized to its full WRAP_CONTENT content (never
+            // internally clipped or scrolled by design — panning is the canvas's job, not the
+            // EditText's), forcing scrollY back to 0 every frame is always safe and a no-op
+            // once nothing is scrolled.
+            if (et.scrollY != 0) et.scrollTo(0, 0)
             // Positions directly from editTopAnchorY (the top-left corner) — no more computing
             // through a "bottom minus height" formula at all. That indirection was the root of
             // several rounds of the same bug: every layer that touched it (drag, resize,
