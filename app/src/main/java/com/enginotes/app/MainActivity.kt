@@ -4549,6 +4549,24 @@ class MainActivity : AppCompatActivity() {
         moveSurface.layoutParams = surfaceLp
         canvasContainer.addView(moveSurface)
 
+        // Visible rotate handle — this used to be an invisible hot-zone (drag within 56dp of a
+        // point 90dp above the item) with literally nothing shown to indicate rotation was even
+        // possible there, let alone where. Same interaction (moveSurface's touch listener above
+        // already handles the actual drag-to-rotate logic based on this same position), now with
+        // an actual handle to see and reach for — matching the visible green rotate dot already
+        // used in the full editor, so the two rotate interactions look and feel consistent.
+        val rotateHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(40), dp(40)) }
+        rotateHandle.addView(View(this).apply {
+            val lp = FrameLayout.LayoutParams(dp(28), dp(28)); lp.gravity = Gravity.CENTER; layoutParams = lp
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(Color.parseColor("#4CAF50")); setStroke(dp(2), Color.WHITE)
+            }
+            elevation = dp(4).toFloat()
+        })
+        rotateHandle.isClickable = false // purely visual - moveSurface's own touch listener already covers this exact spot
+        canvasContainer.addView(rotateHandle)
+
         // Floating toolbar: Delete | Done
         val toolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -4572,7 +4590,7 @@ class MainActivity : AppCompatActivity() {
 
         canvasContainer.addView(toolbar)
         textSelectionBox = moveSurface; textSelectionItem = item
-        textSelectionHandles = listOf(toolbar)
+        textSelectionHandles = listOf(toolbar, rotateHandle)
 
         fun updateToolbarPos() {
             val sx = drawingView.worldToScreenX(item.x)
@@ -4581,6 +4599,13 @@ class MainActivity : AppCompatActivity() {
             lp.leftMargin = sx.toInt().coerceIn(dp(4), canvasContainer.width - dp(200))
             lp.topMargin = (sy - dp(100).toFloat()).coerceAtLeast(dp(4).toFloat()).toInt()
             toolbar.layoutParams = lp
+            // Same anchor math the invisible hot-zone in moveSurface's touch listener uses
+            // (dp(90) above item.x/item.y) — keeping this in one place so the visible handle
+            // can never drift from the actual interactive zone.
+            val rsx = drawingView.worldToScreenX(item.x); val rsy = drawingView.worldToScreenY(item.y) - dp(90)
+            val rlp = rotateHandle.layoutParams as FrameLayout.LayoutParams
+            rlp.leftMargin = (rsx - dp(20)).toInt().coerceAtLeast(0); rlp.topMargin = (rsy - dp(20)).toInt().coerceAtLeast(0)
+            rotateHandle.layoutParams = rlp
         }
         updateToolbarPos()
         drawingView.onCanvasTransformed = { updateToolbarPos() }
@@ -4652,7 +4677,12 @@ class MainActivity : AppCompatActivity() {
         boxContainer.addView(et, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
 
         val params=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
-        params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0); params.topMargin=(screenY-screenSizePx-dp(6)).toInt().coerceAtLeast(0)
+        // screenY here is already meant as the TOP (matches editTopAnchorY's convention) — the
+        // old "- screenSizePx" was a leftover from when this used the same bottom-based
+        // assumption everything else did, before that got fixed. Left in place, it meant the
+        // very first frame (before updateET() gets a chance to correct it) briefly positioned
+        // the box one line higher than intended.
+        params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0); params.topMargin=(screenY-dp(6)).toInt().coerceAtLeast(0)
         canvasContainer.addView(boxContainer,params)
 
         // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
