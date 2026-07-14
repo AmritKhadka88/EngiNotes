@@ -5029,15 +5029,29 @@ class MainActivity : AppCompatActivity() {
             drawingView.defaultTextSize=editSize
             // The box's TOP has been kept fixed at editTopAnchorY this whole time (drag and
             // resize both maintain it) — but TextItem.y's storage convention is BOTTOM, so it
-            // has to be converted here, exactly once, at the moment of actually saving. This
-            // was the real bug behind every round of "grows the wrong way": the careful top-
-            // anchor tracking during editing was never actually being applied here — an
-            // existing item kept its OLD item.y no matter how much taller editing made it, and
-            // a new item was saved with editWorldY, which doesn't track content growth at all.
-            val finalHeightWorld = (box?.height?.takeIf { it > 0 } ?: et.height.takeIf { it > 0 } ?: dp(48)) / drawingView.getScaleFactor()
-            val finalBottomY = editTopAnchorY + finalHeightWorld
-            if(item!=null){ item.text=text;item.color=editColor;item.size=editSize;item.rotation=editRotation;item.spans=spans;item.isEditing=false;item.fontFamily=pendingFontFamily;item.opacity=editOpacity; item.x=editWorldX; item.y=finalBottomY; drawingView.clampTextItemToPage(item) }
-            else drawingView.addText(text,editWorldX,finalBottomY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
+            // has to be converted here, exactly once, at the moment of actually saving.
+            //
+            // Height for that conversion must come from the EXACT SAME computation
+            // DrawingView will use afterward to find the item's top when rendering/hit-testing
+            // (textItemHeight() → a StaticLayout built straight from the committed text/size/
+            // font/spans) — NOT from box.height/et.height, which are the EditText's own Android
+            // layout-pass measurements. Those lag the real content by up to a frame: right after
+            // a big paste (the exact moment someone is likely to immediately exit the editor),
+            // the layout pass reflecting the new full height may not have run yet, so box.height
+            // reads stale/too-small. That mismatch between "height used to compute bottom here"
+            // and "height used to compute top at render time" is what made the box visibly jump
+            // upward on exit — worse the larger the paste, since the gap between the two heights
+            // was proportional to how much content had just been added. Using textItemHeight()
+            // for both ends means they can never disagree, no matter how Android's own layout
+            // timing behaves.
+            if(item!=null){
+                item.text=text;item.color=editColor;item.size=editSize;item.rotation=editRotation;item.spans=spans;item.isEditing=false;item.fontFamily=pendingFontFamily;item.opacity=editOpacity; item.x=editWorldX
+                item.y = editTopAnchorY + drawingView.textItemHeight(item)
+                drawingView.clampTextItemToPage(item)
+            } else {
+                val newItem = drawingView.addText(text,editWorldX,editTopAnchorY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
+                if (newItem != null) newItem.y = editTopAnchorY + drawingView.textItemHeight(newItem)
+            }
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
         // Remove keyboard scroll listener
