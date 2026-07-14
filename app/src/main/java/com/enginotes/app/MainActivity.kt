@@ -110,6 +110,12 @@ class MainActivity : AppCompatActivity() {
     private var activeToolbar: View? = null
     private var activeEditBox: View? = null
     private var activeEditorKeyboardListener: android.view.ViewTreeObserver.OnGlobalLayoutListener? = null
+    // The correct, safe mechanism for "keep this overlay positioned in sync with the canvas
+    // every frame" — fires right before each draw, which (unlike onDraw itself) is a point in
+    // the Android lifecycle where it's actually safe to change a View's layout position. An
+    // earlier attempt hooked this from inside DrawingView's onDraw() directly, which silently
+    // failed to reliably apply position changes — this is why.
+    private var editorPreDrawListener: android.view.ViewTreeObserver.OnPreDrawListener? = null
     private var activeEditorKeyboardObserver: android.view.ViewTreeObserver? = null
     private var onImeBottomChanged: ((Int) -> Unit)? = null  // piggybacked onto the working content-view insets listener
     private var activeEditorHandles: List<View> = emptyList()
@@ -4908,7 +4914,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
         drawingView.onScaleChanged={ updateET() }; drawingView.onCanvasTransformed={ updateET() }
-        drawingView.onEditorFrameSync = { updateET() }
+        editorPreDrawListener = android.view.ViewTreeObserver.OnPreDrawListener { updateET(); true }
+        drawingView.viewTreeObserver.addOnPreDrawListener(editorPreDrawListener)
         onBoxMoved = { layoutEditorHandles(); updateET() }  // assigned here so updateET is in scope
         // The box's SIZE changing (typing/pasting) no longer needs to touch position at all —
         // updateET() positions purely from editTopAnchorY now, which a resize doesn't change.
@@ -4951,7 +4958,9 @@ class MainActivity : AppCompatActivity() {
         }
         activeEditorKeyboardListener = null; activeEditorKeyboardObserver = null
         onImeBottomChanged = null
-        drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; drawingView.onEditorFrameSync=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
+        editorPreDrawListener?.let { try { drawingView.viewTreeObserver.removeOnPreDrawListener(it) } catch (e: Exception) {} }
+        editorPreDrawListener = null
+        drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
     }
 

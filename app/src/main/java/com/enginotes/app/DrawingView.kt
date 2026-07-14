@@ -1167,9 +1167,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var isTextEditorOpen: Boolean = false
     var isTextSelected: Boolean = false  // true when text selection box is showing — blocks new editor
     var onScaleChanged: ((Float) -> Unit)? = null
-    // Fired unconditionally on every single onDraw call — see the call site in onDraw() for
-    // why this exists instead of only hooking specific gesture callbacks.
-    var onEditorFrameSync: (() -> Unit)? = null
     // Invalidate all stroke caches when zoom changes (pixel dimensions change)
     fun shiftCanvasVertically(deltaY: Float) {
         translateY += deltaY
@@ -2352,15 +2349,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (++drawCount % 60 == 0) pruneBrushCache()
-        // Runs every single frame, unconditionally, while the text editor is open. This
-        // replaces trying to individually catch every gesture path that can change
-        // translateX/translateY/scaleFactor (onScroll, pinch-zoom, two-finger pan, the
-        // scrollbar thumb...) and invoke a callback from each one — that approach is exactly
-        // the kind of fragile, easy-to-miss-one-spot design that caused the editor box to
-        // stay put while a plain scroll moved everything else under it. Syncing every frame
-        // instead means it's simply never possible for the box to fall out of sync with
-        // whatever the canvas is currently doing, regardless of what caused it.
-        onEditorFrameSync?.invoke()
         canvas.drawColor(Color.WHITE)
         canvas.save()
         canvas.translate(translateX, translateY)
