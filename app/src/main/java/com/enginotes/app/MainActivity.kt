@@ -4504,7 +4504,15 @@ class MainActivity : AppCompatActivity() {
 
         val moveSurface = View(this)
         var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
+        var dragStartWorldX2 = 0f; var dragStartWorldY2 = 0f
         var isDraggingRotate = false; var rotStartRawX2 = 0f; var rotStartRotation2 = 0f
+
+        // Hoisted above the touch listener (was previously defined after moveSurface/toolbar/
+        // rotateHandle setup, and only ever invoked once at setup + on canvas pan/zoom) so that
+        // ACTION_MOVE below can call it on every drag frame — otherwise the toolbar and rotate
+        // handle silently detach from the item and float in place while it's being dragged.
+        lateinit var updateToolbarPos: () -> Unit
+
         moveSurface.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
@@ -4518,6 +4526,7 @@ class MainActivity : AppCompatActivity() {
                         moveStartRawX = ev.rawX; moveStartRawY = ev.rawY
                         val lp = moveSurface.layoutParams as FrameLayout.LayoutParams
                         moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
+                        dragStartWorldX2 = item.x; dragStartWorldY2 = item.y
                     }
                     true // ALWAYS true — never drop the touch sequence
                 }
@@ -4526,14 +4535,27 @@ class MainActivity : AppCompatActivity() {
                         item.rotation = rotStartRotation2 - (ev.rawX - rotStartRawX2) * 0.5f
                         drawingView.invalidate()
                     } else {
-                        val dx = ev.rawX - moveStartRawX; val dy = ev.rawY - moveStartRawY
+                        // Drag delta is computed in WORLD units (screen px / scaleFactor), and
+                        // item.x/item.y are the single source of truth for position — screen
+                        // margins are re-derived FROM them every frame, never the other way
+                        // around. No floor/ceiling clamp here: the item must be draggable to any
+                        // world position, including off the visible screen (pan/zoom to reach it
+                        // again) — same "infinite canvas" model already used elsewhere for panning.
+                        // A hard coerceAtLeast(0) here previously made anything taller/wider than
+                        // the screen unmovable once its top-left hit the screen edge.
+                        val scale = drawingView.getScaleFactor()
+                        val dxWorld = (ev.rawX - moveStartRawX) / scale
+                        val dyWorld = (ev.rawY - moveStartRawY) / scale
+                        item.x = dragStartWorldX2 + dxWorld
+                        item.y = dragStartWorldY2 + dyWorld
+
                         val lp = moveSurface.layoutParams as FrameLayout.LayoutParams
-                        lp.leftMargin = (moveStartLeft + dx).toInt().coerceAtLeast(0)
-                        lp.topMargin = (moveStartTop + dy).toInt().coerceAtLeast(0)
+                        lp.leftMargin = drawingView.worldToScreenX(item.x).toInt()
+                        lp.topMargin = (drawingView.worldToScreenY(item.y) - boxH).toInt()
                         moveSurface.layoutParams = lp
-                        item.x = drawingView.screenToWorldX(lp.leftMargin.toFloat())
-                        item.y = drawingView.screenToWorldY(lp.topMargin.toFloat() + boxH)
+
                         drawingView.invalidate()
+                        updateToolbarPos() // keep toolbar + rotate handle glued to the item mid-drag
                     }
                     true
                 }
@@ -4592,7 +4614,13 @@ class MainActivity : AppCompatActivity() {
         textSelectionBox = moveSurface; textSelectionItem = item
         textSelectionHandles = listOf(toolbar, rotateHandle)
 
-        fun updateToolbarPos() {
+        // Assigned into the lambda var declared above (before moveSurface's touch listener) so
+        // that ACTION_MOVE can call it on every drag frame, keeping the toolbar and rotate handle
+        // glued to the item instead of only refreshing on setup / canvas pan-zoom. Toolbar and
+        // rotate-handle positions are still clamped to stay on-screen and reachable (unlike the
+        // item's own drag, which is intentionally unclamped) — these are small UI controls, not
+        // the thing being dragged, so they should never become unreachable off the edge of the screen.
+        updateToolbarPos = {
             val sx = drawingView.worldToScreenX(item.x)
             val sy = drawingView.worldToScreenY(item.y)
             val lp = toolbar.layoutParams as FrameLayout.LayoutParams
