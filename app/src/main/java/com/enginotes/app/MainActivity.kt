@@ -4513,6 +4513,23 @@ class MainActivity : AppCompatActivity() {
         var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
         var dragStartWorldX2 = 0f; var dragStartWorldY2 = 0f
         var isDraggingRotate = false; var rotStartRawX2 = 0f; var rotStartRotation2 = 0f
+        // Tracks exactly which finger started the current drag. ev.rawX/rawY (used throughout
+        // below) always resolve to pointer INDEX 0 — if a second finger incidentally touches the
+        // screen mid-drag (very easy on a phone: palm, other hand) and then the ORIGINAL finger
+        // lifts, Android reassigns index 0 to that other finger, and ev.rawX/rawY silently jump
+        // to wherever it happens to be. That's what caused the erratic high-speed jumps in either
+        // direction. Fix: capture the pointer ID at ACTION_DOWN, resolve raw coordinates from
+        // THAT pointer specifically every frame, ignore any other pointer's events entirely, and
+        // end the drag cleanly if that specific finger lifts rather than silently following
+        // whichever finger remains.
+        var activePointerId = -1
+        val loc = IntArray(2)
+        fun rawXYForPointer(ev: android.view.MotionEvent, pointerId: Int): Pair<Float, Float>? {
+            val idx = ev.findPointerIndex(pointerId)
+            if (idx < 0) return null
+            moveSurface.getLocationOnScreen(loc)
+            return Pair(loc[0] + ev.getX(idx), loc[1] + ev.getY(idx))
+        }
 
         // The rotate hit-zone in ACTION_DOWN below must test against the SAME (clamped) screen
         // position the visible green dot actually renders at, updated by updateToolbarPos() —
@@ -4533,21 +4550,30 @@ class MainActivity : AppCompatActivity() {
         moveSurface.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
-                    val dist = kotlin.math.hypot((ev.rawX - rotateHandleScreenCx).toDouble(), (ev.rawY - rotateHandleScreenCy).toDouble()).toFloat()
+                    activePointerId = ev.getPointerId(0)
+                    val (rawX, rawY) = rawXYForPointer(ev, activePointerId) ?: (ev.rawX to ev.rawY)
+                    val dist = kotlin.math.hypot((rawX - rotateHandleScreenCx).toDouble(), (rawY - rotateHandleScreenCy).toDouble()).toFloat()
                     if (dist < dp(56)) {
-                        isDraggingRotate = true; rotStartRawX2 = ev.rawX; rotStartRotation2 = item.rotation
+                        isDraggingRotate = true; rotStartRawX2 = rawX; rotStartRotation2 = item.rotation
                     } else {
                         isDraggingRotate = false
-                        moveStartRawX = ev.rawX; moveStartRawY = ev.rawY
+                        moveStartRawX = rawX; moveStartRawY = rawY
                         val lp = moveSurface.layoutParams as FrameLayout.LayoutParams
                         moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
                         dragStartWorldX2 = item.x; dragStartWorldY2 = item.y
                     }
                     true // ALWAYS true — never drop the touch sequence
                 }
+                android.view.MotionEvent.ACTION_POINTER_DOWN -> {
+                    // A second (or third...) finger touching down mid-gesture — e.g. a palm brush
+                    // — is deliberately ignored entirely. It must never become the tracked pointer,
+                    // and must never reset drag-start state, or the next move/lift would jump.
+                    true
+                }
                 android.view.MotionEvent.ACTION_MOVE -> {
+                    val (rawX, rawY) = rawXYForPointer(ev, activePointerId) ?: return@setOnTouchListener true
                     if (isDraggingRotate) {
-                        item.rotation = rotStartRotation2 - (ev.rawX - rotStartRawX2) * 0.5f
+                        item.rotation = rotStartRotation2 - (rawX - rotStartRawX2) * 0.5f
                         drawingView.invalidate()
                     } else {
                         // Drag delta is computed in WORLD units (screen px / scaleFactor), and
@@ -4559,8 +4585,8 @@ class MainActivity : AppCompatActivity() {
                         // A hard coerceAtLeast(0) here previously made anything taller/wider than
                         // the screen unmovable once its top-left hit the screen edge.
                         val scale = drawingView.getScaleFactor()
-                        val dxWorld = (ev.rawX - moveStartRawX) / scale
-                        val dyWorld = (ev.rawY - moveStartRawY) / scale
+                        val dxWorld = (rawX - moveStartRawX) / scale
+                        val dyWorld = (rawY - moveStartRawY) / scale
                         item.x = dragStartWorldX2 + dxWorld
                         item.y = dragStartWorldY2 + dyWorld
 
@@ -4574,8 +4600,17 @@ class MainActivity : AppCompatActivity() {
                     }
                     true
                 }
+                android.view.MotionEvent.ACTION_POINTER_UP -> {
+                    // If the finger that lifted is the one we've been tracking, end the drag
+                    // cleanly here rather than letting some other still-down finger silently take
+                    // over as the new "index 0" on the next MOVE event.
+                    if (ev.getPointerId(ev.actionIndex) == activePointerId) {
+                        isDraggingRotate = false; activePointerId = -1
+                    }
+                    true
+                }
                 android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
-                    isDraggingRotate = false; true
+                    isDraggingRotate = false; activePointerId = -1; true
                 }
                 else -> true
             }
