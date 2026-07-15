@@ -5130,8 +5130,8 @@ class MainActivity : AppCompatActivity() {
             // which runs ONCE when the editor first opens, not on every recalculation.
             val lp=boxContainer.layoutParams as FrameLayout.LayoutParams; lp.leftMargin=(sx-dp(6)).toInt().coerceAtLeast(0); lp.topMargin=(sy-dp(6)).toInt()
             boxContainer.layoutParams=lp
-            val tlp=toolbarScroll.layoutParams as FrameLayout.LayoutParams; tlp.leftMargin=lp.leftMargin; tlp.topMargin=(lp.topMargin-toolbarHeightEstimate)
-            toolbarScroll.layoutParams=tlp
+            // toolbarScroll is a fixed bottom bar now (see its own LayoutParams, gravity BOTTOM)
+            // — it no longer tracks the box's position at all, so there's nothing to update here.
             layoutEditorHandles()
         }
         // Runs ONCE, right when the editor first opens — not on every drag/resize like the
