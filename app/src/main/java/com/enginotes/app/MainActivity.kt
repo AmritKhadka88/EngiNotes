@@ -108,7 +108,6 @@ class MainActivity : AppCompatActivity() {
 
     private var activeEditText: EditText? = null
     private var activeToolbar: View? = null
-    private var activeBottomBar: View? = null
     private var activeEditBox: View? = null
     private var activeEditorKeyboardListener: android.view.ViewTreeObserver.OnGlobalLayoutListener? = null
     // The correct, safe mechanism for "keep this overlay positioned in sync with the canvas
@@ -4433,6 +4432,7 @@ class MainActivity : AppCompatActivity() {
         textSelectionHandles.forEach { canvasContainer.removeView(it) }
         textSelectionHandles = emptyList()
         if (textSelectionBox != null) drawingView.onCanvasTransformed = null
+        drawingView.draggingTextItem = null // safety: never leave an item stuck without page-splitting
         textSelectionBox = null; textSelectionItem = null
         drawingView.isTextSelected = false
         drawingView.selectedItem = null; drawingView.invalidate()
@@ -4514,6 +4514,7 @@ class MainActivity : AppCompatActivity() {
         var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
         var dragStartWorldX2 = 0f; var dragStartWorldY2 = 0f
         var isDraggingRotate = false; var rotStartRawX2 = 0f; var rotStartRotation2 = 0f
+        var frozenMaxWidth: Float? = null // holds item.maxWidth's original value while a move-drag has it pinned
         // Tracks exactly which finger started the current drag. ev.rawX/rawY (used throughout
         // below) always resolve to pointer INDEX 0 — if a second finger incidentally touches the
         // screen mid-drag (very easy on a phone: palm, other hand) and then the ORIGINAL finger
@@ -4581,6 +4582,19 @@ class MainActivity : AppCompatActivity() {
                         val lp = moveSurface.layoutParams as FrameLayout.LayoutParams
                         moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
                         dragStartWorldX2 = item.x; dragStartWorldY2 = item.y
+                        drawingView.draggingTextItem = item // suppress page-split rendering for this item until the drag ends
+                        // Freeze the actual word-wrap width too — not just which page a line
+                        // renders on. In Convenient/Paginated mode, an item without an explicit
+                        // maxWidth wraps at (pageWidth - item.x), which is a moving target during
+                        // a drag: every tiny change in item.x re-flows the text, and since height
+                        // depends on how many lines that produces, the total height — and
+                        // therefore the derived top position — swings with it, independent of
+                        // the actual finger motion. That's the real cause of the shaking. Pinning
+                        // maxWidth to whatever it currently evaluates to makes the layout fully
+                        // stable for the whole drag; restoring it on release lets exactly one
+                        // clean re-wrap happen at the final settled position.
+                        frozenMaxWidth = item.maxWidth
+                        item.maxWidth = drawingView.textWrapWidth(item).toFloat()
                     }
                     true // ALWAYS true — never drop the touch sequence
                 }
@@ -4626,11 +4640,16 @@ class MainActivity : AppCompatActivity() {
                     // over as the new "index 0" on the next MOVE event.
                     if (ev.getPointerId(ev.actionIndex) == activePointerId) {
                         isDraggingRotate = false; activePointerId = -1
+                        if (drawingView.draggingTextItem === item) { drawingView.draggingTextItem = null; drawingView.invalidate() }
+                        frozenMaxWidth?.let { item.maxWidth = it; frozenMaxWidth = null; drawingView.invalidate() }
                     }
                     true
                 }
                 android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
-                    isDraggingRotate = false; activePointerId = -1; true
+                    isDraggingRotate = false; activePointerId = -1
+                    if (drawingView.draggingTextItem === item) { drawingView.draggingTextItem = null; drawingView.invalidate() }
+                    frozenMaxWidth?.let { item.maxWidth = it; frozenMaxWidth = null; drawingView.invalidate() }
+                    true
                 }
                 else -> true
             }
@@ -4659,28 +4678,45 @@ class MainActivity : AppCompatActivity() {
         rotateHandle.isClickable = false // purely visual - moveSurface's own touch listener already covers this exact spot
         canvasContainer.addView(rotateHandle)
 
-        // Floating toolbar: Delete | Done
+        // Fixed bottom bar — matches the same one used in the active typing editor, so tapping a
+        // committed item to select+move it and actively typing feel like the same tool, not two
+        // different UIs. There's no text cursor/selection here (nothing is being typed), so
+        // Bold/Italic/Underline apply to the WHOLE item's text at once rather than a selection —
+        // toggling adds or removes a full-range span, using the same TextSpanData mechanism the
+        // active editor uses for partial-selection formatting.
         val toolbar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.WHITE); cornerRadius = dp(20).toFloat()
-                setStroke(dp(1), Color.parseColor("#DDDDDD"))
-            }
-            elevation = dp(4).toFloat()
+            orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(8).toFloat()
+            setPadding(dp(8), dp(8), dp(8), dp(8)); gravity = Gravity.CENTER
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         }
-        fun tbBtn(label: String, tint: Int? = null) = TextView(this).apply {
-            text = label; textSize = 16f; gravity = Gravity.CENTER
-            val pad = dp(10); setPadding(pad, dp(8), pad, dp(8))
-            tint?.let { setTextColor(it) }
+        val tbInactiveBg = Color.parseColor("#F0EBE0"); val tbActiveBg = Color.parseColor("#8D6E63")
+        fun tbBtn(iconRes: Int, action: (ImageView) -> Unit): ImageView {
+            val b = ImageView(this); b.setImageResource(iconRes); b.scaleType = ImageView.ScaleType.CENTER_INSIDE
+            val p = LinearLayout.LayoutParams(dp(40), dp(40)); p.setMargins(dp(4), 0, dp(4), 0); b.layoutParams = p
+            b.setPadding(dp(8), dp(8), dp(8), dp(8)); b.setBackgroundColor(tbInactiveBg); b.setOnClickListener { action(b) }
+            toolbar.addView(b); return b
         }
-        val btnDel = tbBtn("\uD83D\uDDD1", Color.parseColor("#D32F2F"))
-        btnDel.setOnClickListener { drawingView.removeTextItem(item); dismissTextSelectionBox(); drawingView.invalidate() }
-        val btnDone = tbBtn("\u2713", Color.parseColor("#388E3C"))
-        btnDone.setOnClickListener { dismissTextSelectionBox() }
-        toolbar.addView(btnDel); toolbar.addView(btnDone)
+        fun hasFullSpan(type: Char, value: Int) = item.spans.any { it.type == type && it.value == value && it.start == 0 && it.end == item.text.length }
+        fun toggleFullSpan(btn: ImageView, type: Char, value: Int) {
+            if (hasFullSpan(type, value)) item.spans.removeAll { it.type == type && it.value == value && it.start == 0 && it.end == item.text.length }
+            else item.spans.add(TextSpanData(0, item.text.length, type, value))
+            btn.setBackgroundColor(if (hasFullSpan(type, value)) tbActiveBg else tbInactiveBg)
+            btn.setColorFilter(if (hasFullSpan(type, value)) Color.WHITE else Color.parseColor("#4A4A4A"))
+            drawingView.invalidate()
+        }
+        val btnBold = tbBtn(R.drawable.ic_text_bold) { btn -> toggleFullSpan(btn, 'S', Typeface.BOLD) }
+        val btnItalic = tbBtn(R.drawable.ic_text_italic) { btn -> toggleFullSpan(btn, 'S', Typeface.ITALIC) }
+        val btnUnderline = tbBtn(R.drawable.ic_text_underline) { btn -> toggleFullSpan(btn, 'U', 0) }
+        if (hasFullSpan('S', Typeface.BOLD)) { btnBold.setBackgroundColor(tbActiveBg); btnBold.setColorFilter(Color.WHITE) }
+        if (hasFullSpan('S', Typeface.ITALIC)) { btnItalic.setBackgroundColor(tbActiveBg); btnItalic.setColorFilter(Color.WHITE) }
+        if (hasFullSpan('U', 0)) { btnUnderline.setBackgroundColor(tbActiveBg); btnUnderline.setColorFilter(Color.WHITE) }
+        tbBtn(R.drawable.ic_text_delete) { drawingView.removeTextItem(item); dismissTextSelectionBox(); drawingView.invalidate() }
+        tbBtn(R.drawable.ic_text_check) { dismissTextSelectionBox() }
 
-        canvasContainer.addView(toolbar)
+        val toolbarLp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; bottomMargin = dp(16)
+        }
+        canvasContainer.addView(toolbar, toolbarLp)
         textSelectionBox = moveSurface; textSelectionItem = item
         textSelectionHandles = listOf(toolbar, rotateHandle)
 
@@ -4712,10 +4748,8 @@ class MainActivity : AppCompatActivity() {
             val mlp = moveSurface.layoutParams as FrameLayout.LayoutParams
             mlp.leftMargin = sx.toInt(); mlp.topMargin = (sy - boxH).toInt()
             moveSurface.layoutParams = mlp
-            val lp = toolbar.layoutParams as FrameLayout.LayoutParams
-            lp.leftMargin = sx.toInt().coerceIn(dp(4), canvasContainer.width - dp(200))
-            lp.topMargin = (sy - dp(100).toFloat()).toInt().coerceIn(dp(4), maxTop)
-            toolbar.layoutParams = lp
+            // toolbar is now a fixed bottom bar (see its own LayoutParams, gravity BOTTOM) — it
+            // no longer tracks item.x/item.y at all, unlike moveSurface and rotateHandle below.
             // Anchor math (dp(90) above item.x/item.y) then clamped exactly like the dot's own
             // layout below — and stored in rotateHandleScreenCx/Cy, the SAME values the
             // ACTION_DOWN hit-test reads, so the touchable zone can never drift from the visible
@@ -5004,40 +5038,19 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Position the toolbar's horizontal scroll bar just above the box (falls back to top of screen if no room)
+        // Single fixed bottom bar — replaces the old floating toolbar that used to track the
+        // box's own top edge. That floating version had two problems: for a long multi-page
+        // paste it scrolled far off-screen the moment you scrolled down to keep typing, and
+        // showing it ALONGSIDE a separate bottom bar (an earlier attempt) was just confusing
+        // clutter — two toolbars doing the same job. Now there's exactly one, always reachable,
+        // reusing the SAME toolbar (with all 6 buttons, including the AI sparkle) instead of a
+        // second, different-looking bar.
         val toolbarScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(toolbar) }
-        editorToolbarRef = toolbarScroll  // now set the forward ref so move handle can hide/show it
-        val toolbarHeightEstimate = dp(56)
-        val tp=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
-        tp.leftMargin = params.leftMargin.coerceAtMost((canvasContainer.width - dp(260)).coerceAtLeast(0))
-        tp.topMargin = (params.topMargin - toolbarHeightEstimate).coerceAtLeast(0)
-        canvasContainer.addView(toolbarScroll,tp)
-
-        // Fixed bottom bar: the SAME essential actions (bold/italic/underline/delete/confirm),
-        // but pinned to the bottom of the screen instead of tracking the box's own top edge like
-        // toolbarScroll above does. For a long multi-page paste, that top-anchored toolbar
-        // scrolls far off-screen the moment you scroll down to keep typing/pasting — this bar
-        // stays reachable no matter how far down the box has grown. Its own icons toggle the
-        // same pendingBold/Italic/Underline flags as the top toolbar, so functionally they're
-        // in sync — the one simplification here is that toggling one doesn't visually
-        // repaint the other bar's icon state if both happen to be on screen at once.
-        val bottomBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(8).toFloat(); setPadding(dp(8), dp(8), dp(8), dp(8)); gravity = Gravity.CENTER }
-        fun bbtn(iconRes: Int, action: (ImageView) -> Unit): ImageView {
-            val b = ImageView(this); b.setImageResource(iconRes); b.scaleType = ImageView.ScaleType.CENTER_INSIDE
-            val p = LinearLayout.LayoutParams(dp(40), dp(40)); p.setMargins(dp(4), 0, dp(4), 0); b.layoutParams = p
-            b.setPadding(dp(8), dp(8), dp(8), dp(8)); b.setBackgroundColor(inactiveBg); b.setOnClickListener { action(b) }
-            bottomBar.addView(b); return b
-        }
-        fun setToggleStateIconBottom(btn: ImageView, active: Boolean) { btn.setBackgroundColor(if (active) activeBg else inactiveBg); btn.setColorFilter(if (active) Color.WHITE else Color.parseColor("#4A4A4A")) }
-        bbtn(R.drawable.ic_text_bold) { btn -> if (et.selectionStart != et.selectionEnd) toggleStyleOnSelection(et, Typeface.BOLD) else { pendingBold = !pendingBold; setToggleStateIconBottom(btn, pendingBold) } }
-        bbtn(R.drawable.ic_text_italic) { btn -> if (et.selectionStart != et.selectionEnd) toggleStyleOnSelection(et, Typeface.ITALIC) else { pendingItalic = !pendingItalic; setToggleStateIconBottom(btn, pendingItalic) } }
-        bbtn(R.drawable.ic_text_underline) { btn -> if (et.selectionStart != et.selectionEnd) toggleUnderlineOnSelection(et) else { pendingUnderline = !pendingUnderline; setToggleStateIconBottom(btn, pendingUnderline) } }
-        bbtn(R.drawable.ic_text_delete) { closeInlineEditor(false, delete = true) }
-        bbtn(R.drawable.ic_text_check) { closeInlineEditor(true) }
-        val bottomBarLp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+        editorToolbarRef = toolbarScroll  // forward ref so move handle can hide/show it
+        val toolbarScrollLp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; bottomMargin = dp(16)
         }
-        canvasContainer.addView(bottomBar, bottomBarLp)
+        canvasContainer.addView(toolbarScroll, toolbarScrollLp)
 
         // ── Keyboard scroll-into-view ─────────────────────────────────────────────
         // Piggybacks on the OnApplyWindowInsetsListener already set on android.R.id.content
@@ -5051,9 +5064,9 @@ class MainActivity : AppCompatActivity() {
 
             // Keep the fixed bottom bar riding just above the keyboard rather than buried
             // underneath it — it's most needed exactly while the keyboard is open and typing.
-            val bblp = bottomBar.layoutParams as FrameLayout.LayoutParams
+            val bblp = toolbarScroll.layoutParams as FrameLayout.LayoutParams
             bblp.bottomMargin = (if (keyboardOpen) imeBottom + dp(8) else dp(16))
-            bottomBar.layoutParams = bblp
+            toolbarScroll.layoutParams = bblp
 
             if (keyboardOpen && !keyboardWasOpen) {
                 keyboardWasOpen = true
@@ -5146,7 +5159,7 @@ class MainActivity : AppCompatActivity() {
         // updateET() positions purely from editTopAnchorY now, which a resize doesn't change.
         // Only the corner handles need to move to match the new size.
         onBoxResized = { updateET() }
-        activeEditText=et; activeToolbar=toolbarScroll; activeEditBox=boxContainer; activeBottomBar=bottomBar
+        activeEditText=et; activeToolbar=toolbarScroll; activeEditBox=boxContainer
         activeEditorHandles = listOf(moveHandle, resizeHandle, rotateHandle, deleteHandle)
         boxContainer.post { ensureEditorOnScreen() }
         et.requestFocus()
@@ -5160,7 +5173,6 @@ class MainActivity : AppCompatActivity() {
         for(span in ed.getSpans(0,ed.length,Any::class.java)){ val s=ed.getSpanStart(span);val e=ed.getSpanEnd(span); if(s<0||e<0||s>=e) continue; when(span){ is StyleSpan->spans.add(TextSpanData(s,e,'S',span.style)); is ForegroundColorSpan->spans.add(TextSpanData(s,e,'C',span.foregroundColor)); is UnderlineSpan->spans.add(TextSpanData(s,e,'U',0)); is BackgroundColorSpan->spans.add(TextSpanData(s,e,'H',span.backgroundColor)) } }
         if(box!=null) canvasContainer.removeView(box) else canvasContainer.removeView(et)
         if(tb!=null) canvasContainer.removeView(tb)
-        activeBottomBar?.let { canvasContainer.removeView(it) }; activeBottomBar = null
         activeEditorHandles.forEach { canvasContainer.removeView(it) }; activeEditorHandles = emptyList()
         val item=editingItem
         if(commit&&!delete&&text.isNotBlank()){
