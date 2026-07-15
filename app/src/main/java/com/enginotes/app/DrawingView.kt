@@ -2499,7 +2499,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         while (i + 1 < arc.data.points.size) { canvas.drawCircle(arc.data.points[i], arc.data.points[i + 1], r, p); i += 2 }
     }
 
-    private fun textWrapWidth(item: TextItem): Int {
+    // No longer private: MainActivity's measureTextBoxSize (used to size the drag-selection
+    // surface for a committed item) needs to wrap text at EXACTLY this width too. It used to
+    // have its own hardcoded fallback (4000, i.e. effectively unbounded) for the maxWidth==0
+    // case, which — for Convenient/Paginated mode, where the real wrap is the much narrower
+    // page width — produced far fewer, much longer lines than actual rendering, and therefore
+    // a badly undersized computed height. Since the drag surface is anchored from the bottom
+    // (topMargin = screenBottom - boxH), an undersized boxH left its top edge sitting below the
+    // text's real visual top — the top portion of the item was outside the touchable area
+    // entirely, while the (correctly-covered) bottom portion still worked fine. One shared
+    // function means the two can never diverge like that again.
+    fun textWrapWidth(item: TextItem): Int {
         if (item.maxWidth > 0f) return item.maxWidth.toInt().coerceAtLeast(40)
         if (canvasMode == CanvasMode.INFINITE) return 4000
         // Default: wrap to remaining page width from item.x to page edge

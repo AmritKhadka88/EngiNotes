@@ -4456,8 +4456,15 @@ class MainActivity : AppCompatActivity() {
         val scale = screenSizePx / item.size.coerceAtLeast(1f)
         val tp = android.text.TextPaint(); tp.textSize = item.size; tp.isAntiAlias = true
         try { tp.typeface = Typeface.create(item.fontFamily, Typeface.NORMAL) } catch (e: Exception) {}
-        // Mirror textWrapWidth: maxWidth in world units, else unconstrained
-        val wrapWidth = if (item.maxWidth > 0f) item.maxWidth.toInt().coerceAtLeast(40) else 4000
+        // Was a separate hardcoded "else 4000" fallback here for the maxWidth==0 case — for
+        // Convenient/Paginated mode, real rendering (DrawingView.textWrapWidth) wraps that case
+        // to the actual page width instead, a much narrower value. That mismatch meant this
+        // StaticLayout produced far fewer, far longer lines than what's really on screen, so
+        // `layout.height` below badly undershot the item's true rendered height — which is
+        // exactly what made the drag surface only cover roughly the bottom portion of a long
+        // multi-page item. Calling the real function directly means this can never drift out
+        // of sync with actual rendering again.
+        val wrapWidth = drawingView.textWrapWidth(item)
         val layout = android.text.StaticLayout.Builder.obtain(item.text, 0, item.text.length, tp, wrapWidth).setIncludePad(true).build()
         val measuredW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) } ?: (item.size * 2f)
         // Scale world dimensions to screen pixels, add small padding
