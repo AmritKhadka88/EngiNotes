@@ -2566,6 +2566,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return layout
     }
 
+    // Set by MainActivity's drag handler for exactly the duration of a drag on a committed text
+    // item. While set, drawTextItem below skips the per-page splitting logic for THIS item and
+    // draws it as one continuous block instead. That splitting logic decides which page band
+    // each line belongs to based on the item's current position — so as the item crosses a page
+    // boundary mid-drag, a whole chunk of its lines can reassign to a different page band and
+    // jump by a full page-height discontinuously, even though the underlying drag position moved
+    // smoothly. That's what caused dragging to look erratic/backwards. Freezing to a simple
+    // continuous render during the drag removes the discontinuity entirely; the real per-page
+    // split re-applies cleanly the moment the drag ends and this is cleared.
+    var draggingTextItem: TextItem? = null
+
     private fun drawTextItem(canvas: Canvas, item: TextItem) {
         val layout = getOrBuildLayout(item)
         // Actual content width = widest line, not the wrap width (which can be 4000 for infinite canvas)
@@ -2580,8 +2591,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // render straight through the visual gap between pages. Each run is clipped to its own
         // page's band and the next run picks up at the top of the following page — the same
         // way a paragraph that doesn't fit on one page continues on the next in a word processor.
+        // Suppressed entirely while this exact item is being dragged (see draggingTextItem above).
         val ph = pageHeightPx()
-        if (canvasMode != CanvasMode.INFINITE && item.rotation == 0f && contentH > ph) {
+        if (item !== draggingTextItem && canvasMode != CanvasMode.INFINITE && item.rotation == 0f && contentH > ph) {
             val gap = if (canvasMode == CanvasMode.CONVENIENT) 24f else 40f
             val period = ph + gap
             var lineIdx = 0
