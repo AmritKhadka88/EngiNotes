@@ -4523,12 +4523,22 @@ class MainActivity : AppCompatActivity() {
         // end the drag cleanly if that specific finger lifts rather than silently following
         // whichever finger remains.
         var activePointerId = -1
-        val loc = IntArray(2)
+        // getRawX(index)/getRawY(index) are screen-absolute — independent of any view's current
+        // position. An earlier version of this reconstructed "raw" coordinates from
+        // moveSurface.getLocationOnScreen() + a local offset, but moveSurface is the exact view
+        // being repositioned in response to this same touch, every frame — so that was a
+        // feedback loop: this frame's computed position depended on last frame's self-move, which
+        // depended on the frame before that, etc. That's what produced the extreme jitter/shake,
+        // and under certain frame-timing races could even flip the effective direction. Using
+        // display-absolute coordinates removes the loop entirely — there's nothing to chase.
         fun rawXYForPointer(ev: android.view.MotionEvent, pointerId: Int): Pair<Float, Float>? {
             val idx = ev.findPointerIndex(pointerId)
             if (idx < 0) return null
-            moveSurface.getLocationOnScreen(loc)
-            return Pair(loc[0] + ev.getX(idx), loc[1] + ev.getY(idx))
+            return if (android.os.Build.VERSION.SDK_INT >= 29) {
+                Pair(ev.getRawX(idx), ev.getRawY(idx))
+            } else if (idx == 0) {
+                Pair(ev.rawX, ev.rawY) // pre-API29 has no indexed raw accessor; safe only for index 0
+            } else null
         }
 
         // The rotate hit-zone in ACTION_DOWN below must test against the SAME (clamped) screen
