@@ -4559,6 +4559,22 @@ class MainActivity : AppCompatActivity() {
         // handle silently detach from the item and float in place while it's being dragged.
         lateinit var updateToolbarPos: () -> Unit
 
+        // Runs once when a move-drag ends. Recomputes the wrap width FRESH from wherever the
+        // item was just dropped, rather than restoring whatever it was before the drag. That
+        // distinction matters: clampTextItemToPage only ever fixes maxWidth the very FIRST time
+        // an item is committed, then leaves it alone forever — so without this, dragging moved
+        // the box, but the text kept wrapping as if it were still sitting at its original spot.
+        // The first line/paragraph needs to start exactly where the user dropped it, with
+        // everything after it wrapping to fit the space actually available from there.
+        fun settleWrapWidthAfterDrag() {
+            if (drawingView.canvasMode == CanvasMode.CONVENIENT || drawingView.canvasMode == CanvasMode.PAGINATED) {
+                item.maxWidth = (drawingView.pageWidthPx() - item.x - 16f).coerceAtLeast(80f)
+            } else {
+                frozenMaxWidth?.let { item.maxWidth = it }
+            }
+            frozenMaxWidth = null
+            drawingView.invalidate()
+        }
         moveSurface.setOnTouchListener { _, ev ->
             // The hand-icon toggle (fingerPanMode) is handled inside DrawingView itself, but
             // moveSurface is a separate overlay View sitting on top of it — it had no idea that
@@ -4640,15 +4656,15 @@ class MainActivity : AppCompatActivity() {
                     // over as the new "index 0" on the next MOVE event.
                     if (ev.getPointerId(ev.actionIndex) == activePointerId) {
                         isDraggingRotate = false; activePointerId = -1
-                        if (drawingView.draggingTextItem === item) { drawingView.draggingTextItem = null; drawingView.invalidate() }
-                        frozenMaxWidth?.let { item.maxWidth = it; frozenMaxWidth = null; drawingView.invalidate() }
+                        if (drawingView.draggingTextItem === item) { drawingView.draggingTextItem = null }
+                        if (frozenMaxWidth != null) settleWrapWidthAfterDrag() // only after an actual move-drag, never after a rotate or plain tap
                     }
                     true
                 }
                 android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
                     isDraggingRotate = false; activePointerId = -1
-                    if (drawingView.draggingTextItem === item) { drawingView.draggingTextItem = null; drawingView.invalidate() }
-                    frozenMaxWidth?.let { item.maxWidth = it; frozenMaxWidth = null; drawingView.invalidate() }
+                    if (drawingView.draggingTextItem === item) { drawingView.draggingTextItem = null }
+                    if (frozenMaxWidth != null) settleWrapWidthAfterDrag()
                     true
                 }
                 else -> true
