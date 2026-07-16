@@ -995,6 +995,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     val polylinePoints = mutableListOf<Float>()  // world coords [x0,y0,x1,y1,...]
     var polylineCursorX = 0f; var polylineCursorY = 0f  // live preview end point
     var onPolylineUpdated: (() -> Unit)? = null  // notify MainActivity to offer Close/Undo
+    var polylineFingerDown = false  // drives the magnifier lens while actively placing a point
+    // True while the current touch landed inside the small (invisible, touchable-only) zone
+    // around the last placed point — that touch is repositioning the existing point instead of
+    // adding a new one, so a mis-tapped vertex can be nudged right without undoing anything.
+    var polylineAdjustingLastPoint = false
 
     fun finalizePolyline(close: Boolean = false) {
         if (polylinePoints.size < 4) { polylinePoints.clear(); invalidate(); return }
@@ -1855,8 +1860,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val sx = worldToScreenX(worldX); val sy = worldToScreenY(worldY)
         val lensRadius = 70f
         val oneCm = resources.displayMetrics.xdpi / 2.54f  // 1cm in pixels
-        val lensOffsetY = -(lensRadius + oneCm)  // 1cm above finger
-        val cx = sx; val cy = sy + lensOffsetY
+        val lensDistance = lensRadius + oneCm  // how far above (or, if flipped, below) the finger
+        // Default above the finger. If that would clip off the top of the screen, flip to the
+        // same distance BELOW the finger instead — otherwise the lens becomes partly or fully
+        // invisible exactly when you're placing a point near the top of the page, which is
+        // exactly when you need to see it most.
+        val aboveCy = sy - lensDistance
+        val cy = if (aboveCy - lensRadius < 0f) sy + lensDistance else aboveCy
+        val cx = sx
         val zoomFactor = 3f
 
         // Save world transform and switch to screen space for the lens overlay
@@ -1892,8 +1903,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         canvas.drawCircle(cx, cy, lensRadius, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=android.graphics.Color.parseColor("#1C1C1E"); strokeWidth=2f; style=Paint.Style.STROKE })
         // Shadow
         canvas.drawCircle(cx, cy, lensRadius+2f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=0x22000000; strokeWidth=4f; style=Paint.Style.STROKE })
-        // Stem line from lens bottom to finger
-        canvas.drawLine(cx, cy+lensRadius, sx, sy-8f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=android.graphics.Color.parseColor("#1C1C1E"); strokeWidth=1.5f; style=Paint.Style.STROKE })
+        // Stem line from lens to finger — direction flips to match whichever side the lens ended up on.
+        val stemStartY = if (cy < sy) cy + lensRadius else cy - lensRadius
+        val stemEndY = if (cy < sy) sy - 8f else sy + 8f
+        canvas.drawLine(cx, stemStartY, sx, stemEndY, Paint(Paint.ANTI_ALIAS_FLAG).apply { color=android.graphics.Color.parseColor("#1C1C1E"); strokeWidth=1.5f; style=Paint.Style.STROKE })
         canvas.restore()
     }
 
@@ -2424,7 +2437,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (snapMarkersActionCount != actions.size || snapMarkersDirty) rebuildSnapMarkerCache()
         }
         if (snapEnabled) drawSnapMarkers(canvas)
-        if (currentTool == Tool.POLYLINE) drawPolylinePreview(canvas)
+        if (currentTool == Tool.POLYLINE) {
+            drawPolylinePreview(canvas)
+            if (polylineFingerDown) drawMagnifierLens(canvas, polylineCursorX, polylineCursorY)
+        }
         canvas.restore()
         drawCursor(canvas)
     }
@@ -3645,26 +3661,48 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Each segment commits as an independent LINE stroke on completion.
     private fun handlePolyline(event: MotionEvent) {
         var wx = screenToWorldX(event.x); var wy = screenToWorldY(event.y)
-        // Snap if enabled
-        if (snapEnabled && polylinePoints.size >= 2) {
+        // Snap if enabled — skipped while adjusting an existing point, since snapping there
+        // should behave like placing that point fresh would, not be influenced by its own
+        // not-yet-moved position.
+        if (snapEnabled && polylinePoints.size >= 2 && !polylineAdjustingLastPoint) {
             val sx = polylinePoints[polylinePoints.size-2]; val sy = polylinePoints[polylinePoints.size-1]
             val snap = findSnapTarget(wx, wy, sx, sy)
             if (snap != null) { wx = snap.wx; wy = snap.wy; snapResult = snap } else snapResult = null
         }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                polylineFingerDown = true
+                // Small (invisible, touch-only) hit-zone around the last placed point: landing
+                // inside it means this touch is meant to fix/nudge that point, not commit a
+                // brand new one on top of whatever mistake was just made.
+                polylineAdjustingLastPoint = if (polylinePoints.size >= 2) {
+                    val lastX = polylinePoints[polylinePoints.size-2]; val lastY = polylinePoints[polylinePoints.size-1]
+                    distance(wx, wy, lastX, lastY) <= (28f / scaleFactor)
+                } else false
                 polylineCursorX = wx; polylineCursorY = wy; invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
+                if (polylineAdjustingLastPoint && polylinePoints.size >= 2) {
+                    // Drag the EXISTING last point live — the segment leading into it (and any
+                    // in-progress preview leading out of it) redraws correctly on its own since
+                    // both are derived from this same list each frame.
+                    polylinePoints[polylinePoints.size-2] = wx; polylinePoints[polylinePoints.size-1] = wy
+                }
                 polylineCursorX = wx; polylineCursorY = wy; invalidate()
             }
             MotionEvent.ACTION_UP -> {
+                polylineFingerDown = false
                 // Double-tap: finish polyline
-                if (gestureDetectorPolyline.onTouchEvent(event)) return
-                if (polylinePoints.isEmpty()) { polylinePoints.add(wx); polylinePoints.add(wy) }
-                else { polylinePoints.add(wx); polylinePoints.add(wy) }
+                if (gestureDetectorPolyline.onTouchEvent(event)) { polylineAdjustingLastPoint = false; return }
+                if (polylineAdjustingLastPoint) {
+                    // Just finished repositioning the existing point — nothing new to add.
+                    polylineAdjustingLastPoint = false
+                } else {
+                    polylinePoints.add(wx); polylinePoints.add(wy)
+                }
                 onPolylineUpdated?.invoke(); invalidate()
             }
+            MotionEvent.ACTION_CANCEL -> { polylineFingerDown = false; polylineAdjustingLastPoint = false }
         }
         gestureDetectorPolyline.onTouchEvent(event)
     }
