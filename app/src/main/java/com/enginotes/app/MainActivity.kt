@@ -949,6 +949,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setActiveTool(btn: ImageButton?, tool: Tool) {
+        // Commit any open text edit before switching tools — same principle already applied to
+        // Polyline just below (finalize before switching away). Without this, switching tools
+        // while typing left the text editor fully open and interactive while the newly selected
+        // tool ALSO went live underneath it — e.g. tapping a shape tool while still in an active
+        // text edit left both the keyboard/editor AND the shape tool simultaneously active.
+        if (activeEditText != null && tool != Tool.TEXT) closeInlineEditor(true)
         if (tool != Tool.POLYLINE) { drawingView.finalizePolyline(false); polylineBar?.let { canvasContainer.removeView(it) }; polylineBar = null }
         drawingView.currentTool = tool; setActiveToolbarBtn(btn)
         dismissPenOptionsPanel(); dismissEraserOptionsPanel(); dismissHighlighterOptionsPanel(); dismissBrushOptionsPanel(); dismissShapesPicker(); dismissShapeOptionsPanel()
