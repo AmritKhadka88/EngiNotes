@@ -4568,7 +4568,19 @@ class MainActivity : AppCompatActivity() {
         // everything after it wrapping to fit the space actually available from there.
         fun settleWrapWidthAfterDrag() {
             if (drawingView.canvasMode == CanvasMode.CONVENIENT || drawingView.canvasMode == CanvasMode.PAGINATED) {
+                // item.y is the BOTTOM (see textItemHeight/drawTextItem convention), so simply
+                // changing maxWidth and leaving item.y alone would shift the visual TOP by
+                // however much the height changed — exactly the "wrap shifts the whole
+                // paragraph" bug. A single unbreakable long token (a URL/path with no spaces,
+                // like the CI log's JAVA_HOME line) is the classic trigger: it renders at a very
+                // different width depending on available room, so re-wrapping it can swing the
+                // total height a lot. Capturing height before/after and folding the DIFFERENCE
+                // into item.y keeps the first line's screen position exactly where it was —
+                // the extra/removed height comes entirely from the bottom edge instead.
+                val heightBefore = drawingView.textItemHeight(item)
                 item.maxWidth = (drawingView.pageWidthPx() - item.x - 16f).coerceAtLeast(80f)
+                val heightAfter = drawingView.textItemHeight(item)
+                item.y += (heightAfter - heightBefore)
             } else {
                 frozenMaxWidth?.let { item.maxWidth = it }
             }
