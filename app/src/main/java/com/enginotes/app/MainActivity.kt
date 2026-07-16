@@ -363,6 +363,9 @@ class MainActivity : AppCompatActivity() {
     private val takePictureForOcrLauncher = registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         if (success) ocrCameraFile?.let { runOcrOnUri(Uri.fromFile(it)) }
     }
+    private val pickImageForCustomHatchLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) addCustomHatchFromUri(uri)
+    }
 
     private fun launchCameraForOcr() {
         if (checkSelfPermission(android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -1695,7 +1698,7 @@ class MainActivity : AppCompatActivity() {
                 sizeButton(drawingView.eraserSize, 120) { drawingView.eraserSize = it }
             }
             Tool.FILL -> {
-                eightColors(drawingView.fillColor) { c -> drawingView.fillColor = c; drawingView.pendingHatchPattern = null }
+                eightColors(drawingView.fillColor) { c -> drawingView.fillColor = c; drawingView.pendingHatchPattern = null; drawingView.pendingCustomHatchPath = null }
             }
             Tool.TEXT -> {
                 // Show 3 recently used fonts (no scrollable row — just 3 chips)
@@ -2715,6 +2718,44 @@ class MainActivity : AppCompatActivity() {
         canvasContainer.addView(scroll, lp)
     }
 
+    private fun customHatchDir(): File = File(filesDir, "custom_hatches").also { it.mkdirs() }
+    private fun listCustomHatches(): List<File> = customHatchDir().listFiles()?.filter { it.isFile }?.sortedByDescending { it.lastModified() } ?: emptyList()
+
+    private fun addCustomHatchFromUri(uri: Uri) {
+        try {
+            val outFile = File(customHatchDir(), "hatch_${System.currentTimeMillis()}.png")
+            contentResolver.openInputStream(uri)?.use { input ->
+                val bmp = android.graphics.BitmapFactory.decodeStream(input)
+                FileOutputStream(outFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            }
+            applyCustomHatch(outFile.absolutePath)
+        } catch (e: Exception) {
+            android.widget.Toast.makeText(this, "Couldn't read that image", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun applyCustomHatch(path: String) {
+        drawingView.pendingHatchPattern = null
+        drawingView.pendingCustomHatchPath = path
+        drawingView.pendingHatchColor = drawingView.currentColor
+        setActiveTool(null, Tool.FILL)
+        android.widget.Toast.makeText(this, "Tap area to fill with this hatch", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    private fun startHatchSnip() {
+        drawingView.onHatchSnipSelected = { bmp, _, _, _, _ ->
+            try {
+                val outFile = File(customHatchDir(), "hatch_${System.currentTimeMillis()}.png")
+                FileOutputStream(outFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                applyCustomHatch(outFile.absolutePath)
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(this, "Couldn't save that snip", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+        setActiveTool(null, Tool.HATCH_SNIP)
+        android.widget.Toast.makeText(this, "Drag a box around the strokes you want as a hatch", android.widget.Toast.LENGTH_LONG).show()
+    }
+
     private fun showHatchPicker() {
         val categories = linkedMapOf(
             "Lines" to listOf("45° Lines" to HatchPattern.HATCH_45, "135° Lines" to HatchPattern.HATCH_135, "Vertical" to HatchPattern.HATCH_90, "Horizontal" to HatchPattern.HATCH_0, "Cross" to HatchPattern.HATCH_CROSS, "Diagonal Cross" to HatchPattern.HATCH_DIAGONAL_CROSS),
@@ -2724,15 +2765,34 @@ class MainActivity : AppCompatActivity() {
             "Material" to listOf("Glass" to HatchPattern.GLASS, "Rubber" to HatchPattern.RUBBER, "Plastic" to HatchPattern.PLASTIC, "Ceramic" to HatchPattern.CERAMIC, "Fiberglass" to HatchPattern.FIBERGLASS, "Foam" to HatchPattern.FOAM, "Membrane" to HatchPattern.MEMBRANE),
             "Patterns" to listOf("Dots Fine" to HatchPattern.DOTS_FINE, "Dots Coarse" to HatchPattern.DOTS_COARSE, "Stipple" to HatchPattern.STIPPLE, "Honeycomb" to HatchPattern.HONEYCOMB, "Basket Weave" to HatchPattern.BASKET_WEAVE, "Diamond Grid" to HatchPattern.DIAMOND_GRID, "Zigzag" to HatchPattern.ZIGZAG, "Wave" to HatchPattern.WAVE, "Herringbone" to HatchPattern.HERRINGBONE, "Scale" to HatchPattern.SCALE, "Chain Link" to HatchPattern.CHAIN_LINK, "Contour" to HatchPattern.CONTOUR, "Water" to HatchPattern.WATER)
         )
-        val allItems = mutableListOf<String>(); val allPatterns = mutableListOf<HatchPattern>()
-        categories.forEach { (cat, items) -> allItems.add("── $cat ──"); allPatterns.add(HatchPattern.HATCH_45); items.forEach { (name, pat) -> allItems.add("  $name"); allPatterns.add(pat) } }
+        val allItems = mutableListOf<String>(); val allPatterns = mutableListOf<HatchPattern?>()
+        val allCustomPaths = mutableListOf<String?>(); val allActions = mutableListOf<(() -> Unit)?>()
+        fun addRow(label: String, pattern: HatchPattern? = null, customPath: String? = null, action: (() -> Unit)? = null) {
+            allItems.add(label); allPatterns.add(pattern); allCustomPaths.add(customPath); allActions.add(action)
+        }
+        categories.forEach { (cat, items) ->
+            addRow("── $cat ──")
+            items.forEach { (name, pat) -> addRow("  $name", pattern = pat) }
+        }
+        // Custom section — existing procedural patterns above are completely untouched. "Add"
+        // brings in any image (PNG etc.) from the device; "Snip" crops a region of the current
+        // canvas with the page background/lines/fills excluded, keeping only the ink itself.
+        // Both end up as tileable custom hatches, listed below so they can be reused later.
+        addRow("── Custom ──")
+        addRow("  ➕ Add image (PNG, etc.)", action = { pickImageForCustomHatchLauncher.launch("image/*") })
+        addRow("  ✂ Snip from canvas", action = { startHatchSnip() })
+        listCustomHatches().forEach { f -> addRow("  🖼 ${f.name}", customPath = f.absolutePath) }
 
         AlertDialog.Builder(this).setTitle("Hatch Pattern (long-press area to fill)")
             .setItems(allItems.toTypedArray()) { _, i ->
-                val selected = allPatterns[i]; val label = allItems[i]
+                val label = allItems[i]
                 if (label.startsWith("──")) return@setItems
+                allActions[i]?.let { it(); return@setItems }
+                allCustomPaths[i]?.let { applyCustomHatch(it); return@setItems }
+                val selected = allPatterns[i] ?: return@setItems
                 // Set fill tool with hatch — next tap fills the tapped area with this hatch
                 drawingView.pendingHatchPattern = selected
+                drawingView.pendingCustomHatchPath = null
                 drawingView.pendingHatchColor = drawingView.currentColor
                 setActiveTool(null, Tool.FILL)
                 android.widget.Toast.makeText(this, "Tap area to fill with hatch", android.widget.Toast.LENGTH_SHORT).show()
@@ -2911,8 +2971,8 @@ class MainActivity : AppCompatActivity() {
         // so smaller = tighter spacing = more lines drawn per area = more expensive to
         // first-render (after that it's cached — see drawHatchPattern's caching fix — but the
         // one-time render cost for a large area with tight spacing is still real).
-        val hatchLabels = arrayOf("Fine (dense)", "Normal", "Coarse (sparse)")
-        val hatchValues = arrayOf(0.5f, 1f, 2f)
+        val hatchLabels = arrayOf("Extra Fine", "Fine", "Normal", "Medium", "Coarse", "Extra Coarse", "Broad", "Ultra Broad")
+        val hatchValues = arrayOf(0.25f, 0.5f, 1f, 1.5f, 2f, 3f, 5f, 8f)
         var selHatchScale = prefs.getFloat("hatch_scale", 1f)
         val hatchLbl = TextView(this).apply { textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(8),0,dp(8)) }
         fun closestHatchIndex() = hatchValues.indices.minByOrNull { kotlin.math.abs(hatchValues[it] - selHatchScale) } ?: 1

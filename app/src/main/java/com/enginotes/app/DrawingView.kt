@@ -63,7 +63,7 @@ enum class InputMode { AUTO, STYLUS_ONLY, FINGER_ONLY }
 
 enum class Tool {
     SELECT, FILL, PEN, BRUSH, ERASER, HIGHLIGHTER, LINE, RECTANGLE, ROUNDED_RECT, CIRCLE, ELLIPSE,
-    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT, AUTOSELECT, LASSO, MULTISELECT, POLYLINE, EXPORT_WINDOW, OCR_SNIP,
+    TRIANGLE, DIAMOND, ARROW, STAR, PENTAGON, HEXAGON, CURVE, CROSS, ARC, TEXT, AUTOSELECT, LASSO, MULTISELECT, POLYLINE, EXPORT_WINDOW, OCR_SNIP, HATCH_SNIP,
     HEPTAGON, OCTAGON, NONAGON, DECAGON, TRAPEZOID, PARALLELOGRAM, RIGHT_TRIANGLE, ISOSCELES_TRIANGLE,
     SEMICIRCLE, HALF_ELLIPSE, TEARDROP, HEART, PLUS_THICK, DOUBLE_ARROW, BRACKET_L, BRACKET_R,
     CLOUD, SPEECH_BUBBLE, LIGHTNING, MOON, CHEVRON_RIGHT, CHEVRON_LEFT, CHEVRON_UP, CHEVRON_DOWN,
@@ -795,6 +795,10 @@ class FillItem(var path: String, var x: Float, var y: Float, var w: Float, var h
     var hatchPattern: HatchPattern? = null
     var hatchColor: Int = android.graphics.Color.BLACK
     var hatchScale: Float = 1f
+    // Path to a user-provided or user-snipped image, tiled as the hatch instead of one of the
+    // built-in procedural HatchPattern drawings. Mutually exclusive with hatchPattern — when
+    // set, drawHatchPattern tiles this bitmap instead of running the procedural line-drawing.
+    var customHatchPath: String? = null
     // Separate from `bitmap` above (which holds the flood-fill SHAPE mask) — this holds the
     // fully-rendered, already-masked hatch pattern itself, computed once and reused every
     // frame after that. See drawHatchPattern().
@@ -1223,6 +1227,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var exportWindowEnd: Pair<Float, Float>? = null
     var onExportWindowSelected: ((Float, Float, Float, Float) -> Unit)? = null
     var onOcrSnipSelected: ((Bitmap, Float, Float, Float, Float) -> Unit)? = null  // cropped bitmap + world bounds (left, top, right, bottom), ready for OCR or any other per-region use
+    var onHatchSnipSelected: ((Bitmap, Float, Float, Float, Float) -> Unit)? = null  // same shape as onOcrSnipSelected, but the bitmap has a TRANSPARENT background with only strokes (no page lines/paper color/fills) — see snipHatchBitmap()
 
     private var scaleFactor = 1f
     private var translateX = 0f; private var translateY = 0f
@@ -1910,16 +1915,53 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         canvas.restore()
     }
 
+    private val customHatchBitmapCache = mutableMapOf<String, Bitmap>()
+    private fun loadCustomHatchBitmap(path: String): Bitmap? {
+        customHatchBitmapCache[path]?.let { return it }
+        return try {
+            android.graphics.BitmapFactory.decodeFile(path)?.also { customHatchBitmapCache[path] = it }
+        } catch (e: Exception) { null }
+    }
+
     private fun drawHatchPattern(canvas: Canvas, item: FillItem) {
-        val hp = item.hatchPattern ?: return
+        if (item.hatchPattern == null && item.customHatchPath == null) return
         val l = item.x; val t = item.y; val r = item.x + item.w; val b = item.y + item.h
+        item.hatchRenderCache?.let { canvas.drawBitmap(it, null, RectF(l, t, r, b), null); return }
+
+        val customPath = item.customHatchPath
+        if (customPath != null) {
+            // Custom (user-added or user-snipped) hatch: tile the bitmap itself instead of
+            // running a procedural line-drawing. Uses its own original colors as-is — no
+            // tinting via hatchColor, since that would be surprising for an arbitrary photo
+            // and isn't needed for a snip (which is already just the ink color it was drawn in).
+            val tile = loadCustomHatchBitmap(customPath) ?: return
+            val bw = item.w.toInt().coerceAtLeast(1); val bh = item.h.toInt().coerceAtLeast(1)
+            val hatchBmp = android.graphics.Bitmap.createBitmap(bw, bh, android.graphics.Bitmap.Config.ARGB_8888)
+            val hc = Canvas(hatchBmp)
+            // hatchScale controls the tile's rendered size (world units per tile edge) — same
+            // "bigger number = broader/coarser pattern" convention as the procedural patterns.
+            val tileSizePx = (96f * item.hatchScale).coerceAtLeast(8f)
+            val shader = android.graphics.BitmapShader(tile, android.graphics.Shader.TileMode.REPEAT, android.graphics.Shader.TileMode.REPEAT)
+            val m = android.graphics.Matrix(); val sc = tileSizePx / tile.width.toFloat().coerceAtLeast(1f); m.setScale(sc, sc)
+            shader.setLocalMatrix(m)
+            hc.drawRect(0f, 0f, bw.toFloat(), bh.toFloat(), Paint(Paint.ANTI_ALIAS_FLAG).apply { this.shader = shader })
+            val bmpMask = getOrLoadFillBitmap(item)
+            if (bmpMask != null) {
+                val maskPaint = Paint().apply { xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN) }
+                hc.drawBitmap(bmpMask, null, android.graphics.Rect(0, 0, bw, bh), maskPaint)
+                item.hatchRenderCache = hatchBmp
+            }
+            canvas.drawBitmap(hatchBmp, null, RectF(l, t, r, b), null)
+            return
+        }
+
+        val hp = item.hatchPattern ?: return
         // Was rebuilding the entire hatch (potentially thousands of drawLine/drawCircle calls
         // for dense/small hatch spacing, PLUS a fresh Bitmap.createBitmap allocation) on every
         // single frame this fill was on screen — exactly the same "recompute forever" mistake
         // fixed earlier for Calligraphy/Fountain strokes. hatchPattern/hatchColor/hatchScale
         // are only ever set once at creation (no live hatch-editing exists), so caching the
         // final composited result is safe indefinitely.
-        item.hatchRenderCache?.let { canvas.drawBitmap(it, null, RectF(l, t, r, b), null); return }
         val s = 8f * item.hatchScale
         val sw = 1.5f  // stroke width in world coords
         val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = item.hatchColor; style = Paint.Style.STROKE; strokeWidth = sw; strokeCap = Paint.Cap.ROUND }
@@ -3244,6 +3286,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // hatch genuinely more expensive to first-render than a "Coarse" one, though after the
     // caching fix above that cost is only ever paid once per fill, not every frame.
     var pendingHatchScale: Float = 1f
+    // Set instead of pendingHatchPattern when the user picked a custom (added or snipped) hatch
+    // image rather than one of the built-in procedural patterns.
+    var pendingCustomHatchPath: String? = null
     private var fillScrollGuard = false
     var onDimensionCreated: ((DimensionItem) -> Unit)? = null
     var onDimensionEdit: ((DimensionItem) -> Unit)? = null
@@ -4882,6 +4927,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (currentTool == Tool.LASSO) { handleLasso(event); return true }
         if (currentTool == Tool.EXPORT_WINDOW) { handleExportWindow(event); return true }
         if (currentTool == Tool.OCR_SNIP) { handleOcrSnip(event); return true }
+        if (currentTool == Tool.HATCH_SNIP) { handleHatchSnip(event); return true }
         if (canvasMode == CanvasMode.INFINITE && currentItem == null && event.actionMasked == MotionEvent.ACTION_MOVE && isFinger) gestureDetector.onTouchEvent(event)
         handleDrawing(event); return true
     }
@@ -4915,6 +4961,37 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
             }
         }
+    }
+
+    private fun handleHatchSnip(event: MotionEvent) {
+        val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { exportWindowStart = Pair(wx, wy); exportWindowEnd = Pair(wx, wy); invalidate() }
+            MotionEvent.ACTION_MOVE -> { exportWindowEnd = Pair(wx, wy); invalidate() }
+            MotionEvent.ACTION_UP -> {
+                val s = exportWindowStart ?: return; val e = exportWindowEnd ?: return
+                val left = minOf(s.first, e.first); val top = minOf(s.second, e.second); val right = maxOf(s.first, e.first); val bottom = maxOf(s.second, e.second)
+                exportWindowStart = null; exportWindowEnd = null; currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT); invalidate()
+                if (right - left > 20f && bottom - top > 20f) {
+                    val bmp = snipHatchBitmap(left, top, right, bottom)
+                    onHatchSnipSelected?.invoke(bmp, left, top, right, bottom)
+                }
+            }
+        }
+    }
+
+    // Renders ONLY the strokes inside the given world-space rectangle onto a transparent
+    // bitmap — no page background, no ruled lines, no paper color, no shape fills — so the
+    // result is exactly the ink itself, tileable as a custom hatch. Reuses the same
+    // includeFills=false convention already established by renderStrokesOnly() for "strokes
+    // only" rendering, just cropped to a region instead of the whole view.
+    fun snipHatchBitmap(left: Float, top: Float, right: Float, bottom: Float): Bitmap {
+        val w = (right - left).coerceAtLeast(1f).toInt(); val h = (bottom - top).coerceAtLeast(1f).toInt()
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.translate(-left, -top)
+        for (a in actions) drawActionItem(canvas, a, includeFills = false)
+        return bmp
     }
 
     private fun clampToPage(wx: Float, wy: Float): Pair<Float, Float> {
@@ -6491,6 +6568,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 post {
                     val fi = FillItem(outFile.absolutePath, wx0, wy0, wx1 - wx0, wy1 - wy0)
                     if (pendingHatchPattern != null) { fi.hatchPattern = pendingHatchPattern; fi.hatchColor = pendingHatchColor; fi.hatchScale = pendingHatchScale }
+                    if (pendingCustomHatchPath != null) { fi.customHatchPath = pendingCustomHatchPath; fi.hatchScale = pendingHatchScale }
                     fi.bitmap = fb
                     // Only remove an existing FillItem if the tap pixel lands inside it AND the
                     // new fill is roughly the same size as the existing one — meaning the user
@@ -6533,7 +6611,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\n")
-            is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\n")
+            is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.customHatchPath ?: ""}\n")
             is AudioItem -> sb.append("AUDIO\u0001${a.filePath}\u0001${a.title.replace("\u0001","_")}\u0001${a.x}\u0001${a.y}\u0001${a.durationMs}\u0001${a.radius}\n")
         }
         return sb.toString()
@@ -6600,7 +6678,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                     line.startsWith("FILL\u0001") -> {
                         val p = line.split("\u0001")
-                        if (p.size >= 6) actions.add(FillItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat()))
+                        if (p.size >= 6) {
+                            val fi = FillItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat())
+                            if (p.size >= 7 && p[6].isNotBlank()) fi.customHatchPath = p[6]
+                            actions.add(fi)
+                        }
                         i++
                     }
                     else -> {
