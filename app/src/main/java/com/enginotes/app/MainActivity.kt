@@ -41,6 +41,12 @@ import java.io.FileOutputStream
 
 class MainActivity : AppCompatActivity() {
 
+    // 96 DPI reference — same one pageWidthPx() already uses for real paper dimensions
+    // (3.7795 px/mm = 96/25.4). A point is defined as 1/72 inch, so this is the factor that
+    // makes a font size picked in POINTS render at the physically-correct size on a real
+    // printed page — the same convention MS Word itself uses for on-screen point sizing.
+    private val PT_TO_PX = 96f / 72f
+
     private lateinit var drawingView: DrawingView
     private lateinit var canvasContainer: FrameLayout
     private lateinit var tvTitle: TextView
@@ -1491,6 +1497,64 @@ class MainActivity : AppCompatActivity() {
             row.addView(btn)
         }
 
+        // Text-specific size picker: MS-Word-style scrollable list of point sizes plus an
+        // editable box for a custom value — replaces the generic slider (sizeButton above) just
+        // for the Text tool, since "drag a dot along a bar" doesn't give the precision or the
+        // familiar reference points (12, 14, 18...) that choosing an exact font size calls for.
+        // Displays/accepts POINTS; converts to/from the internal pixel unit via PT_TO_PX so the
+        // physical size matches MS Word's own convention when actually printed.
+        fun textSizeButton(currentSizePx: Float, onChange: (Float) -> Unit) {
+            val standardPoints = listOf(6f,7f,8f,9f,10f,10.5f,11f,12f,13f,14f,16f,18f,20f,22f,24f,26f,28f,32f,36f,40f,44f,48f,54f,60f,66f,72f,80f,88f,96f,108f,120f,132f,144f,160f)
+            val btn = TextView(this).apply {
+                text = (currentSizePx / PT_TO_PX).let { if (it == it.toInt().toFloat()) it.toInt().toString() else it.toString() }
+                textSize = 14f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#1C1C1E"))
+                val lp = LinearLayout.LayoutParams(dp(44), BAR_H); lp.setMargins(dp(2), 0, dp(2), 0); layoutParams = lp
+                background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(11).toFloat() }
+            }
+            btn.setOnClickListener { v ->
+                val popup = android.widget.PopupWindow(this)
+                val pLayout = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat() }
+                }
+                // Editable custom-value box at the top
+                val customRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(14), dp(12), dp(14), dp(8)) }
+                val customEdit = android.widget.EditText(this).apply {
+                    hint = "Custom pt"; inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+                    setText((currentSizePx / PT_TO_PX).let { if (it == it.toInt().toFloat()) it.toInt().toString() else it.toString() })
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                val setBtn = TextView(this).apply {
+                    text = "Set"; setTextColor(Color.parseColor("#1565C0")); setPadding(dp(12), dp(6), dp(4), dp(6))
+                    setOnClickListener {
+                        val pts = customEdit.text.toString().toFloatOrNull()
+                        if (pts != null && pts > 0f) { onChange((pts * PT_TO_PX).coerceIn(4f, 1000f)); btn.text = pts.let { if (it == it.toInt().toFloat()) it.toInt().toString() else it.toString() }; popup.dismiss() }
+                    }
+                }
+                customRow.addView(customEdit); customRow.addView(setBtn)
+                pLayout.addView(customRow)
+                pLayout.addView(View(this).apply { setBackgroundColor(Color.parseColor("#E5E1DC")); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)) })
+                // Scrollable list of standard sizes — at least 30 entries, matching the familiar
+                // reference points from MS Word's own font-size dropdown.
+                val scroll = android.widget.ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(140), dp(280)) }
+                val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                val currentPts = currentSizePx / PT_TO_PX
+                for (pt in standardPoints) {
+                    list.addView(TextView(this).apply {
+                        text = if (pt == pt.toInt().toFloat()) pt.toInt().toString() else pt.toString()
+                        textSize = 16f; setPadding(dp(16), dp(10), dp(16), dp(10))
+                        if (kotlin.math.abs(pt - currentPts) < 0.01f) { setBackgroundColor(Color.parseColor("#E3EEFB")); setTextColor(Color.parseColor("#1565C0")) } else setTextColor(Color.parseColor("#1C1C1E"))
+                        setOnClickListener { onChange(pt * PT_TO_PX); btn.text = if (pt == pt.toInt().toFloat()) pt.toInt().toString() else pt.toString(); popup.dismiss() }
+                    })
+                }
+                scroll.addView(list); pLayout.addView(scroll)
+                popup.contentView = pLayout; popup.width = dp(180); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+                popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
+                popup.showAsDropDown(v, -dp(60), -dp(90))
+            }
+            row.addView(btn)
+        }
+
         fun opacityButton(currentOpacity: Int, onChange: (Int) -> Unit) {
             var currentVal = currentOpacity
             val btn = object : android.view.View(this) {
@@ -1662,7 +1726,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 })
                 divider()
-                sizeButton(editSize, 120) { v -> editSize = v; activeEditText?.textSize = v / resources.displayMetrics.density; textSelectionItem?.let { it.size = v; drawingView.invalidate() } }
+                textSizeButton(editSize) { v -> editSize = v; activeEditText?.textSize = v / resources.displayMetrics.density; textSelectionItem?.let { it.size = v; drawingView.invalidate() } }
                 opacityButton(editOpacity) { v -> editOpacity = v; activeEditText?.alpha = v / 255f; textSelectionItem?.let { it.opacity = v; drawingView.invalidate() } }
                 divider()
                 eightColors(editColor) { c -> editColor = c; activeEditText?.setTextColor(c); textSelectionItem?.let { it.color = c; drawingView.invalidate() } }
@@ -4570,7 +4634,8 @@ class MainActivity : AppCompatActivity() {
         }
         var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
         var dragStartWorldX2 = 0f; var dragStartWorldY2 = 0f
-        var isDraggingRotate = false; var rotStartRawX2 = 0f; var rotStartRotation2 = 0f
+        var isDraggingRotate = false; var rotStartRotation2 = 0f
+        var rotPivotScreenX = 0f; var rotPivotScreenY = 0f; var rotStartAngleDeg = 0f
         var frozenMaxWidth: Float? = null // holds item.maxWidth's original value while a move-drag has it pinned
         // Tracks exactly which finger started the current drag. ev.rawX/rawY (used throughout
         // below) always resolve to pointer INDEX 0 — if a second finger incidentally touches the
@@ -4660,7 +4725,11 @@ class MainActivity : AppCompatActivity() {
                     val (rawX, rawY) = rawXYForPointer(ev, activePointerId) ?: (ev.rawX to ev.rawY)
                     val dist = kotlin.math.hypot((rawX - rotateHandleScreenCx).toDouble(), (rawY - rotateHandleScreenCy).toDouble()).toFloat()
                     if (dist < dp(56)) {
-                        isDraggingRotate = true; rotStartRawX2 = rawX; rotStartRotation2 = item.rotation
+                        isDraggingRotate = true
+                        rotPivotScreenX = drawingView.worldToScreenX(item.x) + boxW / 2f
+                        rotPivotScreenY = drawingView.worldToScreenY(item.y) - boxH / 2f
+                        rotStartAngleDeg = Math.toDegrees(kotlin.math.atan2((rawY - rotPivotScreenY).toDouble(), (rawX - rotPivotScreenX).toDouble())).toFloat()
+                        rotStartRotation2 = item.rotation
                     } else {
                         isDraggingRotate = false
                         moveStartRawX = rawX; moveStartRawY = rawY
@@ -4692,7 +4761,14 @@ class MainActivity : AppCompatActivity() {
                 android.view.MotionEvent.ACTION_MOVE -> {
                     val (rawX, rawY) = rawXYForPointer(ev, activePointerId) ?: return@setOnTouchListener true
                     if (isDraggingRotate) {
-                        item.rotation = rotStartRotation2 - (rawX - rotStartRawX2) * 0.5f
+                        // True angle-around-pivot rotation: the angle FROM the item's center TO
+                        // the finger, compared between drag-start and now. This is what makes 1°
+                        // of actual finger arc always equal 1° of rotation, regardless of the
+                        // radius you happen to be grabbing at — the old version scaled a raw
+                        // horizontal pixel delta by a fixed constant, which had no relationship
+                        // to the real angle swept and made rotation wildly over-sensitive.
+                        val currentAngleDeg = Math.toDegrees(kotlin.math.atan2((rawY - rotPivotScreenY).toDouble(), (rawX - rotPivotScreenX).toDouble())).toFloat()
+                        item.rotation = rotStartRotation2 + (currentAngleDeg - rotStartAngleDeg)
                         drawingView.invalidate()
                     } else {
                         // Drag delta is computed in WORLD units (screen px / scaleFactor), and
@@ -4839,7 +4915,13 @@ class MainActivity : AppCompatActivity() {
             // layout below — and stored in rotateHandleScreenCx/Cy, the SAME values the
             // ACTION_DOWN hit-test reads, so the touchable zone can never drift from the visible
             // handle regardless of how tall/far-off-screen the item's true position is.
-            val rsx = drawingView.worldToScreenX(item.x); val rsy = drawingView.worldToScreenY(item.y) - dp(90)
+            // Anchored to the box's actual TOP edge (not a fixed 90dp above the BOTTOM, which
+            // drifted further from "on top of the box" the taller the item was) and centered
+            // horizontally over its width (not left-aligned to item.x, which is why it always
+            // looked offset to the left rather than sitting squarely above the text). Still
+            // clamped to stay on-screen/reachable for a tall item scrolled partly off-view.
+            val rsx = drawingView.worldToScreenX(item.x) + boxW / 2f
+            val rsy = (drawingView.worldToScreenY(item.y) - boxH) - dp(40)
             val rlp = rotateHandle.layoutParams as FrameLayout.LayoutParams
             rlp.leftMargin = (rsx - dp(20)).toInt().coerceIn(0, canvasContainer.width - dp(40))
             rlp.topMargin = (rsy - dp(20)).toInt().coerceIn(0, maxTop)
