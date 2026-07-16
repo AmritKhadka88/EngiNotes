@@ -1575,7 +1575,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is AudioItem -> drawAudioItem(canvas, action)
             is FillItem -> {
                 if (!includeFills) return
-                if (action.hatchPattern != null) {
+                if (action.hatchPattern != null || action.customHatchPath != null) {
                     drawHatchPattern(canvas, action); return
                 }
                 val bmp = getOrLoadFillBitmap(action) ?: return
