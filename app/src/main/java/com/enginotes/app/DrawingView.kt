@@ -5464,11 +5464,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val newSegs = mutableListOf<MutableList<Float>>()
                     newSegs.addAll(segs.subList(1, segs.size - 1))
                     newSegs.add(merged)
-                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType); StrokeItem(d, d.buildPath(), d.toPaint()) }
+                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline); StrokeItem(d, d.buildPath(), d.toPaint()) }
                 }
             }
         }
-        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType); StrokeItem(d, d.buildPath(), d.toPaint()) }
+        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline); StrokeItem(d, d.buildPath(), d.toPaint()) }
     }
 
     // Finds ALL points (as sorted t-values in [0,1]) where a segment crosses the eraser circle
@@ -6195,7 +6195,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             }
                             if (segPts.size >= 4) {
                                 val d = StrokeData(Tool.PEN, segPts, data.color, data.strokeWidth, false,
-                                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity)
+                                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true)
                                 result.add(StrokeItem(d, d.buildPath(), d.toPaint()))
                             }
                         }
@@ -6214,7 +6214,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 for ((vx, vy) in verts) { plinePts.add(vx); plinePts.add(vy) }
                 if (closed && verts.isNotEmpty()) { plinePts.add(verts[0].first); plinePts.add(verts[0].second) }
                 val d = StrokeData(Tool.PEN, plinePts, data.color, data.strokeWidth, false,
-                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity)
+                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true)
                 listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
             }
         }
