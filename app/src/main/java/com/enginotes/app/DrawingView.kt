@@ -3419,7 +3419,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // overlay box's own touch handling.
                 if (item is TextItem) { if (!handled) { activeHandle = HandleType.NONE; selectedItem = findItemAt(wx, wy) }; invalidate(); return }
                 if (item != null) {
-                    val b = getBounds(item)
+                    val b = getBoundsRaw(item)
                     if (b != null) {
                         val rot = getRotation(item); val (px, py) = getPivot(item, b)
                         val (lx, ly) = rotatePoint(wx, wy, px, py, -rot)
