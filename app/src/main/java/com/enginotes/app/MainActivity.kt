@@ -4665,6 +4665,17 @@ class MainActivity : AppCompatActivity() {
         return Pair(boxW, boxH)
     }
 
+    // Angle (in degrees) from a pivot point to a touch point, screen-space. Shared by every
+    // "drag around a pivot to rotate" gesture in this file (committed-item rotate handle,
+    // active-editor rotate handle) — these used to each have their own hand-copied atan2/
+    // toDegrees calculation. That duplication is exactly how the rotation bugs earlier in this
+    // app's life kept surviving being "fixed": a correction applied to one copy silently never
+    // reached the other, and it'd resurface a few sessions later looking like a brand new bug.
+    // Rotating a box around its own center is always the SAME math regardless of which box it
+    // is, so it only needs to exist once.
+    private fun angleDegrees(pivotX: Float, pivotY: Float, touchX: Float, touchY: Float): Float =
+        Math.toDegrees(kotlin.math.atan2((touchY - pivotY).toDouble(), (touchX - pivotX).toDouble())).toFloat()
+
     private fun showTextSelectionBox(item: TextItem, screenX: Float, screenY: Float, initialRawX: Float = -1f, initialRawY: Float = -1f) {
         if (textSelectionItem === item) return
         dismissTextSelectionBox()
@@ -4725,16 +4736,6 @@ class MainActivity : AppCompatActivity() {
             } else null
         }
 
-        // The rotate hit-zone in ACTION_DOWN below must test against the SAME (clamped) screen
-        // position the visible green dot actually renders at, updated by updateToolbarPos() —
-        // never recomputed independently there. Previously it re-derived an unclamped position
-        // (worldToScreenY(item.y) - dp(90)), which for a tall multi-page item can land far from
-        // where the on-screen-clamped dot actually is: an invisible "rotate zone" floating
-        // somewhere the user can't see, sometimes landing right where they'd naturally grab to
-        // drag the item — flipping an intended move into an unwanted (and, for a mostly-vertical
-        // drag, nearly invisible) rotation instead, which looked like the drag had simply stopped.
-        var rotateHandleScreenCx = 0f; var rotateHandleScreenCy = 0f
-
         // Hoisted above the touch listener (was previously defined after moveSurface/toolbar/
         // rotateHandle setup, and only ever invoked once at setup + on canvas pan/zoom) so that
         // ACTION_MOVE below can call it on every drag frame — otherwise the toolbar and rotate
@@ -4794,33 +4795,28 @@ class MainActivity : AppCompatActivity() {
                 android.view.MotionEvent.ACTION_DOWN -> {
                     activePointerId = ev.getPointerId(0)
                     val (rawX, rawY) = rawXYForPointer(ev, activePointerId) ?: (ev.rawX to ev.rawY)
-                    val dist = kotlin.math.hypot((rawX - rotateHandleScreenCx).toDouble(), (rawY - rotateHandleScreenCy).toDouble()).toFloat()
-                    if (dist < dp(56)) {
-                        isDraggingRotate = true
-                        rotPivotScreenX = drawingView.worldToScreenX(item.x) + boxW / 2f
-                        rotPivotScreenY = drawingView.worldToScreenY(item.y) - boxH / 2f
-                        rotStartAngleDeg = Math.toDegrees(kotlin.math.atan2((rawY - rotPivotScreenY).toDouble(), (rawX - rotPivotScreenX).toDouble())).toFloat()
-                        rotStartRotation2 = item.rotation
-                    } else {
-                        isDraggingRotate = false
-                        moveStartRawX = rawX; moveStartRawY = rawY
-                        val lp = moveSurface.layoutParams as FrameLayout.LayoutParams
-                        moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
-                        dragStartWorldX2 = item.x; dragStartWorldY2 = item.y
-                        drawingView.draggingTextItem = item // suppress page-split rendering for this item until the drag ends
-                        // Freeze the actual word-wrap width too — not just which page a line
-                        // renders on. In Convenient/Paginated mode, an item without an explicit
-                        // maxWidth wraps at (pageWidth - item.x), which is a moving target during
-                        // a drag: every tiny change in item.x re-flows the text, and since height
-                        // depends on how many lines that produces, the total height — and
-                        // therefore the derived top position — swings with it, independent of
-                        // the actual finger motion. That's the real cause of the shaking. Pinning
-                        // maxWidth to whatever it currently evaluates to makes the layout fully
-                        // stable for the whole drag; restoring it on release lets exactly one
-                        // clean re-wrap happen at the final settled position.
-                        frozenMaxWidth = item.maxWidth
-                        item.maxWidth = drawingView.textWrapWidth(item).toFloat()
-                    }
+                    // Rotation is handled entirely by rotateHandle's own dedicated listener now
+                    // (see below) — it owns whatever bounds it's actually drawn in, so there's
+                    // no need to guess here whether a touch was "close to the dot." This is
+                    // always a move-drag start.
+                    isDraggingRotate = false
+                    moveStartRawX = rawX; moveStartRawY = rawY
+                    val lp = moveSurface.layoutParams as FrameLayout.LayoutParams
+                    moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
+                    dragStartWorldX2 = item.x; dragStartWorldY2 = item.y
+                    drawingView.draggingTextItem = item // suppress page-split rendering for this item until the drag ends
+                    // Freeze the actual word-wrap width too — not just which page a line
+                    // renders on. In Convenient/Paginated mode, an item without an explicit
+                    // maxWidth wraps at (pageWidth - item.x), which is a moving target during
+                    // a drag: every tiny change in item.x re-flows the text, and since height
+                    // depends on how many lines that produces, the total height — and
+                    // therefore the derived top position — swings with it, independent of
+                    // the actual finger motion. That's the real cause of the shaking. Pinning
+                    // maxWidth to whatever it currently evaluates to makes the layout fully
+                    // stable for the whole drag; restoring it on release lets exactly one
+                    // clean re-wrap happen at the final settled position.
+                    frozenMaxWidth = item.maxWidth
+                    item.maxWidth = drawingView.textWrapWidth(item).toFloat()
                     true // ALWAYS true — never drop the touch sequence
                 }
                 android.view.MotionEvent.ACTION_POINTER_DOWN -> {
@@ -4831,39 +4827,27 @@ class MainActivity : AppCompatActivity() {
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
                     val (rawX, rawY) = rawXYForPointer(ev, activePointerId) ?: return@setOnTouchListener true
-                    if (isDraggingRotate) {
-                        // True angle-around-pivot rotation: the angle FROM the item's center TO
-                        // the finger, compared between drag-start and now. This is what makes 1°
-                        // of actual finger arc always equal 1° of rotation, regardless of the
-                        // radius you happen to be grabbing at — the old version scaled a raw
-                        // horizontal pixel delta by a fixed constant, which had no relationship
-                        // to the real angle swept and made rotation wildly over-sensitive.
-                        val currentAngleDeg = Math.toDegrees(kotlin.math.atan2((rawY - rotPivotScreenY).toDouble(), (rawX - rotPivotScreenX).toDouble())).toFloat()
-                        item.rotation = rotStartRotation2 + (currentAngleDeg - rotStartAngleDeg)
-                        drawingView.invalidate()
-                    } else {
-                        // Drag delta is computed in WORLD units (screen px / scaleFactor), and
-                        // item.x/item.y are the single source of truth for position — screen
-                        // margins are re-derived FROM them every frame, never the other way
-                        // around. No floor/ceiling clamp here: the item must be draggable to any
-                        // world position, including off the visible screen (pan/zoom to reach it
-                        // again) — same "infinite canvas" model already used elsewhere for panning.
-                        // A hard coerceAtLeast(0) here previously made anything taller/wider than
-                        // the screen unmovable once its top-left hit the screen edge.
-                        val scale = drawingView.getScaleFactor()
-                        val dxWorld = (rawX - moveStartRawX) / scale
-                        val dyWorld = (rawY - moveStartRawY) / scale
-                        item.x = dragStartWorldX2 + dxWorld
-                        item.y = dragStartWorldY2 + dyWorld
+                    // Drag delta is computed in WORLD units (screen px / scaleFactor), and
+                    // item.x/item.y are the single source of truth for position — screen
+                    // margins are re-derived FROM them every frame, never the other way
+                    // around. No floor/ceiling clamp here: the item must be draggable to any
+                    // world position, including off the visible screen (pan/zoom to reach it
+                    // again) — same "infinite canvas" model already used elsewhere for panning.
+                    // A hard coerceAtLeast(0) here previously made anything taller/wider than
+                    // the screen unmovable once its top-left hit the screen edge.
+                    val scale = drawingView.getScaleFactor()
+                    val dxWorld = (rawX - moveStartRawX) / scale
+                    val dyWorld = (rawY - moveStartRawY) / scale
+                    item.x = dragStartWorldX2 + dxWorld
+                    item.y = dragStartWorldY2 + dyWorld
 
-                        val lp = moveSurface.layoutParams as FrameLayout.LayoutParams
-                        lp.leftMargin = drawingView.worldToScreenX(item.x).toInt()
-                        lp.topMargin = (drawingView.worldToScreenY(item.y) - boxH).toInt()
-                        moveSurface.layoutParams = lp
+                    val lp = moveSurface.layoutParams as FrameLayout.LayoutParams
+                    lp.leftMargin = drawingView.worldToScreenX(item.x).toInt()
+                    lp.topMargin = (drawingView.worldToScreenY(item.y) - boxH).toInt()
+                    moveSurface.layoutParams = lp
 
-                        drawingView.invalidate()
-                        updateToolbarPos() // keep toolbar + rotate handle glued to the item mid-drag
-                    }
+                    drawingView.invalidate()
+                    updateToolbarPos() // keep toolbar + rotate handle glued to the item mid-drag
                     true
                 }
                 android.view.MotionEvent.ACTION_POINTER_UP -> {
@@ -4920,12 +4904,12 @@ class MainActivity : AppCompatActivity() {
                 android.view.MotionEvent.ACTION_DOWN -> {
                     rotPivotScreenX = drawingView.worldToScreenX(item.x) + boxW / 2f
                     rotPivotScreenY = drawingView.worldToScreenY(item.y) - boxH / 2f
-                    rotStartAngleDeg = Math.toDegrees(kotlin.math.atan2((ev.rawY - rotPivotScreenY).toDouble(), (ev.rawX - rotPivotScreenX).toDouble())).toFloat()
+                    rotStartAngleDeg = angleDegrees(rotPivotScreenX, rotPivotScreenY, ev.rawX, ev.rawY)
                     rotStartRotation2 = item.rotation
                     true
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
-                    val currentAngleDeg = Math.toDegrees(kotlin.math.atan2((ev.rawY - rotPivotScreenY).toDouble(), (ev.rawX - rotPivotScreenX).toDouble())).toFloat()
+                    val currentAngleDeg = angleDegrees(rotPivotScreenX, rotPivotScreenY, ev.rawX, ev.rawY)
                     item.rotation = rotStartRotation2 + (currentAngleDeg - rotStartAngleDeg)
                     drawingView.invalidate()
                     true
@@ -5008,23 +4992,20 @@ class MainActivity : AppCompatActivity() {
             moveSurface.layoutParams = mlp
             // toolbar is now a fixed bottom bar (see its own LayoutParams, gravity BOTTOM) — it
             // no longer tracks item.x/item.y at all, unlike moveSurface and rotateHandle below.
-            // Anchor math (dp(90) above item.x/item.y) then clamped exactly like the dot's own
-            // layout below — and stored in rotateHandleScreenCx/Cy, the SAME values the
-            // ACTION_DOWN hit-test reads, so the touchable zone can never drift from the visible
-            // handle regardless of how tall/far-off-screen the item's true position is.
             // Anchored to the box's actual TOP edge (not a fixed 90dp above the BOTTOM, which
             // drifted further from "on top of the box" the taller the item was) and centered
             // horizontally over its width (not left-aligned to item.x, which is why it always
             // looked offset to the left rather than sitting squarely above the text). Still
             // clamped to stay on-screen/reachable for a tall item scrolled partly off-view.
+            // rotateHandle owns its own touch bounds directly now (its own dedicated listener,
+            // not a distance check against some other view), so there's no separate "hit zone
+            // center" to keep in sync here anymore — just its visible position.
             val rsx = drawingView.worldToScreenX(item.x) + boxW / 2f
             val rsy = (drawingView.worldToScreenY(item.y) - boxH) - dp(40)
             val rlp = rotateHandle.layoutParams as FrameLayout.LayoutParams
             rlp.leftMargin = (rsx - dp(20)).toInt().coerceIn(0, canvasContainer.width - dp(40))
             rlp.topMargin = (rsy - dp(20)).toInt().coerceIn(0, maxTop)
             rotateHandle.layoutParams = rlp
-            rotateHandleScreenCx = rlp.leftMargin + dp(20).toFloat()
-            rotateHandleScreenCy = rlp.topMargin + dp(20).toFloat()
         }
         updateToolbarPos()
         drawingView.onCanvasTransformed = { updateToolbarPos() }
@@ -5231,17 +5212,14 @@ class MainActivity : AppCompatActivity() {
                     val loc = IntArray(2); boxContainer.getLocationOnScreen(loc)
                     rotPivotXEdit = loc[0] + boxContainer.width / 2f
                     rotPivotYEdit = loc[1] + boxContainer.height / 2f
-                    rotateStartAngleDeg = Math.toDegrees(kotlin.math.atan2((ev.rawY - rotPivotYEdit).toDouble(), (ev.rawX - rotPivotXEdit).toDouble())).toFloat()
+                    rotateStartAngleDeg = angleDegrees(rotPivotXEdit, rotPivotYEdit, ev.rawX, ev.rawY)
                     rotateStartRotation = editRotation
                     true
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
-                    // True angle-around-pivot rotation — matches the fix already applied to the
-                    // committed-item rotate handle. The old version scaled raw horizontal pixel
-                    // movement by a fixed 0.5, which has no relationship to the actual angle your
-                    // finger sweeps around the box, and made rotation wildly over-sensitive
-                    // (e.g. 30° of real finger movement producing far more than 30° of rotation).
-                    val currentAngleDeg = Math.toDegrees(kotlin.math.atan2((ev.rawY - rotPivotYEdit).toDouble(), (ev.rawX - rotPivotXEdit).toDouble())).toFloat()
+                    // True angle-around-pivot rotation — matches the committed-item rotate
+                    // handle exactly, since both now call the same shared angleDegrees() helper.
+                    val currentAngleDeg = angleDegrees(rotPivotXEdit, rotPivotYEdit, ev.rawX, ev.rawY)
                     editRotation = rotateStartRotation + (currentAngleDeg - rotateStartAngleDeg)
                     if (!useActualSize) { boxContainer.rotation = editRotation }
                     true

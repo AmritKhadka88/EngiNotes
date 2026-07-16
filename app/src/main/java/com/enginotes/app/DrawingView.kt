@@ -2912,38 +2912,27 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 floatArrayOf(item.x, item.y - h, item.x + w, item.y)
             }
             is StrokeItem -> {
-                val pts = item.data.points; if (pts.size < 2) return null
-                if (item.data.type == Tool.CIRCLE && pts.size >= 4) {
-                    val r = kotlin.math.hypot((pts[2] - pts[0]).toDouble(), (pts[3] - pts[1]).toDouble()).toFloat()
-                    floatArrayOf(pts[0] - r, pts[1] - r, pts[0] + r, pts[1] + r)
-                } else if (SHAPE_TOOLS.contains(item.data.type) && pts.size == 4) {
-                    // 2-point shapes (LINE, RECT, CIRCLE, TRIANGLE etc.) — fast path
-                    floatArrayOf(minOf(pts[0], pts[2]), minOf(pts[1], pts[3]), maxOf(pts[0], pts[2]), maxOf(pts[1], pts[3]))
-                } else {
-                    var minX = pts[0]; var maxX = pts[0]; var minY = pts[1]; var maxY = pts[1]; var i = 0
-                    while (i + 1 < pts.size) {
-                        minX = minOf(minX, pts[i]); maxX = maxOf(maxX, pts[i])
-                        minY = minOf(minY, pts[i + 1]); maxY = maxOf(maxY, pts[i + 1]); i += 2
-                    }
-                    if (item.data.type == Tool.BRUSH && item.data.brushStyle in setOf(BrushStyle.SPRAY, BrushStyle.FIRE, BrushStyle.GRASS)) {
-                        val pad = item.data.strokeWidth * 2.5f
-                        minX -= pad; maxX += pad; minY -= pad; maxY += pad
-                    }
-                    floatArrayOf(minX, minY, maxX, maxY)
-                }.let { b ->
-                    // If item has a rotation angle, expand to axis-aligned bbox of the ROTATED shape
-                    val rot = item.data.rotation
-                    if (rot == 0f || b == null) b
-                    else {
-                        val cx = (b[0]+b[2])/2f; val cy = (b[1]+b[3])/2f
-                        val rad = Math.toRadians(rot.toDouble())
-                        val cos = kotlin.math.abs(kotlin.math.cos(rad)).toFloat()
-                        val sin = kotlin.math.abs(kotlin.math.sin(rad)).toFloat()
-                        val hw = (b[2]-b[0])/2f; val hh = (b[3]-b[1])/2f
-                        // Rotated AABB half-extents
-                        val newHw = hw*cos + hh*sin; val newHh = hw*sin + hh*cos
-                        floatArrayOf(cx-newHw, cy-newHh, cx+newHw, cy+newHh)
-                    }
+                // Tight/unrotated bounds now come from getBoundsRaw — previously this exact
+                // computation (2-point fast path, circle radius, point-scan, brush padding) was
+                // written out a second time here, and the two copies had quietly drifted apart:
+                // this one applied extra padding for Spray/Fire/Grass brush strokes, the other
+                // didn't. Since hit-testing and rotation pivots use getBoundsRaw specifically
+                // (to match what's actually rendered), that padding was silently missing from
+                // anywhere that used getBoundsRaw's answer instead of getBounds's. One shared
+                // computation means the two can't disagree with each other anymore.
+                val b = getBoundsRaw(item) ?: return null
+                // If item has a rotation angle, expand to axis-aligned bbox of the ROTATED shape
+                val rot = item.data.rotation
+                if (rot == 0f) b
+                else {
+                    val cx = (b[0]+b[2])/2f; val cy = (b[1]+b[3])/2f
+                    val rad = Math.toRadians(rot.toDouble())
+                    val cos = kotlin.math.abs(kotlin.math.cos(rad)).toFloat()
+                    val sin = kotlin.math.abs(kotlin.math.sin(rad)).toFloat()
+                    val hw = (b[2]-b[0])/2f; val hh = (b[3]-b[1])/2f
+                    // Rotated AABB half-extents
+                    val newHw = hw*cos + hh*sin; val newHh = hw*sin + hh*cos
+                    floatArrayOf(cx-newHw, cy-newHh, cx+newHw, cy+newHh)
                 }
             }
             is DimensionItem -> {
@@ -3956,11 +3945,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     // Raw (unrotated) bbox — used for rendering selection handles and computing pivot points.
     // data.rotation is NOT factored in; the caller applies canvas.rotate() for visual orientation.
+    // The single source of truth for a StrokeItem's tight, UNROTATED bounding box — the item's
+    // true visual extent in its own local (pre-rotation) coordinate frame. getBounds() builds on
+    // top of this by additionally expanding for rotation when the item has one; anything that
+    // needs the tight box directly (hit-testing, rotation pivot math) calls this instead.
     private fun getBoundsRaw(item: Any): FloatArray? {
         return when (item) {
             is StrokeItem -> {
                 val pts = item.data.points; if (pts.size < 2) return null
-                if (item.data.type == Tool.CIRCLE && pts.size >= 4) {
+                val b = if (item.data.type == Tool.CIRCLE && pts.size >= 4) {
                     val r = kotlin.math.hypot((pts[2]-pts[0]).toDouble(),(pts[3]-pts[1]).toDouble()).toFloat()
                     floatArrayOf(pts[0]-r, pts[1]-r, pts[0]+r, pts[1]+r)
                 } else if (SHAPE_TOOLS.contains(item.data.type) && pts.size == 4) {
@@ -3970,6 +3963,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     while (i+1<pts.size) { mnX=minOf(mnX,pts[i]); mxX=maxOf(mxX,pts[i]); mnY=minOf(mnY,pts[i+1]); mxY=maxOf(mxY,pts[i+1]); i+=2 }
                     floatArrayOf(mnX, mnY, mxX, mxY)
                 }
+                // Spray/Fire/Grass brush strokes render a soft cloud of particles well outside
+                // the literal path points — pad the bounds to actually contain them. This used to
+                // only happen in getBounds()'s own separate copy of this computation, not here,
+                // so anything reading getBoundsRaw directly for these three brush styles got a
+                // box that didn't match what was actually drawn.
+                if (item.data.type == Tool.BRUSH && item.data.brushStyle in setOf(BrushStyle.SPRAY, BrushStyle.FIRE, BrushStyle.GRASS)) {
+                    val pad = item.data.strokeWidth * 2.5f
+                    floatArrayOf(b[0]-pad, b[1]-pad, b[2]+pad, b[3]+pad)
+                } else b
             }
             else -> getBounds(item)  // non-stroke items don't have separate raw bounds
         }
