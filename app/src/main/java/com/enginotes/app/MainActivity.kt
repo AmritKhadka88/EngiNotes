@@ -4701,6 +4701,17 @@ class MainActivity : AppCompatActivity() {
                 frozenMaxWidth?.let { item.maxWidth = it }
             }
             frozenMaxWidth = null
+            // boxW/boxH were captured ONCE when this item was first selected and never touched
+            // again — so once maxWidth (and therefore the text's true rendered width/height)
+            // changed here, the highlighted selection box stayed the OLD size while the actual
+            // text underneath it was now a different size, visibly mismatched. Recomputing both
+            // and resizing the actual moveSurface view keeps the highlight glued to reality.
+            val (newBoxW, newBoxH) = measureTextBoxSize(item, screenSizePx)
+            boxW = newBoxW; boxH = newBoxH
+            val slp = moveSurface.layoutParams as FrameLayout.LayoutParams
+            slp.width = boxW; slp.height = boxH
+            moveSurface.layoutParams = slp
+            updateToolbarPos() // re-derive position from the refreshed boxH too
             drawingView.invalidate()
         }
         moveSurface.setOnTouchListener { _, ev ->
@@ -4830,6 +4841,32 @@ class MainActivity : AppCompatActivity() {
             }
             elevation = dp(4).toFloat()
         })
+        // Own touch listener, not routed through moveSurface's dist-check anymore. That worked
+        // only by coincidence, back when the dot sat low enough to still fall inside
+        // moveSurface's own rectangle (which spans exactly the text's own footprint) — once the
+        // dot was moved to sit clearly ABOVE the box (so it visually reads as "on top of the
+        // text", per an earlier fix), it moved outside moveSurface's bounds entirely, and Android
+        // simply never delivered those touches to moveSurface's listener at all. Rotation
+        // silently stopped working. A dedicated listener on the handle itself can't have that
+        // problem, since it owns whatever bounds it's actually drawn in.
+        rotateHandle.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    rotPivotScreenX = drawingView.worldToScreenX(item.x) + boxW / 2f
+                    rotPivotScreenY = drawingView.worldToScreenY(item.y) - boxH / 2f
+                    rotStartAngleDeg = Math.toDegrees(kotlin.math.atan2((ev.rawY - rotPivotScreenY).toDouble(), (ev.rawX - rotPivotScreenX).toDouble())).toFloat()
+                    rotStartRotation2 = item.rotation
+                    true
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val currentAngleDeg = Math.toDegrees(kotlin.math.atan2((ev.rawY - rotPivotScreenY).toDouble(), (ev.rawX - rotPivotScreenX).toDouble())).toFloat()
+                    item.rotation = rotStartRotation2 + (currentAngleDeg - rotStartAngleDeg)
+                    drawingView.invalidate()
+                    true
+                }
+                else -> true
+            }
+        }
         rotateHandle.isClickable = false // purely visual - moveSurface's own touch listener already covers this exact spot
         canvasContainer.addView(rotateHandle)
 
@@ -4981,7 +5018,16 @@ class MainActivity : AppCompatActivity() {
         // height, floating handles with no on-screen clamp) have since been fixed directly, so
         // this cap wasn't buying anything anymore except a worse editing experience.
         et.typeface = typefaceFromFamily(pendingFontFamily)
-        if(!useActualSize) et.rotation=editRotation
+        // Rotation lives on boxContainer alone now, not on both et AND boxContainer
+        // independently. et is a CHILD of boxContainer, so rotating the parent already rotates
+        // everything inside it (the text, any future border/background) as one unit — setting
+        // et's own rotation on top of that compounded the two together: et carried its own
+        // fixed tilt from here, while boxContainer's tilt kept changing live during a drag,
+        // and the two combined into something that rotated faster than intended, in a
+        // direction that didn't track the finger, with the text appearing to move independently
+        // of "the box." One rotation value, applied once at setup and kept in sync during drag
+        // (see the rotate handle's touch listener below), removes the compounding entirely.
+        if (!useActualSize) boxContainer.rotation = editRotation
         et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } } }; override fun afterTextChanged(s:Editable?){
             // Android moves the cursor to the end of any inserted text (a paste is one big
             // insert) and auto-scrolls EditText's OWN internal viewport to keep that cursor
@@ -5107,13 +5153,30 @@ class MainActivity : AppCompatActivity() {
             layoutParams = FrameLayout.LayoutParams(dp(16), dp(16)).also { it.gravity = Gravity.CENTER }
             background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.parseColor("#4CAF50")); setStroke(dp(2), Color.WHITE) }
         })
-        var rotateStartRawX = 0f; var rotateStartRawY = 0f; var rotateStartRotation = 0f
+        var rotPivotXEdit = 0f; var rotPivotYEdit = 0f; var rotateStartAngleDeg = 0f; var rotateStartRotation = 0f
         rotateHandle.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
-                android.view.MotionEvent.ACTION_DOWN -> { rotateStartRawX = ev.rawX; rotateStartRawY = ev.rawY; rotateStartRotation = editRotation; true }
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    // Pivot = boxContainer's actual on-screen center. Captured once here (not
+                    // per-frame), so there's no risk of the feedback-loop issue that came from
+                    // reading a view's live position while ALSO repositioning it in response to
+                    // the same touch (relevant for dragging, not for rotating — position doesn't
+                    // change during a pure rotation, only editRotation does).
+                    val loc = IntArray(2); boxContainer.getLocationOnScreen(loc)
+                    rotPivotXEdit = loc[0] + boxContainer.width / 2f
+                    rotPivotYEdit = loc[1] + boxContainer.height / 2f
+                    rotateStartAngleDeg = Math.toDegrees(kotlin.math.atan2((ev.rawY - rotPivotYEdit).toDouble(), (ev.rawX - rotPivotXEdit).toDouble())).toFloat()
+                    rotateStartRotation = editRotation
+                    true
+                }
                 android.view.MotionEvent.ACTION_MOVE -> {
-                    val dx = ev.rawX - rotateStartRawX
-                    editRotation = rotateStartRotation + dx * 0.5f
+                    // True angle-around-pivot rotation — matches the fix already applied to the
+                    // committed-item rotate handle. The old version scaled raw horizontal pixel
+                    // movement by a fixed 0.5, which has no relationship to the actual angle your
+                    // finger sweeps around the box, and made rotation wildly over-sensitive
+                    // (e.g. 30° of real finger movement producing far more than 30° of rotation).
+                    val currentAngleDeg = Math.toDegrees(kotlin.math.atan2((ev.rawY - rotPivotYEdit).toDouble(), (ev.rawX - rotPivotXEdit).toDouble())).toFloat()
+                    editRotation = rotateStartRotation + (currentAngleDeg - rotateStartAngleDeg)
                     if (!useActualSize) { boxContainer.rotation = editRotation }
                     true
                 }
