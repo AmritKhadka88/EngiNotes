@@ -1666,6 +1666,46 @@ class MainActivity : AppCompatActivity() {
                 opacityButton(editOpacity) { v -> editOpacity = v; activeEditText?.alpha = v / 255f; textSelectionItem?.let { it.opacity = v; drawingView.invalidate() } }
                 divider()
                 eightColors(editColor) { c -> editColor = c; activeEditText?.setTextColor(c); textSelectionItem?.let { it.color = c; drawingView.invalidate() } }
+                divider()
+                // B / I / U / Delete / Confirm — appended to this SAME shared context bar rather
+                // than a separate floating one, since this is the bar that's actually always
+                // visible and reachable while the Text tool is active, whether you're currently
+                // typing (activeEditText != null) or have tapped a committed item to select/move
+                // it (textSelectionItem != null, no live cursor). For the latter case there's no
+                // selection to apply formatting to, so B/I/U toggle the whole item's text at once.
+                fun ctxTextBtn(iconRes: Int, action: () -> Unit) {
+                    row.addView(ImageView(this).apply {
+                        setImageResource(iconRes); scaleType = ImageView.ScaleType.CENTER_INSIDE
+                        val lp = LinearLayout.LayoutParams(dp(34), dp(34)); lp.setMargins(dp(3), 0, dp(3), 0); layoutParams = lp
+                        setPadding(dp(6), dp(6), dp(6), dp(6))
+                        background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(8).toFloat() }
+                        setColorFilter(Color.parseColor("#4A4A4A"))
+                        setOnClickListener { action() }
+                    })
+                }
+                ctxTextBtn(R.drawable.ic_text_bold) {
+                    val et = activeEditText
+                    if (et != null) { if (et.selectionStart != et.selectionEnd) toggleStyleOnSelection(et, Typeface.BOLD) else pendingBold = !pendingBold }
+                    else textSelectionItem?.let { toggleFullItemSpan(it, 'S', Typeface.BOLD); drawingView.invalidate() }
+                }
+                ctxTextBtn(R.drawable.ic_text_italic) {
+                    val et = activeEditText
+                    if (et != null) { if (et.selectionStart != et.selectionEnd) toggleStyleOnSelection(et, Typeface.ITALIC) else pendingItalic = !pendingItalic }
+                    else textSelectionItem?.let { toggleFullItemSpan(it, 'S', Typeface.ITALIC); drawingView.invalidate() }
+                }
+                ctxTextBtn(R.drawable.ic_text_underline) {
+                    val et = activeEditText
+                    if (et != null) { if (et.selectionStart != et.selectionEnd) toggleUnderlineOnSelection(et) else pendingUnderline = !pendingUnderline }
+                    else textSelectionItem?.let { toggleFullItemSpan(it, 'U', 0); drawingView.invalidate() }
+                }
+                ctxTextBtn(R.drawable.ic_text_delete) {
+                    if (activeEditText != null) closeInlineEditor(false, delete = true)
+                    else textSelectionItem?.let { drawingView.removeTextItem(it); dismissTextSelectionBox(); drawingView.invalidate() }
+                }
+                ctxTextBtn(R.drawable.ic_text_check) {
+                    if (activeEditText != null) closeInlineEditor(true)
+                    else dismissTextSelectionBox()
+                }
             }
             Tool.SELECT, Tool.LASSO, Tool.AUTOSELECT, Tool.MULTISELECT -> {
                 // Select: rectangle icon, Lasso: lasso icon, Rectangle (was Auto): dashed rect icon
@@ -4420,6 +4460,14 @@ class MainActivity : AppCompatActivity() {
     private fun toggleStyleOnSelection(et:EditText,styleFlag:Int){ val s=et.selectionStart;val e=et.selectionEnd; if(s==e){Toast.makeText(this,"Select text first",Toast.LENGTH_SHORT).show();return}; val from=minOf(s,e);val to=maxOf(s,e); val ed=et.text; val ex=ed.getSpans(from,to,StyleSpan::class.java).filter{it.style==styleFlag&&ed.getSpanStart(it)<=from&&ed.getSpanEnd(it)>=to}; if(ex.isNotEmpty()) for(sp in ex) ed.removeSpan(sp) else ed.setSpan(StyleSpan(styleFlag),from,to,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
     private fun applyColorToSelection(et:EditText,color:Int){ val s=et.selectionStart;val e=et.selectionEnd; if(s==e){editColor=color;et.setTextColor(color);return}; et.text.setSpan(ForegroundColorSpan(color),minOf(s,e),maxOf(s,e),Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
     private fun toggleUnderlineOnSelection(et:EditText){ val s=et.selectionStart;val e=et.selectionEnd; val from=minOf(s,e);val to=maxOf(s,e); val ed=et.text; val ex=ed.getSpans(from,to,UnderlineSpan::class.java).filter{ed.getSpanStart(it)<=from&&ed.getSpanEnd(it)>=to}; if(ex.isNotEmpty()) for(sp in ex) ed.removeSpan(sp) else ed.setSpan(UnderlineSpan(),from,to,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
+    // Toggles a style across a committed item's WHOLE text at once — used when there's no live
+    // cursor/selection to apply formatting to (i.e. the item is just selected/tapped, not being
+    // actively typed in).
+    private fun toggleFullItemSpan(item: TextItem, type: Char, value: Int) {
+        val has = item.spans.any { it.type == type && it.value == value && it.start == 0 && it.end == item.text.length }
+        if (has) item.spans.removeAll { it.type == type && it.value == value && it.start == 0 && it.end == item.text.length }
+        else item.spans.add(TextSpanData(0, item.text.length, type, value))
+    }
     private fun applyHighlightToSelection(et:EditText,color:Int){ et.text.setSpan(BackgroundColorSpan(color),minOf(et.selectionStart,et.selectionEnd),maxOf(et.selectionStart,et.selectionEnd),Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
 
     private var textSelectionBox: View? = null
@@ -4510,7 +4558,14 @@ class MainActivity : AppCompatActivity() {
         val (measW, measH) = measureTextBoxSize(item, screenSizePx)
         var boxW = measW; var boxH = measH
 
-        val moveSurface = View(this)
+        val moveSurface = View(this).apply {
+            // Visible feedback that this item is now selected/in move mode — previously this
+            // View was fully invisible, so the only sign of selection was the small handles,
+            // easy to miss especially on a large item where they might be off-screen.
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setStroke(dp(2), Color.parseColor("#1565C0")); setColor(Color.parseColor("#141565C0")) // translucent blue fill + solid blue outline
+            }
+        }
         var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
         var dragStartWorldX2 = 0f; var dragStartWorldY2 = 0f
         var isDraggingRotate = false; var rotStartRawX2 = 0f; var rotStartRotation2 = 0f
