@@ -41,12 +41,6 @@ import java.io.FileOutputStream
 
 class MainActivity : AppCompatActivity() {
 
-    // 96 DPI reference — same one pageWidthPx() already uses for real paper dimensions
-    // (3.7795 px/mm = 96/25.4). A point is defined as 1/72 inch, so this is the factor that
-    // makes a font size picked in POINTS render at the physically-correct size on a real
-    // printed page — the same convention MS Word itself uses for on-screen point sizing.
-    private val PT_TO_PX = 96f / 72f
-
     private lateinit var drawingView: DrawingView
     private lateinit var canvasContainer: FrameLayout
     private lateinit var tvTitle: TextView
