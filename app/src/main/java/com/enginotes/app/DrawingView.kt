@@ -5233,7 +5233,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         flush()
         return segs.map { sp ->
-            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.FOUNTAIN, opacity = data.opacity, lineType = data.lineType)
+            // isPolyline = true is the critical part here: without it, Tool.PEN's default
+            // render path runs every stroke through quadratic-bezier smoothing to remove hand
+            // tremor (see the comment on StrokeData.isPolyline above). That's correct for actual
+            // freehand pen strokes, but these points come from densely sampling a SHAPE's
+            // perfectly straight edges (a rect/triangle/etc.) — smoothing them rounds sharp
+            // corners into unwanted little curves, and since each subsequent area-erase re-runs
+            // this same reconstruction on the now-already-curved path, the distortion compounds
+            // worse with every erase. Marking it a polyline keeps the straight-line render path,
+            // preserving the shape's actual geometry exactly as sampled.
+            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.FOUNTAIN, opacity = data.opacity, lineType = data.lineType, isPolyline = true)
             StrokeItem(d, d.buildPath(), d.toPaint())
         }
     }
