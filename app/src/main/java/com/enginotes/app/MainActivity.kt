@@ -4525,8 +4525,10 @@ class MainActivity : AppCompatActivity() {
     private fun updateTextSelectionBoxSize(box: FrameLayout, moveSurface: View, item: TextItem): Pair<Int, Int> {
         val density = resources.displayMetrics.density
         val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
-        val convenientBoost = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 1.6f else 1f
-        val screenSizePx = (if (useActualSize) item.size else item.size * drawingView.getScaleFactor()) * convenientBoost
+        // No boost here — real rendering (drawTextItem) never applies one; a leftover 1.6x
+        // factor here (from an old, since-abandoned idea to display Convenient-mode text bigger
+        // while typing) made this box measurably larger than the actual text.
+        val screenSizePx = if (useActualSize) item.size else item.size * drawingView.getScaleFactor()
         val (boxW, boxH) = measureTextBoxSize(item, screenSizePx)
 
         val lp = box.layoutParams as FrameLayout.LayoutParams
@@ -4547,8 +4549,8 @@ class MainActivity : AppCompatActivity() {
         drawingView.isTextSelected = true
 
         val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
-        val convenientBoost = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 1.6f else 1f
-        val screenSizePx = (if (useActualSize) item.size else item.size * drawingView.getScaleFactor()) * convenientBoost
+        // Same fix as updateTextSelectionBoxSize above — no artificial boost, matches real rendering.
+        val screenSizePx = if (useActualSize) item.size else item.size * drawingView.getScaleFactor()
 
         // Use a touch surface sized to the text item (not full-screen).
         // Always returns true on ACTION_DOWN so the gesture is never dropped mid-sequence.
