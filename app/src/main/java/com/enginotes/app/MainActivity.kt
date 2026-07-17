@@ -52,6 +52,8 @@ class MainActivity : AppCompatActivity() {
     internal val PT_TO_PX = 1.333f
     private var isConvenientLayout = true
 
+    private val driveManager by lazy { DriveManager(this) }
+
     private val shapeEntries: List<Pair<Int, Tool>> = listOf(
         R.drawable.ic_shape_line to Tool.LINE,
         R.drawable.ic_shape_rectangle to Tool.RECTANGLE,
@@ -545,6 +547,7 @@ class MainActivity : AppCompatActivity() {
 
         drawingView.migrateOldNotes(filesDir)
         lastSavedContent = drawingView.serialize()
+        driveManager.trySilentSignIn { }
         drawingView.arcDivisions = prefs.getInt("arc_divisions",3)
         drawingView.defaultDimFontSize = prefs.getFloat("dim_font_size", 11f)
         drawingView.defaultDimArrowSize = prefs.getFloat("dim_arrow_size", 9f)
@@ -2086,6 +2089,12 @@ class MainActivity : AppCompatActivity() {
         if (currentFileName != null) popup.menu.add("Delete This Note")
         popup.menu.add("Add to Book")
         popup.menu.add("Layers")
+        popup.menu.add(if (driveManager.isSignedIn()) "Back Up to Drive" else "Sign in with Google")
+        if (driveManager.isSignedIn()) {
+            popup.menu.add("Restore from Drive")
+            popup.menu.add("Auto-Backup: ${if (getPrefs().getBoolean("auto_backup_drive", false)) "On" else "Off"}")
+            popup.menu.add("Sign Out of Google")
+        }
         listOf("Open PDF","Chart Builder","Handwriting to Text","Ask Gemini about Drawing","Settings","About","Exit").forEach { popup.menu.add(it) }
         popup.setOnMenuItemClickListener { item ->
             when {
@@ -2113,10 +2122,138 @@ class MainActivity : AppCompatActivity() {
                 item.title == "Settings" -> showSettingsDialog()
                 item.title == "About" -> showAboutDialog()
                 item.title == "Exit" -> confirmThenExit()
+                item.title == "Sign in with Google" -> driveManager.signIn()
+                item.title == "Sign Out of Google" -> driveManager.signOut {
+                    Toast.makeText(this, "Signed out of Google", Toast.LENGTH_SHORT).show()
+                }
+                item.title == "Back Up to Drive" -> currentFileName?.let { backUpNoteToDrive(it, silent = false) }
+                item.title == "Restore from Drive" -> showRestoreFromDriveDialog()
+                item.title.toString().startsWith("Auto-Backup:") -> {
+                    val newValue = !getPrefs().getBoolean("auto_backup_drive", false)
+                    getPrefs().edit().putBoolean("auto_backup_drive", newValue).apply()
+                    Toast.makeText(this, if (newValue) "Auto-backup turned on" else "Auto-backup turned off", Toast.LENGTH_SHORT).show()
+                }
             }
             true
         }
         popup.show()
+    }
+
+    // ---- Drive backup: the note's own .eng file plus every image/audio/custom-font it references ----
+
+    /**
+     * Pulls out every local file path a note's serialized content refers to — image files,
+     * audio recordings, custom hatch bitmaps, and custom font files — so they can be synced
+     * to Drive alongside the note itself. Parses the same pipe/\u0001-delimited line format
+     * that DrawingView.serialize()/loadFromString() use; see DrawingView.kt for the field order
+     * of each line type.
+     */
+    private fun extractAssetPaths(content: String): List<String> {
+        val paths = linkedSetOf<String>()
+        content.lineSequence().forEach { line ->
+            if (line.isBlank()) return@forEach
+            val parts = line.split('\u0001')
+            when (parts.getOrNull(0)) {
+                "IMAGE" -> parts.getOrNull(1)?.let { if (it.isNotBlank()) paths.add(it) }
+                "AUDIO" -> parts.getOrNull(1)?.let { if (it.isNotBlank()) paths.add(it) }
+                "FILL" -> {
+                    parts.getOrNull(1)?.let { if (it.isNotBlank()) paths.add(it) }
+                    parts.getOrNull(6)?.let { if (it.isNotBlank()) paths.add(it) } // customHatchPath
+                }
+                "TEXT" -> {
+                    val font = parts.getOrNull(9)
+                    if (!font.isNullOrBlank() && font.startsWith("/")) paths.add(font) // custom font file, not a built-in family name
+                }
+            }
+        }
+        return paths.toList()
+    }
+
+    /** Saves [name], then uploads it and every asset it references to Drive. Set [silent] to skip toasts on success (used by auto-backup). */
+    private fun backUpNoteToDrive(name: String, silent: Boolean) {
+        if (name == currentFileName) writeCurrentFile()
+        val engFile = File(getDrawingsFolder(), "$name.eng")
+        if (!engFile.exists()) {
+            if (!silent) Toast.makeText(this, "Couldn't find the saved note file", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!silent) Toast.makeText(this, "Backing up to Drive…", Toast.LENGTH_SHORT).show()
+        val assetPaths = extractAssetPaths(engFile.readText())
+        uploadAssetsThenNote(assetPaths, 0, engFile, name, silent)
+    }
+
+    private fun uploadAssetsThenNote(paths: List<String>, index: Int, engFile: File, noteName: String, silent: Boolean) {
+        if (index >= paths.size) {
+            driveManager.uploadFile(engFile, "$noteName.eng", "text/plain") { success, error ->
+                if (!silent) Toast.makeText(this, if (success) "Backed up to Drive!" else "Backup failed: $error", Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
+        val assetFile = File(paths[index])
+        if (!assetFile.exists()) { uploadAssetsThenNote(paths, index + 1, engFile, noteName, silent); return }
+        driveManager.uploadAsset(assetFile) { _, _ -> uploadAssetsThenNote(paths, index + 1, engFile, noteName, silent) }
+    }
+
+    /** Shows every .eng note currently backed up on Drive, letting the user pick one to restore. */
+    private fun showRestoreFromDriveDialog() {
+        if (!driveManager.isSignedIn()) { Toast.makeText(this, "Sign in with Google first", Toast.LENGTH_SHORT).show(); return }
+        Toast.makeText(this, "Checking Drive…", Toast.LENGTH_SHORT).show()
+        driveManager.listFiles { files, error ->
+            if (files == null) { Toast.makeText(this, error ?: "Couldn't reach Drive", Toast.LENGTH_SHORT).show(); return@listFiles }
+            val notes = files.filter { it.name.endsWith(".eng") }
+            if (notes.isEmpty()) { Toast.makeText(this, "No notes found on Drive", Toast.LENGTH_SHORT).show(); return@listFiles }
+            val names = notes.map { it.name.removeSuffix(".eng") }.toTypedArray()
+            AlertDialog.Builder(this)
+                .setTitle("Restore a note from Drive")
+                .setItems(names) { _, which -> confirmAndRestore(notes[which]) }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+    }
+
+    /** Warns before overwriting a local note that's newer than the Drive copy being restored. */
+    private fun confirmAndRestore(driveFile: com.google.api.services.drive.model.File) {
+        val name = driveFile.name.removeSuffix(".eng")
+        val localFile = File(getDrawingsFolder(), driveFile.name)
+        val driveModified = driveFile.modifiedTime?.value ?: 0L
+        if (localFile.exists() && localFile.lastModified() > driveModified) {
+            AlertDialog.Builder(this)
+                .setTitle("Local version is newer")
+                .setMessage("Your local copy of \"$name\" is newer than the one on Drive. Restoring will overwrite your local changes with the older Drive version. Continue?")
+                .setPositiveButton("Overwrite local") { _, _ -> doRestore(driveFile, localFile) }
+                .setNegativeButton("Cancel", null)
+                .show()
+        } else {
+            doRestore(driveFile, localFile)
+        }
+    }
+
+    private fun doRestore(driveFile: com.google.api.services.drive.model.File, localFile: File) {
+        Toast.makeText(this, "Restoring…", Toast.LENGTH_SHORT).show()
+        driveManager.downloadFile(driveFile.name, localFile) { success, error ->
+            if (!success) { Toast.makeText(this, "Restore failed: $error", Toast.LENGTH_SHORT).show(); return@downloadFile }
+            val content = localFile.readText()
+            val assetPaths = extractAssetPaths(content)
+            restoreAssets(assetPaths, 0) {
+                Toast.makeText(this, "Restored! Open the note to view it.", Toast.LENGTH_SHORT).show()
+                if (currentFileName == localFile.nameWithoutExtension) drawingView.loadFromString(content)
+            }
+        }
+    }
+
+    private fun restoreAssets(paths: List<String>, index: Int, onDone: () -> Unit) {
+        if (index >= paths.size) { onDone(); return }
+        val destFile = File(paths[index])
+        if (destFile.exists()) { restoreAssets(paths, index + 1, onDone); return }
+        destFile.parentFile?.mkdirs()
+        driveManager.downloadAsset(destFile.name, destFile) { _, _ -> restoreAssets(paths, index + 1, onDone) }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        driveManager.handleSignInResult(requestCode, data) { success, error ->
+            Toast.makeText(this, if (success) "Signed in with Google!" else (error ?: "Sign-in cancelled"), Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun convertHandwritingInPlace() {
@@ -2849,9 +2986,23 @@ class MainActivity : AppCompatActivity() {
 
     private fun showSettingsDialog() {
         val prefs = getPrefs()
-        val container = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(20),dp(8),dp(20),dp(8)) }
-        fun hdr(t:String){ container.addView(TextView(this).apply{ text=t;textSize=11f;setTextColor(Color.parseColor("#7B61FF"));setPadding(0,dp(10),0,dp(2));typeface=Typeface.DEFAULT_BOLD }) }
-        fun div(){ container.addView(View(this).apply{ layoutParams=LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,dp(1)).also{it.setMargins(0,dp(8),0,dp(4))};setBackgroundColor(Color.LTGRAY) }) }
+        val accent = Color.parseColor("#7B61FF")
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(14), dp(22), dp(14))
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(20).toFloat() }
+        }
+        // Section header: was 11f with no visual weight — genuinely easy to miss scrolling past.
+        // Bumped up, bolder, small colored accent bar on the left for a bit of "premium" polish
+        // instead of just being plain gray caps text.
+        fun hdr(t: String) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(18), 0, dp(6)) }
+            row.addView(View(this).apply { setBackgroundColor(accent); layoutParams = LinearLayout.LayoutParams(dp(4), dp(16)).also { it.setMargins(0, 0, dp(8), 0) } })
+            row.addView(TextView(this).apply { text = t; textSize = 15f; setTextColor(Color.parseColor("#2A2A2A")); typeface = Typeface.DEFAULT_BOLD; letterSpacing = 0.02f })
+            container.addView(row)
+        }
+        // Much lighter than before, and given real breathing room on both sides — a heavy full-
+        // width rule between every single section is exactly what made this feel cramped/busy.
+        fun div() { container.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).also { it.setMargins(0, dp(14), 0, 0) }; setBackgroundColor(Color.parseColor("#EDEAE4")) }) }
 
         div(); hdr("LOCK BEHAVIOUR")
         val lockEraseCb = CheckBox(this).apply { text="Locked items: prevent erasing"; isChecked=prefs.getBoolean("lock_prevent_erase",true); setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_erase",on).apply() } }; container.addView(lockEraseCb)
@@ -3067,8 +3218,27 @@ class MainActivity : AppCompatActivity() {
                 setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s:SeekBar?,v:Int,f:Boolean){if(f){dimArrowSz=v.coerceAtLeast(4).toFloat();lbl.text="Default Arrow Size: ${dimArrowSz.toInt()}"}}; override fun onStartTrackingTouch(s:SeekBar?){}; override fun onStopTrackingTouch(s:SeekBar?){} }) })
         })
 
+        // Consistent, more readable styling applied to every checkbox at once here, rather than
+        // editing each of the 7 individual checkbox creation sites above (lower risk of missing
+        // one or ending up with inconsistent styling between them).
+        fun styleCheckboxesIn(vg: android.view.ViewGroup) {
+            for (idx in 0 until vg.childCount) {
+                val child = vg.getChildAt(idx)
+                if (child is CheckBox) {
+                    child.textSize = 14f; child.setTextColor(Color.parseColor("#2A2A2A"))
+                    child.buttonTintList = android.content.res.ColorStateList.valueOf(accent)
+                    child.setPadding(dp(6), dp(4), 0, dp(4))
+                } else if (child is android.view.ViewGroup) styleCheckboxesIn(child)
+            }
+        }
+        styleCheckboxesIn(container)
+
         val scroll = ScrollView(this).apply{ addView(container) }
-        AlertDialog.Builder(this).setTitle("Settings").setView(scroll)
+        val titleView = TextView(this).apply {
+            text = "Settings"; textSize = 22f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#1C1C1E")); setPadding(dp(24), dp(20), dp(24), dp(8))
+        }
+        AlertDialog.Builder(this).setCustomTitle(titleView).setView(scroll)
             .setPositiveButton("Done") { _,_ ->
                 prefs.edit()
                     .putBoolean("confirm_exit_clear",confirmCb.isChecked)
@@ -4655,6 +4825,9 @@ class MainActivity : AppCompatActivity() {
         val name=currentFileName?:return
         File(getDrawingsFolder(),"$name.eng").writeText(drawingView.serialize())
         lastSavedContent=drawingView.serialize()
+        if (getPrefs().getBoolean("auto_backup_drive", false) && driveManager.isSignedIn()) {
+            backUpNoteToDrive(name, silent = true)
+        }
     }
 
     private fun autoSave() {
