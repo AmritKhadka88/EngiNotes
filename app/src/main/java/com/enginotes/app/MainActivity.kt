@@ -42,14 +42,14 @@ import java.io.FileOutputStream
 class MainActivity : AppCompatActivity() {
 
     internal lateinit var drawingView: DrawingView
-    private lateinit var canvasContainer: FrameLayout
+    internal lateinit var canvasContainer: FrameLayout
     private lateinit var tvTitle: TextView
     private lateinit var btnLayoutToggle: ImageButton
 
     private var currentFileName: String? = null
     private var hwrAutoEnabled = false  // real-time handwriting-to-text toggle
     private var lastSavedContent: String = ""
-    private val PT_TO_PX = 1.333f
+    internal val PT_TO_PX = 1.333f
     private var isConvenientLayout = true
 
     private val shapeEntries: List<Pair<Int, Tool>> = listOf(
@@ -106,27 +106,36 @@ class MainActivity : AppCompatActivity() {
         R.drawable.ic_shape_octagon_stop to Tool.OCTAGON_STOP
     )
 
-    private var activeEditText: EditText? = null
-    private var activeToolbar: View? = null
-    private var activeEditBox: View? = null
-    private var activeEditorKeyboardListener: android.view.ViewTreeObserver.OnGlobalLayoutListener? = null
+    internal var activeEditText: EditText? = null
+    internal var activeToolbar: View? = null
+    internal var activeEditBox: View? = null
+    internal var activeEditorKeyboardListener: android.view.ViewTreeObserver.OnGlobalLayoutListener? = null
     // The correct, safe mechanism for "keep this overlay positioned in sync with the canvas
     // every frame" — fires right before each draw, which (unlike onDraw itself) is a point in
     // the Android lifecycle where it's actually safe to change a View's layout position. An
     // earlier attempt hooked this from inside DrawingView's onDraw() directly, which silently
     // failed to reliably apply position changes — this is why.
-    private var editorPreDrawListener: android.view.ViewTreeObserver.OnPreDrawListener? = null
-    private var activeEditorKeyboardObserver: android.view.ViewTreeObserver? = null
-    private var onImeBottomChanged: ((Int) -> Unit)? = null  // piggybacked onto the working content-view insets listener
-    private var activeEditorHandles: List<View> = emptyList()
-    private var editingItem: TextItem? = null
-    private var editWorldX = 0f; private var editWorldY = 0f; private var editTopAnchorY = 0f
-    private var editRotation = 0f; private var editColor = Color.BLACK
-    private var editSize = 12f * 1.333f
-    private var editOpacity = 255
-    private var pendingBold = false; private var pendingItalic = false
-    private var pendingUnderline = false; private var pendingHighlight: Int? = null
-    private var pendingFontFamily: String = "sans-serif"
+    internal var editorPreDrawListener: android.view.ViewTreeObserver.OnPreDrawListener? = null
+    internal var activeEditorKeyboardObserver: android.view.ViewTreeObserver? = null
+    internal var onImeBottomChanged: ((Int) -> Unit)? = null  // piggybacked onto the working content-view insets listener
+    internal var activeEditorHandles: List<View> = emptyList()
+    internal var editingItem: TextItem? = null
+    internal var editWorldX = 0f; internal var editWorldY = 0f; internal var editTopAnchorY = 0f
+    internal var editRotation = 0f; internal var editColor = Color.BLACK
+    internal var editSize = 12f * 1.333f
+    internal var editOpacity = 255
+    internal var pendingBold = false; internal var pendingItalic = false
+    internal var pendingUnderline = false; internal var pendingHighlight: Int? = null
+    internal var pendingFontFamily: String = "sans-serif"
+    // These four are read/written across many separate function calls (showTextSelectionBox,
+    // dismissTextSelectionBox, the shared context bar, etc.), so — unlike the functions that use
+    // them — they can't move into TextEditingExtensions.kt as part of the split. An extension
+    // function can't hold its own stored state; there's no way to add real storage to a class
+    // from outside it in Kotlin. These have to stay actual MainActivity properties.
+    internal var textSelectionBox: View? = null
+    internal var textSelectionItem: TextItem? = null
+    internal var textSelectionHandles: List<View> = emptyList()
+    internal var layerToolbar: View? = null
     private val recentFonts = mutableListOf("sans-serif", "serif", "monospace")
 
     // Returns a short display name for a font family string (system name or file path)
@@ -137,7 +146,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     // Resolves font family to Typeface — handles both system names and file paths
-    private fun typefaceFromFamily(family: String): android.graphics.Typeface {
+    internal fun typefaceFromFamily(family: String): android.graphics.Typeface {
         return try {
             if (family.startsWith("/") && java.io.File(family).exists())
                 android.graphics.Typeface.createFromFile(family)
@@ -150,7 +159,7 @@ class MainActivity : AppCompatActivity() {
     private var cameraImageFile: File? = null
     private var activeToolbarButton: ImageButton? = null
     private var lastShapeTool: Tool? = null  // restored after tapping outside a just-drawn shape
-    private var isSwitchingTextEditor = false
+    internal var isSwitchingTextEditor = false
     private var exportWindowBitmap: Bitmap? = null
     private var pendingExportBitmap: Bitmap? = null
     private var pendingExportFormat: String = "png"
@@ -347,10 +356,10 @@ class MainActivity : AppCompatActivity() {
     // OCR-specific launchers - separate from the normal image-insert launchers above because the
     // result should be run through text recognition and shown for review, not dropped onto the
     // canvas as a picture.
-    private val pickImageForOcrLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+    internal val pickImageForOcrLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) runOcrOnUri(uri)
     }
-    private val pickPdfForOcrLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+    internal val pickPdfForOcrLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) ocrSnipLauncher.launch(android.content.Intent(this, PdfViewerActivity::class.java).putExtra("pdf_uri", uri.toString()))
     }
     private val ocrSnipLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -359,78 +368,18 @@ class MainActivity : AppCompatActivity() {
             if (path != null) runOcrOnUri(Uri.fromFile(File(path)))
         }
     }
-    private var ocrCameraFile: File? = null
-    private val takePictureForOcrLauncher = registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+    internal var ocrCameraFile: File? = null
+    internal val takePictureForOcrLauncher = registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         if (success) ocrCameraFile?.let { runOcrOnUri(Uri.fromFile(it)) }
     }
     internal val pickImageForCustomHatchLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) addCustomHatchFromUri(uri)
     }
 
-    private fun launchCameraForOcr() {
-        if (checkSelfPermission(android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            try {
-                val folder = File(filesDir, "images").also { it.mkdirs() }
-                val pf = File(folder, "ocr_camera_${System.currentTimeMillis()}.jpg"); ocrCameraFile = pf
-                val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", pf)
-                takePictureForOcrLauncher.launch(uri)
-            } catch (e: Exception) { Toast.makeText(this, "Camera failed: ${e.message}", Toast.LENGTH_LONG).show() }
-        } else {
-            requestCameraPermission.launch(android.Manifest.permission.CAMERA)
-        }
-    }
+    // launchCameraForOcr, runOcrOnUri, and showOcrResultDialog moved to OcrExtensions.kt.
 
-    // Runs ML Kit's on-device Text Recognition (free, fully offline once the model is bundled
-    // with the app - no network call, no per-use cost) on the given image and shows the result
-    // in an editable dialog before inserting it as a text item on the canvas.
-    //
-    // IMPORTANT LIMITATION: this recognizes general printed/handwritten TEXT character-by-
-    // character. It is NOT a math-aware OCR engine - it has no understanding of equation
-    // structure (fractions, exponents, square roots, summations, matrices, etc.) and will read
-    // math notation as a flat left-to-right sequence of characters/symbols. True structured math
-    // recognition (the kind that outputs real LaTeX for fractions, exponents, etc.) is a
-    // significantly harder problem that, as far as free/offline-capable options go, doesn't have
-    // a good solution at the moment - the well-known accurate engines (e.g. Mathpix) are
-    // cloud-based paid services. Simple expressions with no special structure (e.g. "x + 2 = 5")
-    // will often come through fine.
-    private fun runOcrOnUri(uri: Uri) {
-        val progress = android.app.ProgressDialog(this).apply { setMessage("Reading text..."); setCancelable(false); show() }
-        try {
-            val image = com.google.mlkit.vision.common.InputImage.fromFilePath(this, uri)
-            val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
-            recognizer.process(image)
-                .addOnSuccessListener { result ->
-                    progress.dismiss()
-                    showOcrResultDialog(result.text)
-                }
-                .addOnFailureListener { e ->
-                    progress.dismiss()
-                    Toast.makeText(this, "OCR failed: ${e.message}", Toast.LENGTH_LONG).show()
-                }
-        } catch (e: Exception) {
-            progress.dismiss()
-            Toast.makeText(this, "OCR failed: ${e.message}", Toast.LENGTH_LONG).show()
-        }
-    }
 
-    private fun showOcrResultDialog(text: String) {
-        if (text.isBlank()) { Toast.makeText(this, "No text found in image", Toast.LENGTH_SHORT).show(); return }
-        val et = EditText(this).apply {
-            setText(text); minLines = 4; maxLines = 14; gravity = Gravity.TOP or Gravity.START
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-        }
-        val scroll = ScrollView(this).apply { addView(et) }
-        AlertDialog.Builder(this).setTitle("Extracted Text (edit if needed)").setView(scroll)
-            .setPositiveButton("Insert") { _, _ ->
-                val finalText = et.text.toString()
-                if (finalText.isNotBlank()) {
-                    drawingView.addText(finalText, drawingView.screenCenterWorldX(), drawingView.screenCenterWorldY(), drawingView.defaultTextSize, 0f, drawingView.currentColor)
-                    Toast.makeText(this, "Text inserted", Toast.LENGTH_SHORT).show()
-                }
-            }.setNegativeButton("Cancel", null).show()
-    }
-
-    private val requestCameraPermission = registerForActivityResult(
+    internal val requestCameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) launchCameraInternal()
@@ -970,7 +919,7 @@ class MainActivity : AppCompatActivity() {
         activeToolbarButton = btn
         btn?.let { it.isSelected = true; it.background = themedPillDrawable(theme, selected = true); it.elevation = themedPillElevation(theme) }
     }
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+    internal fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     // Keeps the context (color/size) bar glued to the top edge of the primary toolbar, no
     // matter what size the primary toolbar's buttons currently are. Previously this gap was
@@ -1886,7 +1835,7 @@ class MainActivity : AppCompatActivity() {
         fullscreenRestoreBtn = null
     }
 
-    private fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
+    internal fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
 
     private fun showOffsetDialog(item: StrokeItem) {
         val container = LinearLayout(this).apply {
@@ -2226,7 +2175,7 @@ class MainActivity : AppCompatActivity() {
     // Handles the whole "select something -> get an answer inserted below it" flow: places a
     // placeholder, then grows it live as text streams in, rather than waiting for the whole
     // answer and dropping it in all at once.
-    private fun runGeminiQuery(prompt: String, imageBytes: ByteArray?, worldX: Float, worldY: Float) {
+    internal fun runGeminiQuery(prompt: String, imageBytes: ByteArray?, worldX: Float, worldY: Float) {
         if (geminiApiKey().isBlank()) { showGeminiSetupDialog { runGeminiQuery(prompt, imageBytes, worldX, worldY) }; return }
         // worldY is meant to be the desired TOP of the answer (just below the question) — but
         // TextItem.y means the BOTTOM of the text everywhere in DrawingView (drawTextItem/
@@ -2528,7 +2477,7 @@ class MainActivity : AppCompatActivity() {
 
     // Closes any open floating panel (shapes picker, pen options, eraser options) -
     // called whenever the user picks a different tool so panels never get stuck open.
-    private fun dismissAllFloatingPanels() {
+    internal fun dismissAllFloatingPanels() {
         dismissShapesPicker()
         dismissPenOptionsPanel()
         dismissShapeOptionsPanel()
@@ -2725,16 +2674,7 @@ class MainActivity : AppCompatActivity() {
     // this file, since Kotlin resolves an extension function through an implicit receiver the
     // same way it resolves a member function.
 
-    private fun showOcrSourceDialog() {
-        AlertDialog.Builder(this).setTitle("Extract Text From")
-            .setItems(arrayOf("Photo (camera)", "Image from Gallery", "Snip from PDF")) { _, i ->
-                when (i) {
-                    0 -> launchCameraForOcr()
-                    1 -> pickImageForOcrLauncher.launch("image/*")
-                    2 -> pickPdfForOcrLauncher.launch("application/pdf")
-                }
-            }.show()
-    }
+    // showOcrSourceDialog moved to OcrExtensions.kt.
 
     private fun showAboutDialog() {
         val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(16), dp(24), dp(8)); gravity = Gravity.CENTER_HORIZONTAL }
@@ -4389,7 +4329,7 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle("Table Style").setView(scroll).setPositiveButton("Done",null).show()
     }
 
-    private fun dismissCellEditor() {
+    internal fun dismissCellEditor() {
         val et=activeCellEditText?:return
         try{ canvasContainer.removeView(activeCellToolbar) }catch(e:Exception){}
         try{ canvasContainer.removeView(tableToolbarOverlay) }catch(e:Exception){}
@@ -4507,908 +4447,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun toggleStyleOnSelection(et:EditText,styleFlag:Int){ val s=et.selectionStart;val e=et.selectionEnd; if(s==e){Toast.makeText(this,"Select text first",Toast.LENGTH_SHORT).show();return}; val from=minOf(s,e);val to=maxOf(s,e); val ed=et.text; val ex=ed.getSpans(from,to,StyleSpan::class.java).filter{it.style==styleFlag&&ed.getSpanStart(it)<=from&&ed.getSpanEnd(it)>=to}; if(ex.isNotEmpty()) for(sp in ex) ed.removeSpan(sp) else ed.setSpan(StyleSpan(styleFlag),from,to,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
-    private fun applyColorToSelection(et:EditText,color:Int){ val s=et.selectionStart;val e=et.selectionEnd; if(s==e){editColor=color;et.setTextColor(color);return}; et.text.setSpan(ForegroundColorSpan(color),minOf(s,e),maxOf(s,e),Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
-    private fun toggleUnderlineOnSelection(et:EditText){ val s=et.selectionStart;val e=et.selectionEnd; val from=minOf(s,e);val to=maxOf(s,e); val ed=et.text; val ex=ed.getSpans(from,to,UnderlineSpan::class.java).filter{ed.getSpanStart(it)<=from&&ed.getSpanEnd(it)>=to}; if(ex.isNotEmpty()) for(sp in ex) ed.removeSpan(sp) else ed.setSpan(UnderlineSpan(),from,to,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
-    // Toggles a style across a committed item's WHOLE text at once — used when there's no live
-    // cursor/selection to apply formatting to (i.e. the item is just selected/tapped, not being
-    // actively typed in).
-    private fun toggleFullItemSpan(item: TextItem, type: Char, value: Int) {
-        val has = item.spans.any { it.type == type && it.value == value && it.start == 0 && it.end == item.text.length }
-        if (has) item.spans.removeAll { it.type == type && it.value == value && it.start == 0 && it.end == item.text.length }
-        else item.spans.add(TextSpanData(0, item.text.length, type, value))
-    }
-    private fun applyHighlightToSelection(et:EditText,color:Int){ et.text.setSpan(BackgroundColorSpan(color),minOf(et.selectionStart,et.selectionEnd),maxOf(et.selectionStart,et.selectionEnd),Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
+    // toggleStyleOnSelection, applyColorToSelection, toggleUnderlineOnSelection,
+    // toggleFullItemSpan, applyHighlightToSelection, dismissTextSelectionBox,
+    // measureTextBoxSize, updateTextSelectionBoxSize, angleDegrees, showTextSelectionBox,
+    // showInlineTextEditor, and closeInlineEditor have all moved to
+    // TextEditingExtensions.kt (as extension functions on MainActivity) — the single
+    // largest, most-frequently-fixed cluster of code in this app, now living in its own
+    // file instead of buried among unrelated features. Every call site elsewhere in this
+    // file is unchanged — Kotlin resolves an extension function the same way it resolves
+    // a member function, through the implicit receiver.
 
-    private var textSelectionBox: View? = null
-    private var textSelectionItem: TextItem? = null
-    private var textSelectionHandles: List<View> = emptyList()
-    private var layerToolbar: View? = null
-
-    private fun dismissTextSelectionBox() {
-        textSelectionBox?.let { canvasContainer.removeView(it) }
-        textSelectionHandles.forEach { canvasContainer.removeView(it) }
-        textSelectionHandles = emptyList()
-        if (textSelectionBox != null) drawingView.onCanvasTransformed = null
-        drawingView.draggingTextItem = null // safety: never leave an item stuck without page-splitting
-        textSelectionBox = null; textSelectionItem = null
-        drawingView.isTextSelected = false
-        drawingView.selectedItem = null; drawingView.invalidate()
-    }
-
-    // Lightweight selection box for a single tap on text: shows the same border + move/resize/
-    // rotate/delete handles as the full editor, but with NO EditText/keyboard. Double-tapping the
-    // box (handled by DrawingView's gesture detector, which calls showInlineTextEditor directly)
-    // is what actually opens it for typing. This satisfies "single tap = select + resize, double
-    // tap = edit, drag inside = move."
-    // Recomputes and applies the selection box's width/height/position in place - cheap enough
-    // to call on every ACTION_MOVE during a resize/move drag, unlike tearing down and rebuilding
-    // the whole view hierarchy (which is what made resizing feel rough/jumpy before).
-    // Measures the text item's ACTUAL rendered width/height using StaticLayout, the same way
-    // DrawingView itself renders it - replaces the old character-count * fixed-width heuristic,
-    // which badly overestimated width for normal text (e.g. "Amrit Khadka" was computing a box
-    // hundreds of pixels wider than the real text), pushing the right-side corner/edge handles
-    // off-screen and making them untappable.
-    private fun measureTextBoxSize(item: TextItem, screenSizePx: Float): Pair<Int, Int> {
-        // Use WORLD units (item.size) exactly like drawTextItem does, then scale to screen.
-        // Previously used screenSizePx directly which gave different layout than canvas rendering.
-        val scale = screenSizePx / item.size.coerceAtLeast(1f)
-        val tp = android.text.TextPaint(); tp.textSize = item.size; tp.isAntiAlias = true
-        try { tp.typeface = Typeface.create(item.fontFamily, Typeface.NORMAL) } catch (e: Exception) {}
-        // Was a separate hardcoded "else 4000" fallback here for the maxWidth==0 case — for
-        // Convenient/Paginated mode, real rendering (DrawingView.textWrapWidth) wraps that case
-        // to the actual page width instead, a much narrower value. That mismatch meant this
-        // StaticLayout produced far fewer, far longer lines than what's really on screen, so
-        // `layout.height` below badly undershot the item's true rendered height — which is
-        // exactly what made the drag surface only cover roughly the bottom portion of a long
-        // multi-page item. Calling the real function directly means this can never drift out
-        // of sync with actual rendering again.
-        val wrapWidth = drawingView.textWrapWidth(item)
-        val layout = android.text.StaticLayout.Builder.obtain(item.text, 0, item.text.length, tp, wrapWidth).setIncludePad(true).build()
-        val measuredW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) } ?: (item.size * 2f)
-        // Scale world dimensions to screen pixels, add small padding
-        val w = (measuredW * scale + dp(12)).toInt().coerceAtLeast(dp(40))
-        val h = (layout.height * scale + dp(8).toFloat()).coerceAtLeast(dp(30).toFloat()).toInt()
-        return Pair(w, h)
-    }
-
-    private fun updateTextSelectionBoxSize(box: FrameLayout, moveSurface: View, item: TextItem): Pair<Int, Int> {
-        val density = resources.displayMetrics.density
-        val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
-        // No boost here — real rendering (drawTextItem) never applies one; a leftover 1.6x
-        // factor here (from an old, since-abandoned idea to display Convenient-mode text bigger
-        // while typing) made this box measurably larger than the actual text.
-        val screenSizePx = if (useActualSize) item.size else item.size * drawingView.getScaleFactor()
-        val (boxW, boxH) = measureTextBoxSize(item, screenSizePx)
-
-        val lp = box.layoutParams as FrameLayout.LayoutParams
-        // Keep the box's top-left anchored where it currently is rather than re-deriving from
-        // screenX/screenY each time, so the box grows/shrinks from its current position smoothly
-        // instead of snapping back to its original spawn point.
-        lp.width = boxW; lp.height = boxH
-        box.layoutParams = lp
-        val mlp = moveSurface.layoutParams; mlp.width = boxW; mlp.height = boxH; moveSurface.layoutParams = mlp
-        return Pair(boxW, boxH)
-    }
-
-    // Angle (in degrees) from a pivot point to a touch point, screen-space. Shared by every
-    // "drag around a pivot to rotate" gesture in this file (committed-item rotate handle,
-    // active-editor rotate handle) — these used to each have their own hand-copied atan2/
-    // toDegrees calculation. That duplication is exactly how the rotation bugs earlier in this
-    // app's life kept surviving being "fixed": a correction applied to one copy silently never
-    // reached the other, and it'd resurface a few sessions later looking like a brand new bug.
-    // Rotating a box around its own center is always the SAME math regardless of which box it
-    // is, so it only needs to exist once.
-    private fun angleDegrees(pivotX: Float, pivotY: Float, touchX: Float, touchY: Float): Float =
-        Math.toDegrees(kotlin.math.atan2((touchY - pivotY).toDouble(), (touchX - pivotX).toDouble())).toFloat()
-
-    private fun showTextSelectionBox(item: TextItem, screenX: Float, screenY: Float, initialRawX: Float = -1f, initialRawY: Float = -1f) {
-        if (textSelectionItem === item) return
-        dismissTextSelectionBox()
-        closeInlineEditor(true)
-        dismissCellEditor()
-        drawingView.isTextSelected = true
-
-        val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
-        // Same fix as updateTextSelectionBoxSize above — no artificial boost, matches real rendering.
-        val screenSizePx = if (useActualSize) item.size else item.size * drawingView.getScaleFactor()
-
-        // Use a touch surface sized to the text item (not full-screen).
-        // Always returns true on ACTION_DOWN so the gesture is never dropped mid-sequence.
-        // Taps outside fall through naturally to DrawingView below.
-        val anchorScreenX = drawingView.worldToScreenX(item.x)
-        val anchorScreenY = drawingView.worldToScreenY(item.y)
-        val (measW, measH) = measureTextBoxSize(item, screenSizePx)
-        var boxW = measW; var boxH = measH
-
-        val moveSurface = View(this).apply {
-            // Visible feedback that this item is now selected/in move mode — previously this
-            // View was fully invisible, so the only sign of selection was the small handles,
-            // easy to miss especially on a large item where they might be off-screen.
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setStroke(dp(2), Color.parseColor("#1565C0")); setColor(Color.parseColor("#141565C0")) // translucent blue fill + solid blue outline
-            }
-        }
-        var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
-        var dragStartWorldX2 = 0f; var dragStartWorldY2 = 0f
-        var isDraggingRotate = false; var rotStartRotation2 = 0f
-        var rotPivotScreenX = 0f; var rotPivotScreenY = 0f; var rotStartAngleDeg = 0f
-        var frozenMaxWidth: Float? = null // holds item.maxWidth's original value while a move-drag has it pinned
-        // Tracks exactly which finger started the current drag. ev.rawX/rawY (used throughout
-        // below) always resolve to pointer INDEX 0 — if a second finger incidentally touches the
-        // screen mid-drag (very easy on a phone: palm, other hand) and then the ORIGINAL finger
-        // lifts, Android reassigns index 0 to that other finger, and ev.rawX/rawY silently jump
-        // to wherever it happens to be. That's what caused the erratic high-speed jumps in either
-        // direction. Fix: capture the pointer ID at ACTION_DOWN, resolve raw coordinates from
-        // THAT pointer specifically every frame, ignore any other pointer's events entirely, and
-        // end the drag cleanly if that specific finger lifts rather than silently following
-        // whichever finger remains.
-        var activePointerId = -1
-        // getRawX(index)/getRawY(index) are screen-absolute — independent of any view's current
-        // position. An earlier version of this reconstructed "raw" coordinates from
-        // moveSurface.getLocationOnScreen() + a local offset, but moveSurface is the exact view
-        // being repositioned in response to this same touch, every frame — so that was a
-        // feedback loop: this frame's computed position depended on last frame's self-move, which
-        // depended on the frame before that, etc. That's what produced the extreme jitter/shake,
-        // and under certain frame-timing races could even flip the effective direction. Using
-        // display-absolute coordinates removes the loop entirely — there's nothing to chase.
-        fun rawXYForPointer(ev: android.view.MotionEvent, pointerId: Int): Pair<Float, Float>? {
-            val idx = ev.findPointerIndex(pointerId)
-            if (idx < 0) return null
-            return if (android.os.Build.VERSION.SDK_INT >= 29) {
-                Pair(ev.getRawX(idx), ev.getRawY(idx))
-            } else if (idx == 0) {
-                Pair(ev.rawX, ev.rawY) // pre-API29 has no indexed raw accessor; safe only for index 0
-            } else null
-        }
-
-        // Hoisted above the touch listener (was previously defined after moveSurface/toolbar/
-        // rotateHandle setup, and only ever invoked once at setup + on canvas pan/zoom) so that
-        // ACTION_MOVE below can call it on every drag frame — otherwise the toolbar and rotate
-        // handle silently detach from the item and float in place while it's being dragged.
-        lateinit var updateToolbarPos: () -> Unit
-
-        // Runs once when a move-drag ends. Recomputes the wrap width FRESH from wherever the
-        // item was just dropped, rather than restoring whatever it was before the drag. That
-        // distinction matters: clampTextItemToPage only ever fixes maxWidth the very FIRST time
-        // an item is committed, then leaves it alone forever — so without this, dragging moved
-        // the box, but the text kept wrapping as if it were still sitting at its original spot.
-        // The first line/paragraph needs to start exactly where the user dropped it, with
-        // everything after it wrapping to fit the space actually available from there.
-        fun settleWrapWidthAfterDrag() {
-            if (drawingView.canvasMode == CanvasMode.CONVENIENT || drawingView.canvasMode == CanvasMode.PAGINATED) {
-                // item.y is the BOTTOM (see textItemHeight/drawTextItem convention), so simply
-                // changing maxWidth and leaving item.y alone would shift the visual TOP by
-                // however much the height changed — exactly the "wrap shifts the whole
-                // paragraph" bug. A single unbreakable long token (a URL/path with no spaces,
-                // like the CI log's JAVA_HOME line) is the classic trigger: it renders at a very
-                // different width depending on available room, so re-wrapping it can swing the
-                // total height a lot. Capturing height before/after and folding the DIFFERENCE
-                // into item.y keeps the first line's screen position exactly where it was —
-                // the extra/removed height comes entirely from the bottom edge instead.
-                val heightBefore = drawingView.textItemHeight(item)
-                item.maxWidth = (drawingView.pageWidthPx() - item.x - 16f).coerceAtLeast(80f)
-                val heightAfter = drawingView.textItemHeight(item)
-                item.y += (heightAfter - heightBefore)
-            } else {
-                frozenMaxWidth?.let { item.maxWidth = it }
-            }
-            frozenMaxWidth = null
-            // boxW/boxH were captured ONCE when this item was first selected and never touched
-            // again — so once maxWidth (and therefore the text's true rendered width/height)
-            // changed here, the highlighted selection box stayed the OLD size while the actual
-            // text underneath it was now a different size, visibly mismatched. Recomputing both
-            // and resizing the actual moveSurface view keeps the highlight glued to reality.
-            val (newBoxW, newBoxH) = measureTextBoxSize(item, screenSizePx)
-            boxW = newBoxW; boxH = newBoxH
-            val slp = moveSurface.layoutParams as FrameLayout.LayoutParams
-            slp.width = boxW; slp.height = boxH
-            moveSurface.layoutParams = slp
-            updateToolbarPos() // re-derive position from the refreshed boxH too
-            drawingView.invalidate()
-        }
-        moveSurface.setOnTouchListener { _, ev ->
-            // The hand-icon toggle (fingerPanMode) is handled inside DrawingView itself, but
-            // moveSurface is a separate overlay View sitting on top of it — it had no idea that
-            // toggle existed, so it always intercepted the touch first and started a drag
-            // regardless. Returning false (not consuming) here on ACTION_DOWN lets Android's
-            // normal touch dispatch fall through to DrawingView underneath, which already does
-            // the right thing for panning.
-            if (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN && drawingView.fingerPanMode) {
-                return@setOnTouchListener false
-            }
-            when (ev.actionMasked) {
-                android.view.MotionEvent.ACTION_DOWN -> {
-                    activePointerId = ev.getPointerId(0)
-                    val (rawX, rawY) = rawXYForPointer(ev, activePointerId) ?: (ev.rawX to ev.rawY)
-                    // Rotation is handled entirely by rotateHandle's own dedicated listener now
-                    // (see below) — it owns whatever bounds it's actually drawn in, so there's
-                    // no need to guess here whether a touch was "close to the dot." This is
-                    // always a move-drag start.
-                    isDraggingRotate = false
-                    moveStartRawX = rawX; moveStartRawY = rawY
-                    val lp = moveSurface.layoutParams as FrameLayout.LayoutParams
-                    moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
-                    dragStartWorldX2 = item.x; dragStartWorldY2 = item.y
-                    drawingView.draggingTextItem = item // suppress page-split rendering for this item until the drag ends
-                    // Freeze the actual word-wrap width too — not just which page a line
-                    // renders on. In Convenient/Paginated mode, an item without an explicit
-                    // maxWidth wraps at (pageWidth - item.x), which is a moving target during
-                    // a drag: every tiny change in item.x re-flows the text, and since height
-                    // depends on how many lines that produces, the total height — and
-                    // therefore the derived top position — swings with it, independent of
-                    // the actual finger motion. That's the real cause of the shaking. Pinning
-                    // maxWidth to whatever it currently evaluates to makes the layout fully
-                    // stable for the whole drag; restoring it on release lets exactly one
-                    // clean re-wrap happen at the final settled position.
-                    frozenMaxWidth = item.maxWidth
-                    item.maxWidth = drawingView.textWrapWidth(item).toFloat()
-                    true // ALWAYS true — never drop the touch sequence
-                }
-                android.view.MotionEvent.ACTION_POINTER_DOWN -> {
-                    // A second (or third...) finger touching down mid-gesture — e.g. a palm brush
-                    // — is deliberately ignored entirely. It must never become the tracked pointer,
-                    // and must never reset drag-start state, or the next move/lift would jump.
-                    true
-                }
-                android.view.MotionEvent.ACTION_MOVE -> {
-                    val (rawX, rawY) = rawXYForPointer(ev, activePointerId) ?: return@setOnTouchListener true
-                    // Drag delta is computed in WORLD units (screen px / scaleFactor), and
-                    // item.x/item.y are the single source of truth for position — screen
-                    // margins are re-derived FROM them every frame, never the other way
-                    // around. No floor/ceiling clamp here: the item must be draggable to any
-                    // world position, including off the visible screen (pan/zoom to reach it
-                    // again) — same "infinite canvas" model already used elsewhere for panning.
-                    // A hard coerceAtLeast(0) here previously made anything taller/wider than
-                    // the screen unmovable once its top-left hit the screen edge.
-                    val scale = drawingView.getScaleFactor()
-                    val dxWorld = (rawX - moveStartRawX) / scale
-                    val dyWorld = (rawY - moveStartRawY) / scale
-                    item.x = dragStartWorldX2 + dxWorld
-                    item.y = dragStartWorldY2 + dyWorld
-
-                    val lp = moveSurface.layoutParams as FrameLayout.LayoutParams
-                    lp.leftMargin = drawingView.worldToScreenX(item.x).toInt()
-                    lp.topMargin = (drawingView.worldToScreenY(item.y) - boxH).toInt()
-                    moveSurface.layoutParams = lp
-
-                    drawingView.invalidate()
-                    updateToolbarPos() // keep toolbar + rotate handle glued to the item mid-drag
-                    true
-                }
-                android.view.MotionEvent.ACTION_POINTER_UP -> {
-                    // If the finger that lifted is the one we've been tracking, end the drag
-                    // cleanly here rather than letting some other still-down finger silently take
-                    // over as the new "index 0" on the next MOVE event.
-                    if (ev.getPointerId(ev.actionIndex) == activePointerId) {
-                        isDraggingRotate = false; activePointerId = -1
-                        if (drawingView.draggingTextItem === item) { drawingView.draggingTextItem = null }
-                        if (frozenMaxWidth != null) settleWrapWidthAfterDrag() // only after an actual move-drag, never after a rotate or plain tap
-                    }
-                    true
-                }
-                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
-                    isDraggingRotate = false; activePointerId = -1
-                    if (drawingView.draggingTextItem === item) { drawingView.draggingTextItem = null }
-                    if (frozenMaxWidth != null) settleWrapWidthAfterDrag()
-                    true
-                }
-                else -> true
-            }
-        }
-        val surfaceLp = FrameLayout.LayoutParams(boxW, boxH)
-        surfaceLp.leftMargin = anchorScreenX.toInt().coerceAtLeast(0)
-        surfaceLp.topMargin = (anchorScreenY - boxH).toInt().coerceAtLeast(0)
-        moveSurface.layoutParams = surfaceLp
-        canvasContainer.addView(moveSurface)
-
-        // Visible rotate handle — this used to be an invisible hot-zone (drag within 56dp of a
-        // point 90dp above the item) with literally nothing shown to indicate rotation was even
-        // possible there, let alone where. Same interaction (moveSurface's touch listener above
-        // already handles the actual drag-to-rotate logic based on this same position), now with
-        // an actual handle to see and reach for — matching the visible green rotate dot already
-        // used in the full editor, so the two rotate interactions look and feel consistent.
-        val rotateHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(40), dp(40)) }
-        rotateHandle.addView(View(this).apply {
-            val lp = FrameLayout.LayoutParams(dp(28), dp(28)); lp.gravity = Gravity.CENTER; layoutParams = lp
-            background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(Color.parseColor("#4CAF50")); setStroke(dp(2), Color.WHITE)
-            }
-            elevation = dp(4).toFloat()
-        })
-        // Own touch listener, not routed through moveSurface's dist-check anymore. That worked
-        // only by coincidence, back when the dot sat low enough to still fall inside
-        // moveSurface's own rectangle (which spans exactly the text's own footprint) — once the
-        // dot was moved to sit clearly ABOVE the box (so it visually reads as "on top of the
-        // text", per an earlier fix), it moved outside moveSurface's bounds entirely, and Android
-        // simply never delivered those touches to moveSurface's listener at all. Rotation
-        // silently stopped working. A dedicated listener on the handle itself can't have that
-        // problem, since it owns whatever bounds it's actually drawn in.
-        rotateHandle.setOnTouchListener { _, ev ->
-            when (ev.actionMasked) {
-                android.view.MotionEvent.ACTION_DOWN -> {
-                    rotPivotScreenX = drawingView.worldToScreenX(item.x) + boxW / 2f
-                    rotPivotScreenY = drawingView.worldToScreenY(item.y) - boxH / 2f
-                    rotStartAngleDeg = angleDegrees(rotPivotScreenX, rotPivotScreenY, ev.rawX, ev.rawY)
-                    rotStartRotation2 = item.rotation
-                    true
-                }
-                android.view.MotionEvent.ACTION_MOVE -> {
-                    val currentAngleDeg = angleDegrees(rotPivotScreenX, rotPivotScreenY, ev.rawX, ev.rawY)
-                    item.rotation = rotStartRotation2 + (currentAngleDeg - rotStartAngleDeg)
-                    drawingView.invalidate()
-                    true
-                }
-                else -> true
-            }
-        }
-        rotateHandle.isClickable = false // purely visual - moveSurface's own touch listener already covers this exact spot
-        canvasContainer.addView(rotateHandle)
-
-        // Fixed bottom bar — matches the same one used in the active typing editor, so tapping a
-        // committed item to select+move it and actively typing feel like the same tool, not two
-        // different UIs. There's no text cursor/selection here (nothing is being typed), so
-        // Bold/Italic/Underline apply to the WHOLE item's text at once rather than a selection —
-        // toggling adds or removes a full-range span, using the same TextSpanData mechanism the
-        // active editor uses for partial-selection formatting.
-        val toolbar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(8).toFloat()
-            setPadding(dp(8), dp(8), dp(8), dp(8)); gravity = Gravity.CENTER
-            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        }
-        val tbInactiveBg = Color.parseColor("#F0EBE0"); val tbActiveBg = Color.parseColor("#8D6E63")
-        fun tbBtn(iconRes: Int, action: (ImageView) -> Unit): ImageView {
-            val b = ImageView(this); b.setImageResource(iconRes); b.scaleType = ImageView.ScaleType.CENTER_INSIDE
-            val p = LinearLayout.LayoutParams(dp(40), dp(40)); p.setMargins(dp(4), 0, dp(4), 0); b.layoutParams = p
-            b.setPadding(dp(8), dp(8), dp(8), dp(8)); b.setBackgroundColor(tbInactiveBg); b.setOnClickListener { action(b) }
-            toolbar.addView(b); return b
-        }
-        fun hasFullSpan(type: Char, value: Int) = item.spans.any { it.type == type && it.value == value && it.start == 0 && it.end == item.text.length }
-        fun toggleFullSpan(btn: ImageView, type: Char, value: Int) {
-            if (hasFullSpan(type, value)) item.spans.removeAll { it.type == type && it.value == value && it.start == 0 && it.end == item.text.length }
-            else item.spans.add(TextSpanData(0, item.text.length, type, value))
-            btn.setBackgroundColor(if (hasFullSpan(type, value)) tbActiveBg else tbInactiveBg)
-            btn.setColorFilter(if (hasFullSpan(type, value)) Color.WHITE else Color.parseColor("#4A4A4A"))
-            drawingView.invalidate()
-        }
-        val btnBold = tbBtn(R.drawable.ic_text_bold) { btn -> toggleFullSpan(btn, 'S', Typeface.BOLD) }
-        val btnItalic = tbBtn(R.drawable.ic_text_italic) { btn -> toggleFullSpan(btn, 'S', Typeface.ITALIC) }
-        val btnUnderline = tbBtn(R.drawable.ic_text_underline) { btn -> toggleFullSpan(btn, 'U', 0) }
-        if (hasFullSpan('S', Typeface.BOLD)) { btnBold.setBackgroundColor(tbActiveBg); btnBold.setColorFilter(Color.WHITE) }
-        if (hasFullSpan('S', Typeface.ITALIC)) { btnItalic.setBackgroundColor(tbActiveBg); btnItalic.setColorFilter(Color.WHITE) }
-        if (hasFullSpan('U', 0)) { btnUnderline.setBackgroundColor(tbActiveBg); btnUnderline.setColorFilter(Color.WHITE) }
-        tbBtn(R.drawable.ic_text_delete) { drawingView.removeTextItem(item); dismissTextSelectionBox(); drawingView.invalidate() }
-        tbBtn(R.drawable.ic_text_check) { dismissTextSelectionBox() }
-
-        val toolbarLp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; bottomMargin = dp(16)
-        }
-        canvasContainer.addView(toolbar, toolbarLp)
-        textSelectionBox = moveSurface; textSelectionItem = item
-        textSelectionHandles = listOf(toolbar, rotateHandle)
-
-        // Assigned into the lambda var declared above (before moveSurface's touch listener) so
-        // that ACTION_MOVE can call it on every drag frame, keeping the toolbar and rotate handle
-        // glued to the item instead of only refreshing on setup / canvas pan-zoom. Toolbar and
-        // rotate-handle positions are still clamped to stay on-screen and reachable (unlike the
-        // item's own drag, which is intentionally unclamped) — these are small UI controls, not
-        // the thing being dragged, so they should never become unreachable off the edge of the screen.
-        updateToolbarPos = {
-            // Ceiling clamp added: for a text item taller than the screen (a multi-page paste),
-            // item.y (its bottom) can be far below the visible area — worldToScreenY(item.y)
-            // is then a huge pixel value, and a floor-only clamp does nothing to stop the
-            // toolbar/rotate handle from being positioned thousands of px off the bottom of the
-            // screen, i.e. rendered but completely invisible ("single tap shows nothing").
-            // Clamping to a max keeps both controls reachable regardless of item height.
-            val maxTop = (canvasContainer.height - dp(48)).coerceAtLeast(dp(4))
-            val sx = drawingView.worldToScreenX(item.x)
-            val sy = drawingView.worldToScreenY(item.y)
-            // The invisible draggable moveSurface itself was previously only ever positioned
-            // once at creation and during its own active drag — never on canvas pan/zoom, unlike
-            // the toolbar and rotate dot below. So panning the canvas after selecting an item
-            // (without dragging it) left the actual touch-catching surface frozen at its old
-            // screen coordinates while the item visually scrolled away underneath it — the
-            // toolbar/dot looked like they were following correctly, but touching the item where
-            // it now visually sits hit nothing, since the real interactive surface was left
-            // behind. Repositioning it here too, from the same item.x/item.y source of truth
-            // used everywhere else, keeps it glued to the item regardless of how much you scroll.
-            val mlp = moveSurface.layoutParams as FrameLayout.LayoutParams
-            mlp.leftMargin = sx.toInt(); mlp.topMargin = (sy - boxH).toInt()
-            moveSurface.layoutParams = mlp
-            // toolbar is now a fixed bottom bar (see its own LayoutParams, gravity BOTTOM) — it
-            // no longer tracks item.x/item.y at all, unlike moveSurface and rotateHandle below.
-            // Anchored to the box's actual TOP edge (not a fixed 90dp above the BOTTOM, which
-            // drifted further from "on top of the box" the taller the item was) and centered
-            // horizontally over its width (not left-aligned to item.x, which is why it always
-            // looked offset to the left rather than sitting squarely above the text). Still
-            // clamped to stay on-screen/reachable for a tall item scrolled partly off-view.
-            // rotateHandle owns its own touch bounds directly now (its own dedicated listener,
-            // not a distance check against some other view), so there's no separate "hit zone
-            // center" to keep in sync here anymore — just its visible position.
-            val rsx = drawingView.worldToScreenX(item.x) + boxW / 2f
-            val rsy = (drawingView.worldToScreenY(item.y) - boxH) - dp(40)
-            val rlp = rotateHandle.layoutParams as FrameLayout.LayoutParams
-            rlp.leftMargin = (rsx - dp(20)).toInt().coerceIn(0, canvasContainer.width - dp(40))
-            rlp.topMargin = (rsy - dp(20)).toInt().coerceIn(0, maxTop)
-            rotateHandle.layoutParams = rlp
-        }
-        updateToolbarPos()
-        drawingView.onCanvasTransformed = { updateToolbarPos() }
-    }
-
-    private fun showInlineTextEditor(item: TextItem?, screenX: Float, screenY: Float, worldX: Float, worldY: Float) {
-        dismissTextSelectionBox()
-        if (activeEditText != null && editingItem === item) return
-        if (activeEditText != null) { isSwitchingTextEditor=true; closeInlineEditor(true); isSwitchingTextEditor=false; drawingView.post{ showInlineTextEditor(item,screenX,screenY,worldX,worldY) }; return }
-        dismissCellEditor()
-        dismissAllFloatingPanels()
-        drawingView.isTextEditorOpen = true
-        pendingBold=false; pendingItalic=false; pendingUnderline=false; pendingHighlight=null
-        // Default font size: 50pt in Convenient layout (large, comfortable writing feel),
-        // 12pt in Print/Infinite layouts (true-to-scale, matches standard document text).
-        val layoutDefaultSize = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 50f * PT_TO_PX else 12f * PT_TO_PX
-        editingItem=item; editWorldX=item?.x?:worldX; editWorldY=item?.y?:worldY; editRotation=item?.rotation?:0f; editColor=item?.color?:drawingView.currentColor; editSize=item?.size?:layoutDefaultSize
-        editOpacity = item?.opacity ?: 255
-        // editWorldY (like TextItem.y) means BOTTOM everywhere else in this app — but what we
-        // actually want while typing/pasting is for the TOP to stay fixed and the box to grow
-        // DOWNWARD as content is added, the way any normal text editor behaves. Without this
-        // anchor, a fixed "bottom" with growing height means the rendered top keeps climbing
-        // further up the screen the more text goes in — which is exactly the "text goes up"
-        // bug on a large paste. For an existing item, back-calculate its current top from its
-        // stored bottom+height; for a brand new one, the tap position IS the intended top.
-        editTopAnchorY = if (item != null) item.y - drawingView.textItemHeight(item) else worldY
-        // For new text: use last-saved font from prefs (most reliable — survives any intermediate resets)
-        // For existing text: load that item's own font
-        pendingFontFamily = item?.fontFamily ?: (getPrefs().getString("last_font", pendingFontFamily) ?: pendingFontFamily)
-        val density=resources.displayMetrics.density
-        val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
-        // Was boosted 1.6x for Convenient mode to make typing feel bigger/easier — turned out
-        // to be the opposite of convenient in practice: a jarring size jump between what you're
-        // typing and what it actually looks like once committed. Matches final size exactly now.
-        val convenientBoost = 1f
-        val screenSizePx=(if(useActualSize) editSize else editSize*drawingView.getScaleFactor()) * convenientBoost
-
-        // Bordered editing box (matches the blue-bordered selection rectangle from the reference)
-        val boxContainer = FrameLayout(this)
-        boxContainer.clipChildren = false
-        boxContainer.clipToPadding = false
-        val et=EditText(this)
-        val spannable=SpannableStringBuilder(item?.text?:"")
-        item?.spans?.forEach{ sp-> val s=sp.start.coerceIn(0,spannable.length);val e=sp.end.coerceIn(s,spannable.length); if(s<e) when(sp.type){ 'S'->spannable.setSpan(StyleSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'C'->spannable.setSpan(ForegroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'U'->spannable.setSpan(UnderlineSpan(),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'H'->spannable.setSpan(BackgroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } }
-        val maxEditorWidthPx = (canvasContainer.width - screenX - dp(24)).toInt().coerceAtLeast(dp(140))
-        et.setText(spannable,TextView.BufferType.SPANNABLE)
-        et.setTextColor(editColor); et.alpha = editOpacity / 255f
-        et.textSize=(screenSizePx/density).coerceAtLeast(8f)
-        et.setBackgroundColor(Color.TRANSPARENT)
-        et.setPadding(dp(8),dp(8),dp(8),dp(8)); et.minWidth=dp(140); et.maxWidth=maxEditorWidthPx; et.minHeight=dp(48)
-        // No max height here anymore. There used to be one (2.2 screens, with internal
-        // scrolling past that), added on a hypothesis that an unboundedly tall View might hit
-        // an Android rendering crash. That traded away exactly the behavior actually wanted —
-        // a box that grows freely and lets you pan the canvas to see the rest of it, the way
-        // Notewise does — for a bounded box with its own internal scrollbar, which just moved
-        // the problem instead of fixing it. The real bugs (position math using the wrong
-        // height, floating handles with no on-screen clamp) have since been fixed directly, so
-        // this cap wasn't buying anything anymore except a worse editing experience.
-        et.typeface = typefaceFromFamily(pendingFontFamily)
-        // Rotation lives on boxContainer alone now, not on both et AND boxContainer
-        // independently. et is a CHILD of boxContainer, so rotating the parent already rotates
-        // everything inside it (the text, any future border/background) as one unit — setting
-        // et's own rotation on top of that compounded the two together: et carried its own
-        // fixed tilt from here, while boxContainer's tilt kept changing live during a drag,
-        // and the two combined into something that rotated faster than intended, in a
-        // direction that didn't track the finger, with the text appearing to move independently
-        // of "the box." One rotation value, applied once at setup and kept in sync during drag
-        // (see the rotate handle's touch listener below), removes the compounding entirely.
-        if (!useActualSize) boxContainer.rotation = editRotation
-        et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } } }; override fun afterTextChanged(s:Editable?){
-            // Android moves the cursor to the end of any inserted text (a paste is one big
-            // insert) and auto-scrolls EditText's OWN internal viewport to keep that cursor
-            // visible — BEFORE the box has resized to its new full WRAP_CONTENT height. That
-            // leaves scrollY stuck showing only the tail of a large paste. et.post so this runs
-            // after Android's own post-triggered auto-scroll (which caused the problem) rather
-            // than racing it.
-            et.post { et.scrollTo(0, 0) }
-        } })
-
-        // Visible border frame around the editable box, drawn via a GradientDrawable stroke.
-        // Bigger padding and a thicker, more visible border than before per request.
-        boxContainer.background = android.graphics.drawable.GradientDrawable().apply {
-            setStroke(dp(2), Color.parseColor("#2196F3"))
-            setColor(Color.parseColor("#08000000"))
-        }
-        boxContainer.addView(et, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
-
-        val params=FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,FrameLayout.LayoutParams.WRAP_CONTENT)
-        // screenY here is already meant as the TOP (matches editTopAnchorY's convention) — the
-        // old "- screenSizePx" was a leftover from when this used the same bottom-based
-        // assumption everything else did, before that got fixed. Left in place, it meant the
-        // very first frame (before updateET() gets a chance to correct it) briefly positioned
-        // the box one line higher than intended.
-        params.leftMargin=(screenX - dp(6)).toInt().coerceAtLeast(0); params.topMargin=(screenY-dp(6)).toInt().coerceAtLeast(0)
-        canvasContainer.addView(boxContainer,params)
-
-        // Move handle: a small drag grip on the TOP-LEFT corner of the box. Dragging this moves
-        // the whole box (and the underlying text item's world position) without needing to leave
-        // the editor or tap elsewhere - works both while actively typing and after.
-        // All four handles below are positioned via setX/setY (absolute pixels, applied once the
-        // box's real WRAP_CONTENT size is known via an OnLayoutChangeListener) rather than
-        // negative margins + gravity, which proved unreliable for views meant to sit outside
-        // their parent's own bounds.
-        val moveHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
-        moveHandle.addView(View(this).apply {
-            layoutParams = FrameLayout.LayoutParams(dp(16), dp(16)).also { it.gravity = Gravity.CENTER }
-            background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.parseColor("#2196F3")); setStroke(dp(2), Color.WHITE) }
-        })
-        var moveStartRawX = 0f; var moveStartRawY = 0f; var moveStartLeft = 0; var moveStartTop = 0
-        var moveHandlePointerId = -1
-        // Forward reference: layoutEditorHandles is defined below but called from here
-        var onBoxMoved: (() -> Unit)? = null
-        var onBoxResized: (() -> Unit)? = null
-        // toolbarScroll is declared later in this function — use a forward ref so we can hide it during drag
-        var editorToolbarRef: View? = null
-        moveHandle.setOnTouchListener { _, ev ->
-            when (ev.actionMasked) {
-                android.view.MotionEvent.ACTION_DOWN -> {
-                    moveHandlePointerId = ev.getPointerId(0)
-                    moveStartRawX = ev.rawX; moveStartRawY = ev.rawY
-                    val lp = boxContainer.layoutParams as FrameLayout.LayoutParams
-                    moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
-                    editorToolbarRef?.visibility = View.INVISIBLE  // hide toolbar while dragging
-                    true
-                }
-                android.view.MotionEvent.ACTION_POINTER_DOWN -> true // ignore extra fingers, same reasoning as the committed-item drag
-                android.view.MotionEvent.ACTION_MOVE -> {
-                    // Same fix as the committed-item drag: resolve coordinates from the SPECIFIC
-                    // finger that started this drag (via pointer ID), not plain ev.rawX/rawY
-                    // (always pointer index 0) — otherwise a stray second-finger touch mid-drag,
-                    // followed by the original finger lifting, silently reassigns index 0 to
-                    // that other finger and causes a sudden, erratic jump.
-                    val idx = ev.findPointerIndex(moveHandlePointerId)
-                    if (idx < 0) return@setOnTouchListener true
-                    val curRawX = if (android.os.Build.VERSION.SDK_INT >= 29) ev.getRawX(idx) else ev.rawX
-                    val curRawY = if (android.os.Build.VERSION.SDK_INT >= 29) ev.getRawY(idx) else ev.rawY
-                    val dx = (curRawX - moveStartRawX).toInt(); val dy = (curRawY - moveStartRawY).toInt()
-                    val lp = boxContainer.layoutParams as FrameLayout.LayoutParams
-                    // No floor clamp — same reasoning as the committed-item drag fix: a hard
-                    // coerceAtLeast(0) here made a box taller/wider than the screen unmovable
-                    // once its top-left hit the screen edge, since going further was a no-op.
-                    lp.leftMargin = moveStartLeft + dx; lp.topMargin = moveStartTop + dy
-                    boxContainer.layoutParams = lp
-                    // Directly track top-left position — no more converting through a
-                    // "bottom" intermediate and back, which is what the earlier, more
-                    // complicated version of this did. A drag IS a top-left position update;
-                    // there's no need to round-trip that through height math at all.
-                    editWorldX = drawingView.screenToWorldX((lp.leftMargin + dp(6)).toFloat())
-                    editTopAnchorY = drawingView.screenToWorldY((lp.topMargin + dp(6)).toFloat())
-                    onBoxMoved?.invoke()
-                    true
-                }
-                android.view.MotionEvent.ACTION_POINTER_UP -> {
-                    if (ev.getPointerId(ev.actionIndex) == moveHandlePointerId) moveHandlePointerId = -1
-                    true
-                }
-                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
-                    moveHandlePointerId = -1
-                    editorToolbarRef?.visibility = View.VISIBLE  // restore toolbar once placed
-                    true
-                }
-                else -> true
-            }
-        }
-        // All 4 editor handles are direct children of canvasContainer (not boxContainer) so they
-        // are never clipped by boxContainer's bounds - same fix applied to the selection box handles.
-        fun containerLeft() = (boxContainer.layoutParams as FrameLayout.LayoutParams).leftMargin.toFloat()
-        fun containerTop() = (boxContainer.layoutParams as FrameLayout.LayoutParams).topMargin.toFloat()
-
-        val resizeHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
-        resizeHandle.addView(View(this).apply {
-            layoutParams = FrameLayout.LayoutParams(dp(16), dp(16)).also { it.gravity = Gravity.CENTER }
-            background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor("#2196F3")) }
-        })
-        var resizeStartX = 0f; var resizeStartWidth = 0
-        resizeHandle.setOnTouchListener { _, ev ->
-            when (ev.actionMasked) {
-                android.view.MotionEvent.ACTION_DOWN -> { resizeStartX = ev.rawX; resizeStartWidth = et.width.takeIf { it > 0 } ?: maxEditorWidthPx; true }
-                android.view.MotionEvent.ACTION_MOVE -> {
-                    val dx = (ev.rawX - resizeStartX).toInt()
-                    val newWidth = (resizeStartWidth + dx).coerceIn(dp(80), maxEditorWidthPx)
-                    et.maxWidth = newWidth; et.minWidth = newWidth
-                    et.requestLayout()
-                    true
-                }
-                else -> true
-            }
-        }
-
-        val rotateHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
-        rotateHandle.addView(View(this).apply {
-            layoutParams = FrameLayout.LayoutParams(dp(16), dp(16)).also { it.gravity = Gravity.CENTER }
-            background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.parseColor("#4CAF50")); setStroke(dp(2), Color.WHITE) }
-        })
-        var rotPivotXEdit = 0f; var rotPivotYEdit = 0f; var rotateStartAngleDeg = 0f; var rotateStartRotation = 0f
-        rotateHandle.setOnTouchListener { _, ev ->
-            when (ev.actionMasked) {
-                android.view.MotionEvent.ACTION_DOWN -> {
-                    // Pivot = boxContainer's actual on-screen center. Captured once here (not
-                    // per-frame), so there's no risk of the feedback-loop issue that came from
-                    // reading a view's live position while ALSO repositioning it in response to
-                    // the same touch (relevant for dragging, not for rotating — position doesn't
-                    // change during a pure rotation, only editRotation does).
-                    val loc = IntArray(2); boxContainer.getLocationOnScreen(loc)
-                    rotPivotXEdit = loc[0] + boxContainer.width / 2f
-                    rotPivotYEdit = loc[1] + boxContainer.height / 2f
-                    rotateStartAngleDeg = angleDegrees(rotPivotXEdit, rotPivotYEdit, ev.rawX, ev.rawY)
-                    rotateStartRotation = editRotation
-                    true
-                }
-                android.view.MotionEvent.ACTION_MOVE -> {
-                    // True angle-around-pivot rotation — matches the committed-item rotate
-                    // handle exactly, since both now call the same shared angleDegrees() helper.
-                    val currentAngleDeg = angleDegrees(rotPivotXEdit, rotPivotYEdit, ev.rawX, ev.rawY)
-                    editRotation = rotateStartRotation + (currentAngleDeg - rotateStartAngleDeg)
-                    if (!useActualSize) { boxContainer.rotation = editRotation }
-                    true
-                }
-                else -> true
-            }
-        }
-
-        val deleteHandle = FrameLayout(this).apply { layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)) }
-        deleteHandle.addView(ImageView(this).apply {
-            layoutParams = FrameLayout.LayoutParams(dp(20), dp(20)).also { it.gravity = Gravity.CENTER }
-            setImageResource(R.drawable.ic_text_delete)
-            background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(2), Color.parseColor("#D32F2F")) }
-            setPadding(dp(3), dp(3), dp(3), dp(3))
-        })
-        deleteHandle.setOnClickListener { closeInlineEditor(false, delete = true) }
-
-        canvasContainer.addView(moveHandle)
-        canvasContainer.addView(resizeHandle)
-        canvasContainer.addView(rotateHandle)
-        canvasContainer.addView(deleteHandle)
-
-        fun layoutEditorHandles() {
-            val bx = containerLeft(); val by = containerTop()
-            val w = boxContainer.width.toFloat(); val h = boxContainer.height.toFloat()
-            val half = dp(16)
-            // Screen-space clamp so a handle can never scroll off-screen and become
-            // unreachable — this was the actual cause of "can't move text taller than one
-            // page": with no vertical clamp, a handle anchored to the (possibly far off-screen)
-            // top/middle/bottom of a tall text box could land somewhere the person could never
-            // actually tap, since only leftMargin had a coerceAtLeast(0) before, not topMargin.
-            val maxTop = (canvasContainer.height - dp(32)).coerceAtLeast(0)
-            fun clampTop(v: Float) = v.toInt().coerceIn(0, maxTop)
-            val mlp = moveHandle.layoutParams as FrameLayout.LayoutParams
-            mlp.leftMargin = (bx - half).toInt().coerceAtLeast(0); mlp.topMargin = clampTop(by - half)
-            moveHandle.layoutParams = mlp
-            val rlp = resizeHandle.layoutParams as FrameLayout.LayoutParams
-            rlp.leftMargin = (bx + w - half).toInt(); rlp.topMargin = clampTop(by + h / 2f - half)
-            resizeHandle.layoutParams = rlp
-            val rolp = rotateHandle.layoutParams as FrameLayout.LayoutParams
-            rolp.leftMargin = (bx + w - half).toInt(); rolp.topMargin = clampTop(by + h - half)
-            rotateHandle.layoutParams = rolp
-            val dlp = deleteHandle.layoutParams as FrameLayout.LayoutParams
-            dlp.leftMargin = (bx + w - half).toInt(); dlp.topMargin = clampTop(by - half)
-            deleteHandle.layoutParams = dlp
-        }
-        boxContainer.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, or_, ob ->
-            if (r - l != or_ - ol || b - t != ob - ot) { layoutEditorHandles(); onBoxResized?.invoke() }
-        }
-        boxContainer.post { layoutEditorHandles() }
-        // onBoxMoved is assigned after updateET() is defined below
-
-        // Options toolbar positioned directly above the editing box (not pinned to screen bottom)
-        val toolbar=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(6).toFloat(); setPadding(dp(6),dp(6),dp(6),dp(6)) }
-        fun ibtn(iconRes:Int,action:(ImageView)->Unit):ImageView{
-            val b=ImageView(this); b.setImageResource(iconRes); b.scaleType=ImageView.ScaleType.CENTER_INSIDE
-            val p=LinearLayout.LayoutParams(dp(34),dp(34));p.setMargins(dp(2),0,dp(2),0);b.layoutParams=p
-            b.setPadding(dp(6),dp(6),dp(6),dp(6))
-            b.setBackgroundColor(Color.parseColor("#F0EBE0"));b.setOnClickListener{action(b)};toolbar.addView(b);return b
-        }
-        fun tbtnText(label:String,action:(TextView)->Unit):TextView{ val b=TextView(this);b.text=label;b.textSize=14f;b.setTextColor(Color.parseColor("#4A4A4A"));b.gravity=Gravity.CENTER;val p=LinearLayout.LayoutParams(dp(34),dp(34));p.setMargins(dp(2),0,dp(2),0);b.layoutParams=p;b.setBackgroundColor(Color.parseColor("#F0EBE0"));b.setOnClickListener{action(b)};toolbar.addView(b);return b }
-        val activeBg=Color.parseColor("#8D6E63"); val inactiveBg=Color.parseColor("#F0EBE0")
-        fun setToggleStateIcon(btn: ImageView, active: Boolean) { btn.setBackgroundColor(if(active) activeBg else inactiveBg); btn.setColorFilter(if(active) Color.WHITE else Color.parseColor("#4A4A4A")) }
-        ibtn(R.drawable.ic_text_bold){btn-> if(et.selectionStart!=et.selectionEnd) toggleStyleOnSelection(et,Typeface.BOLD) else{ pendingBold=!pendingBold; setToggleStateIcon(btn,pendingBold) } }
-        ibtn(R.drawable.ic_text_italic){btn-> if(et.selectionStart!=et.selectionEnd) toggleStyleOnSelection(et,Typeface.ITALIC) else{ pendingItalic=!pendingItalic; setToggleStateIcon(btn,pendingItalic) } }
-        ibtn(R.drawable.ic_text_underline){btn-> if(et.selectionStart!=et.selectionEnd) toggleUnderlineOnSelection(et) else{ pendingUnderline=!pendingUnderline; setToggleStateIcon(btn,pendingUnderline) } }
-        ibtn(R.drawable.ic_text_check){ closeInlineEditor(true) }
-        ibtn(R.drawable.ic_text_delete){ closeInlineEditor(false,delete=true) }
-        tbtnText("✨"){ _ ->
-            val selStart = et.selectionStart; val selEnd = et.selectionEnd
-            val query = (if (selStart != selEnd && selStart >= 0 && selEnd >= 0) et.text.toString().substring(minOf(selStart,selEnd), maxOf(selStart,selEnd)) else et.text.toString()).trim()
-            if (query.isEmpty()) { Toast.makeText(this,"Type or select something first",Toast.LENGTH_SHORT).show() }
-            else {
-                val qx = editWorldX
-                // et.height is the EditText's REAL on-screen height across every line it's
-                // currently wrapped to. Using editTopAnchorY (the fixed top) plus this current
-                // height gives the box's actual current bottom — editWorldY itself is no longer
-                // kept in sync during live editing (see updateET), so reading it directly here
-                // would give a stale, pre-edit position instead of where the box actually is now.
-                val fullHeightWorld = et.height / drawingView.getScaleFactor()
-                val qy = editTopAnchorY + fullHeightWorld
-                closeInlineEditor(true)
-                runGeminiQuery(query, null, qx, qy + 30f)
-            }
-        }
-
-        // Single fixed bottom bar — replaces the old floating toolbar that used to track the
-        // box's own top edge. That floating version had two problems: for a long multi-page
-        // paste it scrolled far off-screen the moment you scrolled down to keep typing, and
-        // showing it ALONGSIDE a separate bottom bar (an earlier attempt) was just confusing
-        // clutter — two toolbars doing the same job. Now there's exactly one, always reachable,
-        // reusing the SAME toolbar (with all 6 buttons, including the AI sparkle) instead of a
-        // second, different-looking bar.
-        val toolbarScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(toolbar) }
-        editorToolbarRef = toolbarScroll  // forward ref so move handle can hide/show it
-        val toolbarScrollLp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; bottomMargin = dp(16)
-        }
-        canvasContainer.addView(toolbarScroll, toolbarScrollLp)
-
-        // ── Keyboard scroll-into-view ─────────────────────────────────────────────
-        // Piggybacks on the OnApplyWindowInsetsListener already set on android.R.id.content
-        // in onCreate, which IS reliably called even with adjustNothing. The ViewTreeObserver
-        // approach was broken because adjustNothing prevents global layout changes from firing.
-        var savedTranslateY: Float? = null
-        var keyboardWasOpen = false
-
-        onImeBottomChanged = { imeBottom ->
-            val keyboardOpen = imeBottom > dp(150)
-
-            // Keep the fixed bottom bar riding just above the keyboard rather than buried
-            // underneath it — it's most needed exactly while the keyboard is open and typing.
-            val bblp = toolbarScroll.layoutParams as FrameLayout.LayoutParams
-            bblp.bottomMargin = (if (keyboardOpen) imeBottom + dp(8) else dp(16))
-            toolbarScroll.layoutParams = bblp
-
-            if (keyboardOpen && !keyboardWasOpen) {
-                keyboardWasOpen = true
-                savedTranslateY = drawingView.getTranslateY()
-
-                val canvasTop = IntArray(2).also { canvasContainer.getLocationOnScreen(it) }[1]
-                val textAbsoluteY = drawingView.worldToScreenY(editWorldY) + canvasTop
-                val screenHeight = window.decorView.height
-                val visibleBoundary = screenHeight - imeBottom
-
-                if (textAbsoluteY > visibleBoundary) {
-                    val extraPadding = dp(120)
-                    val delta = -(textAbsoluteY - visibleBoundary + extraPadding).toFloat()
-                    drawingView.shiftCanvasVertically(delta)
-                }
-
-            } else if (!keyboardOpen && keyboardWasOpen) {
-                keyboardWasOpen = false
-                val origY = savedTranslateY
-                if (origY != null) {
-                    drawingView.shiftCanvasVertically(origY - drawingView.getTranslateY())
-                }
-                savedTranslateY = null
-            }
-        }
-        // ─────────────────────────────────────────────────────────────────────────
-
-        fun updateET(){
-            val scale=drawingView.getScaleFactor();val nsp=editSize*scale*convenientBoost
-            et.textSize=(nsp/density).coerceAtLeast(8f)
-            // EditText keeps its OWN internal scroll position (separate from boxContainer's
-            // on-screen margins) so it can auto-follow the cursor. Right after a paste, the
-            // cursor jumps to the end of the inserted text, and — for a moment before the box
-            // has finished growing to its new WRAP_CONTENT height — EditText scrolls its
-            // internal viewport down to keep that cursor visible within its OLD (smaller)
-            // bounds. That internal scrollY then stays stuck even once the box correctly
-            // resizes to its full multi-page height, so only the tail of a big paste renders
-            // and everything above it looks like it vanished — even though the box's own
-            // position/size (computed below from editTopAnchorY) was correct the whole time.
-            // Since this editor is always sized to its full WRAP_CONTENT content (never
-            // internally clipped or scrolled by design — panning is the canvas's job, not the
-            // EditText's), forcing scrollY back to 0 every frame is always safe and a no-op
-            // once nothing is scrolled.
-            if (et.scrollY != 0) et.scrollTo(0, 0)
-            // Positions directly from editTopAnchorY (the top-left corner) — no more computing
-            // through a "bottom minus height" formula at all. That indirection was the root of
-            // several rounds of the same bug: every layer that touched it (drag, resize,
-            // scale-change) had to independently get the height-and-direction math exactly
-            // right, and any one of them being slightly off desynced the whole chain. Since the
-            // box is positioned by its actual top-left margin anyway, there was never a real
-            // reason to convert through "bottom" during live editing in the first place —
-            // that conversion only matters once, at commit time, for TextItem.y's storage
-            // convention (see closeInlineEditor).
-            val sx=drawingView.worldToScreenX(editWorldX);val sy=drawingView.worldToScreenY(editTopAnchorY)
-            // Deliberately UNCLAMPED here — this runs on every drag frame and every content
-            // change, and a box taller than the screen legitimately needs its top to go
-            // negative (above the visible area) at some scroll positions. Clamping it here
-            // (an earlier attempt) fought the user's own drag on every single frame, snapping
-            // a large box back to a fixed boundary and making it look completely frozen. The
-            // "make sure it's visible" safety net now lives in ensureEditorOnScreen() below,
-            // which runs ONCE when the editor first opens, not on every recalculation.
-            val lp=boxContainer.layoutParams as FrameLayout.LayoutParams; lp.leftMargin=(sx-dp(6)).toInt().coerceAtLeast(0); lp.topMargin=(sy-dp(6)).toInt()
-            boxContainer.layoutParams=lp
-            // toolbarScroll is a fixed bottom bar now (see its own LayoutParams, gravity BOTTOM)
-            // — it no longer tracks the box's position at all, so there's nothing to update here.
-            layoutEditorHandles()
-        }
-        // Runs ONCE, right when the editor first opens — not on every drag/resize like the
-        // earlier (broken) attempt at this. If the box would open off-screen (the actual cause
-        // of double-tap making text "disappear"), this nudges editTopAnchorY itself by the
-        // same on-screen correction, so the fix is baked into the anchor and free dragging
-        // afterward is completely unaffected by it.
-        fun ensureEditorOnScreen() {
-            updateET()
-            val lp = boxContainer.layoutParams as FrameLayout.LayoutParams
-            val maxTop = (canvasContainer.height - dp(48)).coerceAtLeast(0)
-            val clampedTop = lp.topMargin.coerceIn(0, maxTop)
-            if (clampedTop != lp.topMargin) {
-                val deltaScreenPx = (clampedTop - lp.topMargin).toFloat()
-                val deltaWorld = deltaScreenPx / drawingView.getScaleFactor()
-                editTopAnchorY += deltaWorld
-                updateET()
-            }
-        }
-        drawingView.onScaleChanged={ updateET() }; drawingView.onCanvasTransformed={ updateET() }
-        editorPreDrawListener = android.view.ViewTreeObserver.OnPreDrawListener { updateET(); true }
-        drawingView.viewTreeObserver.addOnPreDrawListener(editorPreDrawListener)
-        onBoxMoved = { layoutEditorHandles(); updateET() }  // assigned here so updateET is in scope
-        // The box's SIZE changing (typing/pasting) no longer needs to touch position at all —
-        // updateET() positions purely from editTopAnchorY now, which a resize doesn't change.
-        // Only the corner handles need to move to match the new size.
-        onBoxResized = { updateET() }
-        activeEditText=et; activeToolbar=toolbarScroll; activeEditBox=boxContainer
-        activeEditorHandles = listOf(moveHandle, resizeHandle, rotateHandle, deleteHandle)
-        boxContainer.post { ensureEditorOnScreen() }
-        et.requestFocus()
-        et.post{ val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager; imm.showSoftInput(et,InputMethodManager.SHOW_IMPLICIT) }
-    }
-
-    private fun closeInlineEditor(commit:Boolean, delete:Boolean=false) {
-        val et=activeEditText?:return; val tb=activeToolbar; val box=activeEditBox
-        val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager; imm.hideSoftInputFromWindow(et.windowToken,0)
-        val text=et.text.toString(); val spans=mutableListOf<TextSpanData>(); val ed=et.text
-        for(span in ed.getSpans(0,ed.length,Any::class.java)){ val s=ed.getSpanStart(span);val e=ed.getSpanEnd(span); if(s<0||e<0||s>=e) continue; when(span){ is StyleSpan->spans.add(TextSpanData(s,e,'S',span.style)); is ForegroundColorSpan->spans.add(TextSpanData(s,e,'C',span.foregroundColor)); is UnderlineSpan->spans.add(TextSpanData(s,e,'U',0)); is BackgroundColorSpan->spans.add(TextSpanData(s,e,'H',span.backgroundColor)) } }
-        if(box!=null) canvasContainer.removeView(box) else canvasContainer.removeView(et)
-        if(tb!=null) canvasContainer.removeView(tb)
-        activeEditorHandles.forEach { canvasContainer.removeView(it) }; activeEditorHandles = emptyList()
-        val item=editingItem
-        if(commit&&!delete&&text.isNotBlank()){
-            drawingView.defaultTextSize=editSize
-            // The box's TOP has been kept fixed at editTopAnchorY this whole time (drag and
-            // resize both maintain it) — but TextItem.y's storage convention is BOTTOM, so it
-            // has to be converted here, exactly once, at the moment of actually saving.
-            //
-            // Height for that conversion must come from the EXACT SAME computation
-            // DrawingView will use afterward to find the item's top when rendering/hit-testing
-            // (textItemHeight() → a StaticLayout built straight from the committed text/size/
-            // font/spans) — NOT from box.height/et.height, which are the EditText's own Android
-            // layout-pass measurements. Those lag the real content by up to a frame: right after
-            // a big paste (the exact moment someone is likely to immediately exit the editor),
-            // the layout pass reflecting the new full height may not have run yet, so box.height
-            // reads stale/too-small. That mismatch between "height used to compute bottom here"
-            // and "height used to compute top at render time" is what made the box visibly jump
-            // upward on exit — worse the larger the paste, since the gap between the two heights
-            // was proportional to how much content had just been added. Using textItemHeight()
-            // for both ends means they can never disagree, no matter how Android's own layout
-            // timing behaves.
-            if(item!=null){
-                item.text=text;item.color=editColor;item.size=editSize;item.rotation=editRotation;item.spans=spans;item.isEditing=false;item.fontFamily=pendingFontFamily;item.opacity=editOpacity; item.x=editWorldX
-                item.y = editTopAnchorY + drawingView.textItemHeight(item)
-                drawingView.clampTextItemToPage(item)
-            } else {
-                val newItem = drawingView.addText(text,editWorldX,editTopAnchorY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
-                if (newItem != null) newItem.y = editTopAnchorY + drawingView.textItemHeight(newItem)
-            }
-        } else { if(item!=null) drawingView.removeTextItem(item) }
-        if(!isSwitchingTextEditor) drawingView.invalidate()
-        // Remove keyboard scroll listener
-        if (activeEditorKeyboardListener != null) {
-            try { activeEditorKeyboardObserver?.removeOnGlobalLayoutListener(activeEditorKeyboardListener) } catch (e: Exception) {}
-        }
-        activeEditorKeyboardListener = null; activeEditorKeyboardObserver = null
-        onImeBottomChanged = null
-        editorPreDrawListener?.let { try { drawingView.viewTreeObserver.removeOnPreDrawListener(it) } catch (e: Exception) {} }
-        editorPreDrawListener = null
-        drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
-        if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
-    }
 
     private fun launchCamera() {
         if (checkSelfPermission(android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
