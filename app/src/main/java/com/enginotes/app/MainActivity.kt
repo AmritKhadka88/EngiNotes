@@ -908,6 +908,11 @@ class MainActivity : AppCompatActivity() {
         // tool ALSO went live underneath it — e.g. tapping a shape tool while still in an active
         // text edit left both the keyboard/editor AND the shape tool simultaneously active.
         if (activeEditText != null && tool != Tool.TEXT) closeInlineEditor(true)
+        // Same principle, the other text state: tapping an already-committed text item to
+        // select it (move/rotate handles, no active cursor) is a SEPARATE state from actively
+        // typing — closeInlineEditor above doesn't touch it. Switching tools left that selection
+        // overlay fully visible and interactive on top of whatever tool you just switched to.
+        if (textSelectionItem != null && tool != Tool.TEXT) dismissTextSelectionBox()
         if (tool != Tool.POLYLINE) { drawingView.finalizePolyline(false); polylineBar?.let { canvasContainer.removeView(it) }; polylineBar = null }
         drawingView.currentTool = tool; setActiveToolbarBtn(btn)
         dismissPenOptionsPanel(); dismissEraserOptionsPanel(); dismissHighlighterOptionsPanel(); dismissBrushOptionsPanel(); dismissShapesPicker(); dismissShapeOptionsPanel()
