@@ -2000,45 +2000,77 @@ class MainActivity : AppCompatActivity() {
     // sendBackward/sendToBack rather than introducing a second way to reorder items, so this
     // panel and the per-shape layer buttons (in the shape selection toolbar) always agree.
     private fun showLayersPanel() {
-        if (drawingView.actions.isEmpty()) { Toast.makeText(this, "Nothing on the canvas yet", Toast.LENGTH_SHORT).show(); return }
-        fun describe(item: Any): String = when (item) {
-            is StrokeItem -> item.data.type.name.lowercase().replaceFirstChar { it.uppercase() }
-            is TextItem -> "Text: \"${item.text.take(24)}${if (item.text.length > 24) "…" else ""}\""
-            is ImageItem -> "Image"
-            is FillItem -> "Fill"
-            is TableItem -> "Table"
-            is AudioItem -> "Audio note"
-            is DimensionItem -> "Dimension"
-            else -> item.javaClass.simpleName
-        }
         var dlg: AlertDialog? = null
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(8), dp(12), dp(8)) }
+
+        fun renameLayerDialog(layerId: Int, currentName: String) {
+            val input = android.widget.EditText(this).apply { setText(currentName); setSelection(text.length) }
+            AlertDialog.Builder(this).setTitle("Rename layer").setView(input)
+                .setPositiveButton("Rename") { _, _ ->
+                    val n = input.text.toString().trim()
+                    if (n.isNotEmpty()) drawingView.renameLayer(layerId, n)
+                    showLayersPanel(); dlg?.dismiss()
+                }.setNegativeButton("Cancel", null).show()
+        }
+
         fun refresh() {
             list.removeAllViews()
-            for (item in drawingView.actions.asReversed()) {
-                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, dp(8)) }
+            // layers is already top-of-list = frontmost, matching the request directly —
+            // no reversal needed here, unlike the old per-item version.
+            for (layer in drawingView.layers) {
+                val count = drawingView.actions.count { drawingView.itemLayerId(it) == layer.id }
+                val isActive = layer.id == drawingView.currentLayerId
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(8), dp(8), dp(8), dp(8))
+                    if (isActive) setBackgroundColor(Color.parseColor("#E3EEFB"))
+                }
                 row.addView(TextView(this).apply {
-                    text = describe(item); textSize = 14f; setTextColor(Color.parseColor("#1C1C1E"))
+                    text = "${layer.name}  ($count)"
+                    textSize = 14f; setTextColor(if (layer.visible) Color.parseColor("#1C1C1E") else Color.parseColor("#B0AAA2"))
+                    if (isActive) setTypeface(null, Typeface.BOLD)
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                    setOnClickListener {
-                        drawingView.selectedItem = item; drawingView.currentTool = Tool.SELECT
-                        setActiveToolbarBtn(findViewById(R.id.btnSelect)); drawingView.invalidate(); dlg?.dismiss()
-                    }
+                    // Tap = make this the active layer (new items go here). Long-press = rename.
+                    setOnClickListener { drawingView.currentLayerId = layer.id; refresh() }
+                    setOnLongClickListener { renameLayerDialog(layer.id, layer.name); true }
                 })
-                fun layerBtn(label: String, action: () -> Unit) = TextView(this).apply {
-                    text = label; textSize = 15f; setPadding(dp(10), dp(6), dp(10), dp(6)); setTextColor(Color.parseColor("#1565C0"))
+                fun iconBtn(label: String, color: String = "#1565C0", action: () -> Unit) = TextView(this).apply {
+                    text = label; textSize = 15f; setPadding(dp(8), dp(6), dp(8), dp(6)); setTextColor(Color.parseColor(color))
                     setOnClickListener { action(); refresh() }
                 }
-                row.addView(layerBtn("⬆⬆") { drawingView.bringToFront(item) })
-                row.addView(layerBtn("⬆") { drawingView.bringForward(item) })
-                row.addView(layerBtn("⬇") { drawingView.sendBackward(item) })
-                row.addView(layerBtn("⬇⬇") { drawingView.sendToBack(item) })
+                row.addView(iconBtn(if (layer.visible) "👁" else "🚫") { drawingView.setLayerVisible(layer.id, !layer.visible) })
+                row.addView(iconBtn("⬆") { drawingView.moveLayerUp(layer.id) })
+                row.addView(iconBtn("⬇") { drawingView.moveLayerDown(layer.id) })
+                row.addView(iconBtn("🗑", "#D32F2F") {
+                    if (drawingView.layers.size <= 1) {
+                        Toast.makeText(this, "Can't delete the only layer", Toast.LENGTH_SHORT).show()
+                    } else {
+                        AlertDialog.Builder(this)
+                            .setTitle("Delete \"${layer.name}\"?")
+                            .setMessage(if (count > 0) "This deletes everything in it too — $count item${if (count == 1) "" else "s"}." else "This layer is empty.")
+                            .setPositiveButton("Delete") { _, _ -> drawingView.deleteLayer(layer.id); refresh() }
+                            .setNegativeButton("Cancel", null).show()
+                    }
+                })
                 list.addView(row)
+                list.addView(View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)) })
             }
         }
         refresh()
         val scroll = ScrollView(this).apply { addView(list) }
-        dlg = AlertDialog.Builder(this).setTitle("Layers (top = front)").setView(scroll).setPositiveButton("Done", null).show()
+        val outer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(scroll) }
+        dlg = AlertDialog.Builder(this).setTitle("Layers (tap = active, long-press = rename)")
+            .setView(outer)
+            .setNeutralButton("+ New Layer") { _, _ ->
+                val input = android.widget.EditText(this).apply { hint = "Layer name" }
+                AlertDialog.Builder(this).setTitle("New layer").setView(input)
+                    .setPositiveButton("Create") { _, _ ->
+                        val n = input.text.toString().trim().ifEmpty { "Layer ${drawingView.layers.size + 1}" }
+                        drawingView.createLayer(n)
+                        showLayersPanel()
+                    }.setNegativeButton("Cancel", null).show()
+            }
+            .setPositiveButton("Done", null).show()
     }
 
     fun onMenuClick(v: View) {

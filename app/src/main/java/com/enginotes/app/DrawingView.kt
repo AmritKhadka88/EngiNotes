@@ -726,6 +726,7 @@ class StrokeData(
 }
 
 class StrokeItem(val data: StrokeData, var path: Path, var paint: Paint) {
+    var layerId: Int = 0
     var cachedBitmap: android.graphics.Bitmap? = null
     var cacheValid: Boolean = false
     var cacheLeft = 0f; var cacheTop = 0f; var cacheRight = 0f; var cacheBottom = 0f
@@ -765,6 +766,7 @@ class StrokeItem(val data: StrokeData, var path: Path, var paint: Paint) {
 }
 
 class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var size: Float, var rotation: Float) {
+    var layerId: Int = 0
     var spans: MutableList<TextSpanData> = mutableListOf()
     var isEditing: Boolean = false
     var maxWidth: Float = 0f  // 0 = unbounded (legacy); >0 = wrap to this width
@@ -785,11 +787,13 @@ class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var
 }
 
 class ImageItem(var path: String, var x: Float, var y: Float, var w: Float, var h: Float, var rotation: Float) {
+    var layerId: Int = 0
     @Volatile var bitmap: Bitmap? = null
     @Volatile var loading: Boolean = false
 }
 
 class FillItem(var path: String, var x: Float, var y: Float, var w: Float, var h: Float) {
+    var layerId: Int = 0
     @Volatile var bitmap: Bitmap? = null
     @Volatile var loading: Boolean = false
     var hatchPattern: HatchPattern? = null
@@ -824,6 +828,7 @@ class DimensionItem(
     var arrowSize: Float = 9f,      // world-unit base
     var textColor: Int = android.graphics.Color.parseColor("#1565C0")
 ) {
+    var layerId: Int = 0
     val len: Float get() { val dx=x2-x1; val dy=y2-y1; return kotlin.math.sqrt((dx*dx+dy*dy).toDouble()).toFloat() }
     fun displayLabel(refPixelLen: Float, mmPerUnit: Float = 0f): String {
         return when {
@@ -868,6 +873,58 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
     internal val actions = mutableListOf<Any>()
+
+    // ── Layers (AutoCAD-style: named containers of many items, not one layer per shape) ──────
+    class Layer(val id: Int, var name: String, var visible: Boolean = true)
+    val layers = mutableListOf(Layer(0, "Layer 1"))
+    var currentLayerId: Int = 0  // new items are tagged with whichever layer is active
+    private var nextLayerId = 1
+
+    // Every item type is tagged with which layer it belongs to. There's no shared base class
+    // across StrokeItem/TextItem/ImageItem/etc. (they're stored heterogeneously as Any in
+    // `actions`), so this reads/writes each type's own layerId property individually.
+    // TableItem and AudioItem are defined in separate files (TableItem.kt, AudioItem.kt) not
+    // available in this session — adding layerId to them isn't done here since editing a class
+    // definition I can't actually see risks a compile error rather than a real fix. They fall
+    // back to "always layer 0 / always visible" below (the else branches) until those files are
+    // available to add layerId to them the same way as everything else.
+    fun itemLayerId(item: Any): Int = when (item) {
+        is StrokeItem -> item.layerId
+        is TextItem -> item.layerId
+        is ImageItem -> item.layerId
+        is FillItem -> item.layerId
+        is DimensionItem -> item.layerId
+        else -> 0
+    }
+    private fun setItemLayerId(item: Any, id: Int) { when (item) {
+        is StrokeItem -> item.layerId = id
+        is TextItem -> item.layerId = id
+        is ImageItem -> item.layerId = id
+        is FillItem -> item.layerId = id
+        is DimensionItem -> item.layerId = id
+        else -> {}
+    } }
+
+    // New layer goes to the TOP of the list (frontmost) and becomes active — this is what makes
+    // "applying a hatch/color creates an instant new layer" put that hatch visibly on top of
+    // whatever it's covering, rather than silently behind it.
+    fun createLayer(name: String): Layer {
+        val l = Layer(nextLayerId++, name); layers.add(0, l); currentLayerId = l.id; invalidate(); return l
+    }
+    fun renameLayer(layerId: Int, name: String) { layers.find { it.id == layerId }?.name = name }
+    // Deleting a layer deletes everything in it too — matches "if a layer is deleted, objects in
+    // it must be deleted as well" exactly. Always keeps at least one layer so there's never
+    // nowhere for new items to go.
+    fun deleteLayer(layerId: Int) {
+        if (layers.size <= 1) return
+        actions.removeAll { itemLayerId(it) == layerId }
+        layers.removeAll { it.id == layerId }
+        if (currentLayerId == layerId) currentLayerId = layers.first().id
+        redoStack.clear(); markSpatialDirty(); invalidate()
+    }
+    fun setLayerVisible(layerId: Int, visible: Boolean) { layers.find { it.id == layerId }?.visible = visible; markSpatialDirty(); invalidate() }
+    fun moveLayerUp(layerId: Int) { val i = layers.indexOfFirst { it.id == layerId }; if (i > 0) { val l = layers.removeAt(i); layers.add(i - 1, l) }; invalidate() }
+    fun moveLayerDown(layerId: Int) { val i = layers.indexOfFirst { it.id == layerId }; if (i in 0 until layers.size - 1) { val l = layers.removeAt(i); layers.add(i + 1, l) }; invalidate() }
     // Read/written by drawHatchPattern and loadCustomHatchBitmap in HatchRenderingExtensions.kt.
     // Has to stay a real class property (not something the extension file can declare itself) —
     // an extension function has no way to add real stored state to a class from outside it.
@@ -974,9 +1031,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // and sometimes behind" was this exact effect. Sorting by each item's real index in
         // `actions` restores true, predictable stacking order while keeping the performance win
         // of only considering items actually near the viewport.
+        //
+        // Layer-aware on top of that: a hidden layer's items are dropped entirely (AutoCAD-style
+        // hide), and everything else sorts by LAYER rank first (top of the layers list = drawn
+        // last = frontmost), then by its original `actions` position as a tiebreaker within the
+        // same layer — so intra-layer stacking still respects individual bringToFront/sendToBack
+        // where it's been used, but layer membership always wins first.
         val order = HashMap<Any, Int>(actions.size)
         actions.forEachIndexed { i, a -> order[a] = i }
-        result.sortBy { order[it] ?: Int.MAX_VALUE }
+        val layerRank = HashMap<Int, Int>(layers.size)
+        layers.forEachIndexed { i, l -> layerRank[l.id] = i }
+        val hiddenLayerIds = layers.filter { !it.visible }.map { it.id }.toHashSet()
+        result.removeAll { hiddenLayerIds.contains(itemLayerId(it)) }
+        result.sortWith(compareByDescending<Any> { layerRank[itemLayerId(it)] ?: 0 }.thenBy { order[it] ?: Int.MAX_VALUE })
         return result
     }
     fun removeDimensionItem(d: DimensionItem) { actions.remove(d); selectedItem = null; redoStack.clear(); markSpatialDirty(); invalidate() }
@@ -1336,13 +1403,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 Tool.TEXT -> {
                     val hit = findTextItemAt(wx, wy)
                     if (hit != null) {
-                        // Was missing the onTextSelectRequest call that the identical case in
-                        // the Tool.SELECT branch below has — so this correctly switched to
-                        // Select (so the text becomes draggable/resizable) but never told
-                        // MainActivity to actually show the font/size/color options panel,
-                        // leaving the person looking at a plain Select toolbar with no way to
-                        // change what they just tapped.
-                        selectedItem = hit; currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT)
+                        // Deliberately NOT switching currentTool to SELECT here anymore. The
+                        // move/rotate selection overlay (moveSurface, opened via
+                        // onTextSelectRequest below) is a separate overlay view that works
+                        // regardless of what currentTool DrawingView itself has — it doesn't
+                        // need Select tool active to function. Switching tools here just meant
+                        // the bottom toolbar's highlight silently jumped from Text to Select
+                        // out from under the person's finger, even though they never touched
+                        // the tool row — which is exactly what "tapping a font shouldn't send me
+                        // to a different tool" was describing.
+                        selectedItem = hit
                         onTextSelectRequest?.invoke(hit, e.x, e.y, e.rawX, e.rawY)
                         invalidate()
                     }
@@ -1352,7 +1422,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         // current one instead of opening another.
                         onEmptyAreaTap?.invoke()
                     } else {
-                        selectedItem = null; if (!isTextSelected) onTextEditRequest?.invoke(null, e.x, e.y, wx, wy)
+                        selectedItem = null
+                        // isTextSelected only ever gets cleared by dismissTextSelectionBox() —
+                        // which nothing here was calling. So once ANY text item had been
+                        // selected once, this flag stayed stuck true forever, and the check
+                        // below silently blocked every later attempt to tap empty space and
+                        // start a brand new text box — "the Text tool just doesn't work anymore"
+                        // after the first time you selected something.
+                        if (isTextSelected) onTextDeselectRequest?.invoke()
+                        onTextEditRequest?.invoke(null, e.x, e.y, wx, wy)
                     }
                 }
                 Tool.MULTISELECT -> {
@@ -1422,7 +1500,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 onTextEditRequest?.invoke(hit, e.x, e.y, wx, wy)
                 return true
             }
-            if (currentTool == Tool.TEXT) { if (!isTextSelected) onTextEditRequest?.invoke(null, e.x, e.y, wx, wy); return true }
+            if (currentTool == Tool.TEXT) { if (isTextSelected) onTextDeselectRequest?.invoke(); onTextEditRequest?.invoke(null, e.x, e.y, wx, wy); return true }
             // Double-tap a table in SELECT tool: enter cell-editing mode and open the tapped cell
             if (currentTool == Tool.SELECT) {
                 for (action in actions.reversed()) {
@@ -5084,7 +5162,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         var ii = 0; while (ii < src.size - 1) { if ((ii/2) % skip == 0 || ii >= src.size - 2) { keep.add(src[ii]); keep.add(src[ii+1]) }; ii += 2 }
                         src.clear(); src.addAll(keep); item.path = item.data.buildPath(); item.invalidateCache()
                     }
-                    actions.add(item); redoStack.clear(); markSpatialDirty()
+                    actions.add(item); item.layerId = currentLayerId; redoStack.clear(); markSpatialDirty()
                     // For shape tools: notify MainActivity to show select handles temporarily
                     if (isShapeTool) {
                         selectedItem = item
@@ -6163,7 +6241,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     fun addText(text: String, x: Float, y: Float, size: Float, rotation: Float, color: Int, spans: MutableList<TextSpanData> = mutableListOf(), fontFamily: String = "sans-serif", opacity: Int = 255): TextItem? {
         if (text.isBlank()) return null
         val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPageForText(x, y, text, size, fontFamily) else Pair(x, y)
-        val item = TextItem(text, cx, cy, color, size, rotation); item.spans = spans; item.fontFamily = fontFamily; item.opacity = opacity
+        val item = TextItem(text, cx, cy, color, size, rotation); item.spans = spans; item.fontFamily = fontFamily; item.opacity = opacity; item.layerId = currentLayerId
         actions.add(item); redoStack.clear(); markSpatialDirty(); invalidate()
         return item
     }
@@ -6219,7 +6297,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     fun addImage(path: String, wx: Float, wy: Float, w: Float, h: Float) {
-        val item = ImageItem(path, wx - w / 2f, wy - h / 2f, w, h, 0f)
+        val item = ImageItem(path, wx - w / 2f, wy - h / 2f, w, h, 0f); item.layerId = currentLayerId
         actions.add(item); redoStack.clear(); markSpatialDirty()
         loadBitmapAsync(path) { bmp -> item.bitmap = bmp; item.loading = false; markSpatialDirty(); invalidate() }
         invalidate()
@@ -6384,6 +6462,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     if (pendingHatchPattern != null) { fi.hatchPattern = pendingHatchPattern; fi.hatchColor = pendingHatchColor; fi.hatchScale = pendingHatchScale }
                     if (pendingCustomHatchPath != null) { fi.customHatchPath = pendingCustomHatchPath; fi.hatchScale = pendingHatchScale }
                     fi.bitmap = fb
+                    // Every new fill — procedural hatch, custom hatch, or plain color — gets its
+                    // own new named layer automatically, matching the AutoCAD convention of
+                    // organizing a drawing by material/color layer (a "Concrete" layer, a "Steel"
+                    // layer, etc.) rather than lumping every fill into whatever layer happened to
+                    // be active. createLayer() already puts the new layer at the top of the list
+                    // (frontmost) and makes it active, so the fill lands visibly on top of
+                    // whatever it's covering rather than silently behind it.
+                    val layerName = when {
+                        pendingHatchPattern != null -> "Hatch: ${pendingHatchPattern!!.name.lowercase().replace('_',' ').replaceFirstChar { it.uppercase() }}"
+                        pendingCustomHatchPath != null -> "Hatch: Custom"
+                        else -> "Fill: #%06X".format(fillColor and 0xFFFFFF)
+                    }
+                    fi.layerId = createLayer(layerName).id
                     // Only remove an existing FillItem if the tap pixel lands inside it AND the
                     // new fill is roughly the same size as the existing one — meaning the user
                     // re-tapped the same closed region to replace its color. If the new fill is
@@ -6420,12 +6511,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         flushDirtyFillItems()  // safety net: never save with fill edits still only in memory
         val sb = StringBuilder()
         sb.append("META\u0001${paperType.name}\u0001${canvasMode.name}\u0001${paperSize.name}\u0001${pageOrientation.name}\u0001$paperColor\n")
+        // Layer list itself: id, visibility, and name for each — sanitized against the field/
+        // entry separators since a layer name is free-typed text. Restored before any items are
+        // parsed below so their layerId values land on real, already-existing layers.
+        sb.append("LAYERS\u0001$currentLayerId\u0001$nextLayerId\u0001")
+        sb.append(layers.joinToString("|") { l -> "${l.id},${l.visible},${l.name.replace(",", " ").replace("|", " ")}" })
+        sb.append("\n")
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
-            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}\n")
-            is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\n")
-            is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\n")
-            is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.customHatchPath ?: ""}\u0001${a.hatchPattern?.name ?: ""}\u0001${a.hatchColor}\u0001${a.hatchScale}\n")
+            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}\n")
+            is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\u0001${a.layerId}\n")
+            is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\u0001${a.layerId}\n")
+            is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.customHatchPath ?: ""}\u0001${a.hatchPattern?.name ?: ""}\u0001${a.hatchColor}\u0001${a.hatchScale}\u0001${a.layerId}\n")
             is AudioItem -> sb.append("AUDIO\u0001${a.filePath}\u0001${a.title.replace("\u0001","_")}\u0001${a.x}\u0001${a.y}\u0001${a.durationMs}\u0001${a.radius}\n")
         }
         return sb.toString()
@@ -6433,6 +6530,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     fun loadFromString(content: String) {
         actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null; markSpatialDirty()
+        // Reset to a single default layer — overwritten by the LAYERS line below if the file has
+        // one. Older saves (from before this feature) won't have it, and correctly fall back to
+        // everything living on one default layer instead of crashing on a missing line.
+        layers.clear(); layers.add(Layer(0, "Layer 1")); currentLayerId = 0; nextLayerId = 1
         val lines = content.lines(); var i = 0
         while (i < lines.size) {
             val line = lines[i]; if (line.isBlank()) { i++; continue }
@@ -6445,6 +6546,23 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         try { if (p.size > 3) paperSize = PaperSizeOption.valueOf(p[3]) } catch (e: Exception) {}
                         try { if (p.size > 4) pageOrientation = Orientation.valueOf(p[4]) } catch (e: Exception) {}
                         try { if (p.size > 5) paperColor = p[5].toInt() } catch (e: Exception) {}
+                        i++
+                    }
+                    line.startsWith("LAYERS\u0001") -> {
+                        try {
+                            val p = line.split("\u0001")
+                            if (p.size >= 4) {
+                                val loaded = p[3].split("|").mapNotNull { entry ->
+                                    val f = entry.split(",", limit = 3)
+                                    if (f.size >= 3) Layer(f[0].toIntOrNull() ?: return@mapNotNull null, f[2], f[1].toBoolean()) else null
+                                }
+                                if (loaded.isNotEmpty()) {
+                                    layers.clear(); layers.addAll(loaded)
+                                    currentLayerId = p[1].toIntOrNull() ?: layers.first().id
+                                    nextLayerId = p[2].toIntOrNull() ?: (layers.maxOf { it.id } + 1)
+                                }
+                            }
+                        } catch (e: Exception) {}
                         i++
                     }
                     line.startsWith("TABLE\u0001") -> {
@@ -6478,6 +6596,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             if (p.size >= 10) item.fontFamily = p[9]
                             if (p.size >= 11) item.opacity   = p[10].toIntOrNull() ?: 255
                             if (p.size >= 12 && p[11].isNotBlank()) item.linkTarget = p[11]
+                            if (p.size >= 13) item.layerId = p[12].toIntOrNull() ?: 0
                             actions.add(item)
                         }
                         i++
@@ -6486,6 +6605,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val p = line.split("\u0001")
                         if (p.size >= 7) {
                             val item = ImageItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat(), p[6].toFloat())
+                            if (p.size >= 8) item.layerId = p[7].toIntOrNull() ?: 0
                             actions.add(item); loadBitmapAsync(p[1]) { bmp -> item.bitmap = bmp; item.loading = false; invalidate() }
                         }
                         i++
@@ -6500,6 +6620,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             }
                             if (p.size >= 9) fi.hatchColor = p[8].toIntOrNull() ?: fi.hatchColor
                             if (p.size >= 10) fi.hatchScale = p[9].toFloatOrNull() ?: fi.hatchScale
+                            if (p.size >= 11) fi.layerId = p[10].toIntOrNull() ?: 0
                             actions.add(fi)
                         }
                         i++
@@ -6522,7 +6643,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 if (p.size >= 14 && p[13].isNotBlank()) for (h in p[13].split(";")) { val hv = h.split(","); if (hv.size == 3) holes.add(floatArrayOf(hv[0].toFloat(), hv[1].toFloat(), hv[2].toFloat())) }
                                 val slant = if (p.size >= 15) p[14].toFloatOrNull() ?: 0.65f else 0.65f
                                 val isPoly = if (p.size >= 16) p[15] == "true" else false
-                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
+                                val lid = if (p.size >= 17) p[16].toIntOrNull() ?: 0 else 0
+                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly); val si = StrokeItem(d, d.buildPath(), d.toPaint()); si.layerId = lid; actions.add(si)
                             } else {
                                 val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
                                 val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
