@@ -2849,9 +2849,23 @@ class MainActivity : AppCompatActivity() {
 
     private fun showSettingsDialog() {
         val prefs = getPrefs()
-        val container = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(20),dp(8),dp(20),dp(8)) }
-        fun hdr(t:String){ container.addView(TextView(this).apply{ text=t;textSize=11f;setTextColor(Color.parseColor("#7B61FF"));setPadding(0,dp(10),0,dp(2));typeface=Typeface.DEFAULT_BOLD }) }
-        fun div(){ container.addView(View(this).apply{ layoutParams=LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,dp(1)).also{it.setMargins(0,dp(8),0,dp(4))};setBackgroundColor(Color.LTGRAY) }) }
+        val accent = Color.parseColor("#7B61FF")
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(14), dp(22), dp(14))
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(20).toFloat() }
+        }
+        // Section header: was 11f with no visual weight — genuinely easy to miss scrolling past.
+        // Bumped up, bolder, small colored accent bar on the left for a bit of "premium" polish
+        // instead of just being plain gray caps text.
+        fun hdr(t: String) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(18), 0, dp(6)) }
+            row.addView(View(this).apply { setBackgroundColor(accent); layoutParams = LinearLayout.LayoutParams(dp(4), dp(16)).also { it.setMargins(0, 0, dp(8), 0) } })
+            row.addView(TextView(this).apply { text = t; textSize = 15f; setTextColor(Color.parseColor("#2A2A2A")); typeface = Typeface.DEFAULT_BOLD; letterSpacing = 0.02f })
+            container.addView(row)
+        }
+        // Much lighter than before, and given real breathing room on both sides — a heavy full-
+        // width rule between every single section is exactly what made this feel cramped/busy.
+        fun div() { container.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).also { it.setMargins(0, dp(14), 0, 0) }; setBackgroundColor(Color.parseColor("#EDEAE4")) }) }
 
         div(); hdr("LOCK BEHAVIOUR")
         val lockEraseCb = CheckBox(this).apply { text="Locked items: prevent erasing"; isChecked=prefs.getBoolean("lock_prevent_erase",true); setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_erase",on).apply() } }; container.addView(lockEraseCb)
@@ -3067,8 +3081,27 @@ class MainActivity : AppCompatActivity() {
                 setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s:SeekBar?,v:Int,f:Boolean){if(f){dimArrowSz=v.coerceAtLeast(4).toFloat();lbl.text="Default Arrow Size: ${dimArrowSz.toInt()}"}}; override fun onStartTrackingTouch(s:SeekBar?){}; override fun onStopTrackingTouch(s:SeekBar?){} }) })
         })
 
+        // Consistent, more readable styling applied to every checkbox at once here, rather than
+        // editing each of the 7 individual checkbox creation sites above (lower risk of missing
+        // one or ending up with inconsistent styling between them).
+        fun styleCheckboxesIn(vg: android.view.ViewGroup) {
+            for (idx in 0 until vg.childCount) {
+                val child = vg.getChildAt(idx)
+                if (child is CheckBox) {
+                    child.textSize = 14f; child.setTextColor(Color.parseColor("#2A2A2A"))
+                    child.buttonTintList = android.content.res.ColorStateList.valueOf(accent)
+                    child.setPadding(dp(6), dp(4), 0, dp(4))
+                } else if (child is android.view.ViewGroup) styleCheckboxesIn(child)
+            }
+        }
+        styleCheckboxesIn(container)
+
         val scroll = ScrollView(this).apply{ addView(container) }
-        AlertDialog.Builder(this).setTitle("Settings").setView(scroll)
+        val titleView = TextView(this).apply {
+            text = "Settings"; textSize = 22f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#1C1C1E")); setPadding(dp(24), dp(20), dp(24), dp(8))
+        }
+        AlertDialog.Builder(this).setCustomTitle(titleView).setView(scroll)
             .setPositiveButton("Done") { _,_ ->
                 prefs.edit()
                     .putBoolean("confirm_exit_clear",confirmCb.isChecked)
