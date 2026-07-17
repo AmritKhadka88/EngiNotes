@@ -52,6 +52,8 @@ class MainActivity : AppCompatActivity() {
     internal val PT_TO_PX = 1.333f
     private var isConvenientLayout = true
 
+    private val driveManager by lazy { DriveManager(this) }
+
     private val shapeEntries: List<Pair<Int, Tool>> = listOf(
         R.drawable.ic_shape_line to Tool.LINE,
         R.drawable.ic_shape_rectangle to Tool.RECTANGLE,
@@ -545,6 +547,7 @@ class MainActivity : AppCompatActivity() {
 
         drawingView.migrateOldNotes(filesDir)
         lastSavedContent = drawingView.serialize()
+        driveManager.trySilentSignIn { }
         drawingView.arcDivisions = prefs.getInt("arc_divisions",3)
         drawingView.defaultDimFontSize = prefs.getFloat("dim_font_size", 11f)
         drawingView.defaultDimArrowSize = prefs.getFloat("dim_arrow_size", 9f)
@@ -2086,6 +2089,8 @@ class MainActivity : AppCompatActivity() {
         if (currentFileName != null) popup.menu.add("Delete This Note")
         popup.menu.add("Add to Book")
         popup.menu.add("Layers")
+        popup.menu.add(if (driveManager.isSignedIn()) "Back Up to Drive" else "Sign in with Google")
+        if (driveManager.isSignedIn()) popup.menu.add("Sign Out of Google")
         listOf("Open PDF","Chart Builder","Handwriting to Text","Ask Gemini about Drawing","Settings","About","Exit").forEach { popup.menu.add(it) }
         popup.setOnMenuItemClickListener { item ->
             when {
@@ -2113,10 +2118,35 @@ class MainActivity : AppCompatActivity() {
                 item.title == "Settings" -> showSettingsDialog()
                 item.title == "About" -> showAboutDialog()
                 item.title == "Exit" -> confirmThenExit()
+                item.title == "Sign in with Google" -> driveManager.signIn()
+                item.title == "Sign Out of Google" -> driveManager.signOut {
+                    Toast.makeText(this, "Signed out of Google", Toast.LENGTH_SHORT).show()
+                }
+                item.title == "Back Up to Drive" -> backUpCurrentNoteToDrive()
             }
             true
         }
         popup.show()
+    }
+
+    /** Saves the current note, then uploads that saved .eng file to the user's EngiNotes Drive folder. */
+    private fun backUpCurrentNoteToDrive() {
+        val name = currentFileName
+        if (name == null) { Toast.makeText(this, "Save the note first!", Toast.LENGTH_SHORT).show(); return }
+        saveCurrent()
+        val engFile = File(getDrawingsFolder(), "$name.eng")
+        if (!engFile.exists()) { Toast.makeText(this, "Couldn't find the saved note file", Toast.LENGTH_SHORT).show(); return }
+        Toast.makeText(this, "Backing up to Drive…", Toast.LENGTH_SHORT).show()
+        driveManager.uploadFile(engFile, "$name.eng", "text/plain") { success, error ->
+            Toast.makeText(this, if (success) "Backed up to Drive!" else "Backup failed: $error", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        driveManager.handleSignInResult(requestCode, data) { success, error ->
+            Toast.makeText(this, if (success) "Signed in with Google!" else (error ?: "Sign-in cancelled"), Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun convertHandwritingInPlace() {
