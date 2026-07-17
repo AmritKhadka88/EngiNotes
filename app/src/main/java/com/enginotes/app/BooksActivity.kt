@@ -18,6 +18,7 @@ class BooksActivity : AppCompatActivity() {
     private lateinit var booksContainer: LinearLayout
     private lateinit var emptyView: TextView
     private val dateFormat = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
+    private val driveManager by lazy { DriveManager(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -39,11 +40,12 @@ class BooksActivity : AppCompatActivity() {
         root.addView(topBar, topLp)
 
         val appTitle = TextView(this)
-        appTitle.text = "\uD83D\uDCDA EngiNotes"
+        appTitle.text = "\uD83D\uDCDA EngiNotes  \u25BE"
         appTitle.textSize = 22f
         appTitle.setTextColor(android.graphics.Color.WHITE)
         appTitle.typeface = android.graphics.Typeface.DEFAULT_BOLD
         appTitle.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        appTitle.setOnClickListener { showAppMenu(it) }
         topBar.addView(appTitle)
 
         fun topBtn(emoji: String, action: () -> Unit) {
@@ -439,6 +441,160 @@ class BooksActivity : AppCompatActivity() {
                     .apply()
                 Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show()
             }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
+
+    private fun showAppMenu(anchor: View) {
+        val popup = androidx.appcompat.widget.PopupMenu(this, anchor)
+        popup.menu.add(if (driveManager.isSignedIn()) "Sign Out of Google" else "Sign in with Google")
+        if (driveManager.isSignedIn()) {
+            popup.menu.add("Restore from Drive")
+            popup.menu.add("Auto-Backup: ${if (getPrefs().getBoolean("auto_backup_drive", false)) "On" else "Off"}")
+        }
+        popup.menu.add("About")
+        popup.setOnMenuItemClickListener { item ->
+            when {
+                item.title == "Sign in with Google" -> driveManager.signIn()
+                item.title == "Sign Out of Google" -> driveManager.signOut {
+                    Toast.makeText(this, "Signed out of Google", Toast.LENGTH_SHORT).show()
+                }
+                item.title == "Restore from Drive" -> showRestoreFromDriveDialog()
+                item.title.toString().startsWith("Auto-Backup:") -> {
+                    val newValue = !getPrefs().getBoolean("auto_backup_drive", false)
+                    getPrefs().edit().putBoolean("auto_backup_drive", newValue).apply()
+                    Toast.makeText(this, if (newValue) "Auto-backup turned on" else "Auto-backup turned off", Toast.LENGTH_SHORT).show()
+                }
+                item.title == "About" -> showAboutDialog()
+            }
+            true
+        }
+        popup.show()
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        driveManager.handleSignInResult(requestCode, data) { success, error ->
+            Toast.makeText(this, if (success) "Signed in with Google!" else (error ?: "Sign-in cancelled"), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // ---- Restore from Drive: browse every note backed up on Drive and pull one down ----
+
+    /**
+     * Same parsing as MainActivity's extractAssetPaths() — pulls every local file path (images,
+     * audio, custom fonts) a note's serialized content refers to, so restore can pull those down
+     * too, not just the .eng text itself. Kept as a separate copy here since this Activity has no
+     * open note / DrawingView to delegate to; see DrawingView.kt's serialize() for the line format.
+     */
+    private fun extractAssetPaths(content: String): List<String> {
+        val paths = linkedSetOf<String>()
+        content.lineSequence().forEach { line ->
+            if (line.isBlank()) return@forEach
+            val parts = line.split('\u0001')
+            when (parts.getOrNull(0)) {
+                "IMAGE" -> parts.getOrNull(1)?.let { if (it.isNotBlank()) paths.add(it) }
+                "AUDIO" -> parts.getOrNull(1)?.let { if (it.isNotBlank()) paths.add(it) }
+                "FILL" -> {
+                    parts.getOrNull(1)?.let { if (it.isNotBlank()) paths.add(it) }
+                    parts.getOrNull(6)?.let { if (it.isNotBlank()) paths.add(it) }
+                }
+                "TEXT" -> {
+                    val font = parts.getOrNull(9)
+                    if (!font.isNullOrBlank() && font.startsWith("/")) paths.add(font)
+                }
+            }
+        }
+        return paths.toList()
+    }
+
+    private fun showRestoreFromDriveDialog() {
+        Toast.makeText(this, "Checking Drive…", Toast.LENGTH_SHORT).show()
+        driveManager.listFiles { files, error ->
+            if (files == null) { Toast.makeText(this, error ?: "Couldn't reach Drive", Toast.LENGTH_SHORT).show(); return@listFiles }
+            val notes = files.filter { it.name.endsWith(".eng") }
+            if (notes.isEmpty()) { Toast.makeText(this, "No notes found on Drive", Toast.LENGTH_SHORT).show(); return@listFiles }
+            val names = notes.map { it.name.removeSuffix(".eng") }.toTypedArray()
+            AlertDialog.Builder(this)
+                .setTitle("Restore a note from Drive")
+                .setItems(names) { _, which -> confirmAndRestore(notes[which]) }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+    }
+
+    /** Finds where a note of this name already lives locally (if anywhere), so restore lands back in the same book instead of always defaulting to General. */
+    private fun confirmAndRestore(driveFile: com.google.api.services.drive.model.File) {
+        val name = driveFile.name.removeSuffix(".eng")
+        val existingLocal = getAllPages().firstOrNull { it.first.nameWithoutExtension == name }
+        val destFile = existingLocal?.first ?: run {
+            ensureDefaultBook()
+            File(File(getBooksRoot(), "General"), driveFile.name)
+        }
+        val driveModified = driveFile.modifiedTime?.value ?: 0L
+        if (destFile.exists() && destFile.lastModified() > driveModified) {
+            AlertDialog.Builder(this)
+                .setTitle("Local version is newer")
+                .setMessage("Your local copy of \"$name\" is newer than the one on Drive. Restoring will overwrite your local changes with the older Drive version. Continue?")
+                .setPositiveButton("Overwrite local") { _, _ -> doRestore(driveFile, destFile) }
+                .setNegativeButton("Cancel", null)
+                .show()
+        } else {
+            doRestore(driveFile, destFile)
+        }
+    }
+
+    private fun doRestore(driveFile: com.google.api.services.drive.model.File, destFile: File) {
+        Toast.makeText(this, "Restoring…", Toast.LENGTH_SHORT).show()
+        driveManager.downloadFile(driveFile.name, destFile) { success, error ->
+            if (!success) { Toast.makeText(this, "Restore failed: $error", Toast.LENGTH_SHORT).show(); return@downloadFile }
+            val assetPaths = extractAssetPaths(destFile.readText())
+            restoreAssets(assetPaths, 0) {
+                Toast.makeText(this, "Restored \"${destFile.nameWithoutExtension}\"!", Toast.LENGTH_SHORT).show()
+                refresh()
+            }
+        }
+    }
+
+    private fun restoreAssets(paths: List<String>, index: Int, onDone: () -> Unit) {
+        if (index >= paths.size) { onDone(); return }
+        val destFile = File(paths[index])
+        if (destFile.exists()) { restoreAssets(paths, index + 1, onDone); return }
+        destFile.parentFile?.mkdirs()
+        driveManager.downloadAsset(destFile.name, destFile) { _, _ -> restoreAssets(paths, index + 1, onDone) }
+    }
+
+    private fun showAboutDialog() {
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(16), dp(24), dp(8)); gravity = Gravity.CENTER_HORIZONTAL }
+        try {
+            val icon = ImageView(this).apply {
+                setImageResource(R.mipmap.ic_launcher)
+                layoutParams = LinearLayout.LayoutParams(dp(80), dp(80))
+            }
+            container.addView(icon)
+        } catch (e: Exception) {}
+        container.addView(TextView(this).apply {
+            text = "EngiNotes"; textSize = 22f; typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setTextColor(android.graphics.Color.parseColor("#2A2A2A")); gravity = Gravity.CENTER
+            setPadding(0, dp(12), 0, dp(4))
+        })
+        val versionName = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "" }
+        if (!versionName.isNullOrBlank()) {
+            container.addView(TextView(this).apply {
+                text = "Version $versionName"; textSize = 13f; setTextColor(android.graphics.Color.parseColor("#9E9E9E")); gravity = Gravity.CENTER
+                setPadding(0, 0, 0, dp(16))
+            })
+        }
+        container.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)); setBackgroundColor(android.graphics.Color.parseColor("#EEEEEE")) })
+        container.addView(TextView(this).apply {
+            text = "Developed by Amrit Khadka"; textSize = 15f; setTextColor(android.graphics.Color.parseColor("#2A2A2A")); gravity = Gravity.CENTER
+            setPadding(0, dp(16), 0, dp(4))
+        })
+        container.addView(TextView(this).apply {
+            text = "Contributor: Avinash Khadgi"; textSize = 14f; setTextColor(android.graphics.Color.parseColor("#5A5A5A")); gravity = Gravity.CENTER
+            setPadding(0, 0, 0, dp(8))
+        })
+        AlertDialog.Builder(this).setView(container).setPositiveButton("Close", null).show()
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()

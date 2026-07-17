@@ -2089,13 +2089,8 @@ class MainActivity : AppCompatActivity() {
         if (currentFileName != null) popup.menu.add("Delete This Note")
         popup.menu.add("Add to Book")
         popup.menu.add("Layers")
-        popup.menu.add(if (driveManager.isSignedIn()) "Back Up to Drive" else "Sign in with Google")
-        if (driveManager.isSignedIn()) {
-            popup.menu.add("Restore from Drive")
-            popup.menu.add("Auto-Backup: ${if (getPrefs().getBoolean("auto_backup_drive", false)) "On" else "Off"}")
-            popup.menu.add("Sign Out of Google")
-        }
-        listOf("Open PDF","Chart Builder","Handwriting to Text","Ask Gemini about Drawing","Settings","About","Exit").forEach { popup.menu.add(it) }
+        popup.menu.add("Back Up to Drive")
+        listOf("Open PDF","Chart Builder","Handwriting to Text","Ask Gemini about Drawing","Settings","Exit").forEach { popup.menu.add(it) }
         popup.setOnMenuItemClickListener { item ->
             when {
                 item.title.toString().startsWith("Note:") -> showRenameDialog()
@@ -2120,18 +2115,13 @@ class MainActivity : AppCompatActivity() {
                     setActiveTool(null, Tool.OCR_SNIP)
                 }
                 item.title == "Settings" -> showSettingsDialog()
-                item.title == "About" -> showAboutDialog()
                 item.title == "Exit" -> confirmThenExit()
-                item.title == "Sign in with Google" -> driveManager.signIn()
-                item.title == "Sign Out of Google" -> driveManager.signOut {
-                    Toast.makeText(this, "Signed out of Google", Toast.LENGTH_SHORT).show()
-                }
-                item.title == "Back Up to Drive" -> currentFileName?.let { backUpNoteToDrive(it, silent = false) }
-                item.title == "Restore from Drive" -> showRestoreFromDriveDialog()
-                item.title.toString().startsWith("Auto-Backup:") -> {
-                    val newValue = !getPrefs().getBoolean("auto_backup_drive", false)
-                    getPrefs().edit().putBoolean("auto_backup_drive", newValue).apply()
-                    Toast.makeText(this, if (newValue) "Auto-backup turned on" else "Auto-backup turned off", Toast.LENGTH_SHORT).show()
+                item.title == "Back Up to Drive" -> {
+                    if (!driveManager.isSignedIn()) {
+                        Toast.makeText(this, "Sign in with Google from the home screen first", Toast.LENGTH_SHORT).show()
+                    } else {
+                        currentFileName?.let { backUpNoteToDrive(it, silent = false) }
+                    }
                 }
             }
             true
@@ -2950,39 +2940,6 @@ class MainActivity : AppCompatActivity() {
     // same way it resolves a member function.
 
     // showOcrSourceDialog moved to OcrExtensions.kt.
-
-    private fun showAboutDialog() {
-        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(16), dp(24), dp(8)); gravity = Gravity.CENTER_HORIZONTAL }
-        try {
-            val icon = ImageView(this).apply {
-                setImageResource(R.mipmap.ic_launcher)
-                layoutParams = LinearLayout.LayoutParams(dp(80), dp(80))
-            }
-            container.addView(icon)
-        } catch (e: Exception) {}
-        container.addView(TextView(this).apply {
-            text = "EngiNotes"; textSize = 22f; typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#2A2A2A")); gravity = Gravity.CENTER
-            setPadding(0, dp(12), 0, dp(4))
-        })
-        val versionName = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "" }
-        if (!versionName.isNullOrBlank()) {
-            container.addView(TextView(this).apply {
-                text = "Version $versionName"; textSize = 13f; setTextColor(Color.parseColor("#9E9E9E")); gravity = Gravity.CENTER
-                setPadding(0, 0, 0, dp(16))
-            })
-        }
-        container.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)); setBackgroundColor(Color.parseColor("#EEEEEE")) })
-        container.addView(TextView(this).apply {
-            text = "Developed by Amrit Khadka"; textSize = 15f; setTextColor(Color.parseColor("#2A2A2A")); gravity = Gravity.CENTER
-            setPadding(0, dp(16), 0, dp(4))
-        })
-        container.addView(TextView(this).apply {
-            text = "Contributor: Avinash Khadgi"; textSize = 14f; setTextColor(Color.parseColor("#5A5A5A")); gravity = Gravity.CENTER
-            setPadding(0, 0, 0, dp(8))
-        })
-        AlertDialog.Builder(this).setView(container).setPositiveButton("Close", null).show()
-    }
 
     private fun showSettingsDialog() {
         val prefs = getPrefs()
