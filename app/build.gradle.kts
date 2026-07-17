@@ -50,6 +50,7 @@ android {
             excludes += "META-INF/LICENSE"
             excludes += "META-INF/NOTICE"
             excludes += "META-INF/MANIFEST.MF"
+            excludes += "META-INF/INDEX.LIST"
         }
     }
 }
