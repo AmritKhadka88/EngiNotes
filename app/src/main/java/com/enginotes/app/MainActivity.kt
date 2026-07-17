@@ -2090,7 +2090,11 @@ class MainActivity : AppCompatActivity() {
         popup.menu.add("Add to Book")
         popup.menu.add("Layers")
         popup.menu.add(if (driveManager.isSignedIn()) "Back Up to Drive" else "Sign in with Google")
-        if (driveManager.isSignedIn()) popup.menu.add("Sign Out of Google")
+        if (driveManager.isSignedIn()) {
+            popup.menu.add("Restore from Drive")
+            popup.menu.add("Auto-Backup: ${if (getPrefs().getBoolean("auto_backup_drive", false)) "On" else "Off"}")
+            popup.menu.add("Sign Out of Google")
+        }
         listOf("Open PDF","Chart Builder","Handwriting to Text","Ask Gemini about Drawing","Settings","About","Exit").forEach { popup.menu.add(it) }
         popup.setOnMenuItemClickListener { item ->
             when {
@@ -2122,24 +2126,127 @@ class MainActivity : AppCompatActivity() {
                 item.title == "Sign Out of Google" -> driveManager.signOut {
                     Toast.makeText(this, "Signed out of Google", Toast.LENGTH_SHORT).show()
                 }
-                item.title == "Back Up to Drive" -> backUpCurrentNoteToDrive()
+                item.title == "Back Up to Drive" -> currentFileName?.let { backUpNoteToDrive(it, silent = false) }
+                item.title == "Restore from Drive" -> showRestoreFromDriveDialog()
+                item.title.toString().startsWith("Auto-Backup:") -> {
+                    val newValue = !getPrefs().getBoolean("auto_backup_drive", false)
+                    getPrefs().edit().putBoolean("auto_backup_drive", newValue).apply()
+                    Toast.makeText(this, if (newValue) "Auto-backup turned on" else "Auto-backup turned off", Toast.LENGTH_SHORT).show()
+                }
             }
             true
         }
         popup.show()
     }
 
-    /** Saves the current note, then uploads that saved .eng file to the user's EngiNotes Drive folder. */
-    private fun backUpCurrentNoteToDrive() {
-        val name = currentFileName
-        if (name == null) { Toast.makeText(this, "Save the note first!", Toast.LENGTH_SHORT).show(); return }
-        saveCurrent()
-        val engFile = File(getDrawingsFolder(), "$name.eng")
-        if (!engFile.exists()) { Toast.makeText(this, "Couldn't find the saved note file", Toast.LENGTH_SHORT).show(); return }
-        Toast.makeText(this, "Backing up to Drive…", Toast.LENGTH_SHORT).show()
-        driveManager.uploadFile(engFile, "$name.eng", "text/plain") { success, error ->
-            Toast.makeText(this, if (success) "Backed up to Drive!" else "Backup failed: $error", Toast.LENGTH_SHORT).show()
+    // ---- Drive backup: the note's own .eng file plus every image/audio/custom-font it references ----
+
+    /**
+     * Pulls out every local file path a note's serialized content refers to — image files,
+     * audio recordings, custom hatch bitmaps, and custom font files — so they can be synced
+     * to Drive alongside the note itself. Parses the same pipe/\u0001-delimited line format
+     * that DrawingView.serialize()/loadFromString() use; see DrawingView.kt for the field order
+     * of each line type.
+     */
+    private fun extractAssetPaths(content: String): List<String> {
+        val paths = linkedSetOf<String>()
+        content.lineSequence().forEach { line ->
+            if (line.isBlank()) return@forEach
+            val parts = line.split('\u0001')
+            when (parts.getOrNull(0)) {
+                "IMAGE" -> parts.getOrNull(1)?.let { if (it.isNotBlank()) paths.add(it) }
+                "AUDIO" -> parts.getOrNull(1)?.let { if (it.isNotBlank()) paths.add(it) }
+                "FILL" -> {
+                    parts.getOrNull(1)?.let { if (it.isNotBlank()) paths.add(it) }
+                    parts.getOrNull(6)?.let { if (it.isNotBlank()) paths.add(it) } // customHatchPath
+                }
+                "TEXT" -> {
+                    val font = parts.getOrNull(9)
+                    if (!font.isNullOrBlank() && font.startsWith("/")) paths.add(font) // custom font file, not a built-in family name
+                }
+            }
         }
+        return paths.toList()
+    }
+
+    /** Saves [name], then uploads it and every asset it references to Drive. Set [silent] to skip toasts on success (used by auto-backup). */
+    private fun backUpNoteToDrive(name: String, silent: Boolean) {
+        if (name == currentFileName) writeCurrentFile()
+        val engFile = File(getDrawingsFolder(), "$name.eng")
+        if (!engFile.exists()) {
+            if (!silent) Toast.makeText(this, "Couldn't find the saved note file", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!silent) Toast.makeText(this, "Backing up to Drive…", Toast.LENGTH_SHORT).show()
+        val assetPaths = extractAssetPaths(engFile.readText())
+        uploadAssetsThenNote(assetPaths, 0, engFile, name, silent)
+    }
+
+    private fun uploadAssetsThenNote(paths: List<String>, index: Int, engFile: File, noteName: String, silent: Boolean) {
+        if (index >= paths.size) {
+            driveManager.uploadFile(engFile, "$noteName.eng", "text/plain") { success, error ->
+                if (!silent) Toast.makeText(this, if (success) "Backed up to Drive!" else "Backup failed: $error", Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
+        val assetFile = File(paths[index])
+        if (!assetFile.exists()) { uploadAssetsThenNote(paths, index + 1, engFile, noteName, silent); return }
+        driveManager.uploadAsset(assetFile) { _, _ -> uploadAssetsThenNote(paths, index + 1, engFile, noteName, silent) }
+    }
+
+    /** Shows every .eng note currently backed up on Drive, letting the user pick one to restore. */
+    private fun showRestoreFromDriveDialog() {
+        if (!driveManager.isSignedIn()) { Toast.makeText(this, "Sign in with Google first", Toast.LENGTH_SHORT).show(); return }
+        Toast.makeText(this, "Checking Drive…", Toast.LENGTH_SHORT).show()
+        driveManager.listFiles { files, error ->
+            if (files == null) { Toast.makeText(this, error ?: "Couldn't reach Drive", Toast.LENGTH_SHORT).show(); return@listFiles }
+            val notes = files.filter { it.name.endsWith(".eng") }
+            if (notes.isEmpty()) { Toast.makeText(this, "No notes found on Drive", Toast.LENGTH_SHORT).show(); return@listFiles }
+            val names = notes.map { it.name.removeSuffix(".eng") }.toTypedArray()
+            AlertDialog.Builder(this)
+                .setTitle("Restore a note from Drive")
+                .setItems(names) { _, which -> confirmAndRestore(notes[which]) }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+    }
+
+    /** Warns before overwriting a local note that's newer than the Drive copy being restored. */
+    private fun confirmAndRestore(driveFile: com.google.api.services.drive.model.File) {
+        val name = driveFile.name.removeSuffix(".eng")
+        val localFile = File(getDrawingsFolder(), driveFile.name)
+        val driveModified = driveFile.modifiedTime?.value ?: 0L
+        if (localFile.exists() && localFile.lastModified() > driveModified) {
+            AlertDialog.Builder(this)
+                .setTitle("Local version is newer")
+                .setMessage("Your local copy of \"$name\" is newer than the one on Drive. Restoring will overwrite your local changes with the older Drive version. Continue?")
+                .setPositiveButton("Overwrite local") { _, _ -> doRestore(driveFile, localFile) }
+                .setNegativeButton("Cancel", null)
+                .show()
+        } else {
+            doRestore(driveFile, localFile)
+        }
+    }
+
+    private fun doRestore(driveFile: com.google.api.services.drive.model.File, localFile: File) {
+        Toast.makeText(this, "Restoring…", Toast.LENGTH_SHORT).show()
+        driveManager.downloadFile(driveFile.name, localFile) { success, error ->
+            if (!success) { Toast.makeText(this, "Restore failed: $error", Toast.LENGTH_SHORT).show(); return@downloadFile }
+            val content = localFile.readText()
+            val assetPaths = extractAssetPaths(content)
+            restoreAssets(assetPaths, 0) {
+                Toast.makeText(this, "Restored! Open the note to view it.", Toast.LENGTH_SHORT).show()
+                if (currentFileName == localFile.nameWithoutExtension) drawingView.loadFromString(content)
+            }
+        }
+    }
+
+    private fun restoreAssets(paths: List<String>, index: Int, onDone: () -> Unit) {
+        if (index >= paths.size) { onDone(); return }
+        val destFile = File(paths[index])
+        if (destFile.exists()) { restoreAssets(paths, index + 1, onDone); return }
+        destFile.parentFile?.mkdirs()
+        driveManager.downloadAsset(destFile.name, destFile) { _, _ -> restoreAssets(paths, index + 1, onDone) }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
@@ -4718,6 +4825,9 @@ class MainActivity : AppCompatActivity() {
         val name=currentFileName?:return
         File(getDrawingsFolder(),"$name.eng").writeText(drawingView.serialize())
         lastSavedContent=drawingView.serialize()
+        if (getPrefs().getBoolean("auto_backup_drive", false) && driveManager.isSignedIn()) {
+            backUpNoteToDrive(name, silent = true)
+        }
     }
 
     private fun autoSave() {

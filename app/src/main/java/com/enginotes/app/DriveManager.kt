@@ -46,6 +46,7 @@ class DriveManager(private val activity: AppCompatActivity) {
     private val executor = Executors.newCachedThreadPool()
     private var driveService: Drive? = null
     private var appFolderId: String? = null
+    private var assetsFolderId: String? = null
 
     private val signInClient: GoogleSignInClient by lazy {
         val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
@@ -111,6 +112,104 @@ class DriveManager(private val activity: AppCompatActivity) {
     }
 
     // ---- Everything below does network I/O on a background thread ----
+
+    /**
+     * A single flat "Assets" subfolder inside EngiNotes, shared by every note, holding copies of
+     * every image/audio/custom-font file any note references. Filenames already come out unique
+     * (timestamp-based, e.g. "gemini_172...jpg"), so one flat folder keyed by filename is enough —
+     * no need to mirror the app's own per-note folder structure on Drive.
+     */
+    private fun ensureAssetsFolder(onResult: (folderId: String?, error: String?) -> Unit) {
+        val service = driveService ?: return onResult(null, "Not signed in")
+        val cached = assetsFolderId
+        if (cached != null) return onResult(cached, null)
+        ensureAppFolder { parentId, err ->
+            if (parentId == null) return@ensureAppFolder onResult(null, err)
+            executor.execute {
+                try {
+                    val existing = service.files().list()
+                        .setQ("mimeType='application/vnd.google-apps.folder' and name='Assets' and '$parentId' in parents and trashed=false")
+                        .setSpaces("drive")
+                        .execute()
+                    val folderId = existing.files.firstOrNull()?.id ?: run {
+                        val meta = DriveFile().apply {
+                            name = "Assets"
+                            mimeType = "application/vnd.google-apps.folder"
+                            parents = listOf(parentId)
+                        }
+                        service.files().create(meta).setFields("id").execute().id
+                    }
+                    assetsFolderId = folderId
+                    activity.runOnUiThread { onResult(folderId, null) }
+                } catch (e: Exception) {
+                    activity.runOnUiThread { onResult(null, e.message ?: "Couldn't reach Drive") }
+                }
+            }
+        }
+    }
+
+    private fun guessMimeType(fileName: String): String = when {
+        fileName.endsWith(".jpg", true) || fileName.endsWith(".jpeg", true) -> "image/jpeg"
+        fileName.endsWith(".png", true) -> "image/png"
+        fileName.endsWith(".m4a", true) -> "audio/mp4"
+        fileName.endsWith(".mp3", true) -> "audio/mpeg"
+        fileName.endsWith(".ttf", true) -> "font/ttf"
+        fileName.endsWith(".otf", true) -> "font/otf"
+        else -> "application/octet-stream"
+    }
+
+    /** Uploads or updates [localFile] (by filename) in the shared Assets folder. */
+    fun uploadAsset(localFile: File, onResult: (Boolean, String?) -> Unit) {
+        val service = driveService ?: return onResult(false, "Not signed in")
+        ensureAssetsFolder { folderId, err ->
+            if (folderId == null) return@ensureAssetsFolder onResult(false, err)
+            executor.execute {
+                try {
+                    val existing = service.files().list()
+                        .setQ("name='${localFile.name}' and '$folderId' in parents and trashed=false")
+                        .setSpaces("drive")
+                        .execute()
+                    val content = FileContent(guessMimeType(localFile.name), localFile)
+                    if (existing.files.isNotEmpty()) {
+                        service.files().update(existing.files[0].id, null, content).execute()
+                    } else {
+                        val meta = DriveFile().apply { name = localFile.name; parents = listOf(folderId) }
+                        service.files().create(meta, content).execute()
+                    }
+                    activity.runOnUiThread { onResult(true, null) }
+                } catch (e: Exception) {
+                    activity.runOnUiThread { onResult(false, e.message ?: "Asset upload failed") }
+                }
+            }
+        }
+    }
+
+    /** Downloads an asset by filename from the shared Assets folder into [destFile]. */
+    fun downloadAsset(fileName: String, destFile: File, onResult: (Boolean, String?) -> Unit) {
+        val service = driveService ?: return onResult(false, "Not signed in")
+        ensureAssetsFolder { folderId, err ->
+            if (folderId == null) return@ensureAssetsFolder onResult(false, err)
+            executor.execute {
+                try {
+                    val existing = service.files().list()
+                        .setQ("name='$fileName' and '$folderId' in parents and trashed=false")
+                        .setSpaces("drive")
+                        .execute()
+                    val fileId = existing.files.firstOrNull()?.id
+                    if (fileId == null) {
+                        activity.runOnUiThread { onResult(false, "Not found on Drive") }
+                        return@execute
+                    }
+                    FileOutputStream(destFile).use { out ->
+                        service.files().get(fileId).executeMediaAndDownloadTo(out)
+                    }
+                    activity.runOnUiThread { onResult(true, null) }
+                } catch (e: Exception) {
+                    activity.runOnUiThread { onResult(false, e.message ?: "Asset download failed") }
+                }
+            }
+        }
+    }
 
     private fun ensureAppFolder(onResult: (folderId: String?, error: String?) -> Unit) {
         val service = driveService ?: return onResult(null, "Not signed in")
