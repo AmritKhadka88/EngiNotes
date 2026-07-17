@@ -963,6 +963,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // its own. Now that every type has real bounds and is correctly indexed by
         // rebuildSpatialIndex(), the grid query above already finds all of them — this is now
         // genuinely just "items on screen" regardless of how large the document is.
+        //
+        // The order they come out in above is whatever grid cell each item happened to land in
+        // and the order those cells were visited — it has NOTHING to do with the user's actual
+        // stacking/layering intent, which lives entirely in `actions`' list position (that's
+        // what bringToFront/sendToBack/bringForward/sendBackward all operate on). Without
+        // re-sorting here, draw two overlapping items, nudge one slightly so it crosses into a
+        // different grid cell, and their relative render order could flip for no reason a user
+        // could predict — "layers feel unpredictable, one line sometimes comes before something
+        // and sometimes behind" was this exact effect. Sorting by each item's real index in
+        // `actions` restores true, predictable stacking order while keeping the performance win
+        // of only considering items actually near the viewport.
+        val order = HashMap<Any, Int>(actions.size)
+        actions.forEachIndexed { i, a -> order[a] = i }
+        result.sortBy { order[it] ?: Int.MAX_VALUE }
         return result
     }
     fun removeDimensionItem(d: DimensionItem) { actions.remove(d); selectedItem = null; redoStack.clear(); markSpatialDirty(); invalidate() }
@@ -5553,7 +5567,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val finalPts = mutableListOf<Float>()
         for ((vx, vy) in newVerts) { finalPts.add(vx); finalPts.add(vy) }
         if (closed) { finalPts.add(newVerts[0].first); finalPts.add(newVerts[0].second) }
-        val d = StrokeData(Tool.PEN, finalPts, data.color, data.strokeWidth, false, lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity)
+        // isPolyline = true — same fix as the area eraser's shape-splitting: these vertices come
+        // from exact line-line intersections of the offset edges, genuinely straight geometry,
+        // not freehand pen strokes. Without this flag, Tool.PEN's default corner-smoothing (meant
+        // to remove hand tremor from real handwriting) rounds/warps the straight offset polygon
+        // into the "thin sliver near a corner" shape seen when this bug was still present.
+        val d = StrokeData(Tool.PEN, finalPts, data.color, data.strokeWidth, false, lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true)
         return StrokeItem(d, d.buildPath(), d.toPaint())
     }
 
@@ -6059,8 +6078,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // changes its rendered thickness. PenStyle.BALL renders at 0.65x strokeWidth —
                 // hardcoding it here silently shrunk every shape's line weight the instant it
                 // was first touched by the eraser.
+                //
+                // isPolyline = true: the 96-segment sampling above already approximates the
+                // curve smoothly on its own — running it through Tool.PEN's default corner-
+                // smoothing on top added no visible benefit, but meant every SUBSEQUENT erase
+                // (splitStrokeAroundEraser preserves this flag from the original) re-sampled and
+                // re-smoothed an already-smoothed curve, compounding a little drift each time.
+                // That compounding was the actual cause of a circle/ellipse's shape visibly
+                // changing after being erased more than once.
                 val d = StrokeData(Tool.PEN, segPts, data.color, data.strokeWidth, false,
-                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity)
+                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true)
                 listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
             }
             else -> {

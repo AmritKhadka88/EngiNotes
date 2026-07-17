@@ -812,6 +812,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton?>(R.id.btnBrush)?.setOnLongClickListener { showBrushOptionsPanel(); true }
 
         findViewById<ImageButton?>(R.id.btnMenu)?.setOnClickListener { onMenuClick(it) }
+        setupLayersButton()
         findViewById<ImageButton?>(R.id.btnLink)?.setOnClickListener { closeInlineEditor(true); showLinkPickerDialog() }
         findViewById<ImageButton?>(R.id.btnBack)?.setOnClickListener {
             // Close any open full-screen panel first; only exit if nothing is open
@@ -1942,6 +1943,95 @@ class MainActivity : AppCompatActivity() {
         popup.show()
     }
 
+    private var layersToggleBtn: ImageButton? = null
+
+    // No XML layout file available in this workflow to add a new icon button declaratively, so
+    // this creates one at runtime and inserts it into the same toolbar as the three-dot menu,
+    // right before it — matching "second rightmost icon." Visibility is controlled by the
+    // Settings toggle; when off, Layers is still reachable via the three-dot menu itself.
+    private fun setupLayersButton() {
+        val btnMenu = findViewById<ImageButton?>(R.id.btnMenu) ?: return
+        val parent = btnMenu.parent as? ViewGroup ?: return
+        val index = parent.indexOfChild(btnMenu)
+        val btnLayers = ImageButton(this).apply {
+            background = btnMenu.background
+            setPadding(btnMenu.paddingLeft, btnMenu.paddingTop, btnMenu.paddingRight, btnMenu.paddingBottom)
+            contentDescription = "Layers"
+            setImageDrawable(fiveBarsDrawable())
+            id = View.generateViewId()
+            layoutParams = btnMenu.layoutParams
+            setOnClickListener { showLayersPanel() }
+        }
+        parent.addView(btnLayers, index)
+        layersToggleBtn = btnLayers
+        updateLayersButtonVisibility()
+    }
+
+    internal fun updateLayersButtonVisibility() {
+        layersToggleBtn?.visibility = if (getPrefs().getBoolean("layers_button_always_visible", false)) View.VISIBLE else View.GONE
+    }
+
+    // Drawn directly instead of depending on a vector drawable resource, since there's no XML/
+    // resource-file access in this workflow to add one cleanly.
+    private fun fiveBarsDrawable(): android.graphics.drawable.Drawable {
+        val size = dp(24)
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#333333"); strokeWidth = dp(2).toFloat(); strokeCap = Paint.Cap.ROUND
+        }
+        val barCount = 5
+        val gap = size.toFloat() / (barCount + 1)
+        for (i in 1..barCount) { val y = gap * i; canvas.drawLine(size * 0.12f, y, size * 0.88f, y, paint) }
+        return android.graphics.drawable.BitmapDrawable(resources, bmp)
+    }
+
+    // Lists every item currently on the canvas, top-of-stack (frontmost, rendered last) shown
+    // FIRST — standard layer-panel convention. Reuses the existing bringToFront/bringForward/
+    // sendBackward/sendToBack rather than introducing a second way to reorder items, so this
+    // panel and the per-shape layer buttons (in the shape selection toolbar) always agree.
+    private fun showLayersPanel() {
+        if (drawingView.actions.isEmpty()) { Toast.makeText(this, "Nothing on the canvas yet", Toast.LENGTH_SHORT).show(); return }
+        fun describe(item: Any): String = when (item) {
+            is StrokeItem -> item.data.type.name.lowercase().replaceFirstChar { it.uppercase() }
+            is TextItem -> "Text: \"${item.text.take(24)}${if (item.text.length > 24) "…" else ""}\""
+            is ImageItem -> "Image"
+            is FillItem -> "Fill"
+            is TableItem -> "Table"
+            is AudioItem -> "Audio note"
+            is DimensionItem -> "Dimension"
+            else -> item.javaClass.simpleName
+        }
+        var dlg: AlertDialog? = null
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(8), dp(12), dp(8)) }
+        fun refresh() {
+            list.removeAllViews()
+            for (item in drawingView.actions.asReversed()) {
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, dp(8)) }
+                row.addView(TextView(this).apply {
+                    text = describe(item); textSize = 14f; setTextColor(Color.parseColor("#1C1C1E"))
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    setOnClickListener {
+                        drawingView.selectedItem = item; drawingView.currentTool = Tool.SELECT
+                        setActiveToolbarBtn(findViewById(R.id.btnSelect)); drawingView.invalidate(); dlg?.dismiss()
+                    }
+                })
+                fun layerBtn(label: String, action: () -> Unit) = TextView(this).apply {
+                    text = label; textSize = 15f; setPadding(dp(10), dp(6), dp(10), dp(6)); setTextColor(Color.parseColor("#1565C0"))
+                    setOnClickListener { action(); refresh() }
+                }
+                row.addView(layerBtn("⬆⬆") { drawingView.bringToFront(item) })
+                row.addView(layerBtn("⬆") { drawingView.bringForward(item) })
+                row.addView(layerBtn("⬇") { drawingView.sendBackward(item) })
+                row.addView(layerBtn("⬇⬇") { drawingView.sendToBack(item) })
+                list.addView(row)
+            }
+        }
+        refresh()
+        val scroll = ScrollView(this).apply { addView(list) }
+        dlg = AlertDialog.Builder(this).setTitle("Layers (top = front)").setView(scroll).setPositiveButton("Done", null).show()
+    }
+
     fun onMenuClick(v: View) {
         closeInlineEditor(true)
         val popup = PopupMenu(this, v)
@@ -1949,6 +2039,7 @@ class MainActivity : AppCompatActivity() {
         listOf("Save","Save As","Export","Export Window","Clear Canvas").forEach { popup.menu.add(it) }
         if (currentFileName != null) popup.menu.add("Delete This Note")
         popup.menu.add("Add to Book")
+        popup.menu.add("Layers")
         listOf("Open PDF","Chart Builder","Handwriting to Text","Ask Gemini about Drawing","Settings","About","Exit").forEach { popup.menu.add(it) }
         popup.setOnMenuItemClickListener { item ->
             when {
@@ -1965,6 +2056,7 @@ class MainActivity : AppCompatActivity() {
                 item.title == "Clear Canvas" -> confirmThenClear()
                 item.title == "Delete This Note" -> deleteCurrentNote()
                 item.title == "Add to Book" -> showAddToBookDialog()
+                item.title == "Layers" -> showLayersPanel()
                 item.title == "Open PDF" -> pickPdfLauncher.launch("application/pdf")
                 item.title == "Chart Builder" -> chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java))
                 item.title == "Handwriting to Text" -> convertHandwritingInPlace()
@@ -2723,6 +2815,15 @@ class MainActivity : AppCompatActivity() {
         div(); hdr("GENERAL")
         val confirmCb = CheckBox(this).apply{ text="Confirm before exit or clear canvas"; isChecked=prefs.getBoolean("confirm_exit_clear",true) }; container.addView(confirmCb)
         val autosaveCb = CheckBox(this).apply{ text="Autosave every 10 seconds"; isChecked=prefs.getBoolean("autosave",true) }; container.addView(autosaveCb)
+        val layersBtnCb = CheckBox(this).apply {
+            text = "Always show Layers button in toolbar"
+            isChecked = prefs.getBoolean("layers_button_always_visible", false)
+            setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("layers_button_always_visible", on).apply(); updateLayersButtonVisibility() }
+        }; container.addView(layersBtnCb)
+        container.addView(TextView(this).apply {
+            text = "When off, Layers is still reachable from the ⋮ menu."
+            textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(2), 0, dp(4))
+        })
 
         div(); hdr("APPEARANCE")
         val themeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, dp(6)) }

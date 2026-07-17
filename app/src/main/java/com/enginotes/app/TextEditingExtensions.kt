@@ -238,7 +238,28 @@ internal fun MainActivity.showTextSelectionBox(item: TextItem, screenX: Float, s
             updateToolbarPos() // re-derive position from the refreshed boxH too
             drawingView.invalidate()
         }
+        // Double-tap-to-edit, added directly here rather than relying on DrawingView's own
+        // double-tap detector — once an item is selected, moveSurface sits on top of it and
+        // intercepts every touch, so DrawingView's gesture detector never even sees a tap here
+        // again. Without this, there was no way back into active editing once an item had been
+        // selected once: single-tapping it again just re-confirmed the selection (still able to
+        // change font/color via the context bar), but double-tapping did nothing, since nothing
+        // was listening for it on this view.
+        val doubleTapDetector = android.view.GestureDetector(this, object : android.view.GestureDetector.SimpleOnGestureListener() {
+            override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
+                // e.x/e.y are local to moveSurface — convert through its actual current on-screen
+                // position (kept in sync with its layoutParams by Android) to get real screen
+                // coordinates, matching what DrawingView's own touch handling expects.
+                val absX = moveSurface.left + e.x; val absY = moveSurface.top + e.y
+                val wx = drawingView.screenToWorldX(absX); val wy = drawingView.screenToWorldY(absY)
+                dismissTextSelectionBox()
+                item.isEditing = true
+                showInlineTextEditor(item, absX, absY, wx, wy)
+                return true
+            }
+        })
         moveSurface.setOnTouchListener { _, ev ->
+            if (doubleTapDetector.onTouchEvent(ev)) return@setOnTouchListener true
             // The hand-icon toggle (fingerPanMode) is handled inside DrawingView itself, but
             // moveSurface is a separate overlay View sitting on top of it — it had no idea that
             // toggle existed, so it always intercepted the touch first and started a drag
@@ -578,6 +599,7 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
         var onBoxResized: (() -> Unit)? = null
         // toolbarScroll is declared later in this function — use a forward ref so we can hide it during drag
         var editorToolbarRef: View? = null
+        var currentImeBottom = 0  // tracked for the toolbar's dynamic positioning below, kept in sync by onImeBottomChanged further down
         moveHandle.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
                 android.view.MotionEvent.ACTION_DOWN -> {
@@ -722,6 +744,43 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
             val dlp = deleteHandle.layoutParams as FrameLayout.LayoutParams
             dlp.leftMargin = (bx + w - half).toInt(); dlp.topMargin = clampTop(by - half)
             deleteHandle.layoutParams = dlp
+
+            // Toolbar (B/I/U/check/delete/sparkle): prefers sitting just above the box. If that
+            // would land under the top app bar, or the box's top isn't on screen at all, falls
+            // back to just below the box instead (clamped above the keyboard when it's open). If
+            // NEITHER edge of the box is currently visible — a long text item, actively scrolled,
+            // filling the whole screen — neither "above" nor "below" is reachable, so it pins to
+            // the top-right corner instead, same principle as the magnifier lens flipping sides
+            // rather than becoming simply unreachable.
+            val tb = editorToolbarRef
+            if (tb != null) {
+                val topBarH = dp(56)
+                val toolbarH = dp(40)
+                val screenH = canvasContainer.height
+                val keyboardTop = if (currentImeBottom > dp(150)) (screenH - currentImeBottom) else screenH
+                val topVisible = by in topBarH.toFloat()..screenH.toFloat()
+                val bottomVisible = (by + h) in topBarH.toFloat()..screenH.toFloat()
+                val tlp = tb.layoutParams as FrameLayout.LayoutParams
+                when {
+                    !topVisible && !bottomVisible -> {
+                        tlp.gravity = Gravity.TOP or Gravity.END
+                        tlp.topMargin = topBarH + dp(8); tlp.leftMargin = 0; tlp.rightMargin = dp(8); tlp.bottomMargin = 0
+                    }
+                    by - toolbarH >= topBarH -> {
+                        tlp.gravity = Gravity.TOP or Gravity.START
+                        tlp.topMargin = (by - toolbarH).toInt().coerceAtLeast(topBarH)
+                        tlp.leftMargin = bx.toInt().coerceIn(0, (canvasContainer.width - dp(200)).coerceAtLeast(0))
+                        tlp.rightMargin = 0; tlp.bottomMargin = 0
+                    }
+                    else -> {
+                        tlp.gravity = Gravity.TOP or Gravity.START
+                        tlp.topMargin = (by + h + dp(8)).toInt().coerceIn(topBarH, (keyboardTop - toolbarH).coerceAtLeast(topBarH))
+                        tlp.leftMargin = bx.toInt().coerceIn(0, (canvasContainer.width - dp(200)).coerceAtLeast(0))
+                        tlp.rightMargin = 0; tlp.bottomMargin = 0
+                    }
+                }
+                tb.layoutParams = tlp
+            }
         }
         boxContainer.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, or_, ob ->
             if (r - l != or_ - ol || b - t != ob - ot) { layoutEditorHandles(); onBoxResized?.invoke() }
@@ -729,15 +788,16 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
         boxContainer.post { layoutEditorHandles() }
         // onBoxMoved is assigned after updateET() is defined below
 
-        // Options toolbar positioned directly above the editing box (not pinned to screen bottom)
-        val toolbar=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(6).toFloat(); setPadding(dp(6),dp(6),dp(6),dp(6)) }
+        // Toolbar size/position: smaller buttons (was 34dp), and positioned dynamically near
+        // the text box by layoutEditorHandles() above rather than pinned to one fixed spot.
+        val toolbar=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(6).toFloat(); setPadding(dp(4),dp(4),dp(4),dp(4)) }
         fun ibtn(iconRes:Int,action:(ImageView)->Unit):ImageView{
             val b=ImageView(this); b.setImageResource(iconRes); b.scaleType=ImageView.ScaleType.CENTER_INSIDE
-            val p=LinearLayout.LayoutParams(dp(34),dp(34));p.setMargins(dp(2),0,dp(2),0);b.layoutParams=p
-            b.setPadding(dp(6),dp(6),dp(6),dp(6))
+            val p=LinearLayout.LayoutParams(dp(26),dp(26));p.setMargins(dp(2),0,dp(2),0);b.layoutParams=p
+            b.setPadding(dp(4),dp(4),dp(4),dp(4))
             b.setBackgroundColor(Color.parseColor("#F0EBE0"));b.setOnClickListener{action(b)};toolbar.addView(b);return b
         }
-        fun tbtnText(label:String,action:(TextView)->Unit):TextView{ val b=TextView(this);b.text=label;b.textSize=14f;b.setTextColor(Color.parseColor("#4A4A4A"));b.gravity=Gravity.CENTER;val p=LinearLayout.LayoutParams(dp(34),dp(34));p.setMargins(dp(2),0,dp(2),0);b.layoutParams=p;b.setBackgroundColor(Color.parseColor("#F0EBE0"));b.setOnClickListener{action(b)};toolbar.addView(b);return b }
+        fun tbtnText(label:String,action:(TextView)->Unit):TextView{ val b=TextView(this);b.text=label;b.textSize=12f;b.setTextColor(Color.parseColor("#4A4A4A"));b.gravity=Gravity.CENTER;val p=LinearLayout.LayoutParams(dp(26),dp(26));p.setMargins(dp(2),0,dp(2),0);b.layoutParams=p;b.setBackgroundColor(Color.parseColor("#F0EBE0"));b.setOnClickListener{action(b)};toolbar.addView(b);return b }
         val activeBg=Color.parseColor("#8D6E63"); val inactiveBg=Color.parseColor("#F0EBE0")
         fun setToggleStateIcon(btn: ImageView, active: Boolean) { btn.setBackgroundColor(if(active) activeBg else inactiveBg); btn.setColorFilter(if(active) Color.WHITE else Color.parseColor("#4A4A4A")) }
         ibtn(R.drawable.ic_text_bold){btn-> if(et.selectionStart!=et.selectionEnd) toggleStyleOnSelection(et,Typeface.BOLD) else{ pendingBold=!pendingBold; setToggleStateIcon(btn,pendingBold) } }
@@ -763,19 +823,19 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
             }
         }
 
-        // Single fixed bottom bar — replaces the old floating toolbar that used to track the
-        // box's own top edge. That floating version had two problems: for a long multi-page
-        // paste it scrolled far off-screen the moment you scrolled down to keep typing, and
-        // showing it ALONGSIDE a separate bottom bar (an earlier attempt) was just confusing
-        // clutter — two toolbars doing the same job. Now there's exactly one, always reachable,
-        // reusing the SAME toolbar (with all 6 buttons, including the AI sparkle) instead of a
-        // second, different-looking bar.
+        // Positioned dynamically near the text box by layoutEditorHandles() above — prefers just
+        // above the box, falls back below (clamped above the keyboard) if that's occluded by the
+        // top bar, and pins to the screen's top-right if neither edge of the box is visible at
+        // all (a long, actively-scrolled text item filling the whole screen). This replaces an
+        // earlier "always fixed at the bottom" design — reachable, but not actually near what
+        // you're editing, which is what was being asked for here instead.
         val toolbarScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(toolbar) }
-        editorToolbarRef = toolbarScroll  // forward ref so move handle can hide/show it
+        editorToolbarRef = toolbarScroll  // forward ref so move handle can hide/show it, and so layoutEditorHandles can reposition it
         val toolbarScrollLp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; bottomMargin = dp(16)
+            gravity = Gravity.TOP or Gravity.START  // real position set by layoutEditorHandles() immediately after this view exists
         }
         canvasContainer.addView(toolbarScroll, toolbarScrollLp)
+        toolbarScroll.post { layoutEditorHandles() }  // position it correctly right away instead of waiting for the next box-resize
 
         // ── Keyboard scroll-into-view ─────────────────────────────────────────────
         // Piggybacks on the OnApplyWindowInsetsListener already set on android.R.id.content
@@ -786,12 +846,12 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
 
         onImeBottomChanged = { imeBottom ->
             val keyboardOpen = imeBottom > dp(150)
-
-            // Keep the fixed bottom bar riding just above the keyboard rather than buried
-            // underneath it — it's most needed exactly while the keyboard is open and typing.
-            val bblp = toolbarScroll.layoutParams as FrameLayout.LayoutParams
-            bblp.bottomMargin = (if (keyboardOpen) imeBottom + dp(8) else dp(16))
-            toolbarScroll.layoutParams = bblp
+            currentImeBottom = imeBottom
+            // Toolbar position (avoiding the keyboard when it's open) is now handled entirely by
+            // layoutEditorHandles() above, which already runs on every box layout change — just
+            // trigger it here so it re-evaluates against the new keyboard height immediately,
+            // rather than waiting for some unrelated layout change to happen to also update it.
+            layoutEditorHandles()
 
             if (keyboardOpen && !keyboardWasOpen) {
                 keyboardWasOpen = true
