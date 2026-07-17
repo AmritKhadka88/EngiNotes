@@ -1458,8 +1458,17 @@ class MainActivity : AppCompatActivity() {
         // physical size matches MS Word's own convention when actually printed.
         fun textSizeButton(currentSizePx: Float, onChange: (Float) -> Unit) {
             val standardPoints = listOf(6f,7f,8f,9f,10f,10.5f,11f,12f,13f,14f,16f,18f,20f,22f,24f,26f,28f,32f,36f,40f,44f,48f,54f,60f,66f,72f,80f,88f,96f,108f,120f,132f,144f,160f)
+            // Rounds to 1 decimal place and drops a trailing ".0" for whole numbers — px/PT_TO_PX
+            // is a floating-point division and routinely lands a hair off an exact value (4.999998
+            // instead of 5), which showed up raw in the UI. Point sizes only ever need one decimal
+            // of precision (the standard list itself only goes to the half-point, e.g. 10.5), so
+            // rounding here throws away exactly the noise and nothing real.
+            fun ptLabel(pt: Float): String {
+                val r = kotlin.math.round(pt * 10f) / 10f
+                return if (r == kotlin.math.round(r)) r.toInt().toString() else r.toString()
+            }
             val btn = TextView(this).apply {
-                text = (currentSizePx / PT_TO_PX).let { if (it == it.toInt().toFloat()) it.toInt().toString() else it.toString() }
+                text = ptLabel(currentSizePx / PT_TO_PX)
                 textSize = 14f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#1C1C1E"))
                 val lp = LinearLayout.LayoutParams(dp(44), BAR_H); lp.setMargins(dp(2), 0, dp(2), 0); layoutParams = lp
                 background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(11).toFloat() }
@@ -1474,14 +1483,14 @@ class MainActivity : AppCompatActivity() {
                 val customRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(14), dp(12), dp(14), dp(8)) }
                 val customEdit = android.widget.EditText(this).apply {
                     hint = "Custom pt"; inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
-                    setText((currentSizePx / PT_TO_PX).let { if (it == it.toInt().toFloat()) it.toInt().toString() else it.toString() })
+                    setText(ptLabel(currentSizePx / PT_TO_PX))
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 }
                 val setBtn = TextView(this).apply {
                     text = "Set"; setTextColor(Color.parseColor("#1565C0")); setPadding(dp(12), dp(6), dp(4), dp(6))
                     setOnClickListener {
                         val pts = customEdit.text.toString().toFloatOrNull()
-                        if (pts != null && pts > 0f) { onChange((pts * PT_TO_PX).coerceIn(4f, 1000f)); btn.text = pts.let { if (it == it.toInt().toFloat()) it.toInt().toString() else it.toString() }; popup.dismiss() }
+                        if (pts != null && pts > 0f) { onChange((pts * PT_TO_PX).coerceIn(4f, 1000f)); btn.text = ptLabel(pts); popup.dismiss() }
                     }
                 }
                 customRow.addView(customEdit); customRow.addView(setBtn)
@@ -1494,10 +1503,10 @@ class MainActivity : AppCompatActivity() {
                 val currentPts = currentSizePx / PT_TO_PX
                 for (pt in standardPoints) {
                     list.addView(TextView(this).apply {
-                        text = if (pt == pt.toInt().toFloat()) pt.toInt().toString() else pt.toString()
+                        text = ptLabel(pt)
                         textSize = 16f; setPadding(dp(16), dp(10), dp(16), dp(10))
                         if (kotlin.math.abs(pt - currentPts) < 0.01f) { setBackgroundColor(Color.parseColor("#E3EEFB")); setTextColor(Color.parseColor("#1565C0")) } else setTextColor(Color.parseColor("#1C1C1E"))
-                        setOnClickListener { onChange(pt * PT_TO_PX); btn.text = if (pt == pt.toInt().toFloat()) pt.toInt().toString() else pt.toString(); popup.dismiss() }
+                        setOnClickListener { onChange(pt * PT_TO_PX); btn.text = ptLabel(pt); popup.dismiss() }
                     })
                 }
                 scroll.addView(list); pLayout.addView(scroll)
@@ -1951,7 +1960,7 @@ class MainActivity : AppCompatActivity() {
     // Settings toggle; when off, Layers is still reachable via the three-dot menu itself.
     private fun setupLayersButton() {
         val btnMenu = findViewById<ImageButton?>(R.id.btnMenu) ?: return
-        val parent = btnMenu.parent as? ViewGroup ?: return
+        val parent = btnMenu.parent as? android.view.ViewGroup ?: return
         val index = parent.indexOfChild(btnMenu)
         val btnLayers = ImageButton(this).apply {
             background = btnMenu.background
