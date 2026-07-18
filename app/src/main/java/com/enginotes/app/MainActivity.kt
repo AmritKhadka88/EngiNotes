@@ -622,33 +622,33 @@ class MainActivity : AppCompatActivity() {
                 }
                 val scroll = HorizontalScrollView(this).apply {
                     isHorizontalScrollBarEnabled = false
-                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(24).toFloat() }
-                    elevation = dp(6).toFloat()
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(18).toFloat() }
+                    elevation = dp(5).toFloat()
                     layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).also {
                         it.gravity = Gravity.TOP or Gravity.END; it.topMargin = dp(56); it.rightMargin = dp(8)
                     }
                     addView(tb)
                 }
-                val iconSize = dp(40)
+                val iconSize = dp(30)
                 fun sep() = View(this).apply {
-                    layoutParams = LinearLayout.LayoutParams(dp(1), dp(24)).also { it.setMargins(dp(4), dp(8), dp(4), dp(8)) }
+                    layoutParams = LinearLayout.LayoutParams(dp(1), dp(18)).also { it.setMargins(dp(3), dp(6), dp(3), dp(6)) }
                     setBackgroundColor(Color.parseColor("#E0E0E0"))
                     tb.addView(this)
                 }
                 fun iconBtn(glyph: String, action: () -> Unit): TextView {
                     val v = TextView(this).apply {
-                        text = glyph; textSize = 17f; gravity = Gravity.CENTER
+                        text = glyph; textSize = 13f; gravity = Gravity.CENTER
                         setTextColor(Color.parseColor("#2A2A2A"))
-                        layoutParams = LinearLayout.LayoutParams(iconSize, iconSize).also { it.setMargins(dp(2), dp(6), dp(2), dp(6)) }
+                        layoutParams = LinearLayout.LayoutParams(iconSize, iconSize).also { it.setMargins(dp(1), dp(5), dp(1), dp(5)) }
                         background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.parseColor("#F2F2F2")) }
                         setOnClickListener { action() }
                     }
                     tb.addView(v); return v
                 }
                 fun lBtn(label: String, action: () -> Unit) = TextView(this).apply {
-                    text = label; textSize = 12f; gravity = Gravity.CENTER
+                    text = label; textSize = 10f; gravity = Gravity.CENTER
                     setTextColor(Color.parseColor("#2A2A2A"))
-                    val pad = dp(8); setPadding(pad, dp(6), pad, dp(6))
+                    val pad = dp(6); setPadding(pad, dp(5), pad, dp(5))
                     setOnClickListener { action() }; tb.addView(this)
                 }
                 iconBtn("⤒") { drawingView.bringToFront(item) }
@@ -676,17 +676,6 @@ class MainActivity : AppCompatActivity() {
                 iconBtn("⧉") {
                     val copy = drawingView.duplicateAnyItem(item)
                     if (copy != null) drawingView.applyDuplicateAnyResult(copy)
-                }
-                val lockIcon = iconBtn(if (drawingView.isSelectionLocked()) "🔒" else "🔓") {}
-                lockIcon.setOnClickListener {
-                    if (drawingView.isSelectionLocked()) drawingView.unlockSelectedItems() else drawingView.lockSelectedItems()
-                    lockIcon.text = if (drawingView.isSelectionLocked()) "🔒" else "🔓"
-                    val topLockBtn = findViewById<TextView>(R.id.btnLock)
-                    val locked = drawingView.isSelectionLocked()
-                    topLockBtn?.text = if (locked) "🔒" else "🔓"
-                    topLockBtn?.background = android.graphics.drawable.GradientDrawable().apply {
-                        setColor(if (locked) Color.parseColor("#C62828") else Color.parseColor("#2E7D32")); cornerRadius = dp(8).toFloat()
-                    }
                 }
                 iconBtn("🗑") {
                     drawingView.deleteAnyItem(item)

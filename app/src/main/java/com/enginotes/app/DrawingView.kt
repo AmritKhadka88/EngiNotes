@@ -5721,8 +5721,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     fun duplicateStrokeItem(item: StrokeItem): StrokeItem {
         val b = getBoundsRaw(item) ?: getBounds(item)
         val w = if (b != null) (b[2] - b[0]) else item.data.strokeWidth * 4f
-        val gap = (w * 0.15f).coerceAtLeast(20f)
-        val dx = w + gap
+        // Small nearby offset, not a full-width jump — a large shape used to place its copy a
+        // whole shape-width-plus-15% away, which for anything bigger than the visible canvas
+        // meant the copy landed off-screen. Cap it so big shapes still land nearby.
+        val dx = (w * 0.15f).coerceIn(20f, 60f)
         val newPoints = mutableListOf<Float>()
         var i = 0
         while (i + 1 < item.data.points.size) { newPoints.add(item.data.points[i] + dx); newPoints.add(item.data.points[i + 1]); i += 2 }
