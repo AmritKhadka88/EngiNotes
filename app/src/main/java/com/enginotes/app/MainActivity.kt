@@ -3415,7 +3415,7 @@ class MainActivity : AppCompatActivity() {
             background = android.graphics.drawable.GradientDrawable().apply {
                 setColor(Color.parseColor("#9C27B0")); cornerRadius = dp(16).toFloat()
             }
-            elevation = dp(6).toFloat()
+            elevation = dp(10).toFloat()
             setOnClickListener {
                 drawingView.multiSelectIndividual = !drawingView.multiSelectIndividual
                 text = if (drawingView.multiSelectIndividual) "⚙ Indiv" else "⚙ Group"
@@ -3423,8 +3423,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.END
-        lp.bottomMargin = dp(8); lp.rightMargin = dp(12)
+        lp.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+        lp.topMargin = dp(56); lp.leftMargin = dp(8)
         canvasContainer.addView(btn, lp)
         groupModeToggleBtn = btn
     }
