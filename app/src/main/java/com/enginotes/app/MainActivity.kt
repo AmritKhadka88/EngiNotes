@@ -618,26 +618,50 @@ class MainActivity : AppCompatActivity() {
             } else if (item !is TextItem) {
                 val tb = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
                 }
                 val scroll = HorizontalScrollView(this).apply {
                     isHorizontalScrollBarEnabled = false
-                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat(); setStroke(dp(1), Color.parseColor("#DDDDDD")) }
-                    elevation = dp(4).toFloat()
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(18).toFloat() }
+                    elevation = dp(5).toFloat()
                     layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).also {
                         it.gravity = Gravity.TOP or Gravity.END; it.topMargin = dp(56); it.rightMargin = dp(8)
                     }
                     addView(tb)
                 }
+                val iconSize = dp(30)
+                fun sep() = View(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(dp(1), dp(18)).also { it.setMargins(dp(3), dp(6), dp(3), dp(6)) }
+                    setBackgroundColor(Color.parseColor("#E0E0E0"))
+                    tb.addView(this)
+                }
+                fun iconBtn(glyph: String, action: () -> Unit): TextView {
+                    val v = TextView(this).apply {
+                        text = glyph; textSize = 13f; gravity = Gravity.CENTER
+                        setTextColor(Color.parseColor("#2A2A2A"))
+                        layoutParams = LinearLayout.LayoutParams(iconSize, iconSize).also { it.setMargins(dp(1), dp(5), dp(1), dp(5)) }
+                        background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.parseColor("#F2F2F2")) }
+                        setOnClickListener { action() }
+                    }
+                    tb.addView(v); return v
+                }
                 fun lBtn(label: String, action: () -> Unit) = TextView(this).apply {
-                    text = label; textSize = 13f; gravity = Gravity.CENTER
-                    val pad = dp(8); setPadding(pad, dp(6), pad, dp(6))
+                    text = label; textSize = 10f; gravity = Gravity.CENTER
+                    setTextColor(Color.parseColor("#2A2A2A"))
+                    val pad = dp(6); setPadding(pad, dp(5), pad, dp(5))
                     setOnClickListener { action() }; tb.addView(this)
                 }
-                lBtn("⬆⬆") { drawingView.bringToFront(item) }
-                lBtn("⬆") { drawingView.bringForward(item) }
-                lBtn("⬇") { drawingView.sendBackward(item) }
-                lBtn("⬇⬇") { drawingView.sendToBack(item) }
+                iconBtn("⤒") { drawingView.bringToFront(item) }
+                iconBtn("↑") { drawingView.bringForward(item) }
+                iconBtn("↓") { drawingView.sendBackward(item) }
+                iconBtn("⤓") { drawingView.sendToBack(item) }
+                if (item is ImageItem) {
+                    sep()
+                    iconBtn("⇋") { drawingView.flipImageHorizontal(item) }
+                    iconBtn("⇵") { drawingView.flipImageVertical(item) }
+                }
                 if (item is StrokeItem) {
+                    sep()
                     lBtn("Offset") { showOffsetDialog(item) }
                     lBtn("Explode") {
                         val pieces = drawingView.explodeItem(item)
@@ -647,15 +671,23 @@ class MainActivity : AppCompatActivity() {
                             drawingView.applyExplodeResult(item, pieces)
                         }
                     }
-                    lBtn("Copy") {
-                        val copy = drawingView.duplicateStrokeItem(item)
-                        drawingView.applyDuplicateResult(copy)
+                }
+                if (item !is TableItem) {
+                    sep()
+                    iconBtn("⧉") {
+                        val copy = drawingView.duplicateAnyItem(item)
+                        if (copy != null) drawingView.applyDuplicateAnyResult(copy)
                     }
+                }
+                iconBtn("🗑") {
+                    drawingView.deleteAnyItem(item)
+                    canvasContainer.removeView(scroll); layerToolbar = null
                 }
                 canvasContainer.addView(scroll)
                 layerToolbar = scroll
             }
         }
+        drawingView.onTableCellEditRequest = { table, row, col, sx, sy -> showTableCellEditor(table, row, col, sx, sy) }
         drawingView.onMultiSelectionChanged = { items ->
             runOnUiThread {
                 val lockBtn = findViewById<TextView>(R.id.btnLock)
@@ -2089,13 +2121,8 @@ class MainActivity : AppCompatActivity() {
         if (currentFileName != null) popup.menu.add("Delete This Note")
         popup.menu.add("Add to Book")
         popup.menu.add("Layers")
-        popup.menu.add(if (driveManager.isSignedIn()) "Back Up to Drive" else "Sign in with Google")
-        if (driveManager.isSignedIn()) {
-            popup.menu.add("Restore from Drive")
-            popup.menu.add("Auto-Backup: ${if (getPrefs().getBoolean("auto_backup_drive", false)) "On" else "Off"}")
-            popup.menu.add("Sign Out of Google")
-        }
-        listOf("Open PDF","Chart Builder","Handwriting to Text","Ask Gemini about Drawing","Settings","About","Exit").forEach { popup.menu.add(it) }
+        popup.menu.add("Back Up to Drive")
+        listOf("Open PDF","Chart Builder","Handwriting to Text","Ask Gemini about Drawing","Settings","Exit").forEach { popup.menu.add(it) }
         popup.setOnMenuItemClickListener { item ->
             when {
                 item.title.toString().startsWith("Note:") -> showRenameDialog()
@@ -2120,18 +2147,13 @@ class MainActivity : AppCompatActivity() {
                     setActiveTool(null, Tool.OCR_SNIP)
                 }
                 item.title == "Settings" -> showSettingsDialog()
-                item.title == "About" -> showAboutDialog()
                 item.title == "Exit" -> confirmThenExit()
-                item.title == "Sign in with Google" -> driveManager.signIn()
-                item.title == "Sign Out of Google" -> driveManager.signOut {
-                    Toast.makeText(this, "Signed out of Google", Toast.LENGTH_SHORT).show()
-                }
-                item.title == "Back Up to Drive" -> currentFileName?.let { backUpNoteToDrive(it, silent = false) }
-                item.title == "Restore from Drive" -> showRestoreFromDriveDialog()
-                item.title.toString().startsWith("Auto-Backup:") -> {
-                    val newValue = !getPrefs().getBoolean("auto_backup_drive", false)
-                    getPrefs().edit().putBoolean("auto_backup_drive", newValue).apply()
-                    Toast.makeText(this, if (newValue) "Auto-backup turned on" else "Auto-backup turned off", Toast.LENGTH_SHORT).show()
+                item.title == "Back Up to Drive" -> {
+                    if (!driveManager.isSignedIn()) {
+                        Toast.makeText(this, "Sign in with Google from the home screen first", Toast.LENGTH_SHORT).show()
+                    } else {
+                        currentFileName?.let { backUpNoteToDrive(it, silent = false) }
+                    }
                 }
             }
             true
@@ -2951,39 +2973,6 @@ class MainActivity : AppCompatActivity() {
 
     // showOcrSourceDialog moved to OcrExtensions.kt.
 
-    private fun showAboutDialog() {
-        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(16), dp(24), dp(8)); gravity = Gravity.CENTER_HORIZONTAL }
-        try {
-            val icon = ImageView(this).apply {
-                setImageResource(R.mipmap.ic_launcher)
-                layoutParams = LinearLayout.LayoutParams(dp(80), dp(80))
-            }
-            container.addView(icon)
-        } catch (e: Exception) {}
-        container.addView(TextView(this).apply {
-            text = "EngiNotes"; textSize = 22f; typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#2A2A2A")); gravity = Gravity.CENTER
-            setPadding(0, dp(12), 0, dp(4))
-        })
-        val versionName = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "" }
-        if (!versionName.isNullOrBlank()) {
-            container.addView(TextView(this).apply {
-                text = "Version $versionName"; textSize = 13f; setTextColor(Color.parseColor("#9E9E9E")); gravity = Gravity.CENTER
-                setPadding(0, 0, 0, dp(16))
-            })
-        }
-        container.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)); setBackgroundColor(Color.parseColor("#EEEEEE")) })
-        container.addView(TextView(this).apply {
-            text = "Developed by Amrit Khadka"; textSize = 15f; setTextColor(Color.parseColor("#2A2A2A")); gravity = Gravity.CENTER
-            setPadding(0, dp(16), 0, dp(4))
-        })
-        container.addView(TextView(this).apply {
-            text = "Contributor: Avinash Khadgi"; textSize = 14f; setTextColor(Color.parseColor("#5A5A5A")); gravity = Gravity.CENTER
-            setPadding(0, 0, 0, dp(8))
-        })
-        AlertDialog.Builder(this).setView(container).setPositiveButton("Close", null).show()
-    }
-
     private fun showSettingsDialog() {
         val prefs = getPrefs()
         val accent = Color.parseColor("#7B61FF")
@@ -3429,7 +3418,7 @@ class MainActivity : AppCompatActivity() {
             background = android.graphics.drawable.GradientDrawable().apply {
                 setColor(Color.parseColor("#9C27B0")); cornerRadius = dp(16).toFloat()
             }
-            elevation = dp(6).toFloat()
+            elevation = dp(10).toFloat()
             setOnClickListener {
                 drawingView.multiSelectIndividual = !drawingView.multiSelectIndividual
                 text = if (drawingView.multiSelectIndividual) "⚙ Indiv" else "⚙ Group"
@@ -3437,8 +3426,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.END
-        lp.bottomMargin = dp(8); lp.rightMargin = dp(12)
+        lp.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+        lp.topMargin = dp(56); lp.leftMargin = dp(8)
         canvasContainer.addView(btn, lp)
         groupModeToggleBtn = btn
     }
@@ -4546,7 +4535,7 @@ class MainActivity : AppCompatActivity() {
     private fun showSizePicker() {
         val tool=drawingView.currentTool
         val current: Float; val maxSize: Int; val label: String
-        when(tool){ Tool.ERASER->{ current=drawingView.eraserSize; maxSize=200; label="Eraser Size" }; Tool.TEXT->{ current=drawingView.defaultTextSize/PT_TO_PX; maxSize=144; label="Font Size (pt)" }; else->{ current=drawingView.currentStrokeWidth; maxSize=100; label="Stroke Width" } }
+        when(tool){ Tool.ERASER->{ current=drawingView.eraserSize; maxSize=200; label="Eraser Size" }; Tool.TEXT->{ current=drawingView.defaultTextSize/PT_TO_PX; maxSize=144; label="Font Size (pt)" }; Tool.BRUSH->{ current=drawingView.brushThickness; maxSize=100; label="Brush Size" }; else->{ current=drawingView.currentStrokeWidth; maxSize=100; label="Stroke Width" } }
         val container=LinearLayout(this).apply{ orientation=LinearLayout.VERTICAL; setPadding(50,30,50,10) }
         if (tool == Tool.TEXT) {
             // Numeric input matching MS Word's point-size convention — type any exact size,
@@ -4570,7 +4559,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val tv=TextView(this).apply{ text="$label: ${current.toInt()}"; textSize=16f }; container.addView(tv)
-        val seek=SeekBar(this).apply{ max=maxSize; progress=current.toInt().coerceIn(1,maxSize); setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(sb:SeekBar?,v:Int,f:Boolean){ val vv=v.coerceAtLeast(1); tv.text="$label: $vv"; when(tool){ Tool.ERASER->drawingView.eraserSize=vv.toFloat(); else->drawingView.currentStrokeWidth=vv.toFloat() } }; override fun onStartTrackingTouch(sb:SeekBar?){}; override fun onStopTrackingTouch(sb:SeekBar?){} }) }; container.addView(seek)
+        val seek=SeekBar(this).apply{ max=maxSize; progress=current.toInt().coerceIn(1,maxSize); setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(sb:SeekBar?,v:Int,f:Boolean){ val vv=v.coerceAtLeast(1); tv.text="$label: $vv"; when(tool){ Tool.ERASER->drawingView.eraserSize=vv.toFloat(); Tool.BRUSH->drawingView.brushThickness=vv.toFloat(); else->drawingView.currentStrokeWidth=vv.toFloat() } }; override fun onStartTrackingTouch(sb:SeekBar?){}; override fun onStopTrackingTouch(sb:SeekBar?){} }) }; container.addView(seek)
         AlertDialog.Builder(this).setTitle(label).setView(container).setPositiveButton("Done",null).show()
     }
 

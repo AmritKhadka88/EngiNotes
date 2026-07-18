@@ -763,6 +763,18 @@ class StrokeItem(val data: StrokeData, var path: Path, var paint: Paint) {
         cachedBitmap?.recycle(); cachedBitmap = null; cacheValid = false
         sampledPathPts = null; cachedPoints = null  // path changed — resample next hit test
     }
+
+    // "Freeze to bitmap" state for area-erasing expensive particle brush styles (Spray, Dry
+    // Brush, Grass, Fire, etc). Normally erasing splits the stroke's point data and lets the
+    // renderer regenerate the particle pattern from scratch — fine for a plain pen line, very
+    // expensive for hundreds of particles, every single touch-move frame of the drag. Once an
+    // area-erase gesture touches one of these strokes, its current appearance is rendered to a
+    // bitmap ONE time; every further touch-move sample in that same drag just clears a circle of
+    // pixels directly from that bitmap (like erasing a photo) instead of re-generating particles.
+    // While this is non-null, rendering draws this bitmap as-is instead of running the normal
+    // particle renderer, so the growing eraser holes are visible in real time during the drag.
+    var eraseSessionBitmap: android.graphics.Bitmap? = null
+    var eraseSessionLeft = 0f; var eraseSessionTop = 0f; var eraseSessionRight = 0f; var eraseSessionBottom = 0f
 }
 
 class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var size: Float, var rotation: Float) {
@@ -788,6 +800,8 @@ class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var
 
 class ImageItem(var path: String, var x: Float, var y: Float, var w: Float, var h: Float, var rotation: Float) {
     var layerId: Int = 0
+    var flippedH: Boolean = false
+    var flippedV: Boolean = false
     @Volatile var bitmap: Bitmap? = null
     @Volatile var loading: Boolean = false
 }
@@ -1767,6 +1781,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 canvas.save()
                 canvas.translate(action.x + action.w / 2f, action.y + action.h / 2f)
                 canvas.rotate(action.rotation)
+                canvas.scale(if (action.flippedH) -1f else 1f, if (action.flippedV) -1f else 1f)
                 canvas.drawBitmap(bmp, null, RectF(-action.w / 2f, -action.h / 2f, action.w / 2f, action.h / 2f), null)
                 canvas.restore()
             }
@@ -2095,6 +2110,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun drawBrushStrokeWithCache(canvas: Canvas, item: StrokeItem) {
+        val sessionBmp = item.eraseSessionBitmap
+        if (sessionBmp != null) {
+            val dst = android.graphics.RectF(item.eraseSessionLeft, item.eraseSessionTop, item.eraseSessionRight, item.eraseSessionBottom)
+            canvas.drawBitmap(sessionBmp, null, dst, null)
+            return
+        }
         if (!CACHED_BRUSH_STYLES.contains(item.data.brushStyle)) {
             drawBrushStroke(canvas, item); return
         }
@@ -2124,6 +2145,79 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // dstRect is in world coords — the canvas transform (translate+scale) maps to screen correctly
         val dst = android.graphics.RectF(item.cacheLeft, item.cacheTop, item.cacheRight, item.cacheBottom)
         canvas.drawBitmap(bmp, null, dst, null)
+    }
+
+    // Renders the stroke's current appearance into item.eraseSessionBitmap exactly once (if not
+    // already present this session). Returns false if bounds are unavailable or the bitmap would
+    // be unreasonably large, in which case the caller should fall back to normal point-splitting.
+    private fun ensureEraseSessionBitmap(item: StrokeItem): Boolean {
+        if (item.eraseSessionBitmap != null) return true
+        val bounds = getBounds(item) ?: return false
+        val pad = item.data.strokeWidth * 2f
+        val wl = bounds[0] - pad; val wt = bounds[1] - pad
+        val wr = bounds[2] + pad; val wb = bounds[3] + pad
+        val bmpW = ((wr - wl) * CACHE_SCALE).toInt().coerceIn(1, 4096)
+        val bmpH = ((wb - wt) * CACHE_SCALE).toInt().coerceIn(1, 4096)
+        if (bmpW.toLong() * bmpH * 4 > 16L * 1024 * 1024) return false
+        return try {
+            val bmp = android.graphics.Bitmap.createBitmap(bmpW, bmpH, android.graphics.Bitmap.Config.ARGB_8888)
+            val bc = Canvas(bmp)
+            bc.translate(-wl * CACHE_SCALE, -wt * CACHE_SCALE)
+            bc.scale(CACHE_SCALE, CACHE_SCALE)
+            drawBrushStroke(bc, item)
+            item.eraseSessionBitmap = bmp
+            item.eraseSessionLeft = wl; item.eraseSessionTop = wt
+            item.eraseSessionRight = wr; item.eraseSessionBottom = wb
+            true
+        } catch (e: OutOfMemoryError) { false }
+    }
+
+    // Clears a circle of pixels directly from the frozen session bitmap — O(pixels under the
+    // eraser), completely independent of how many particles the original pattern had. This is
+    // the actual fast path: every touch-move sample after the first hit on this stroke lands
+    // here instead of regenerating anything.
+    private fun eraseFromSessionBitmap(item: StrokeItem, x: Float, y: Float, r: Float) {
+        val bmp = item.eraseSessionBitmap ?: return
+        val bc = Canvas(bmp)
+        val bx = (x - item.eraseSessionLeft) * CACHE_SCALE
+        val by = (y - item.eraseSessionTop) * CACHE_SCALE
+        val br = r * CACHE_SCALE
+        bc.drawCircle(bx, by, br, _fillErasePaint)
+    }
+
+    // Called when an erase gesture ends (ACTION_UP/ACTION_CANCEL on the eraser). Any stroke that
+    // got frozen into a session bitmap during this drag needs to become something persistent —
+    // a StrokeItem's serialized format has no concept of "particle pattern with holes punched in
+    // it". Simplest correct fix: save the final bitmap as a PNG (same convention used elsewhere
+    // for generated images) and replace the stroke with a plain ImageItem showing it — same
+    // approach used for the equivalent fill-eraser flow, just producing an image instead of
+    // editing a fill's bitmap in place. A fully-erased stroke (nothing but transparent pixels
+    // left) is just removed instead of saving an empty image.
+    private fun flushEraseSessionBitmaps() {
+        val toReplace = actions.filterIsInstance<StrokeItem>().filter { it.eraseSessionBitmap != null }
+        if (toReplace.isEmpty()) return
+        var changed = false
+        for (item in toReplace) {
+            val bmp = item.eraseSessionBitmap ?: continue
+            item.eraseSessionBitmap = null
+            val idx = actions.indexOf(item)
+            if (idx < 0) continue
+            val pixels = IntArray(bmp.width * bmp.height)
+            bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+            if (pixels.all { (it ushr 24) == 0 }) {
+                actions.removeAt(idx); changed = true; continue
+            }
+            try {
+                val folder = File(ctx.filesDir, "images"); if (!folder.exists()) folder.mkdirs()
+                val outFile = File(folder, "erased_${System.currentTimeMillis()}_${idx}.png")
+                FileOutputStream(outFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                val img = ImageItem(outFile.absolutePath, item.eraseSessionLeft, item.eraseSessionTop,
+                    item.eraseSessionRight - item.eraseSessionLeft, item.eraseSessionBottom - item.eraseSessionTop, 0f)
+                img.layerId = item.layerId; img.bitmap = bmp
+                actions[idx] = img; changed = true
+            } catch (e: Exception) { /* keep the stroke as-is if saving failed */ }
+        }
+        if (changed) markSpatialDirty()
     }
 
     private fun drawBrushStroke(canvas: Canvas, item: StrokeItem) {
@@ -3243,8 +3337,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         invalidate()
     }
 
-    fun addTableRow(afterRow: Int) { val table = activeTableItem ?: return; val insertAt = (afterRow + 1).coerceIn(0, table.rowHeights.size); table.rowHeights.add(insertAt, 60f); table.rows = table.rowHeights.size; table.insertRow(insertAt); invalidate() }
-    fun addTableCol(afterCol: Int) { val table = activeTableItem ?: return; val insertAt = (afterCol + 1).coerceIn(0, table.colWidths.size); table.colWidths.add(insertAt, 80f); table.cols = table.colWidths.size; table.insertCol(insertAt); invalidate() }
+    fun addTableRow(afterRow: Int) { val table = activeTableItem ?: return; val insertAt = (afterRow + 1).coerceIn(0, table.rowHeights.size); table.rowHeights.add(insertAt, 60f); table.rows = table.rowHeights.size; table.insertRow(insertAt); markSpatialDirty(); invalidate() }
+    fun addTableCol(afterCol: Int) { val table = activeTableItem ?: return; val insertAt = (afterCol + 1).coerceIn(0, table.colWidths.size); table.colWidths.add(insertAt, 80f); table.cols = table.colWidths.size; table.insertCol(insertAt); markSpatialDirty(); invalidate() }
     fun removeTableRow(row: Int) { val table = activeTableItem ?: return; if (table.rows <= 1) return; val delAt = row.coerceIn(0, table.rowHeights.size - 1); table.rowHeights.removeAt(delAt); table.rows = table.rowHeights.size; table.deleteRow(delAt); invalidate() }
     fun removeTableCol(col: Int) { val table = activeTableItem ?: return; if (table.cols <= 1) return; val delAt = col.coerceIn(0, table.colWidths.size - 1); table.colWidths.removeAt(delAt); table.cols = table.colWidths.size; table.deleteCol(delAt); invalidate() }
     fun mergeCellSelection() { val table = activeTableItem ?: return; val s = tableSelStart ?: return; val e = tableSelEnd ?: return; table.mergeCells(s.first, s.second, e.first, e.second); tableSelStart = null; tableSelEnd = null; invalidate() }
@@ -3320,20 +3414,27 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     // MOVE: tapping anywhere inside the box (not just a tiny center dot) drags
                     // the whole group. A precise center-only hit-zone meant most taps inside the
                     // box fell through to item-toggle logic instead of moving — very unforgiving.
+                    // EXCLUDED for Tool.MULTISELECT: that tool needs single taps inside the box to
+                    // still reach its own tap-vs-drag logic below (so tapping a line/shape to
+                    // toggle it, or tapping another item entirely, isn't hijacked as "move the
+                    // group" before it even gets a chance to run). Multi-select drags into a group
+                    // move only once real movement is detected — see the ACTION_MOVE handler.
                     val movePad = hr * 0.5f
-                    if (wx >= gb[0]-movePad && wx <= gb[2]+movePad && wy >= gb[1]-movePad && wy <= gb[3]+movePad) {
+                    if (currentTool != Tool.MULTISELECT && wx >= gb[0]-movePad && wx <= gb[2]+movePad && wy >= gb[1]-movePad && wy <= gb[3]+movePad) {
                         groupActiveHandle=HandleType.MOVE; groupDragStartX=wx; groupDragStartY=wy; return
                     }
                 }
             }
-            // MULTISELECT: toggle pill + record tap for ACTION_UP toggle
+            // Tap-vs-drag disambiguation for Tool.MULTISELECT: record the down position and let
+            // ACTION_MOVE decide whether this becomes a group drag (see there) or ACTION_UP
+            // decide it was a tap (toggles that item in/out of the selection). Previously this
+            // spot also had an invisible tap zone toggling Indiv/Group mode directly on canvas —
+            // removed as dead, redundant code: that toggle already has a real, visible control
+            // (the "⚙ Indiv" / "⚙ Group" button MainActivity shows via updateGroupModeToggle()),
+            // and this duplicate had no drawing code at all, so it was just silently eating taps
+            // in a patch of canvas with nothing visibly there — including taps meant for
+            // lines/shapes sitting underneath it.
             if (currentTool == Tool.MULTISELECT) {
-                val gb2 = computeGroupBounds()
-                if (gb2 != null) {
-                    val pillW = 80f/scaleFactor; val pillH = 20f/scaleFactor
-                    val gcx2 = (gb2[0]+gb2[2])/2f; val pillX = gcx2-pillW/2f; val pillY = gb2[3]+14f/scaleFactor
-                    if (wx>=pillX && wx<=pillX+pillW && wy>=pillY && wy<=pillY+pillH) { multiSelectIndividual=!multiSelectIndividual; invalidate(); return }
-                }
                 msTapDownWx = wx; msTapDownWy = wy; msDragging = false
                 return
             }
@@ -3413,7 +3514,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         selectedItems.clear()
                         selectedItem = findItemAt(wx, wy)
                     }
-                    // MULTISELECT item toggling is handled in onSingleTapConfirmed
+                    // MULTISELECT item toggling is handled below, in ACTION_UP (only when the
+                    // tap didn't turn into a drag — see msDragging above)
                 }
                 invalidate()
             }
@@ -3421,9 +3523,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
 
                 // Track drag distance for multiselect tap-vs-drag detection
-                if (currentTool == Tool.MULTISELECT && !msTapDownWx.isNaN()) {
+                if (currentTool == Tool.MULTISELECT && !msTapDownWx.isNaN() && !msDragging) {
                     val dragThreshold = 8f / scaleFactor
-                    if (distance(wx, wy, msTapDownWx, msTapDownWy) > dragThreshold) msDragging = true
+                    if (distance(wx, wy, msTapDownWx, msTapDownWy) > dragThreshold) {
+                        msDragging = true
+                        // A tap turned into a real drag: if it started inside the group's box,
+                        // start a group move now (rather than at touch-down, which is what was
+                        // swallowing single taps on lines/items inside the box before they could
+                        // reach the toggle logic in ACTION_UP).
+                        if (groupActiveHandle == HandleType.NONE) {
+                            val allSelNow = (selectedItems + setOfNotNull(selectedItem)).toSet()
+                            val gbNow = computeGroupBounds()
+                            if (allSelNow.isNotEmpty() && gbNow != null) {
+                                val pad = 28f / scaleFactor * 0.5f
+                                if (msTapDownWx >= gbNow[0]-pad && msTapDownWx <= gbNow[2]+pad && msTapDownWy >= gbNow[1]-pad && msTapDownWy <= gbNow[3]+pad) {
+                                    groupActiveHandle = HandleType.MOVE
+                                    groupDragStartX = wx; groupDragStartY = wy
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Handle pink group bounding box operations
@@ -4906,7 +5025,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // the touch), flush any in-memory-only fill edits rather than leaving them stranded
         // until some later gesture happens to trigger a flush. Scoped ONLY to this case so it
         // never affects any other tool's cancel/up behavior.
-        if (event.actionMasked == MotionEvent.ACTION_CANCEL && currentTool == Tool.ERASER) { flushDirtyFillItems(); return }
+        if (event.actionMasked == MotionEvent.ACTION_CANCEL && currentTool == Tool.ERASER) { flushDirtyFillItems(); flushEraseSessionBitmaps(); return }
         hoverX = event.x; hoverY = event.y
         var wx = screenToWorldX(event.x); var wy = screenToWorldY(event.y)
         if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH || SHAPE_TOOLS.contains(currentTool)) {
@@ -5121,7 +5240,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 item.path = item.data.buildPath(); invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                if (currentTool == Tool.ERASER) { flushDirtyFillItems(); eraserLastX = Float.NaN; eraserLastY = Float.NaN }
+                if (currentTool == Tool.ERASER) { flushDirtyFillItems(); flushEraseSessionBitmaps(); eraserLastX = Float.NaN; eraserLastY = Float.NaN }
                 // Snap end point to nearest existing endpoint if snap is enabled
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
                     val pts0 = currentItem?.data?.points
@@ -5265,6 +5384,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         } else {
             val candidates = itemsNear(x, y, r * 3f).toHashSet()
             val newActions = mutableListOf<Any>()
+            var changed = false
             for (a in actions) {
                 // Items far from eraser pass through unchanged — no processing needed
                 if (a !in candidates) { newActions.add(a); continue }
@@ -5273,7 +5393,27 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         if (a.data.isLocked) {
                             newActions.add(a)
                         } else if (a.data.type == Tool.PEN || a.data.type == Tool.ERASER || a.data.type == Tool.ARC || a.data.type == Tool.HIGHLIGHTER || a.data.type == Tool.BRUSH) {
-                            newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r))
+                            // Cheap hit-test first: itemsNear() casts a wide net (r*3), so a
+                            // stroke can be "nearby" for several touch-move samples before the
+                            // eraser circle actually reaches it. Without this check, EVERY
+                            // candidate got rebuilt into a brand-new StrokeItem on every sample
+                            // regardless of whether anything was actually erased — which threw
+                            // away its cached render bitmap and forced a full re-render.
+                            if (strokeHitTest(a.data, x, y, r)) {
+                                if (a.data.type == Tool.BRUSH && CACHED_BRUSH_STYLES.contains(a.data.brushStyle) && ensureEraseSessionBitmap(a)) {
+                                    // Expensive particle styles (Spray, Dry Brush, Grass, Fire):
+                                    // frozen to a bitmap once, then every further sample just
+                                    // clears pixels directly from it — O(eraser-circle-pixels),
+                                    // not O(total-particles), and never touches the particle
+                                    // generator again for the rest of this drag.
+                                    eraseFromSessionBitmap(a, x, y, r)
+                                    newActions.add(a)
+                                } else {
+                                    newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r)); changed = true
+                                }
+                            } else {
+                                newActions.add(a)
+                            }
                         } else if (CLOSED_SHAPES.contains(a.data.type)) {
                             // Convert to component lines at erase time.
                             // Each edge becomes independent — user gets remaining parts as separate strokes.
@@ -5288,22 +5428,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                         newActions.add(comp)
                                     }
                                 }
+                                changed = true
                             } else {
                                 newActions.add(a)
                             }
                         } else {
                             // Open shapes (LINE, ARROW): split into fragments
-                            if (strokeHitTest(a.data, x, y, r)) newActions.addAll(splitShapeAroundEraser(a.data, x, y, r))
+                            if (strokeHitTest(a.data, x, y, r)) { newActions.addAll(splitShapeAroundEraser(a.data, x, y, r)); changed = true }
                             else newActions.add(a)
                         }
                     }
-                    is TextItem -> { if (distance(x, y, a.x, a.y) > r + a.size) newActions.add(a) }
-                    is ImageItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) }
+                    is TextItem -> { if (distance(x, y, a.x, a.y) > r + a.size) newActions.add(a) else changed = true }
+                    is ImageItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) else changed = true }
                     is FillItem -> {
                         if (eraserMode == EraserMode.AREA && eraserAffectsFill) {
                             // Erase only the pixels the eraser circle touches in the fill bitmap
                             val erased = eraseFillItemRegion(a, x, y, r)
                             if (erased != null) newActions.add(erased) // null = fully erased
+                            changed = true
                         } else {
                             newActions.add(a)
                         }
@@ -5311,7 +5453,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     else -> newActions.add(a)
                 }
             }
-            actions.clear(); actions.addAll(newActions); markSpatialDirty()
+            if (changed) { actions.clear(); actions.addAll(newActions); markSpatialDirty() }
         }
     }
 
@@ -5693,8 +5835,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     fun duplicateStrokeItem(item: StrokeItem): StrokeItem {
         val b = getBoundsRaw(item) ?: getBounds(item)
         val w = if (b != null) (b[2] - b[0]) else item.data.strokeWidth * 4f
-        val gap = (w * 0.15f).coerceAtLeast(20f)
-        val dx = w + gap
+        // Small nearby offset, not a full-width jump — a large shape used to place its copy a
+        // whole shape-width-plus-15% away, which for anything bigger than the visible canvas
+        // meant the copy landed off-screen. Cap it so big shapes still land nearby.
+        val dx = (w * 0.15f).coerceIn(20f, 60f)
         val newPoints = mutableListOf<Float>()
         var i = 0
         while (i + 1 < item.data.points.size) { newPoints.add(item.data.points[i] + dx); newPoints.add(item.data.points[i + 1]); i += 2 }
@@ -5710,6 +5854,35 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     fun applyDuplicateResult(copy: StrokeItem) {
         actions.add(copy); redoStack.clear(); markSpatialDirty(); invalidate()
         selectedItem = copy
+    }
+
+    // ---- Flip (images only — mirroring stroke/text geometry correctly is a separate, larger job) ----
+    fun flipImageHorizontal(item: ImageItem) { item.flippedH = !item.flippedH; invalidate() }
+    fun flipImageVertical(item: ImageItem) { item.flippedV = !item.flippedV; invalidate() }
+
+    // ---- Generic copy/delete for any selected item type (image, text, or stroke) ----
+    fun duplicateAnyItem(item: Any): Any? {
+        return when (item) {
+            is StrokeItem -> duplicateStrokeItem(item)
+            is ImageItem -> ImageItem(item.path, item.x + item.w * 0.15f + 20f, item.y + item.h * 0.15f + 20f, item.w, item.h, item.rotation).also {
+                it.layerId = item.layerId; it.flippedH = item.flippedH; it.flippedV = item.flippedV; it.bitmap = item.bitmap
+            }
+            is TextItem -> TextItem(item.text, item.x + 30f, item.y + 30f, item.color, item.size, item.rotation).also {
+                it.layerId = item.layerId; it.spans = item.spans.map { s -> s.copy() }.toMutableList()
+                it.maxWidth = item.maxWidth; it.fontFamily = item.fontFamily; it.opacity = item.opacity
+            }
+            else -> null
+        }
+    }
+    fun applyDuplicateAnyResult(copy: Any) {
+        actions.add(copy); redoStack.clear(); markSpatialDirty(); invalidate()
+        selectedItem = copy
+    }
+    fun deleteAnyItem(item: Any) {
+        actions.remove(item)
+        if (selectedItem === item) selectedItem = null
+        selectedItems.remove(item)
+        markSpatialDirty(); invalidate()
     }
 
     private fun distanceToShapeOutline(data: StrokeData, x: Float, y: Float): Float {
@@ -6314,7 +6487,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         table.rowHeights.clear(); repeat(rows) { table.rowHeights.add(cellH) }
         table.colWidths.clear(); repeat(cols) { table.colWidths.add(cellW) }
         for (r in 0 until rows) for (c in 0 until cols) table.getCellPublic(r, c)
-        actions.add(table); redoStack.clear(); activeTableItem = table; invalidate()
+        actions.add(table); redoStack.clear(); activeTableItem = table; markSpatialDirty(); invalidate()
     }
 
     fun migrateOldNotes(filesDir: File) {
@@ -6509,6 +6682,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     fun serialize(): String {
         flushDirtyFillItems()  // safety net: never save with fill edits still only in memory
+        flushEraseSessionBitmaps()  // safety net: never save with a bitmap-erased stroke still unfinalized
         val sb = StringBuilder()
         sb.append("META\u0001${paperType.name}\u0001${canvasMode.name}\u0001${paperSize.name}\u0001${pageOrientation.name}\u0001$paperColor\n")
         // Layer list itself: id, visibility, and name for each — sanitized against the field/
@@ -6521,7 +6695,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is TableItem -> sb.append(a.serialize())
             is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\u0001${a.layerId}\n")
-            is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\u0001${a.layerId}\n")
+            is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\u0001${a.layerId}\u0001${a.flippedH}\u0001${a.flippedV}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.customHatchPath ?: ""}\u0001${a.hatchPattern?.name ?: ""}\u0001${a.hatchColor}\u0001${a.hatchScale}\u0001${a.layerId}\n")
             is AudioItem -> sb.append("AUDIO\u0001${a.filePath}\u0001${a.title.replace("\u0001","_")}\u0001${a.x}\u0001${a.y}\u0001${a.durationMs}\u0001${a.radius}\n")
         }
@@ -6606,6 +6780,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         if (p.size >= 7) {
                             val item = ImageItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat(), p[6].toFloat())
                             if (p.size >= 8) item.layerId = p[7].toIntOrNull() ?: 0
+                            if (p.size >= 9) item.flippedH = p[8].toBoolean()
+                            if (p.size >= 10) item.flippedV = p[9].toBoolean()
                             actions.add(item); loadBitmapAsync(p[1]) { bmp -> item.bitmap = bmp; item.loading = false; invalidate() }
                         }
                         i++
