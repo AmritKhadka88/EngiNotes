@@ -4574,6 +4574,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         if (event.actionMasked == MotionEvent.ACTION_DOWN) fillScrollGuard = false
 
+        // Table border-drag-resize + in-session cell switching: once already actively editing a
+        // table (entered via double-tap elsewhere), route single-finger touches here first.
+        // handleTable() was fully written — row/col border hit-testing and drag-resize, tap to
+        // switch cells — but had no call site anywhere in the file, so none of it ever actually
+        // ran; a table could only ever be entered, never resized. This activates that existing,
+        // already-correct logic instead of writing an equivalent path a second time.
+        if (activeTableItem != null && tableIsActive && event.pointerCount == 1) {
+            handleTable(event)
+            return true
+        }
+
         // fingerPanMode: single finger ALWAYS pans — block ALL other tools immediately
         if (fingerPanMode && event.pointerCount == 1) {
             when (event.actionMasked) {

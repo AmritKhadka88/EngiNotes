@@ -4652,7 +4652,32 @@ class MainActivity : AppCompatActivity() {
     // the table cell on the canvas (not a separate bottom-sheet panel), so typing happens directly
     // "inside" the cell the way Excel's in-cell editing works. A tiny actions strip floats just
     // above the cell for row/col/merge/style/chart - Done is implicit (tap elsewhere / Done button).
+    private fun showTableFontPicker(cell: TableCell, et: EditText, onPicked: () -> Unit) {
+        loadCustomFonts()
+        val scroll = ScrollView(this)
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(4), dp(8), dp(4), dp(8)) }
+        lateinit var dialog: AlertDialog
+        fun addFontRow(label: String, family: String, tf: android.graphics.Typeface?) {
+            container.addView(TextView(this).apply {
+                text = label; textSize = 18f; setTextColor(Color.parseColor("#212121"))
+                setPadding(dp(20), dp(14), dp(20), dp(14))
+                if (tf != null) typeface = tf
+                if (cell.fontFamily == family) setBackgroundColor(Color.parseColor("#EDE7F6"))
+                setOnClickListener {
+                    cell.fontFamily = family; et.typeface = tf ?: Typeface.DEFAULT
+                    onPicked(); dialog.dismiss()
+                }
+            })
+        }
+        for ((label, family) in availableFonts) addFontRow(label, family, try { Typeface.create(family, Typeface.NORMAL) } catch (e: Exception) { null })
+        for ((label, path) in customFonts) addFontRow(label, path, try { android.graphics.Typeface.createFromFile(path) } catch (e: Exception) { null })
+        scroll.addView(container)
+        dialog = AlertDialog.Builder(this).setTitle("Cell Font").setView(scroll).setNegativeButton("Cancel", null).create()
+        dialog.show()
+    }
+
     private fun showTableCellEditor(table:TableItem,row:Int,col:Int,screenX:Float,screenY:Float) {
+        dismissCellEditor() // a previous cell's editor+toolbar must be fully torn down first, or they stack
         setBottomBarVisible(false)
         val cell=table.cells[row][col]
         val density = resources.displayMetrics.density
@@ -4662,6 +4687,15 @@ class MainActivity : AppCompatActivity() {
             val sx0 = drawingView.worldToScreenX(rect.left); val sy0 = drawingView.worldToScreenY(rect.top)
             val sx1 = drawingView.worldToScreenX(rect.right); val sy1 = drawingView.worldToScreenY(rect.bottom)
             return RectF(sx0, sy0, sx1, sy1)
+        }
+        // Toolbar position tracks the TABLE's top edge, not the individual cell — otherwise it
+        // jumps to sit on top of whichever cell you're currently in, which is what was reported.
+        fun tableScreenTopLeft(): Pair<Float, Float> = Pair(drawingView.worldToScreenX(table.x), drawingView.worldToScreenY(table.y))
+
+        fun applyTypefaceToEt(et: EditText) {
+            val style = when { cell.bold && cell.italic -> Typeface.BOLD_ITALIC; cell.bold -> Typeface.BOLD; cell.italic -> Typeface.ITALIC; else -> Typeface.NORMAL }
+            et.typeface = if (cell.fontFamily != null) (try { Typeface.create(cell.fontFamily, style) } catch (e: Exception) { Typeface.create(Typeface.DEFAULT, style) }) else Typeface.create(Typeface.DEFAULT, style)
+            et.paintFlags = if (cell.underline) (et.paintFlags or android.graphics.Paint.UNDERLINE_TEXT_FLAG) else (et.paintFlags and android.graphics.Paint.UNDERLINE_TEXT_FLAG.inv())
         }
 
         fun repositionToCellFn(et: EditText) {
@@ -4683,6 +4717,7 @@ class MainActivity : AppCompatActivity() {
             isSingleLine = false
             imeOptions = EditorInfo.IME_FLAG_NO_ENTER_ACTION
         }
+        applyTypefaceToEt(et)
         et.addTextChangedListener(object:TextWatcher{
             override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
             override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){
@@ -4703,46 +4738,70 @@ class MainActivity : AppCompatActivity() {
         et.textSize = (cell.textSize * drawingView.getScaleFactor() / density).coerceAtLeast(8f)
         canvasContainer.addView(et, initParams)
 
-        // Compact floating actions strip, positioned just above the cell
+        // Floating actions strip, positioned just above the whole TABLE (not the cell)
         val actionsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(6).toFloat(); setPadding(dp(4),dp(4),dp(4),dp(4)) }
-        fun actionBtn(label: String, action: () -> Unit) {
+        lateinit var refreshToolbar: () -> Unit
+        fun actionBtn(label: String, pressed: Boolean = false, action: () -> Unit): TextView {
             val b = TextView(this).apply {
-                text = label; textSize = 11f; setTextColor(Color.parseColor("#4A4A4A"))
-                setBackgroundColor(Color.parseColor("#F0EBE0"))
+                text = label; textSize = 11f
+                setTextColor(if (pressed) Color.WHITE else Color.parseColor("#4A4A4A"))
+                setBackgroundColor(if (pressed) Color.parseColor("#8D6E63") else Color.parseColor("#F0EBE0"))
                 setPadding(dp(8), dp(5), dp(8), dp(5))
                 val p = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
                 p.setMargins(dp(2), 0, dp(2), 0); layoutParams = p
-                setOnClickListener { action(); dismissCellEditor() }
+                setOnClickListener { action() }
             }
-            actionsRow.addView(b)
+            actionsRow.addView(b); return b
         }
-        val (selStart, selEnd) = drawingView.getTableSelection()
-        actionBtn("+Row") { drawingView.addTableRow(row) }
-        actionBtn("+Col") { drawingView.addTableCol(col) }
-        actionBtn("-Row") { drawingView.removeTableRow(row) }
-        actionBtn("-Col") { drawingView.removeTableCol(col) }
-        if (selEnd != null) actionBtn("Merge") { drawingView.mergeCellSelection() }
-        if (table.mergeSpans.containsKey(Pair(row, col))) actionBtn("Unmerge") { drawingView.unmergeCellSelection() }
-        actionBtn("Style") { showCellStyleDialog(table, row, col, selEnd) }
-        actionBtn("Chart") { launchChartFromTable(table) }
-        actionBtn("Done") { dismissCellEditor() }
-
+        fun buildToolbar() {
+            actionsRow.removeAllViews()
+            val (selStart, selEnd) = drawingView.getTableSelection()
+            actionBtn("Fonts \u25B2") { showTableFontPicker(cell, et) { drawingView.invalidate(); refreshToolbar() } }
+            actionBtn("B", pressed = cell.bold) { cell.bold = !cell.bold; applyTypefaceToEt(et); table.recalcCellSize(row,col); drawingView.invalidate(); refreshToolbar() }
+            actionBtn("I", pressed = cell.italic) { cell.italic = !cell.italic; applyTypefaceToEt(et); table.recalcCellSize(row,col); drawingView.invalidate(); refreshToolbar() }
+            actionBtn("U", pressed = cell.underline) { cell.underline = !cell.underline; applyTypefaceToEt(et); drawingView.invalidate(); refreshToolbar() }
+            actionBtn("A-") { cell.textSize = (cell.textSize - 2f).coerceAtLeast(8f); repositionToCellFn(et); table.recalcCellSize(row,col); drawingView.invalidate() }
+            actionBtn("${cell.textSize.toInt()}") { }
+            actionBtn("A+") { cell.textSize = (cell.textSize + 2f).coerceAtMost(72f); repositionToCellFn(et); table.recalcCellSize(row,col); drawingView.invalidate() }
+            actionBtn("Text\u00A0Color") { showColorGridDialog { c -> cell.textColor = c; et.setTextColor(c); drawingView.invalidate() } }
+            actionBtn("Cell\u00A0Color") { showColorGridDialog { c -> cell.bgColor = c; drawingView.invalidate() } }
+            // Row/col/merge only make sense once an actual range is selected — a single cell has
+            // nothing to merge, and +Row/+Col already exist elsewhere; showing them unconditionally
+            // for every single cell tap was just clutter.
+            if (selEnd != null) {
+                actionBtn("+Row") { drawingView.addTableRow(row); dismissCellEditor() }
+                actionBtn("+Col") { drawingView.addTableCol(col); dismissCellEditor() }
+                actionBtn("-Row") { drawingView.removeTableRow(row); dismissCellEditor() }
+                actionBtn("-Col") { drawingView.removeTableCol(col); dismissCellEditor() }
+                actionBtn("Merge") { drawingView.mergeCellSelection(); dismissCellEditor() }
+            }
+            if (table.mergeSpans.containsKey(Pair(row, col))) actionBtn("Unmerge") { drawingView.unmergeCellSelection(); dismissCellEditor() }
+            actionBtn("Style") { showCellStyleDialog(table, row, col, selEnd) }
+            actionBtn("Chart") { launchChartFromTable(table) }
+            actionBtn("Del\u00A0Table") {
+                AlertDialog.Builder(this).setTitle("Delete table?").setMessage("This removes the whole table, not just this cell.")
+                    .setPositiveButton("Delete") { _, _ -> drawingView.deleteAnyItem(table); dismissCellEditor() }
+                    .setNegativeButton("Cancel", null).show()
+            }
+            actionBtn("Done") { dismissCellEditor() }
+        }
         val actionsScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(actionsRow) }
         val toolbarHeightEstimate = dp(40)
-        val actionsLp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        actionsLp.leftMargin = initialRect.left.toInt().coerceAtMost((canvasContainer.width - dp(240)).coerceAtLeast(0))
-        actionsLp.topMargin = (initialRect.top.toInt() - toolbarHeightEstimate).coerceAtLeast(0)
-        canvasContainer.addView(actionsScroll, actionsLp)
-
-        // Keep the editor and actions strip glued to the cell as the user pans/zooms the canvas
-        drawingView.onCanvasTransformed = {
-            repositionToCell()
-            val r = cellScreenRect()
-            val alp = actionsScroll.layoutParams as FrameLayout.LayoutParams
-            alp.leftMargin = r.left.toInt().coerceAtMost((canvasContainer.width - dp(240)).coerceAtLeast(0))
-            alp.topMargin = (r.top.toInt() - toolbarHeightEstimate).coerceAtLeast(0)
+        fun repositionToolbar() {
+            val (tsx, tsy) = tableScreenTopLeft()
+            val alp = actionsScroll.layoutParams as? FrameLayout.LayoutParams ?: FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+            alp.leftMargin = tsx.toInt().coerceIn(0, (canvasContainer.width - dp(240)).coerceAtLeast(0))
+            alp.topMargin = (tsy.toInt() - toolbarHeightEstimate).coerceAtLeast(0)
             actionsScroll.layoutParams = alp
         }
+        refreshToolbar = { buildToolbar(); repositionToolbar() }
+        buildToolbar()
+        val actionsLp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        canvasContainer.addView(actionsScroll, actionsLp)
+        repositionToolbar()
+
+        // Keep the editor and toolbar glued to the table/cell as the user pans/zooms the canvas
+        drawingView.onCanvasTransformed = { repositionToCell(); repositionToolbar() }
 
         activeCellEditText=et; activeCellToolbar=actionsScroll; tableToolbarOverlay=actionsScroll
 
