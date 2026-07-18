@@ -3347,7 +3347,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 msTapDownWx = wx; msTapDownWy = wy; msDragging = false
                 return
             }
-        }
 
             for (action in actions.reversed()) {
                 if (action is TableItem) {
