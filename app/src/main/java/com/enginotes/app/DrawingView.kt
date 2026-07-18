@@ -763,6 +763,18 @@ class StrokeItem(val data: StrokeData, var path: Path, var paint: Paint) {
         cachedBitmap?.recycle(); cachedBitmap = null; cacheValid = false
         sampledPathPts = null; cachedPoints = null  // path changed — resample next hit test
     }
+
+    // "Freeze to bitmap" state for area-erasing expensive particle brush styles (Spray, Dry
+    // Brush, Grass, Fire, etc). Normally erasing splits the stroke's point data and lets the
+    // renderer regenerate the particle pattern from scratch — fine for a plain pen line, very
+    // expensive for hundreds of particles, every single touch-move frame of the drag. Once an
+    // area-erase gesture touches one of these strokes, its current appearance is rendered to a
+    // bitmap ONE time; every further touch-move sample in that same drag just clears a circle of
+    // pixels directly from that bitmap (like erasing a photo) instead of re-generating particles.
+    // While this is non-null, rendering draws this bitmap as-is instead of running the normal
+    // particle renderer, so the growing eraser holes are visible in real time during the drag.
+    var eraseSessionBitmap: android.graphics.Bitmap? = null
+    var eraseSessionLeft = 0f; var eraseSessionTop = 0f; var eraseSessionRight = 0f; var eraseSessionBottom = 0f
 }
 
 class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var size: Float, var rotation: Float) {
@@ -2098,6 +2110,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private fun drawBrushStrokeWithCache(canvas: Canvas, item: StrokeItem) {
+        val sessionBmp = item.eraseSessionBitmap
+        if (sessionBmp != null) {
+            val dst = android.graphics.RectF(item.eraseSessionLeft, item.eraseSessionTop, item.eraseSessionRight, item.eraseSessionBottom)
+            canvas.drawBitmap(sessionBmp, null, dst, null)
+            return
+        }
         if (!CACHED_BRUSH_STYLES.contains(item.data.brushStyle)) {
             drawBrushStroke(canvas, item); return
         }
@@ -2127,6 +2145,79 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // dstRect is in world coords — the canvas transform (translate+scale) maps to screen correctly
         val dst = android.graphics.RectF(item.cacheLeft, item.cacheTop, item.cacheRight, item.cacheBottom)
         canvas.drawBitmap(bmp, null, dst, null)
+    }
+
+    // Renders the stroke's current appearance into item.eraseSessionBitmap exactly once (if not
+    // already present this session). Returns false if bounds are unavailable or the bitmap would
+    // be unreasonably large, in which case the caller should fall back to normal point-splitting.
+    private fun ensureEraseSessionBitmap(item: StrokeItem): Boolean {
+        if (item.eraseSessionBitmap != null) return true
+        val bounds = getBounds(item) ?: return false
+        val pad = item.data.strokeWidth * 2f
+        val wl = bounds[0] - pad; val wt = bounds[1] - pad
+        val wr = bounds[2] + pad; val wb = bounds[3] + pad
+        val bmpW = ((wr - wl) * CACHE_SCALE).toInt().coerceIn(1, 4096)
+        val bmpH = ((wb - wt) * CACHE_SCALE).toInt().coerceIn(1, 4096)
+        if (bmpW.toLong() * bmpH * 4 > 16L * 1024 * 1024) return false
+        return try {
+            val bmp = android.graphics.Bitmap.createBitmap(bmpW, bmpH, android.graphics.Bitmap.Config.ARGB_8888)
+            val bc = Canvas(bmp)
+            bc.translate(-wl * CACHE_SCALE, -wt * CACHE_SCALE)
+            bc.scale(CACHE_SCALE, CACHE_SCALE)
+            drawBrushStroke(bc, item)
+            item.eraseSessionBitmap = bmp
+            item.eraseSessionLeft = wl; item.eraseSessionTop = wt
+            item.eraseSessionRight = wr; item.eraseSessionBottom = wb
+            true
+        } catch (e: OutOfMemoryError) { false }
+    }
+
+    // Clears a circle of pixels directly from the frozen session bitmap — O(pixels under the
+    // eraser), completely independent of how many particles the original pattern had. This is
+    // the actual fast path: every touch-move sample after the first hit on this stroke lands
+    // here instead of regenerating anything.
+    private fun eraseFromSessionBitmap(item: StrokeItem, x: Float, y: Float, r: Float) {
+        val bmp = item.eraseSessionBitmap ?: return
+        val bc = Canvas(bmp)
+        val bx = (x - item.eraseSessionLeft) * CACHE_SCALE
+        val by = (y - item.eraseSessionTop) * CACHE_SCALE
+        val br = r * CACHE_SCALE
+        bc.drawCircle(bx, by, br, _fillErasePaint)
+    }
+
+    // Called when an erase gesture ends (ACTION_UP/ACTION_CANCEL on the eraser). Any stroke that
+    // got frozen into a session bitmap during this drag needs to become something persistent —
+    // a StrokeItem's serialized format has no concept of "particle pattern with holes punched in
+    // it". Simplest correct fix: save the final bitmap as a PNG (same convention used elsewhere
+    // for generated images) and replace the stroke with a plain ImageItem showing it — same
+    // approach used for the equivalent fill-eraser flow, just producing an image instead of
+    // editing a fill's bitmap in place. A fully-erased stroke (nothing but transparent pixels
+    // left) is just removed instead of saving an empty image.
+    private fun flushEraseSessionBitmaps() {
+        val toReplace = actions.filterIsInstance<StrokeItem>().filter { it.eraseSessionBitmap != null }
+        if (toReplace.isEmpty()) return
+        var changed = false
+        for (item in toReplace) {
+            val bmp = item.eraseSessionBitmap ?: continue
+            item.eraseSessionBitmap = null
+            val idx = actions.indexOf(item)
+            if (idx < 0) continue
+            val pixels = IntArray(bmp.width * bmp.height)
+            bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+            if (pixels.all { (it ushr 24) == 0 }) {
+                actions.removeAt(idx); changed = true; continue
+            }
+            try {
+                val folder = File(ctx.filesDir, "images"); if (!folder.exists()) folder.mkdirs()
+                val outFile = File(folder, "erased_${System.currentTimeMillis()}_${idx}.png")
+                FileOutputStream(outFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                val img = ImageItem(outFile.absolutePath, item.eraseSessionLeft, item.eraseSessionTop,
+                    item.eraseSessionRight - item.eraseSessionLeft, item.eraseSessionBottom - item.eraseSessionTop, 0f)
+                img.layerId = item.layerId; img.bitmap = bmp
+                actions[idx] = img; changed = true
+            } catch (e: Exception) { /* keep the stroke as-is if saving failed */ }
+        }
+        if (changed) markSpatialDirty()
     }
 
     private fun drawBrushStroke(canvas: Canvas, item: StrokeItem) {
@@ -4934,7 +5025,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // the touch), flush any in-memory-only fill edits rather than leaving them stranded
         // until some later gesture happens to trigger a flush. Scoped ONLY to this case so it
         // never affects any other tool's cancel/up behavior.
-        if (event.actionMasked == MotionEvent.ACTION_CANCEL && currentTool == Tool.ERASER) { flushDirtyFillItems(); return }
+        if (event.actionMasked == MotionEvent.ACTION_CANCEL && currentTool == Tool.ERASER) { flushDirtyFillItems(); flushEraseSessionBitmaps(); return }
         hoverX = event.x; hoverY = event.y
         var wx = screenToWorldX(event.x); var wy = screenToWorldY(event.y)
         if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH || SHAPE_TOOLS.contains(currentTool)) {
@@ -5149,7 +5240,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 item.path = item.data.buildPath(); invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                if (currentTool == Tool.ERASER) { flushDirtyFillItems(); eraserLastX = Float.NaN; eraserLastY = Float.NaN }
+                if (currentTool == Tool.ERASER) { flushDirtyFillItems(); flushEraseSessionBitmaps(); eraserLastX = Float.NaN; eraserLastY = Float.NaN }
                 // Snap end point to nearest existing endpoint if snap is enabled
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
                     val pts0 = currentItem?.data?.points
@@ -5307,13 +5398,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             // eraser circle actually reaches it. Without this check, EVERY
                             // candidate got rebuilt into a brand-new StrokeItem on every sample
                             // regardless of whether anything was actually erased — which threw
-                            // away its cached render bitmap and forced a full re-render. That's
-                            // very visible on expensive brush styles (Spray, Dry Brush, Grass,
-                            // Fire) that render many particles per stroke: dragging the area
-                            // eraser anywhere near one of these re-generated its entire particle
-                            // cloud on every single frame, whether or not it was being erased.
+                            // away its cached render bitmap and forced a full re-render.
                             if (strokeHitTest(a.data, x, y, r)) {
-                                newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r)); changed = true
+                                if (a.data.type == Tool.BRUSH && CACHED_BRUSH_STYLES.contains(a.data.brushStyle) && ensureEraseSessionBitmap(a)) {
+                                    // Expensive particle styles (Spray, Dry Brush, Grass, Fire):
+                                    // frozen to a bitmap once, then every further sample just
+                                    // clears pixels directly from it — O(eraser-circle-pixels),
+                                    // not O(total-particles), and never touches the particle
+                                    // generator again for the rest of this drag.
+                                    eraseFromSessionBitmap(a, x, y, r)
+                                    newActions.add(a)
+                                } else {
+                                    newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r)); changed = true
+                                }
                             } else {
                                 newActions.add(a)
                             }
@@ -6585,6 +6682,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     fun serialize(): String {
         flushDirtyFillItems()  // safety net: never save with fill edits still only in memory
+        flushEraseSessionBitmaps()  // safety net: never save with a bitmap-erased stroke still unfinalized
         val sb = StringBuilder()
         sb.append("META\u0001${paperType.name}\u0001${canvasMode.name}\u0001${paperSize.name}\u0001${pageOrientation.name}\u0001$paperColor\n")
         // Layer list itself: id, visibility, and name for each — sanitized against the field/
