@@ -788,6 +788,8 @@ class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var
 
 class ImageItem(var path: String, var x: Float, var y: Float, var w: Float, var h: Float, var rotation: Float) {
     var layerId: Int = 0
+    var flippedH: Boolean = false
+    var flippedV: Boolean = false
     @Volatile var bitmap: Bitmap? = null
     @Volatile var loading: Boolean = false
 }
@@ -1767,6 +1769,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 canvas.save()
                 canvas.translate(action.x + action.w / 2f, action.y + action.h / 2f)
                 canvas.rotate(action.rotation)
+                canvas.scale(if (action.flippedH) -1f else 1f, if (action.flippedV) -1f else 1f)
                 canvas.drawBitmap(bmp, null, RectF(-action.w / 2f, -action.h / 2f, action.w / 2f, action.h / 2f), null)
                 canvas.restore()
             }
@@ -3320,23 +3323,31 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     // MOVE: tapping anywhere inside the box (not just a tiny center dot) drags
                     // the whole group. A precise center-only hit-zone meant most taps inside the
                     // box fell through to item-toggle logic instead of moving — very unforgiving.
+                    // EXCLUDED for Tool.MULTISELECT: that tool needs single taps inside the box to
+                    // still reach its own tap-vs-drag logic below (so tapping a line/shape to
+                    // toggle it, or tapping another item entirely, isn't hijacked as "move the
+                    // group" before it even gets a chance to run). Multi-select drags into a group
+                    // move only once real movement is detected — see the ACTION_MOVE handler.
                     val movePad = hr * 0.5f
-                    if (wx >= gb[0]-movePad && wx <= gb[2]+movePad && wy >= gb[1]-movePad && wy <= gb[3]+movePad) {
+                    if (currentTool != Tool.MULTISELECT && wx >= gb[0]-movePad && wx <= gb[2]+movePad && wy >= gb[1]-movePad && wy <= gb[3]+movePad) {
                         groupActiveHandle=HandleType.MOVE; groupDragStartX=wx; groupDragStartY=wy; return
                     }
                 }
             }
-            // MULTISELECT: toggle pill + record tap for ACTION_UP toggle
+            // Tap-vs-drag disambiguation for Tool.MULTISELECT: record the down position and let
+            // ACTION_MOVE decide whether this becomes a group drag (see there) or ACTION_UP
+            // decide it was a tap (toggles that item in/out of the selection). Previously this
+            // spot also had an invisible tap zone toggling Indiv/Group mode directly on canvas —
+            // removed as dead, redundant code: that toggle already has a real, visible control
+            // (the "⚙ Indiv" / "⚙ Group" button MainActivity shows via updateGroupModeToggle()),
+            // and this duplicate had no drawing code at all, so it was just silently eating taps
+            // in a patch of canvas with nothing visibly there — including taps meant for
+            // lines/shapes sitting underneath it.
             if (currentTool == Tool.MULTISELECT) {
-                val gb2 = computeGroupBounds()
-                if (gb2 != null) {
-                    val pillW = 80f/scaleFactor; val pillH = 20f/scaleFactor
-                    val gcx2 = (gb2[0]+gb2[2])/2f; val pillX = gcx2-pillW/2f; val pillY = gb2[3]+14f/scaleFactor
-                    if (wx>=pillX && wx<=pillX+pillW && wy>=pillY && wy<=pillY+pillH) { multiSelectIndividual=!multiSelectIndividual; invalidate(); return }
-                }
                 msTapDownWx = wx; msTapDownWy = wy; msDragging = false
                 return
             }
+        }
 
             for (action in actions.reversed()) {
                 if (action is TableItem) {
@@ -3413,7 +3424,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         selectedItems.clear()
                         selectedItem = findItemAt(wx, wy)
                     }
-                    // MULTISELECT item toggling is handled in onSingleTapConfirmed
+                    // MULTISELECT item toggling is handled below, in ACTION_UP (only when the
+                    // tap didn't turn into a drag — see msDragging above)
                 }
                 invalidate()
             }
@@ -3421,9 +3433,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
 
                 // Track drag distance for multiselect tap-vs-drag detection
-                if (currentTool == Tool.MULTISELECT && !msTapDownWx.isNaN()) {
+                if (currentTool == Tool.MULTISELECT && !msTapDownWx.isNaN() && !msDragging) {
                     val dragThreshold = 8f / scaleFactor
-                    if (distance(wx, wy, msTapDownWx, msTapDownWy) > dragThreshold) msDragging = true
+                    if (distance(wx, wy, msTapDownWx, msTapDownWy) > dragThreshold) {
+                        msDragging = true
+                        // A tap turned into a real drag: if it started inside the group's box,
+                        // start a group move now (rather than at touch-down, which is what was
+                        // swallowing single taps on lines/items inside the box before they could
+                        // reach the toggle logic in ACTION_UP).
+                        if (groupActiveHandle == HandleType.NONE) {
+                            val allSelNow = (selectedItems + setOfNotNull(selectedItem)).toSet()
+                            val gbNow = computeGroupBounds()
+                            if (allSelNow.isNotEmpty() && gbNow != null) {
+                                val pad = 28f / scaleFactor * 0.5f
+                                if (msTapDownWx >= gbNow[0]-pad && msTapDownWx <= gbNow[2]+pad && msTapDownWy >= gbNow[1]-pad && msTapDownWy <= gbNow[3]+pad) {
+                                    groupActiveHandle = HandleType.MOVE
+                                    groupDragStartX = wx; groupDragStartY = wy
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Handle pink group bounding box operations
@@ -5712,6 +5741,35 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         selectedItem = copy
     }
 
+    // ---- Flip (images only — mirroring stroke/text geometry correctly is a separate, larger job) ----
+    fun flipImageHorizontal(item: ImageItem) { item.flippedH = !item.flippedH; invalidate() }
+    fun flipImageVertical(item: ImageItem) { item.flippedV = !item.flippedV; invalidate() }
+
+    // ---- Generic copy/delete for any selected item type (image, text, or stroke) ----
+    fun duplicateAnyItem(item: Any): Any? {
+        return when (item) {
+            is StrokeItem -> duplicateStrokeItem(item)
+            is ImageItem -> ImageItem(item.path, item.x + item.w * 0.15f + 20f, item.y + item.h * 0.15f + 20f, item.w, item.h, item.rotation).also {
+                it.layerId = item.layerId; it.flippedH = item.flippedH; it.flippedV = item.flippedV; it.bitmap = item.bitmap
+            }
+            is TextItem -> TextItem(item.text, item.x + 30f, item.y + 30f, item.color, item.size, item.rotation).also {
+                it.layerId = item.layerId; it.spans = item.spans.map { s -> s.copy() }.toMutableList()
+                it.maxWidth = item.maxWidth; it.fontFamily = item.fontFamily; it.opacity = item.opacity
+            }
+            else -> null
+        }
+    }
+    fun applyDuplicateAnyResult(copy: Any) {
+        actions.add(copy); redoStack.clear(); markSpatialDirty(); invalidate()
+        selectedItem = copy
+    }
+    fun deleteAnyItem(item: Any) {
+        actions.remove(item)
+        if (selectedItem === item) selectedItem = null
+        selectedItems.remove(item)
+        markSpatialDirty(); invalidate()
+    }
+
     private fun distanceToShapeOutline(data: StrokeData, x: Float, y: Float): Float {
         var tx = x; var ty = y
         val rot = data.rotation
@@ -6521,7 +6579,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is TableItem -> sb.append(a.serialize())
             is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\u0001${a.layerId}\n")
-            is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\u0001${a.layerId}\n")
+            is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\u0001${a.layerId}\u0001${a.flippedH}\u0001${a.flippedV}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.customHatchPath ?: ""}\u0001${a.hatchPattern?.name ?: ""}\u0001${a.hatchColor}\u0001${a.hatchScale}\u0001${a.layerId}\n")
             is AudioItem -> sb.append("AUDIO\u0001${a.filePath}\u0001${a.title.replace("\u0001","_")}\u0001${a.x}\u0001${a.y}\u0001${a.durationMs}\u0001${a.radius}\n")
         }
@@ -6606,6 +6664,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         if (p.size >= 7) {
                             val item = ImageItem(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat(), p[6].toFloat())
                             if (p.size >= 8) item.layerId = p[7].toIntOrNull() ?: 0
+                            if (p.size >= 9) item.flippedH = p[8].toBoolean()
+                            if (p.size >= 10) item.flippedV = p[9].toBoolean()
                             actions.add(item); loadBitmapAsync(p[1]) { bmp -> item.bitmap = bmp; item.loading = false; invalidate() }
                         }
                         i++
