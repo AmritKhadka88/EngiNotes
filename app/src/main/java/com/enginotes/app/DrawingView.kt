@@ -5293,6 +5293,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         } else {
             val candidates = itemsNear(x, y, r * 3f).toHashSet()
             val newActions = mutableListOf<Any>()
+            var changed = false
             for (a in actions) {
                 // Items far from eraser pass through unchanged — no processing needed
                 if (a !in candidates) { newActions.add(a); continue }
@@ -5301,7 +5302,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         if (a.data.isLocked) {
                             newActions.add(a)
                         } else if (a.data.type == Tool.PEN || a.data.type == Tool.ERASER || a.data.type == Tool.ARC || a.data.type == Tool.HIGHLIGHTER || a.data.type == Tool.BRUSH) {
-                            newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r))
+                            // Cheap hit-test first: itemsNear() casts a wide net (r*3), so a
+                            // stroke can be "nearby" for several touch-move samples before the
+                            // eraser circle actually reaches it. Without this check, EVERY
+                            // candidate got rebuilt into a brand-new StrokeItem on every sample
+                            // regardless of whether anything was actually erased — which threw
+                            // away its cached render bitmap and forced a full re-render. That's
+                            // very visible on expensive brush styles (Spray, Dry Brush, Grass,
+                            // Fire) that render many particles per stroke: dragging the area
+                            // eraser anywhere near one of these re-generated its entire particle
+                            // cloud on every single frame, whether or not it was being erased.
+                            if (strokeHitTest(a.data, x, y, r)) {
+                                newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r)); changed = true
+                            } else {
+                                newActions.add(a)
+                            }
                         } else if (CLOSED_SHAPES.contains(a.data.type)) {
                             // Convert to component lines at erase time.
                             // Each edge becomes independent — user gets remaining parts as separate strokes.
@@ -5316,22 +5331,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                         newActions.add(comp)
                                     }
                                 }
+                                changed = true
                             } else {
                                 newActions.add(a)
                             }
                         } else {
                             // Open shapes (LINE, ARROW): split into fragments
-                            if (strokeHitTest(a.data, x, y, r)) newActions.addAll(splitShapeAroundEraser(a.data, x, y, r))
+                            if (strokeHitTest(a.data, x, y, r)) { newActions.addAll(splitShapeAroundEraser(a.data, x, y, r)); changed = true }
                             else newActions.add(a)
                         }
                     }
-                    is TextItem -> { if (distance(x, y, a.x, a.y) > r + a.size) newActions.add(a) }
-                    is ImageItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) }
+                    is TextItem -> { if (distance(x, y, a.x, a.y) > r + a.size) newActions.add(a) else changed = true }
+                    is ImageItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) else changed = true }
                     is FillItem -> {
                         if (eraserMode == EraserMode.AREA && eraserAffectsFill) {
                             // Erase only the pixels the eraser circle touches in the fill bitmap
                             val erased = eraseFillItemRegion(a, x, y, r)
                             if (erased != null) newActions.add(erased) // null = fully erased
+                            changed = true
                         } else {
                             newActions.add(a)
                         }
@@ -5339,7 +5356,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     else -> newActions.add(a)
                 }
             }
-            actions.clear(); actions.addAll(newActions); markSpatialDirty()
+            if (changed) { actions.clear(); actions.addAll(newActions); markSpatialDirty() }
         }
     }
 
