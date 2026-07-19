@@ -998,7 +998,7 @@ class MainActivity : AppCompatActivity() {
         }
         primary.post {
             val lp = context.layoutParams as? FrameLayout.LayoutParams ?: return@post
-            val gap = dp(6)
+            val gap = 0
             val newMargin = (primary.height.takeIf { it > 0 } ?: dp(54)) + gap
             if (lp.bottomMargin != newMargin) { lp.bottomMargin = newMargin; context.layoutParams = lp }
         }
@@ -1027,7 +1027,7 @@ class MainActivity : AppCompatActivity() {
             // inside the shell's curved zone (the 8dp set in XML was tuned for the old
             // square/borderless bars, not this rounded shell).
             ((findViewById<View?>(barId) as? HorizontalScrollView)?.getChildAt(0) as? LinearLayout)?.let { row ->
-                row.setPadding(dp(14), row.paddingTop, dp(14), row.paddingBottom)
+                row.setPadding(dp(14), dp(4), dp(14), dp(4))
             }
         }
         val primaryIds = listOf(R.id.btnSelect, R.id.btnText, R.id.btnDraw, R.id.btnHighlighter, R.id.btnBrush,
