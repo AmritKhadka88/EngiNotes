@@ -455,16 +455,6 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
-        // With decorFitsSystemWindows(false) active (edge-to-edge), Android's own
-        // windowSoftInputMode="adjustResize" no longer automatically repositions anything —
-        // the app owns all inset handling itself now. Without this listener, the bottom bars
-        // stayed exactly where they were laid out and the keyboard simply drew over them.
-        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
-            val imeHeight = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
-            val bars = listOf(findViewById<View?>(R.id.primaryToolbarScroll), findViewById<View?>(R.id.toolbarScroll))
-            for (bar in bars) { bar?.translationY = -imeHeight.toFloat() }
-            insets
-        }
 
         drawingView     = findViewById(R.id.drawingView)
         drawingView.inputMode = try { InputMode.valueOf(getPrefs().getString("input_mode", "AUTO") ?: "AUTO") } catch (e: Exception) { InputMode.AUTO }
