@@ -1859,6 +1859,12 @@ class MainActivity : AppCompatActivity() {
         findViewById<View?>(R.id.topBarContainer)?.visibility = View.GONE
         findViewById<View?>(R.id.primaryToolbarScroll)?.visibility = View.GONE
         findViewById<View?>(R.id.toolbarScroll)?.visibility = View.GONE
+        // Hides the actual phone status bar (battery/time/etc), not just this app's own top bar —
+        // previously "fullscreen" only ever hid EngiNotes's own UI, leaving the real system bar
+        // untouched, which isn't true fullscreen.
+        val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+        insetsController.hide(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+        insetsController.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         if (fullscreenRestoreBtn != null) return
         val btn = TextView(this).apply {
             text = "⛶"; textSize = 16f; gravity = Gravity.CENTER
@@ -1882,6 +1888,7 @@ class MainActivity : AppCompatActivity() {
         if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
             findViewById<View?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
         }
+        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
         fullscreenRestoreBtn?.let { canvasContainer.removeView(it) }
         fullscreenRestoreBtn = null
     }

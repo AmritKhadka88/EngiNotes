@@ -6610,7 +6610,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val cellW = (screenWidth / scaleFactor / 2f) / cols; val cellH = 60f
         table.rowHeights.clear(); repeat(rows) { table.rowHeights.add(cellH) }
         table.colWidths.clear(); repeat(cols) { table.colWidths.add(cellW) }
-        for (r in 0 until rows) for (c in 0 until cols) table.getCellPublic(r, c)
+        for (r in 0 until rows) for (c in 0 until cols) table.getCellPublic(r, c).textSize = defaultTextSize
         actions.add(table); redoStack.clear(); activeTableItem = table; markSpatialDirty(); invalidate()
     }
 
