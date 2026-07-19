@@ -1026,8 +1026,12 @@ class MainActivity : AppCompatActivity() {
             // Give the inner row enough start/end padding that a button's own corner never sits
             // inside the shell's curved zone (the 8dp set in XML was tuned for the old
             // square/borderless bars, not this rounded shell).
+            // toolbarScroll holds text-label pills (Select/Lasso/Rect/Multi) and needs real
+            // vertical room or the labels clip; primaryToolbarScroll is icon-only and can run
+            // much tighter — using the same value for both was wrong in both directions at once.
+            val vPad = if (barId == R.id.toolbarScroll) dp(10) else dp(2)
             ((findViewById<View?>(barId) as? HorizontalScrollView)?.getChildAt(0) as? LinearLayout)?.let { row ->
-                row.setPadding(dp(14), dp(4), dp(14), dp(4))
+                row.setPadding(dp(14), vPad, dp(14), vPad)
             }
         }
         val primaryIds = listOf(R.id.btnSelect, R.id.btnText, R.id.btnDraw, R.id.btnHighlighter, R.id.btnBrush,
@@ -1045,11 +1049,15 @@ class MainActivity : AppCompatActivity() {
                 (layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
                     lp.marginStart = dp(3); lp.marginEnd = dp(3); layoutParams = lp
                 }
-                // The default ImageButton style reserves generous padding around the icon
-                // graphic itself — this is the actual source of the empty space inside each
-                // button (separate from the row's own outer padding). A little breathing room
-                // still looks intentional; the default was just excessive.
-                setPadding(dp(6), dp(6), dp(6), dp(6))
+                // The default ImageButton style reserves generous padding AND a minimum
+                // touch-target size (~48dp) around the icon graphic, regardless of the button's
+                // own explicit width/height — that minimum-size floor is almost certainly why
+                // reducing padding alone didn't shrink the visible empty space. Zeroing both
+                // out here lets the button's actual configured size (from bar_icon_size) be the
+                // real, final size, with just a little breathing room from padding.
+                minimumWidth = 0; minimumHeight = 0
+                setPadding(dp(3), dp(3), dp(3), dp(3))
+                (this as? ImageButton)?.scaleType = ImageView.ScaleType.FIT_CENTER
             }
         }
         // Top bar (back/undo-redo/link/palm/menu row) — previously untouched by theming since
@@ -3295,6 +3303,13 @@ class MainActivity : AppCompatActivity() {
                         val child = ll.getChildAt(i) as? ImageButton ?: continue
                         val lp = child.layoutParams as LinearLayout.LayoutParams
                         lp.width = sz; lp.height = sz; child.layoutParams = lp
+                        // ImageButton defaults to ScaleType.CENTER — draws the icon at its own
+                        // fixed intrinsic size and just re-centers it, ignoring the view's actual
+                        // bounds entirely. That's the real reason resizing the button never
+                        // visibly resized the icon. FIT_CENTER scales the icon to genuinely fill
+                        // the available space (minus padding), preserving aspect ratio.
+                        child.scaleType = ImageView.ScaleType.FIT_CENTER
+                        child.setPadding(dp(3), dp(3), dp(3), dp(3))
                     }
                 }
                 rebuildContextBar()
