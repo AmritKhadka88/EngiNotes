@@ -1011,6 +1011,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun applyToolbarTheme() {
         val theme = currentAppTheme()
+        // Ensures the saved bar_icon_size preference is actually re-applied every time this
+        // runs (app launch included) — previously button sizing only ever happened inside the
+        // settings dialog's save handler, so a correctly-saved "Small" was silently ignored
+        // until the user revisited Settings and touched the option again.
+        applyBarIconSize(getPrefs().getInt("bar_icon_size", 44))
         // Each bar now gets its OWN capsule "shell" background (visible fill + edge stroke),
         // so the row of buttons reads as one enclosed navigation bar — like an iOS Control
         // Center grouping — instead of icons floating with nothing behind them.
@@ -1327,7 +1332,30 @@ class MainActivity : AppCompatActivity() {
             .withEndAction { onEnd() }.start()
     }
 
-    private fun rebuildContextBar() {
+    // Actually resizes the primary toolbar's buttons to match bar_icon_size — separated out so
+    // it can run both when the setting is actively changed AND on every app launch. Previously
+    // this only ever lived inside the settings-save handler, so a correctly-saved "Small"
+    // preference was silently ignored on the next app launch until the user revisited Settings.
+    internal fun applyBarIconSize(barSizeDp: Int) {
+        val sz = dp(barSizeDp)
+        val primaryBar = findViewById<HorizontalScrollView?>(R.id.primaryToolbarScroll)
+        (primaryBar?.getChildAt(0) as? LinearLayout)?.let { ll ->
+            for (i in 0 until ll.childCount) {
+                val child = ll.getChildAt(i) as? ImageButton ?: continue
+                val lp = child.layoutParams as LinearLayout.LayoutParams
+                lp.width = sz; lp.height = sz; child.layoutParams = lp
+                // ImageButton defaults to ScaleType.CENTER — draws the icon at its own fixed
+                // intrinsic size and just re-centers it, ignoring the view's actual bounds
+                // entirely. FIT_CENTER scales the icon to genuinely fill the available space
+                // (minus padding), preserving aspect ratio.
+                child.scaleType = ImageView.ScaleType.FIT_CENTER
+                val pad = dp((barSizeDp * 0.22f).toInt())
+                child.setPadding(pad, pad, pad, pad)
+            }
+        }
+    }
+
+    internal fun rebuildContextBar() {
         val contextBar = findViewById<HorizontalScrollView>(R.id.toolbarScroll) ?: return
         val row = (contextBar.getChildAt(0) as? LinearLayout) ?: LinearLayout(this).also {
             it.orientation = LinearLayout.HORIZONTAL; it.gravity = Gravity.CENTER_VERTICAL
@@ -1863,7 +1891,8 @@ class MainActivity : AppCompatActivity() {
                         background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(14).toFloat(); setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")) }
                         setOnClickListener { setActiveTool(null, mode.tool) }
                     }
-                    col.addView(iconView, LinearLayout.LayoutParams(dp(28), dp(28)).also { it.gravity = Gravity.CENTER_HORIZONTAL })
+                    val iconSz = (BAR_H * 0.55f).toInt().coerceIn(dp(20), dp(34))
+                    col.addView(iconView, LinearLayout.LayoutParams(iconSz, iconSz).also { it.gravity = Gravity.CENTER_HORIZONTAL })
                     col.addView(TextView(this).apply { text = mode.label; textSize = 8f; gravity = Gravity.CENTER; setTextColor(if (active) Color.WHITE else Color.parseColor("#5C5856")) })
                     row.addView(col)
                 }
@@ -3306,23 +3335,7 @@ class MainActivity : AppCompatActivity() {
                 try { drawingView.paperType = PaperType.valueOf(selPaper) } catch(e:Exception){}
                 drawingView.paperColor = selPaperColor
                 drawingView.invalidate()
-                val sz = dp(selBarSize)
-                val primaryBar = findViewById<HorizontalScrollView?>(R.id.primaryToolbarScroll)
-                (primaryBar?.getChildAt(0) as? LinearLayout)?.let { ll ->
-                    for (i in 0 until ll.childCount) {
-                        val child = ll.getChildAt(i) as? ImageButton ?: continue
-                        val lp = child.layoutParams as LinearLayout.LayoutParams
-                        lp.width = sz; lp.height = sz; child.layoutParams = lp
-                        // ImageButton defaults to ScaleType.CENTER — draws the icon at its own
-                        // fixed intrinsic size and just re-centers it, ignoring the view's actual
-                        // bounds entirely. That's the real reason resizing the button never
-                        // visibly resized the icon. FIT_CENTER scales the icon to genuinely fill
-                        // the available space (minus padding), preserving aspect ratio.
-                        child.scaleType = ImageView.ScaleType.FIT_CENTER
-                        val pad = dp((selBarSize * 0.22f).toInt())
-                        child.setPadding(pad, pad, pad, pad)
-                    }
-                }
+                applyBarIconSize(selBarSize)
                 rebuildContextBar()
                 repositionContextBar()
             }.show()

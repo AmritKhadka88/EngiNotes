@@ -518,6 +518,11 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
         // For new text: use last-saved font from prefs (most reliable — survives any intermediate resets)
         // For existing text: load that item's own font
         pendingFontFamily = item?.fontFamily ?: (getPrefs().getString("last_font", pendingFontFamily) ?: pendingFontFamily)
+        // The panel (Default/Serif/Monospace/size) reads editSize/editColor/pendingFontFamily
+        // directly but was never told to rebuild when editing actually started — so it kept
+        // showing whatever it displayed before (often a stale default), even though the text
+        // being typed correctly used the value just set above.
+        rebuildContextBar()
         val density=resources.displayMetrics.density
         val useActualSize = drawingView.canvasMode != CanvasMode.INFINITE && drawingView.canvasMode != CanvasMode.CONVENIENT
         // Was boosted 1.6x for Convenient mode to make typing feel bigger/easier — turned out
