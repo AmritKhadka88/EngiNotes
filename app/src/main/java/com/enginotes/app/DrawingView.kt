@@ -1071,9 +1071,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (field != value && value != Tool.SELECT && activeTableItem != null) {
                 activeTableItem = null; tableIsActive = false
             }
-            field = value
-        }
-        set(value) {
             if (field == Tool.SELECT && value != Tool.SELECT) selectedItem = null
             if (field == Tool.ARC && value != Tool.ARC) activeArcItem = null
             if ((field == Tool.AUTOSELECT || field == Tool.LASSO) && value != Tool.AUTOSELECT && value != Tool.LASSO) {
