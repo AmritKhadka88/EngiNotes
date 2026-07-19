@@ -1045,6 +1045,11 @@ class MainActivity : AppCompatActivity() {
                 (layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
                     lp.marginStart = dp(3); lp.marginEnd = dp(3); layoutParams = lp
                 }
+                // The default ImageButton style reserves generous padding around the icon
+                // graphic itself — this is the actual source of the empty space inside each
+                // button (separate from the row's own outer padding). A little breathing room
+                // still looks intentional; the default was just excessive.
+                setPadding(dp(6), dp(6), dp(6), dp(6))
             }
         }
         // Top bar (back/undo-redo/link/palm/menu row) — previously untouched by theming since
@@ -3217,8 +3222,8 @@ class MainActivity : AppCompatActivity() {
         })
 
         div(); hdr("TOOLBAR")
-        val barSizeLabels = arrayOf("Small (36dp)", "Medium (44dp)", "Large (52dp)", "Extra Large (60dp)")
-        val barSizeValues = arrayOf(36, 44, 52, 60)
+        val barSizeLabels = arrayOf("Small (36dp)", "Medium (40dp)", "Large (44dp)", "Extra Large (52dp)")
+        val barSizeValues = arrayOf(36, 40, 44, 52)
         var selBarSize = prefs.getInt("bar_icon_size", 44)
         val barSizeLbl = TextView(this).apply { textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(8),0,dp(8)) }
         fun refBarSize() { barSizeLbl.text = "Icon size: ${barSizeLabels[barSizeValues.indexOf(selBarSize).coerceAtLeast(0)]}  (tap)" }
