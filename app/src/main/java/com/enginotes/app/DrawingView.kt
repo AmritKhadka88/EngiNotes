@@ -3325,6 +3325,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val bounds = getBounds(table) ?: return
         val (movePos, rotPos) = tableHandlePositions(table)
         val hr = 26f / scaleFactor
+        val cx = (bounds[0] + bounds[2]) / 2f; val cy = (bounds[1] + bounds[3]) / 2f
+        canvas.save(); canvas.rotate(table.rotation, cx, cy)
         val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE; selP.strokeWidth = 2f / scaleFactor
         canvas.drawRect(bounds[0], bounds[1], bounds[2], bounds[3], selP)
         canvas.restore()
