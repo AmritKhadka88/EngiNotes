@@ -1244,6 +1244,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var arcDragPointIndex = -1
 
     private var activeTableItem: TableItem? = null
+        set(value) { field = value; onTableActiveChanged?.invoke(value) }
+    var onTableActiveChanged: ((TableItem?) -> Unit)? = null
     private var tableDragRowBorder = -1
     private var tableDragColBorder = -1
     private var tableDragStartY = 0f
@@ -1253,6 +1255,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var tableSelEnd: Pair<Int, Int>? = null
     private var tableIsActive: Boolean = false
     private var tableSingleTapCell: Pair<Int, Int>? = null
+    private var tableTapDownWx = 0f; private var tableTapDownWy = 0f
+    private var tableTapCandidateCell: Pair<Int, Int>? = null
+    private var tableDragConfirmed = false
     private var tableSingleTapTime: Long = 0L
     private val TABLE_DOUBLE_TAP_MS = 300L
 
@@ -3294,12 +3299,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; return }
                     val cell = table.hitTestCell(wx, wy)
                     if (cell == null) { tableIsActive = false; tableSelStart = null; tableSelEnd = null; activeTableItem = null; currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT); invalidate(); return }
-                    // Excel-like: a single tap on a cell immediately opens it for editing
-                    tableSelStart = cell; tableSelEnd = null
-                    val rect = table.cellRect(cell.first, cell.second)
-                    val sx = worldToScreenX(rect.left); val sy = worldToScreenY(rect.top)
-                    onTableCellEditRequest?.invoke(table, cell.first, cell.second, sx, sy)
-                    invalidate()
+                    // Don't decide yet whether this opens the cell or starts a range-select drag —
+                    // see ACTION_MOVE/ACTION_UP below.
+                    tableTapDownWx = wx; tableTapDownWy = wy; tableTapCandidateCell = cell; tableDragConfirmed = false
                 } else if (table != null && !tableIsActive) {
                     val cell = table.hitTestCell(wx, wy)
                     if (cell != null) {
@@ -3322,10 +3324,34 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             MotionEvent.ACTION_MOVE -> {
                 val table = activeTableItem ?: return; if (!tableIsActive) return
-                if (tableDragRowBorder >= 0) { table.rowHeights[tableDragRowBorder] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(20f); invalidate() }
-                else if (tableDragColBorder >= 0) { table.colWidths[tableDragColBorder] = (tableDragOrigSize + (wx - tableDragStartX)).coerceAtLeast(30f); invalidate() }
+                if (tableDragRowBorder >= 0) { table.rowHeights[tableDragRowBorder] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(20f); invalidate(); return }
+                if (tableDragColBorder >= 0) { table.colWidths[tableDragColBorder] = (tableDragOrigSize + (wx - tableDragStartX)).coerceAtLeast(30f); invalidate(); return }
+                val candidate = tableTapCandidateCell ?: return
+                if (!tableDragConfirmed) {
+                    val dragThreshold = 10f / scaleFactor
+                    if (distance(wx, wy, tableTapDownWx, tableTapDownWy) > dragThreshold) {
+                        tableDragConfirmed = true
+                        tableSelStart = candidate; tableSelEnd = null
+                    }
+                }
+                if (tableDragConfirmed) extendTableSelection(wx, wy)
             }
-            MotionEvent.ACTION_UP -> { if (tableDragRowBorder >= 0 || tableDragColBorder >= 0) { tableDragRowBorder = -1; tableDragColBorder = -1 } }
+            MotionEvent.ACTION_UP -> {
+                if (tableDragRowBorder >= 0 || tableDragColBorder >= 0) { tableDragRowBorder = -1; tableDragColBorder = -1; return }
+                val candidate = tableTapCandidateCell
+                if (candidate != null && !tableDragConfirmed) {
+                    // Plain tap, or a hold that never turned into a slide — open this cell
+                    val table = activeTableItem
+                    if (table != null) {
+                        tableSelStart = candidate; tableSelEnd = null
+                        val rect = table.cellRect(candidate.first, candidate.second)
+                        val sx = worldToScreenX(rect.left); val sy = worldToScreenY(rect.top)
+                        onTableCellEditRequest?.invoke(table, candidate.first, candidate.second, sx, sy)
+                    }
+                }
+                tableTapCandidateCell = null; tableDragConfirmed = false
+                invalidate()
+            }
         }
     }
 

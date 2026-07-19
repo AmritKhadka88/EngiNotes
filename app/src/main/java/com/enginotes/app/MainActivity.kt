@@ -688,6 +688,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         drawingView.onTableCellEditRequest = { table, row, col, sx, sy -> showTableCellEditor(table, row, col, sx, sy) }
+        drawingView.onTableActiveChanged = { table -> updateTableButton(table) }
         drawingView.onMultiSelectionChanged = { items ->
             runOnUiThread {
                 val lockBtn = findViewById<TextView>(R.id.btnLock)
@@ -3400,6 +3401,30 @@ class MainActivity : AppCompatActivity() {
     private var dimOverlayViews: List<View> = emptyList()
     private var dimScalePanel: View? = null
     private var groupModeToggleBtn: TextView? = null
+    private var tableButton: TextView? = null
+
+    private fun updateTableButton(table: TableItem?) {
+        if (table == null) {
+            tableButton?.let { canvasContainer.removeView(it) }; tableButton = null; return
+        }
+        if (tableButton != null) return
+        val btn = TextView(this).apply {
+            text = "\u2637 Table"; textSize = 12f; setTextColor(Color.WHITE)
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#5D4037")); cornerRadius = dp(16).toFloat()
+            }
+            elevation = dp(10).toFloat()
+            setOnClickListener { drawingView.getActiveTable()?.let { showTablePropertiesDialog(it) } }
+        }
+        // Sits in the bottom toolbar area, above the Select/Lasso/Rect/Multi pill and the tool
+        // icon row beneath it — this is the "bottom upper navigation bar" spot.
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
+        lp.bottomMargin = dp(180); lp.leftMargin = dp(8)
+        canvasContainer.addView(btn, lp)
+        tableButton = btn
+    }
 
     private fun updateGroupModeToggle(show: Boolean) {
         if (!show) {
@@ -4591,7 +4616,10 @@ class MainActivity : AppCompatActivity() {
         chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java).putExtra("table_csv", sb.toString()))
     }
 
-    private fun showCellStyleDialog(table: TableItem, row: Int, col: Int, selEnd: Pair<Int,Int>?) {
+    private fun showTablePropertiesDialog(table: TableItem) {
+        val (selStartRaw, selEnd) = drawingView.getTableSelection()
+        val selStart = selStartRaw ?: Pair(0, 0)
+        val row = selStart.first; val col = selStart.second
         val cell = table.getCellPublic(row,col)
         val minR=minOf(row,selEnd?.first?:row); val maxR=maxOf(row,selEnd?.first?:row).coerceIn(0,table.rows-1)
         val minC=minOf(col,selEnd?.second?:col); val maxC=maxOf(col,selEnd?.second?:col).coerceIn(0,table.cols-1)
@@ -4599,6 +4627,39 @@ class MainActivity : AppCompatActivity() {
 
         val container=LinearLayout(this).apply{ orientation=LinearLayout.VERTICAL; setPadding(dp(16),dp(8),dp(16),dp(8)) }
         fun lbl(t:String){ container.addView(TextView(this).apply{ text=t;textSize=13f;setTextColor(Color.parseColor("#7B61FF"));setPadding(0,dp(10),0,dp(4)) }) }
+        lateinit var dialog: AlertDialog
+
+        val selDesc=if(selEnd!=null) "R${minR+1}C${minC+1} to R${maxR+1}C${maxC+1}" else "R${row+1}C${col+1}"
+        lbl("Selection: $selDesc")
+
+        lbl("Text Style")
+        val styleRow=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setPadding(0,dp(4),0,dp(4)) }
+        fun styleBtn(label:String, pressed:Boolean, action:()->Unit): Button = Button(this).apply{
+            text=label; textSize=13f
+            setBackgroundColor(if(pressed) Color.parseColor("#8D6E63") else Color.parseColor("#EDE7F6"))
+            setTextColor(if(pressed) Color.WHITE else Color.parseColor("#4527A0"))
+            val p=LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f); p.setMargins(dp(2),0,dp(2),0); layoutParams=p
+            setPadding(dp(4),dp(6),dp(4),dp(6)); minWidth=0; minimumWidth=0
+            setOnClickListener{ action(); dialog.dismiss(); showTablePropertiesDialog(table) } // rebuild to reflect new pressed state
+        }
+        styleRow.addView(styleBtn("B", cell.bold){ val v=!cell.bold; applyToSel{it.bold=v} })
+        styleRow.addView(styleBtn("I", cell.italic){ val v=!cell.italic; applyToSel{it.italic=v} })
+        styleRow.addView(styleBtn("U", cell.underline){ val v=!cell.underline; applyToSel{it.underline=v} })
+        container.addView(styleRow)
+        Button(this).apply{ text="Fonts"; textSize=13f; setBackgroundColor(Color.parseColor("#EDE7F6")); setTextColor(Color.parseColor("#4527A0"))
+            setOnClickListener{ loadCustomFonts()
+                val scroll=ScrollView(this@MainActivity); val fc=LinearLayout(this@MainActivity).apply{orientation=LinearLayout.VERTICAL}
+                lateinit var fdlg: AlertDialog
+                fun row(label:String, family:String, tf:android.graphics.Typeface?){ fc.addView(TextView(this@MainActivity).apply{
+                    text=label; textSize=17f; setPadding(dp(20),dp(12),dp(20),dp(12)); if(tf!=null) typeface=tf
+                    setOnClickListener{ applyToSel{it.fontFamily=family}; fdlg.dismiss(); dialog.dismiss(); showTablePropertiesDialog(table) }
+                }) }
+                for((label,family) in availableFonts) row(label, family, try{Typeface.create(family,Typeface.NORMAL)}catch(e:Exception){null})
+                for((label,path) in customFonts) row(label, path, try{android.graphics.Typeface.createFromFile(path)}catch(e:Exception){null})
+                scroll.addView(fc)
+                fdlg=AlertDialog.Builder(this@MainActivity).setTitle("Font").setView(scroll).setNegativeButton("Cancel",null).create(); fdlg.show()
+            }
+        }.also{ container.addView(it) }
 
         lbl("Layout Preset")
         val presetRow=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setPadding(0,dp(4),0,dp(4)) }
@@ -4610,9 +4671,6 @@ class MainActivity : AppCompatActivity() {
         container.addView(presetRow)
 
         val div2=View(this); div2.layoutParams=LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,dp(1)).also{it.setMargins(0,dp(12),0,dp(4))}; div2.setBackgroundColor(Color.LTGRAY); container.addView(div2)
-
-        val selDesc=if(selEnd!=null) "R${minR+1}C${minC+1} to R${maxR+1}C${maxC+1}" else "R${row+1}C${col+1}"
-        lbl("Cell Style ($selDesc)")
 
         lbl("Text Color"); val tcBtn=Button(this).apply{ text="Pick Text Color"; textSize=13f; setBackgroundColor(cell.textColor); setTextColor(Color.WHITE); setOnClickListener{ showColorGridDialog{ c->applyToSel{it.textColor=c}; setBackgroundColor(c) } } }; container.addView(tcBtn)
         lbl("Background Color"); val bgBtn=Button(this).apply{ text="Pick Background"; textSize=13f; setBackgroundColor(cell.bgColor); setOnClickListener{ showColorGridDialog{ c->applyToSel{it.bgColor=c}; setBackgroundColor(c) } } }; container.addView(bgBtn)
@@ -4631,8 +4689,31 @@ class MainActivity : AppCompatActivity() {
         for((idx,al) in listOf("Left","Center","Right").withIndex()){ Button(this).apply{ text=al; textSize=12f; setBackgroundColor(if(cell.alignment==idx)Color.parseColor("#8D6E63") else Color.LTGRAY); setOnClickListener{ applyToSel{it.alignment=idx} }; layoutParams=LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f); alignRow.addView(this) } }
         container.addView(alignRow)
 
+        val div3=View(this); div3.layoutParams=LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,dp(1)).also{it.setMargins(0,dp(12),0,dp(4))}; div3.setBackgroundColor(Color.LTGRAY); container.addView(div3)
+
+        // Row/col/merge only make sense once an actual range is selected
+        if (selEnd != null) {
+            lbl("Rows & Columns (applies to selection anchor)")
+            val rcRow=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setPadding(0,dp(4),0,dp(4)) }
+            fun rcBtn(label:String, action:()->Unit){ Button(this).apply{ text=label; textSize=11f; setBackgroundColor(Color.parseColor("#EDE7F6")); setTextColor(Color.parseColor("#4527A0")); val p=LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f); p.setMargins(dp(2),0,dp(2),0); layoutParams=p; setPadding(dp(4),dp(6),dp(4),dp(6)); minWidth=0; minimumWidth=0; setOnClickListener{ action(); dialog.dismiss() }; rcRow.addView(this) } }
+            rcBtn("+Row"){ drawingView.addTableRow(row) }; rcBtn("+Col"){ drawingView.addTableCol(col) }
+            rcBtn("-Row"){ drawingView.removeTableRow(row) }; rcBtn("-Col"){ drawingView.removeTableCol(col) }
+            container.addView(rcRow)
+            Button(this).apply{ text="Merge Selection"; textSize=13f; setBackgroundColor(Color.parseColor("#EDE7F6")); setTextColor(Color.parseColor("#4527A0")); setOnClickListener{ drawingView.mergeCellSelection(); dialog.dismiss() } }.also{ container.addView(it) }
+        }
+        if (table.mergeSpans.containsKey(Pair(row, col))) {
+            Button(this).apply{ text="Unmerge"; textSize=13f; setBackgroundColor(Color.parseColor("#EDE7F6")); setTextColor(Color.parseColor("#4527A0")); setOnClickListener{ drawingView.unmergeCellSelection(); dialog.dismiss() } }.also{ container.addView(it) }
+        }
+
+        val div4=View(this); div4.layoutParams=LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,dp(1)).also{it.setMargins(0,dp(12),0,dp(4))}; div4.setBackgroundColor(Color.LTGRAY); container.addView(div4)
+        Button(this).apply{ text="Insert Chart from Table"; textSize=13f; setBackgroundColor(Color.parseColor("#E3F2FD")); setTextColor(Color.parseColor("#1565C0")); setOnClickListener{ dialog.dismiss(); launchChartFromTable(table) } }.also{ container.addView(it) }
+        Button(this).apply{ text="Delete Whole Table"; textSize=13f; setBackgroundColor(Color.parseColor("#FFEBEE")); setTextColor(Color.parseColor("#C62828")); setOnClickListener{
+            AlertDialog.Builder(this@MainActivity).setTitle("Delete table?").setMessage("This removes the whole table.")
+                .setPositiveButton("Delete"){ _,_ -> drawingView.deleteAnyItem(table); dialog.dismiss() }.setNegativeButton("Cancel",null).show()
+        } }.also{ container.addView(it) }
+
         val scroll=ScrollView(this); scroll.addView(container)
-        AlertDialog.Builder(this).setTitle("Table Style").setView(scroll).setPositiveButton("Done",null).show()
+        dialog=AlertDialog.Builder(this).setTitle("Table Properties").setView(scroll).setPositiveButton("Done",null).show()
     }
 
     internal fun dismissCellEditor() {
@@ -4755,35 +4836,12 @@ class MainActivity : AppCompatActivity() {
         }
         fun buildToolbar() {
             actionsRow.removeAllViews()
-            val (selStart, selEnd) = drawingView.getTableSelection()
-            actionBtn("Fonts \u25B2") { showTableFontPicker(cell, et) { drawingView.invalidate(); refreshToolbar() } }
             actionBtn("B", pressed = cell.bold) { cell.bold = !cell.bold; applyTypefaceToEt(et); table.recalcCellSize(row,col); drawingView.invalidate(); refreshToolbar() }
             actionBtn("I", pressed = cell.italic) { cell.italic = !cell.italic; applyTypefaceToEt(et); table.recalcCellSize(row,col); drawingView.invalidate(); refreshToolbar() }
             actionBtn("U", pressed = cell.underline) { cell.underline = !cell.underline; applyTypefaceToEt(et); drawingView.invalidate(); refreshToolbar() }
             actionBtn("A-") { cell.textSize = (cell.textSize - 2f).coerceAtLeast(8f); repositionToCellFn(et); table.recalcCellSize(row,col); drawingView.invalidate() }
             actionBtn("${cell.textSize.toInt()}") { }
             actionBtn("A+") { cell.textSize = (cell.textSize + 2f).coerceAtMost(72f); repositionToCellFn(et); table.recalcCellSize(row,col); drawingView.invalidate() }
-            actionBtn("Text\u00A0Color") { showColorGridDialog { c -> cell.textColor = c; et.setTextColor(c); drawingView.invalidate() } }
-            actionBtn("Cell\u00A0Color") { showColorGridDialog { c -> cell.bgColor = c; drawingView.invalidate() } }
-            // Row/col/merge only make sense once an actual range is selected — a single cell has
-            // nothing to merge, and +Row/+Col already exist elsewhere; showing them unconditionally
-            // for every single cell tap was just clutter.
-            if (selEnd != null) {
-                actionBtn("+Row") { drawingView.addTableRow(row); dismissCellEditor() }
-                actionBtn("+Col") { drawingView.addTableCol(col); dismissCellEditor() }
-                actionBtn("-Row") { drawingView.removeTableRow(row); dismissCellEditor() }
-                actionBtn("-Col") { drawingView.removeTableCol(col); dismissCellEditor() }
-                actionBtn("Merge") { drawingView.mergeCellSelection(); dismissCellEditor() }
-            }
-            if (table.mergeSpans.containsKey(Pair(row, col))) actionBtn("Unmerge") { drawingView.unmergeCellSelection(); dismissCellEditor() }
-            actionBtn("Style") { showCellStyleDialog(table, row, col, selEnd) }
-            actionBtn("Chart") { launchChartFromTable(table) }
-            actionBtn("Del\u00A0Table") {
-                AlertDialog.Builder(this).setTitle("Delete table?").setMessage("This removes the whole table, not just this cell.")
-                    .setPositiveButton("Delete") { _, _ -> drawingView.deleteAnyItem(table); dismissCellEditor() }
-                    .setNegativeButton("Cancel", null).show()
-            }
-            actionBtn("Done") { dismissCellEditor() }
         }
         val actionsScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(actionsRow) }
         val toolbarHeightEstimate = dp(40)
