@@ -4823,13 +4823,25 @@ class MainActivity : AppCompatActivity() {
         val actionsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(6).toFloat(); setPadding(dp(4),dp(4),dp(4),dp(4)) }
         lateinit var refreshToolbar: () -> Unit
         fun actionBtn(label: String, pressed: Boolean = false, action: () -> Unit): TextView {
+            val normalBg = if (pressed) Color.parseColor("#8D6E63") else Color.parseColor("#F0EBE0")
+            val flashBg = if (pressed) Color.parseColor("#6D4C41") else Color.parseColor("#D7CCC8")
             val b = TextView(this).apply {
                 text = label; textSize = 11f
                 setTextColor(if (pressed) Color.WHITE else Color.parseColor("#4A4A4A"))
-                setBackgroundColor(if (pressed) Color.parseColor("#8D6E63") else Color.parseColor("#F0EBE0"))
+                setBackgroundColor(normalBg)
                 setPadding(dp(8), dp(5), dp(8), dp(5))
                 val p = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
                 p.setMargins(dp(2), 0, dp(2), 0); layoutParams = p
+                // Immediate visible flash on touch-down, reverted on release — a plain
+                // setBackgroundColor() has no built-in ripple, so without this a tap gave no
+                // feedback at all and it was impossible to tell if it registered.
+                setOnTouchListener { v, ev ->
+                    when (ev.actionMasked) {
+                        android.view.MotionEvent.ACTION_DOWN -> v.setBackgroundColor(flashBg)
+                        android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> v.setBackgroundColor(normalBg)
+                    }
+                    false
+                }
                 setOnClickListener { action() }
             }
             actionsRow.addView(b); return b

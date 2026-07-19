@@ -25,7 +25,14 @@ class TableCell(
     var italic: Boolean = false,
     var underline: Boolean = false,
     var fontFamily: String? = null
-)
+) {
+    // Render cache — rebuilding a StaticLayout (and especially calling Typeface.create()) on
+    // every single draw() frame, for every cell, was expensive enough to freeze the UI thread on
+    // any table with a handful of cells. Only rebuilds when something that actually affects the
+    // rendered layout has changed.
+    @Volatile var cachedLayout: StaticLayout? = null
+    var cachedLayoutKey: String = ""
+}
 
 class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
     var rows: Int = 3
@@ -139,12 +146,17 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
     // Builds a StaticLayout for a cell's text wrapped to the given width - used both for drawing
     // and for measuring how tall the cell needs to be once text wraps.
     private fun buildCellLayout(cell: TableCell, wrapWidth: Int): StaticLayout {
+        val w = wrapWidth.coerceAtLeast(20)
+        val key = "${cell.text}|${cell.textColor}|${cell.textSize}|${cell.bold}|${cell.italic}|${cell.underline}|${cell.fontFamily}|$w"
+        cell.cachedLayout?.let { if (cell.cachedLayoutKey == key) return it }
         val tp = TextPaint(); tp.color = cell.textColor; tp.textSize = cell.textSize; tp.isAntiAlias = true
         val style = when { cell.bold && cell.italic -> Typeface.BOLD_ITALIC; cell.bold -> Typeface.BOLD; cell.italic -> Typeface.ITALIC; else -> Typeface.NORMAL }
-        tp.typeface = if (cell.fontFamily != null) Typeface.create(cell.fontFamily, style) else Typeface.create(Typeface.DEFAULT, style)
+        tp.typeface = resolveTypeface(cell.fontFamily, style)
         val text = if (cell.text.isEmpty()) " " else cell.text
         val cs: CharSequence = if (cell.underline) SpannableString(text).apply { setSpan(UnderlineSpan(), 0, text.length, 0) } else text
-        return StaticLayout.Builder.obtain(cs, 0, cs.length, tp, wrapWidth.coerceAtLeast(20)).setIncludePad(false).build()
+        val layout = StaticLayout.Builder.obtain(cs, 0, cs.length, tp, w).setIncludePad(false).build()
+        cell.cachedLayout = layout; cell.cachedLayoutKey = key
+        return layout
     }
 
     // Recomputes column width (auto-grow up to MAX_AUTO_COL_WIDTH, unless manually resized or
@@ -159,7 +171,7 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
 
         val tp = TextPaint(); tp.textSize = cell.textSize; tp.isAntiAlias = true
         val style = when { cell.bold && cell.italic -> Typeface.BOLD_ITALIC; cell.bold -> Typeface.BOLD; cell.italic -> Typeface.ITALIC; else -> Typeface.NORMAL }
-        tp.typeface = if (cell.fontFamily != null) Typeface.create(cell.fontFamily, style) else Typeface.create(Typeface.DEFAULT, style)
+        tp.typeface = resolveTypeface(cell.fontFamily, style)
         val longestLineWidth = (cell.text.split("\n").maxOfOrNull { tp.measureText(it) } ?: 0f) + 16f
 
         val curColWidth = colWidths.getOrElse(col) { 100f }
@@ -243,6 +255,18 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
     }
 
     companion object {
+        // Shared across every cell/table — Typeface.create() is a genuinely expensive call
+        // (native font lookup); a table with many cells in the same font/style shouldn't pay
+        // that cost once per cell.
+        private val typefaceCache = HashMap<String, Typeface>()
+        private fun resolveTypeface(fontFamily: String?, style: Int): Typeface {
+            val key = "${fontFamily ?: "default"}:$style"
+            return typefaceCache.getOrPut(key) {
+                if (fontFamily != null) (try { Typeface.create(fontFamily, style) } catch (e: Exception) { Typeface.create(Typeface.DEFAULT, style) })
+                else Typeface.create(Typeface.DEFAULT, style)
+            }
+        }
+
         fun deserialize(lines: List<String>, startIdx: Int): Pair<TableItem?, Int> {
             if (startIdx >= lines.size) return Pair(null, startIdx)
             val header = lines[startIdx].split("\u0001")
