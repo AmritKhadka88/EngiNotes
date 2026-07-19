@@ -3370,31 +3370,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                 }
                 val table = activeTableItem
-                if (table != null && tableIsActive) {
-                    val rb = table.hitTestRowBorder(wy, tol); val cb = table.hitTestColBorder(wx, tol)
-                    if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; return }
-                    if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; return }
+                if (table != null) {
+                    if (tableIsActive) {
+                        val rb = table.hitTestRowBorder(wx, wy, tol); val cb = table.hitTestColBorder(wx, wy, tol)
+                        if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; return }
+                        if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; return }
+                    }
                     val cell = table.hitTestCell(wx, wy)
-                    if (cell == null) { tableIsActive = false; tableSelStart = null; tableSelEnd = null; activeTableItem = null; currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT); invalidate(); return }
-                    // Don't decide yet whether this opens the cell or starts a range-select drag —
-                    // see ACTION_MOVE/ACTION_UP below.
+                    if (cell == null) {
+                        if (tableIsActive) { currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT) }
+                        tableIsActive = false; tableSelStart = null; tableSelEnd = null; activeTableItem = null
+                        invalidate(); return
+                    }
+                    // Defer open-vs-range-select-drag until ACTION_MOVE/ACTION_UP decides — applies
+                    // whether this is the very first tap into the table or a later one.
+                    tableIsActive = true
                     tableTapDownWx = wx; tableTapDownWy = wy; tableTapCandidateCell = cell; tableDragConfirmed = false
-                } else if (table != null && !tableIsActive) {
-                    val cell = table.hitTestCell(wx, wy)
-                    if (cell != null) {
-                        tableIsActive = true; tableSelStart = cell; tableSelEnd = null; tableSingleTapCell = null
-                        val rect = table.cellRect(cell.first, cell.second)
-                        val sx = worldToScreenX(rect.left); val sy = worldToScreenY(rect.top)
-                        onTableCellEditRequest?.invoke(table, cell.first, cell.second, sx, sy)
-                        invalidate()
-                    } else { activeTableItem = null; invalidate() }
                 } else {
                     for (action in actions.reversed()) {
-                        if (action is TableItem) {
-                            val b = getBounds(action) ?: continue
-                            if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) {
-                                activeTableItem = action; tableIsActive = false; tableSelStart = null; tableSelEnd = null; tableSingleTapCell = null; invalidate(); return
-                            }
+                        if (action is TableItem && action.hitTestCell(wx, wy) != null) {
+                            activeTableItem = action; tableIsActive = false; tableSelStart = null; tableSelEnd = null; tableSingleTapCell = null; invalidate(); return
                         }
                     }
                 }

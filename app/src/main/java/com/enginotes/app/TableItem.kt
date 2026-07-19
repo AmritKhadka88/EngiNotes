@@ -94,7 +94,21 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
         return RectF(cellX(col), cellY(row), cellX(col) + w, cellY(row) + h)
     }
 
-    fun hitTestCell(wx: Float, wy: Float): Pair<Int, Int>? {
+    // World-space touch point -> the table's own unrotated local space, using the same center
+    // pivot as draw(). Hit-testing below operates entirely in local space; without this, tapping
+    // a rotated table only ever hit-tested against where it WOULD be if unrotated — the exact
+    // "have to tap its previous position" bug.
+    private fun toLocal(wx: Float, wy: Float): FloatArray {
+        if (rotation == 0f) return floatArrayOf(wx, wy)
+        val cx = x + totalWidth() / 2f; val cy = y + totalHeight() / 2f
+        val rad = Math.toRadians(-rotation.toDouble())
+        val cosT = Math.cos(rad).toFloat(); val sinT = Math.sin(rad).toFloat()
+        val dx = wx - cx; val dy = wy - cy
+        return floatArrayOf(cx + dx * cosT - dy * sinT, cy + dx * sinT + dy * cosT)
+    }
+
+    fun hitTestCell(wxIn: Float, wyIn: Float): Pair<Int, Int>? {
+        val local = toLocal(wxIn, wyIn); val wx = local[0]; val wy = local[1]
         if (wx < x || wx > x + totalWidth() || wy < y || wy > y + totalHeight()) return null
         var row = rows - 1; var cy = y
         for (r in 0 until rows) { if (wy < cy + rowHeights.getOrElse(r) { 60f }) { row = r; break }; cy += rowHeights.getOrElse(r) { 60f } }
@@ -105,13 +119,15 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
         return cell.mergedInto ?: Pair(row, col)
     }
 
-    fun hitTestRowBorder(wy: Float, tolerance: Float): Int {
+    fun hitTestRowBorder(wxIn: Float, wyIn: Float, tolerance: Float): Int {
+        val wy = toLocal(wxIn, wyIn)[1]
         var cy = y
         for (r in 0 until rows - 1) { cy += rowHeights.getOrElse(r) { 60f }; if (kotlin.math.abs(wy - cy) <= tolerance) return r }
         return -1
     }
 
-    fun hitTestColBorder(wx: Float, tolerance: Float): Int {
+    fun hitTestColBorder(wxIn: Float, wyIn: Float, tolerance: Float): Int {
+        val wx = toLocal(wxIn, wyIn)[0]
         var cx = x
         for (c in 0 until cols - 1) { cx += colWidths.getOrElse(c) { 100f }; if (kotlin.math.abs(wx - cx) <= tolerance) return c }
         return -1
@@ -165,7 +181,8 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
 
     fun draw(canvas: Canvas, scaleFactor: Float) {
         canvas.save()
-        canvas.translate(x, y); canvas.rotate(rotation); canvas.translate(-x, -y)
+        val pivotX = x + totalWidth() / 2f; val pivotY = y + totalHeight() / 2f
+        canvas.rotate(rotation, pivotX, pivotY)
         for (r in 0 until rows) for (c in 0 until cols) {
             val cell = getCellSafe(r, c); if (cell.mergedInto != null) continue
             val rect = cellRect(r, c)
