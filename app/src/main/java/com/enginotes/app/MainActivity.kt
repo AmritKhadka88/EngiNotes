@@ -492,12 +492,14 @@ class MainActivity : AppCompatActivity() {
                 // ViewGroup.MarginLayoutParams (not LinearLayout.LayoutParams specifically) so this
                 // works regardless of what the actual parent container type turns out to be — a
                 // narrower cast here would silently no-op the whole block if it ever mismatched.
-                for (barView in listOf(primaryBar, findViewById<View?>(R.id.toolbarScroll))) {
-                    val lp = barView?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
-                    if (lp != null && lp.bottomMargin != extraForKeyboard) {
-                        lp.bottomMargin = extraForKeyboard
-                        barView.layoutParams = lp
-                    }
+                // Only primaryBar gets an explicit margin — toolbarScroll is a sibling in the same
+                // reflowing column and already gets pushed up naturally as primaryBar grows; giving
+                // it its own separate margin on top of that double-shifted it into the same spot
+                // as the per-item floating toolbar.
+                val lp = primaryBar?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
+                if (lp != null && lp.bottomMargin != extraForKeyboard) {
+                    lp.bottomMargin = extraForKeyboard
+                    primaryBar.layoutParams = lp
                 }
                 onImeBottomChanged?.invoke(imeBottom)  // notify inline editor keyboard listener
                 insets
