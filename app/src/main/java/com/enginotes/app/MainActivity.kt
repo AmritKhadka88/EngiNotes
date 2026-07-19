@@ -4846,14 +4846,62 @@ class MainActivity : AppCompatActivity() {
             }
             actionsRow.addView(b); return b
         }
+        fun ptLabel(pt: Float): String {
+            val r = kotlin.math.round(pt * 10f) / 10f
+            return if (r == kotlin.math.round(r)) r.toInt().toString() else r.toString()
+        }
+        fun applySizeChangePx(newPx: Float) {
+            cell.textSize = newPx.coerceIn(6f * PT_TO_PX, 160f * PT_TO_PX)
+            repositionToCellFn(et); table.recalcCellSize(row,col); drawingView.invalidate(); refreshToolbar()
+        }
+        fun openSizePicker(anchor: View) {
+            val standardPoints = listOf(6f,7f,8f,9f,10f,10.5f,11f,12f,13f,14f,16f,18f,20f,22f,24f,26f,28f,32f,36f,40f,44f,48f,54f,60f,66f,72f,80f,88f,96f,108f,120f,132f,144f,160f)
+            val popup = android.widget.PopupWindow(this)
+            val pLayout = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat() }
+            }
+            val customRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(14), dp(12), dp(14), dp(8)) }
+            val customEdit = EditText(this).apply {
+                hint = "Custom pt"; inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+                setText(ptLabel(cell.textSize / PT_TO_PX))
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            val setBtn = TextView(this).apply {
+                text = "Set"; setTextColor(Color.parseColor("#1565C0")); setPadding(dp(12), dp(6), dp(4), dp(6))
+                setOnClickListener {
+                    val pts = customEdit.text.toString().toFloatOrNull()
+                    if (pts != null && pts > 0f) { applySizeChangePx(pts * PT_TO_PX); popup.dismiss() }
+                }
+            }
+            customRow.addView(customEdit); customRow.addView(setBtn)
+            pLayout.addView(customRow)
+            pLayout.addView(View(this).apply { setBackgroundColor(Color.parseColor("#E5E1DC")); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)) })
+            val scroll = ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(140), dp(280)) }
+            val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val currentPts = cell.textSize / PT_TO_PX
+            for (pt in standardPoints) {
+                list.addView(TextView(this).apply {
+                    text = ptLabel(pt)
+                    textSize = 16f; setPadding(dp(16), dp(10), dp(16), dp(10))
+                    if (kotlin.math.abs(pt - currentPts) < 0.01f) { setBackgroundColor(Color.parseColor("#E3EEFB")); setTextColor(Color.parseColor("#1565C0")) } else setTextColor(Color.parseColor("#1C1C1E"))
+                    setOnClickListener { applySizeChangePx(pt * PT_TO_PX); popup.dismiss() }
+                })
+            }
+            scroll.addView(list); pLayout.addView(scroll)
+            popup.contentView = pLayout; popup.width = dp(180); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+            popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
+            popup.showAsDropDown(anchor, -dp(60), -dp(300))
+        }
         fun buildToolbar() {
             actionsRow.removeAllViews()
             actionBtn("B", pressed = cell.bold) { cell.bold = !cell.bold; applyTypefaceToEt(et); table.recalcCellSize(row,col); drawingView.invalidate(); refreshToolbar() }
             actionBtn("I", pressed = cell.italic) { cell.italic = !cell.italic; applyTypefaceToEt(et); table.recalcCellSize(row,col); drawingView.invalidate(); refreshToolbar() }
             actionBtn("U", pressed = cell.underline) { cell.underline = !cell.underline; applyTypefaceToEt(et); drawingView.invalidate(); refreshToolbar() }
-            actionBtn("A-") { cell.textSize = (cell.textSize - 2f).coerceAtLeast(8f); repositionToCellFn(et); table.recalcCellSize(row,col); drawingView.invalidate(); refreshToolbar() }
-            actionBtn("${cell.textSize.toInt()}") { }
-            actionBtn("A+") { cell.textSize = (cell.textSize + 2f).coerceAtMost(72f); repositionToCellFn(et); table.recalcCellSize(row,col); drawingView.invalidate(); refreshToolbar() }
+            actionBtn("A-") { applySizeChangePx(cell.textSize - PT_TO_PX) }
+            val sizeChip = actionBtn(ptLabel(cell.textSize / PT_TO_PX)) {}
+            sizeChip.setOnClickListener { openSizePicker(sizeChip) }
+            actionBtn("A+") { applySizeChangePx(cell.textSize + PT_TO_PX) }
             actionBtn("Del") {
                 cell.text = ""; et.setText(""); table.recalcCellSize(row,col); drawingView.invalidate()
             }
