@@ -681,6 +681,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 iconBtn("🗑") {
                     drawingView.deleteAnyItem(item)
+                    canvasContainer.removeView(scroll); layerToolbar = 
+                }
+                iconBtn("🗑") {
+                    drawingView.deleteAnyItem(item)
                     canvasContainer.removeView(scroll); layerToolbar = null
                 }
                 canvasContainer.addView(scroll)
