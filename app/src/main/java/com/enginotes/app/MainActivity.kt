@@ -489,10 +489,15 @@ class MainActivity : AppCompatActivity() {
                 val extraForKeyboard = (imeBottom - navBarBottom).coerceAtLeast(0)
                 // Guard: only update bottomMargin when value changes — prevents layout
                 // thrashing and the blinking/lag caused by firing on every tiny inset update.
-                val lp = primaryBar?.layoutParams as? LinearLayout.LayoutParams
-                if (lp != null && lp.bottomMargin != extraForKeyboard) {
-                    lp.bottomMargin = extraForKeyboard
-                    primaryBar.layoutParams = lp
+                // ViewGroup.MarginLayoutParams (not LinearLayout.LayoutParams specifically) so this
+                // works regardless of what the actual parent container type turns out to be — a
+                // narrower cast here would silently no-op the whole block if it ever mismatched.
+                for (barView in listOf(primaryBar, findViewById<View?>(R.id.toolbarScroll))) {
+                    val lp = barView?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
+                    if (lp != null && lp.bottomMargin != extraForKeyboard) {
+                        lp.bottomMargin = extraForKeyboard
+                        barView.layoutParams = lp
+                    }
                 }
                 onImeBottomChanged?.invoke(imeBottom)  // notify inline editor keyboard listener
                 insets
