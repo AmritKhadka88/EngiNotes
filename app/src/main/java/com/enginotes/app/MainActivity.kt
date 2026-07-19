@@ -455,6 +455,16 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+        // With decorFitsSystemWindows(false) active (edge-to-edge), Android's own
+        // windowSoftInputMode="adjustResize" no longer automatically repositions anything —
+        // the app owns all inset handling itself now. Without this listener, the bottom bars
+        // stayed exactly where they were laid out and the keyboard simply drew over them.
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
+            val imeHeight = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
+            val bars = listOf(findViewById<View?>(R.id.primaryToolbarScroll), findViewById<View?>(R.id.toolbarScroll))
+            for (bar in bars) { bar?.translationY = -imeHeight.toFloat() }
+            insets
+        }
 
         drawingView     = findViewById(R.id.drawingView)
         drawingView.inputMode = try { InputMode.valueOf(getPrefs().getString("input_mode", "AUTO") ?: "AUTO") } catch (e: Exception) { InputMode.AUTO }
@@ -1701,6 +1711,15 @@ class MainActivity : AppCompatActivity() {
                 eightColors(drawingView.fillColor) { c -> drawingView.fillColor = c; drawingView.pendingHatchPattern = null; drawingView.pendingCustomHatchPath = null }
             }
             Tool.TEXT -> {
+                // A specific existing item is selected (not actively being typed into) — sync the
+                // panel's working variables from its REAL stored values first. Without this, the
+                // panel just showed whatever editSize/editColor/etc were last left at (often the
+                // 12pt default from app init), with zero connection to this item's actual size —
+                // so it could display "12" while the item itself was really 50pt, and merely
+                // opening/closing the panel without picking a new value left it that way forever.
+                textSelectionItem?.let { sel ->
+                    editSize = sel.size; editColor = sel.color; editOpacity = sel.opacity; pendingFontFamily = sel.fontFamily
+                }
                 // Show 3 recently used fonts (no scrollable row — just 3 chips)
                 val recent = recentFonts.take(3)
                 val recentLabels = recent.map { fam -> (allFontFamilies.firstOrNull { it.second == fam }?.first ?: fontDisplayName(fam)) to (pendingFontFamily == fam) }
