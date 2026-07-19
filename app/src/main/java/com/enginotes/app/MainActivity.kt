@@ -483,23 +483,34 @@ class MainActivity : AppCompatActivity() {
         // reflows - canvasContainer (weight=1) shrinks to make room, avoiding a visual gap.
         run {
             val primaryBar = findViewById<View?>(R.id.primaryToolbarScroll)
+            val contextBar = findViewById<View?>(R.id.toolbarScroll)
+            // Each bar's own starting bottomMargin, captured once before any keyboard adjustment.
+            // Every subsequent update sets margin = thisBar'sOwnBaseline + keyboardHeight,
+            // independently per bar. This can't double-shift or lose relative spacing no matter
+            // how they're actually nested/related in the layout — each bar only ever knows about
+            // its own original position, never inferred from the other bar's current state.
+            val baseMargins = HashMap<View, Int>()
+            for (bar in listOf(primaryBar, contextBar)) {
+                val lp0 = bar?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
+                if (bar != null && lp0 != null) baseMargins[bar] = lp0.bottomMargin
+            }
             androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { _, insets ->
                 val imeBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
                 val navBarBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars()).bottom
+                // imeBottom only reflects the portion of the keyboard actually overlapping the
+                // app's content — a floating/split keyboard that doesn't cover this area reports
+                // 0 here, so these bars correctly stay put in that case with no extra handling needed.
                 val extraForKeyboard = (imeBottom - navBarBottom).coerceAtLeast(0)
                 // Guard: only update bottomMargin when value changes — prevents layout
                 // thrashing and the blinking/lag caused by firing on every tiny inset update.
-                // ViewGroup.MarginLayoutParams (not LinearLayout.LayoutParams specifically) so this
-                // works regardless of what the actual parent container type turns out to be — a
-                // narrower cast here would silently no-op the whole block if it ever mismatched.
-                // Only primaryBar gets an explicit margin — toolbarScroll is a sibling in the same
-                // reflowing column and already gets pushed up naturally as primaryBar grows; giving
-                // it its own separate margin on top of that double-shifted it into the same spot
-                // as the per-item floating toolbar.
-                val lp = primaryBar?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
-                if (lp != null && lp.bottomMargin != extraForKeyboard) {
-                    lp.bottomMargin = extraForKeyboard
-                    primaryBar.layoutParams = lp
+                for (bar in listOf(primaryBar, contextBar)) {
+                    val base = baseMargins[bar] ?: continue
+                    val lp = bar?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
+                    val target = base + extraForKeyboard
+                    if (lp != null && lp.bottomMargin != target) {
+                        lp.bottomMargin = target
+                        bar.layoutParams = lp
+                    }
                 }
                 onImeBottomChanged?.invoke(imeBottom)  // notify inline editor keyboard listener
                 insets
