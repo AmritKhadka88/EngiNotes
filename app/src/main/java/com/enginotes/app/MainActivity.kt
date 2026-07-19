@@ -4839,9 +4839,9 @@ class MainActivity : AppCompatActivity() {
             actionBtn("B", pressed = cell.bold) { cell.bold = !cell.bold; applyTypefaceToEt(et); table.recalcCellSize(row,col); drawingView.invalidate(); refreshToolbar() }
             actionBtn("I", pressed = cell.italic) { cell.italic = !cell.italic; applyTypefaceToEt(et); table.recalcCellSize(row,col); drawingView.invalidate(); refreshToolbar() }
             actionBtn("U", pressed = cell.underline) { cell.underline = !cell.underline; applyTypefaceToEt(et); drawingView.invalidate(); refreshToolbar() }
-            actionBtn("A-") { cell.textSize = (cell.textSize - 2f).coerceAtLeast(8f); repositionToCellFn(et); table.recalcCellSize(row,col); drawingView.invalidate() }
+            actionBtn("A-") { cell.textSize = (cell.textSize - 2f).coerceAtLeast(8f); repositionToCellFn(et); table.recalcCellSize(row,col); drawingView.invalidate(); refreshToolbar() }
             actionBtn("${cell.textSize.toInt()}") { }
-            actionBtn("A+") { cell.textSize = (cell.textSize + 2f).coerceAtMost(72f); repositionToCellFn(et); table.recalcCellSize(row,col); drawingView.invalidate() }
+            actionBtn("A+") { cell.textSize = (cell.textSize + 2f).coerceAtMost(72f); repositionToCellFn(et); table.recalcCellSize(row,col); drawingView.invalidate(); refreshToolbar() }
             actionBtn("Del") {
                 cell.text = ""; et.setText(""); table.recalcCellSize(row,col); drawingView.invalidate()
             }
