@@ -3309,7 +3309,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun tableHandlePositions(table: TableItem): Pair<FloatArray, FloatArray> {
         val bounds = getBounds(table) ?: return Pair(floatArrayOf(table.x, table.y), floatArrayOf(table.x, table.y))
         val cx = (bounds[0] + bounds[2]) / 2f; val cy = (bounds[1] + bounds[3]) / 2f
-        val hr = 18f / scaleFactor
+        val hr = 26f / scaleFactor
         val moveLocalX = bounds[0] - hr * 1.8f; val moveLocalY = bounds[1] - hr * 1.8f
         val rotLocalX = cx; val rotLocalY = bounds[1] - 60f / scaleFactor
         val rad = Math.toRadians(table.rotation.toDouble())
@@ -3324,9 +3324,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun drawTableHandles(canvas: Canvas, table: TableItem) {
         val bounds = getBounds(table) ?: return
         val (movePos, rotPos) = tableHandlePositions(table)
-        val hr = 18f / scaleFactor
-        val cx = (bounds[0] + bounds[2]) / 2f; val cy = (bounds[1] + bounds[3]) / 2f
-        canvas.save(); canvas.rotate(table.rotation, cx, cy)
+        val hr = 26f / scaleFactor
         val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE; selP.strokeWidth = 2f / scaleFactor
         canvas.drawRect(bounds[0], bounds[1], bounds[2], bounds[3], selP)
         canvas.restore()
@@ -3353,7 +3351,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // whenever a table is active at all, whether or not you're inside cell-editing.
                 if (activeForHandles != null) {
                     val (movePos, rotPos) = tableHandlePositions(activeForHandles)
-                    val hitR = 22f / scaleFactor
+                    val hitR = 30f / scaleFactor
                     if (distance(wx, wy, movePos[0], movePos[1]) <= hitR) {
                         tableHandleMode = 1; tableMoveStartWx = wx; tableMoveStartWy = wy
                         tableOrigX = activeForHandles.x; tableOrigY = activeForHandles.y
