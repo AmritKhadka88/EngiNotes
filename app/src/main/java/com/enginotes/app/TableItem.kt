@@ -4,8 +4,11 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.graphics.Typeface
+import android.text.SpannableString
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.text.style.UnderlineSpan
 
 data class CellSpan(val row: Int, val col: Int, val rowSpan: Int, val colSpan: Int)
 
@@ -17,7 +20,11 @@ class TableCell(
     var borderColor: Int = Color.BLACK,
     var borderWidth: Float = 2f,
     var alignment: Int = 0,
-    var mergedInto: Pair<Int, Int>? = null
+    var mergedInto: Pair<Int, Int>? = null,
+    var bold: Boolean = false,
+    var italic: Boolean = false,
+    var underline: Boolean = false,
+    var fontFamily: String? = null
 )
 
 class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
@@ -117,8 +124,11 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
     // and for measuring how tall the cell needs to be once text wraps.
     private fun buildCellLayout(cell: TableCell, wrapWidth: Int): StaticLayout {
         val tp = TextPaint(); tp.color = cell.textColor; tp.textSize = cell.textSize; tp.isAntiAlias = true
+        val style = when { cell.bold && cell.italic -> Typeface.BOLD_ITALIC; cell.bold -> Typeface.BOLD; cell.italic -> Typeface.ITALIC; else -> Typeface.NORMAL }
+        tp.typeface = if (cell.fontFamily != null) Typeface.create(cell.fontFamily, style) else Typeface.create(Typeface.DEFAULT, style)
         val text = if (cell.text.isEmpty()) " " else cell.text
-        return StaticLayout.Builder.obtain(text, 0, text.length, tp, wrapWidth.coerceAtLeast(20)).setIncludePad(false).build()
+        val cs: CharSequence = if (cell.underline) SpannableString(text).apply { setSpan(UnderlineSpan(), 0, text.length, 0) } else text
+        return StaticLayout.Builder.obtain(cs, 0, cs.length, tp, wrapWidth.coerceAtLeast(20)).setIncludePad(false).build()
     }
 
     // Recomputes column width (auto-grow up to MAX_AUTO_COL_WIDTH, unless manually resized or
@@ -132,6 +142,8 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
         val isMergedMaster = span != null && (span.rowSpan > 1 || span.colSpan > 1)
 
         val tp = TextPaint(); tp.textSize = cell.textSize; tp.isAntiAlias = true
+        val style = when { cell.bold && cell.italic -> Typeface.BOLD_ITALIC; cell.bold -> Typeface.BOLD; cell.italic -> Typeface.ITALIC; else -> Typeface.NORMAL }
+        tp.typeface = if (cell.fontFamily != null) Typeface.create(cell.fontFamily, style) else Typeface.create(Typeface.DEFAULT, style)
         val longestLineWidth = (cell.text.split("\n").maxOfOrNull { tp.measureText(it) } ?: 0f) + 16f
 
         val curColWidth = colWidths.getOrElse(col) { 100f }
@@ -206,7 +218,7 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
         sb.append("COLRESIZED\u0001${colManuallyResized.joinToString(",")}\n")
         for (r in 0 until rows) for (c in 0 until cols) {
             val cell = getCellSafe(r, c); val mi = cell.mergedInto
-            sb.append("CELL\u0001$r\u0001$c\u0001${cell.textColor}\u0001${cell.bgColor}\u0001${cell.textSize}\u0001${cell.borderColor}\u0001${cell.borderWidth}\u0001${cell.alignment}\u0001${mi?.first ?: -1}\u0001${mi?.second ?: -1}\u0001${cell.text.replace("\n", "\u0002")}\n")
+            sb.append("CELL\u0001$r\u0001$c\u0001${cell.textColor}\u0001${cell.bgColor}\u0001${cell.textSize}\u0001${cell.borderColor}\u0001${cell.borderWidth}\u0001${cell.alignment}\u0001${mi?.first ?: -1}\u0001${mi?.second ?: -1}\u0001${cell.bold}\u0001${cell.italic}\u0001${cell.underline}\u0001${cell.fontFamily ?: ""}\u0001${cell.text.replace("\n", "\u0002")}\n")
         }
         for ((key, span) in mergeSpans) sb.append("MERGE\u0001${key.first}\u0001${key.second}\u0001${span.rowSpan}\u0001${span.colSpan}\n")
         sb.append("TABLEEND\n")
@@ -240,7 +252,13 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
                             cell.alignment = p[8].toIntOrNull() ?: 0
                             val mir = p[9].toIntOrNull() ?: -1; val mic = p[10].toIntOrNull() ?: -1
                             cell.mergedInto = if (mir >= 0) Pair(mir, mic) else null
-                            cell.text = p[11].replace("\u0002", "\n")
+                            if (p.size >= 16) {
+                                cell.bold = p[11].toBoolean(); cell.italic = p[12].toBoolean(); cell.underline = p[13].toBoolean()
+                                cell.fontFamily = p[14].ifEmpty { null }
+                                cell.text = p[15].replace("\u0002", "\n")
+                            } else {
+                                cell.text = p[11].replace("\u0002", "\n")
+                            }
                         }
                     }
                     line.startsWith("MERGE\u0001") -> {

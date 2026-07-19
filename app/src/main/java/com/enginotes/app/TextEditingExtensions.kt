@@ -369,6 +369,11 @@ internal fun MainActivity.showTextSelectionBox(item: TextItem, screenX: Float, s
             }
             elevation = dp(4).toFloat()
         })
+        rotateHandle.addView(TextView(this).apply {
+            val lp = FrameLayout.LayoutParams(dp(28), dp(28)); lp.gravity = Gravity.CENTER; layoutParams = lp
+            text = "\u21bb"; setTextColor(Color.WHITE); textSize = 16f; gravity = Gravity.CENTER
+            elevation = dp(5).toFloat()
+        })
         // Own touch listener, not routed through moveSurface's dist-check anymore. That worked
         // only by coincidence, back when the dot sat low enough to still fall inside
         // moveSurface's own rectangle (which spans exactly the text's own footprint) — once the
@@ -552,7 +557,7 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
         // direction that didn't track the finger, with the text appearing to move independently
         // of "the box." One rotation value, applied once at setup and kept in sync during drag
         // (see the rotate handle's touch listener below), removes the compounding entirely.
-        if (!useActualSize) boxContainer.rotation = editRotation
+        boxContainer.rotation = editRotation
         et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } } }; override fun afterTextChanged(s:Editable?){
             // Android moves the cursor to the end of any inserted text (a paste is one big
             // insert) and auto-scrolls EditText's OWN internal viewport to keep that cursor
@@ -679,6 +684,10 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
             layoutParams = FrameLayout.LayoutParams(dp(16), dp(16)).also { it.gravity = Gravity.CENTER }
             background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.parseColor("#4CAF50")); setStroke(dp(2), Color.WHITE) }
         })
+        rotateHandle.addView(TextView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(dp(16), dp(16)).also { it.gravity = Gravity.CENTER }
+            text = "\u21bb"; setTextColor(Color.WHITE); textSize = 10f; gravity = Gravity.CENTER
+        })
         var rotPivotXEdit = 0f; var rotPivotYEdit = 0f; var rotateStartAngleDeg = 0f; var rotateStartRotation = 0f
         rotateHandle.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
@@ -700,7 +709,7 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                     // handle exactly, since both now call the same shared angleDegrees() helper.
                     val currentAngleDeg = angleDegrees(rotPivotXEdit, rotPivotYEdit, ev.rawX, ev.rawY)
                     editRotation = rotateStartRotation + (currentAngleDeg - rotateStartAngleDeg)
-                    if (!useActualSize) { boxContainer.rotation = editRotation }
+                    boxContainer.rotation = editRotation
                     true
                 }
                 else -> true
