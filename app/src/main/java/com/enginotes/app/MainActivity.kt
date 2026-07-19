@@ -1056,7 +1056,13 @@ class MainActivity : AppCompatActivity() {
                 // out here lets the button's actual configured size (from bar_icon_size) be the
                 // real, final size, with just a little breathing room from padding.
                 minimumWidth = 0; minimumHeight = 0
-                setPadding(dp(3), dp(3), dp(3), dp(3))
+                // Proportional (not fixed) padding — fixed padding is a much smaller share of a
+                // big button than a small one, so icons ended up nearly filling the whole button
+                // at Small/Medium/Large while only Extra Large had real breathing room. This keeps
+                // the icon-to-button ratio consistent at every size.
+                val btnPx = getPrefs().getInt("bar_icon_size", 44)
+                val pad = dp((btnPx * 0.22f).toInt())
+                setPadding(pad, pad, pad, pad)
                 (this as? ImageButton)?.scaleType = ImageView.ScaleType.FIT_CENTER
             }
         }
@@ -1849,7 +1855,11 @@ class MainActivity : AppCompatActivity() {
                     }
                     val col = LinearLayout(this).apply {
                         orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
-                        val lp = LinearLayout.LayoutParams(dp(50), BAR_H); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp
+                        // This column holds an icon AND a text label stacked vertically — it
+                        // needs more room than a plain icon button, so it can't just inherit
+                        // BAR_H's tight minimum (30dp), which is why the label was clipping at
+                        // the Small/Medium bar-size presets.
+                        val lp = LinearLayout.LayoutParams(dp(50), BAR_H.coerceAtLeast(dp(46))); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp
                         background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(14).toFloat(); setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")) }
                         setOnClickListener { setActiveTool(null, mode.tool) }
                     }
@@ -3309,7 +3319,8 @@ class MainActivity : AppCompatActivity() {
                         // visibly resized the icon. FIT_CENTER scales the icon to genuinely fill
                         // the available space (minus padding), preserving aspect ratio.
                         child.scaleType = ImageView.ScaleType.FIT_CENTER
-                        child.setPadding(dp(3), dp(3), dp(3), dp(3))
+                        val pad = dp((selBarSize * 0.22f).toInt())
+                        child.setPadding(pad, pad, pad, pad)
                     }
                 }
                 rebuildContextBar()
