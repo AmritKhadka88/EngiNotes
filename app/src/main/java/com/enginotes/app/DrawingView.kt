@@ -2697,7 +2697,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
 
         canvas.save(); canvas.translate(item.x, topY)
-        canvas.rotate(item.rotation, contentW / 2f, contentH / 2f); layout.draw(canvas); canvas.restore()
+        // Rotate around the SAME center that getBounds() reports for the selection box, not
+        // just this item's raw content height. getBounds() pads short/single-line text up to
+        // a minimum height of item.size * 1.2f so the box never gets absurdly thin — but this
+        // rotate() used to pivot on the raw, unpadded contentH. When the two disagreed, the
+        // box and the glyphs rotated around different centers, so the gap between them grew
+        // on one side and shrank on the other instead of staying even. Mirroring the same
+        // coerceAtLeast here keeps both pivots identical.
+        val boundsH = contentH.coerceAtLeast(item.size * 1.2f)
+        val pivotYLocal = contentH - boundsH / 2f
+        canvas.rotate(item.rotation, contentW / 2f, pivotYLocal); layout.draw(canvas); canvas.restore()
     }
 
     private fun bboxHandlePositions(bounds: FloatArray): List<Pair<HandleType, Pair<Float, Float>>> {
