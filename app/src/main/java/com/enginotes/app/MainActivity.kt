@@ -712,6 +712,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         drawingView.onTableCellEditRequest = { table, row, col, sx, sy -> showTableCellEditor(table, row, col, sx, sy) }
+        drawingView.onFormulaCellRefTap = { row, col -> insertCellRefIntoFormula(row, col) }
         drawingView.onTableActiveChanged = { table -> updateTableButton(table) }
         drawingView.onMultiSelectionChanged = { items ->
             runOnUiThread {
@@ -4876,6 +4877,7 @@ class MainActivity : AppCompatActivity() {
         try{ canvasContainer.removeView(tableToolbarOverlay) }catch(e:Exception){}
         try{ canvasContainer.removeView(et) }catch(e:Exception){}
         activeCellEditText=null; activeCellToolbar=null; tableToolbarOverlay=null
+        drawingView.formulaRefMode = false
         dismissFormulaBar()
         val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(et.windowToken,0)
@@ -4885,6 +4887,26 @@ class MainActivity : AppCompatActivity() {
         if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
             findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
         }
+    }
+
+    // EditText keeps its selection state even after losing View focus (focus only affects cursor
+    // blink / IME connection, not the underlying Editable's selection spans) — so this reads
+    // reliably even though tapping the canvas to pick the cell may have already stolen focus
+    // away from whichever text field the user was typing in.
+    private fun insertCellRefIntoFormula(row: Int, col: Int) {
+        val et = activeCellEditText?.takeIf { it.text.toString().startsWith("=") }
+            ?: formulaBarEditText?.takeIf { it.text.toString().startsWith("=") }
+            ?: return
+        val ref = TableItem.columnLabel(col) + (row + 1).toString()
+        val start = et.selectionStart.coerceAtLeast(0)
+        val end = et.selectionEnd.coerceAtLeast(start)
+        val cur = et.text.toString()
+        val newText = cur.substring(0, start.coerceAtMost(cur.length)) + ref + cur.substring(end.coerceAtMost(cur.length))
+        et.setText(newText) // fires the existing TextWatcher, which updates cell.text, recalcs, and mirrors to the other editor
+        et.setSelection((start + ref.length).coerceIn(0, newText.length))
+        et.requestFocus()
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.showSoftInput(et, InputMethodManager.SHOW_IMPLICIT)
     }
 
     private fun dismissFormulaBar() {
@@ -4924,6 +4946,7 @@ class MainActivity : AppCompatActivity() {
                     val c = t.getCellPublic(formulaBarRow, formulaBarCol)
                     c.text = s?.toString() ?: ""
                     t.recalcAllFormulas(); t.recalcCellSize(formulaBarRow, formulaBarCol)
+                    drawingView.formulaRefMode = c.text.startsWith("=")
                     syncingFormulaText = true
                     activeCellEditText?.let { if (it.text.toString() != c.text) it.setText(c.text) }
                     syncingFormulaText = false
@@ -5030,6 +5053,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         applyTypefaceToEt(et)
+        drawingView.formulaRefMode = cell.text.startsWith("=")
         et.addTextChangedListener(object:TextWatcher{
             override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
             override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){
@@ -5040,6 +5064,7 @@ class MainActivity : AppCompatActivity() {
                 table.recalcCellSize(row, col)
                 drawingView.invalidate()
                 repositionToCellFn(et)
+                drawingView.formulaRefMode = cell.text.startsWith("=")
                 if (!syncingFormulaText && formulaBarTable === table && formulaBarRow == row && formulaBarCol == col) {
                     syncingFormulaText = true
                     formulaBarEditText?.let { if (it.text.toString() != cell.text) it.setText(cell.text) }

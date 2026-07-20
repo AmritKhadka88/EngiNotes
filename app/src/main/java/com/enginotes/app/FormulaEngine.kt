@@ -482,6 +482,20 @@ private object FunctionLibrary {
             if (sig == 0.0) FV.Num(0.0) else FV.Num(floor(x / sig) * sig)
         }
         put("SIGN") { ctx -> FV.Num(sign(ctx.arg(0).asDouble())) }
+        // Trig — same convention as real Excel: these take RADIANS, not degrees. For a
+        // degree-valued angle, wrap it first: SIN(RADIANS(30)), not SIN(30).
+        put("SIN") { ctx -> FV.Num(sin(ctx.arg(0).asDouble())) }
+        put("COS") { ctx -> FV.Num(cos(ctx.arg(0).asDouble())) }
+        put("TAN") { ctx -> FV.Num(tan(ctx.arg(0).asDouble())) }
+        put("ASIN") { ctx -> val x = ctx.arg(0).asDouble(); if (x < -1.0 || x > 1.0) FV.Err("#NUM!") else FV.Num(asin(x)) }
+        put("ACOS") { ctx -> val x = ctx.arg(0).asDouble(); if (x < -1.0 || x > 1.0) FV.Err("#NUM!") else FV.Num(acos(x)) }
+        put("ATAN") { ctx -> FV.Num(atan(ctx.arg(0).asDouble())) }
+        put("ATAN2") { ctx -> FV.Num(atan2(ctx.arg(0).asDouble(), ctx.arg(1).asDouble())) }
+        put("SINH") { ctx -> FV.Num(sinh(ctx.arg(0).asDouble())) }
+        put("COSH") { ctx -> FV.Num(cosh(ctx.arg(0).asDouble())) }
+        put("TANH") { ctx -> FV.Num(tanh(ctx.arg(0).asDouble())) }
+        put("DEGREES") { ctx -> FV.Num(Math.toDegrees(ctx.arg(0).asDouble())) }
+        put("RADIANS") { ctx -> FV.Num(Math.toRadians(ctx.arg(0).asDouble())) }
         put("RAND") { _ -> FV.Num(Math.random()) }
         put("RANDBETWEEN") { ctx ->
             val lo = ctx.arg(0).asDouble().toInt(); val hi = ctx.arg(1).asDouble().toInt()

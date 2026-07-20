@@ -1266,6 +1266,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var tableTapCandidateCell: Pair<Int, Int>? = null
     private var tableTapDownTime = 0L
     private var tableLongPressSelectOnly = false
+    // While actively typing a formula (text starting with "="), MainActivity flips this on so
+    // that tapping another cell inserts that cell's reference into the formula instead of
+    // switching to editing that cell — matches how Excel/Sheets formula entry works.
+    var formulaRefMode: Boolean = false
+    var onFormulaCellRefTap: ((Int, Int) -> Unit)? = null
     private var tableDragConfirmed = false
     // Dedicated move/rotate handles for the whole table — separate from cell selection/border-drag
     private var tableHandleMode = 0 // 0=none, 1=moving, 2=rotating
@@ -3378,6 +3383,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val activeForHandles = activeTableItem
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                if (formulaRefMode) {
+                    val ft = activeTableItem
+                    if (ft != null) {
+                        val cell = ft.hitTestCell(wx, wy)
+                        if (cell != null) onFormulaCellRefTap?.invoke(cell.first, cell.second)
+                        return // consume regardless of hit/miss — a stray tap shouldn't close/switch the table mid-formula
+                    }
+                }
                 // Dedicated move/rotate handles take priority over everything else — checked
                 // whenever a table is active at all, whether or not you're inside cell-editing.
                 if (activeForHandles != null) {
