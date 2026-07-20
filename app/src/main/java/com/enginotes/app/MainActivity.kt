@@ -129,6 +129,8 @@ class MainActivity : AppCompatActivity() {
     internal var pendingBold = false; internal var pendingItalic = false
     internal var pendingUnderline = false; internal var pendingHighlight: Int? = null
     internal var pendingFontFamily: String = "sans-serif"
+    private var lastRowEnterTime = 0L
+    private var lastRowEnterCell: Pair<Int, Int>? = null
     // These four are read/written across many separate function calls (showTextSelectionBox,
     // dismissTextSelectionBox, the shared context bar, etc.), so — unlike the functions that use
     // them — they can't move into TextEditingExtensions.kt as part of the split. An extension
@@ -713,6 +715,7 @@ class MainActivity : AppCompatActivity() {
         }
         drawingView.onTableCellEditRequest = { table, row, col, sx, sy -> showTableCellEditor(table, row, col, sx, sy) }
         drawingView.onFormulaCellRefTap = { row, col -> insertCellRefIntoFormula(row, col) }
+        drawingView.onFormulaRangeRefTap = { r1, c1, r2, c2 -> insertRangeRefIntoFormula(r1, c1, r2, c2) }
         drawingView.onTableCellEditorCloseRequest = { dismissCellEditor() }
         drawingView.onTableDeleteRequest = { table ->
             AlertDialog.Builder(this).setTitle("Delete table?").setMessage("This removes the whole table.")
@@ -4903,10 +4906,19 @@ class MainActivity : AppCompatActivity() {
     // reliably even though tapping the canvas to pick the cell may have already stolen focus
     // away from whichever text field the user was typing in.
     private fun insertCellRefIntoFormula(row: Int, col: Int) {
+        insertRefStringIntoFormula(TableItem.columnLabel(col) + (row + 1).toString())
+    }
+
+    private fun insertRangeRefIntoFormula(r1: Int, c1: Int, r2: Int, c2: Int) {
+        val a = TableItem.columnLabel(c1) + (r1 + 1).toString()
+        val b = TableItem.columnLabel(c2) + (r2 + 1).toString()
+        insertRefStringIntoFormula("$a:$b")
+    }
+
+    private fun insertRefStringIntoFormula(ref: String) {
         val et = activeCellEditText?.takeIf { it.text.toString().startsWith("=") }
             ?: formulaBarEditText?.takeIf { it.text.toString().startsWith("=") }
             ?: return
-        val ref = TableItem.columnLabel(col) + (row + 1).toString()
         val start = et.selectionStart.coerceAtLeast(0)
         val end = et.selectionEnd.coerceAtLeast(start)
         val cur = et.text.toString()
@@ -5061,8 +5073,23 @@ class MainActivity : AppCompatActivity() {
                         // row there's no cell below to open — just commit and leave this one
                         // selected instead of silently doing nothing (previously true was returned
                         // either way, so Enter on the last row just ate the keypress and went nowhere).
-                        if (row + 1 < table.rows) showTableCellEditor(table, row + 1, col, screenX, screenY)
-                        else dismissCellEditor(keepSelection = true)
+                        if (row + 1 < table.rows) {
+                            showTableCellEditor(table, row + 1, col, screenX, screenY)
+                        } else {
+                            // Double-Enter on the last row (same cell, within 600ms) adds a new
+                            // row and moves into it — matches "keep pressing Enter to keep adding
+                            // rows" from Excel/Sheets. A single Enter just commits and stays put.
+                            val now = System.currentTimeMillis()
+                            val isDoubleEnter = lastRowEnterCell == Pair(row, col) && (now - lastRowEnterTime) < 600L
+                            if (isDoubleEnter) {
+                                lastRowEnterTime = 0L; lastRowEnterCell = null
+                                drawingView.addTableRow(row)
+                                showTableCellEditor(table, row + 1, col, screenX, screenY)
+                            } else {
+                                lastRowEnterTime = now; lastRowEnterCell = Pair(row, col)
+                                dismissCellEditor(keepSelection = true)
+                            }
+                        }
                         true // consume — don't also insert a newline
                     }
                 } else false

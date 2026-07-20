@@ -1271,6 +1271,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // switching to editing that cell — matches how Excel/Sheets formula entry works.
     var formulaRefMode: Boolean = false
     var onFormulaCellRefTap: ((Int, Int) -> Unit)? = null
+    // Fired instead of onFormulaCellRefTap when a formula-mode touch was a drag across multiple
+    // cells rather than a single tap — e.g. sliding from B1 to B10 should insert "B1:B10", not
+    // just the cell you released on.
+    var onFormulaRangeRefTap: ((Int, Int, Int, Int) -> Unit)? = null
+    private var formulaRefDragStart: Pair<Int, Int>? = null
     // Fired whenever a tap outside the table means "stop editing this cell" — MainActivity's
     // EditText/formula bar overlays live outside DrawingView entirely, so there's no other way
     // for them to find out a tap-outside just happened.
@@ -3414,9 +3419,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val ft = activeTableItem
                     if (ft != null) {
                         val cell = ft.hitTestCell(wx, wy)
-                        if (cell != null) onFormulaCellRefTap?.invoke(cell.first, cell.second)
-                        return // consume regardless of hit/miss — a stray tap shouldn't close/switch the table mid-formula
+                        formulaRefDragStart = cell
+                        if (cell != null) { tableIsActive = true; tableSelStart = cell; tableSelEnd = null; invalidate() }
                     }
+                    return // consume regardless of hit/miss — a stray tap shouldn't close/switch the table mid-formula
                 }
                 // Dedicated move/rotate handles take priority over everything else — checked
                 // whenever a table is active at all, whether or not you're inside cell-editing.
@@ -3444,6 +3450,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 val table = activeTableItem
                 if (table != null) {
+                    val headerCol = table.hitTestHeaderCol(wx, wy, scaleFactor)
+                    if (headerCol >= 0) {
+                        tableIsActive = true; tableSelStart = Pair(0, headerCol); tableSelEnd = Pair(table.rows - 1, headerCol)
+                        tableTapCandidateCell = null; tableDragConfirmed = false
+                        invalidate(); return
+                    }
+                    val headerRow = table.hitTestHeaderRow(wx, wy, scaleFactor)
+                    if (headerRow >= 0) {
+                        tableIsActive = true; tableSelStart = Pair(headerRow, 0); tableSelEnd = Pair(headerRow, table.cols - 1)
+                        tableTapCandidateCell = null; tableDragConfirmed = false
+                        invalidate(); return
+                    }
                     if (tableIsActive) {
                         val rb = table.hitTestRowBorder(wx, wy, tol); val cb = table.hitTestColBorder(wx, wy, tol)
                         if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; tableDragOrigSizeAdjacent = table.rowHeights.getOrElse(rb + 1) { 60f }; return }
@@ -3497,6 +3515,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
             }
             MotionEvent.ACTION_MOVE -> {
+                if (formulaRefMode) {
+                    val start = formulaRefDragStart
+                    if (start != null) {
+                        val ft = activeTableItem
+                        val cell = ft?.hitTestCellClamped(wx, wy)
+                        if (cell != null) { tableSelEnd = if (cell == start) null else cell; invalidate() }
+                    }
+                    return
+                }
                 if (tableHandleMode == 1) {
                     val table = activeTableItem ?: return
                     table.x = tableOrigX + (wx - tableMoveStartWx); table.y = tableOrigY + (wy - tableMoveStartWy)
@@ -3591,6 +3618,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (tableDragConfirmed) extendTableSelection(wx, wy)
             }
             MotionEvent.ACTION_UP -> {
+                if (formulaRefMode) {
+                    val start = formulaRefDragStart
+                    formulaRefDragStart = null
+                    if (start != null) {
+                        val end = tableSelEnd
+                        if (end != null && end != start) onFormulaRangeRefTap?.invoke(start.first, start.second, end.first, end.second)
+                        else onFormulaCellRefTap?.invoke(start.first, start.second)
+                        tableSelStart = null; tableSelEnd = null; invalidate()
+                    }
+                    return
+                }
                 if (tableHandleMode != 0) { tableHandleMode = 0; markSpatialDirty(); return }
                 if (tableDragRowBorder >= 0 || tableDragColBorder >= 0 || tableDragOuterEdge >= 0) { tableDragRowBorder = -1; tableDragColBorder = -1; tableDragOuterEdge = -1; return }
                 if (tableLongPressSelectOnly) { tableLongPressSelectOnly = false; tableTapCandidateCell = null; tableDragConfirmed = false; invalidate(); return }

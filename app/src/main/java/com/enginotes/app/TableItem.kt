@@ -270,7 +270,7 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
             val layout = buildCellLayout(cell, wrapWidth)
             val ty = rect.top + 4f + (rect.height() - 8f - layout.height).coerceAtLeast(0f) / 2f
             val tx = when (cell.alignment) { 1 -> rect.left + (rect.width() - layout.width) / 2f; 2 -> rect.right - layout.width - 4f; else -> rect.left + 4f }
-            canvas.save(); canvas.translate(tx, ty); layout.draw(canvas); canvas.restore()
+            canvas.save(); canvas.clipRect(rect); canvas.translate(tx, ty); layout.draw(canvas); canvas.restore()
         }
         for (r in 0 until rows) for (c in 0 until cols) {
             val cell = getCellSafe(r, c); if (cell.mergedInto != null) continue
@@ -279,6 +279,29 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
             canvas.drawRect(rect, bp)
         }
         canvas.restore()
+    }
+
+    // Returns the column/row a tap landed on within the header strip drawn by drawHeaders() —
+    // only meaningful when showHeaders is on. scaleFactor must match what drawHeaders used, since
+    // the strip's screen-constant size is scale-dependent (see drawHeaders' own comment on this).
+    fun hitTestHeaderCol(wxIn: Float, wyIn: Float, scaleFactor: Float): Int {
+        if (!showHeaders) return -1
+        val local = toLocal(wxIn, wyIn); val wx = local[0]; val wy = local[1]
+        val barSize = (headerTextSize / scaleFactor) * 1.8f
+        if (wy < y - barSize || wy > y || wx < x || wx > x + totalWidth()) return -1
+        var cx = x
+        for (c in 0 until cols) { val w = colWidths.getOrElse(c) { 100f }; if (wx < cx + w) return c; cx += w }
+        return -1
+    }
+
+    fun hitTestHeaderRow(wxIn: Float, wyIn: Float, scaleFactor: Float): Int {
+        if (!showHeaders) return -1
+        val local = toLocal(wxIn, wyIn); val wx = local[0]; val wy = local[1]
+        val barSize = (headerTextSize / scaleFactor) * 1.8f
+        if (wx < x - barSize || wx > x || wy < y || wy > y + totalHeight()) return -1
+        var cy = y
+        for (r in 0 until rows) { val h = rowHeights.getOrElse(r) { 60f }; if (wy < cy + h) return r; cy += h }
+        return -1
     }
 
     fun drawHeaders(canvas: Canvas, scaleFactor: Float) {
