@@ -1271,6 +1271,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // switching to editing that cell — matches how Excel/Sheets formula entry works.
     var formulaRefMode: Boolean = false
     var onFormulaCellRefTap: ((Int, Int) -> Unit)? = null
+    // Fired whenever a tap outside the table means "stop editing this cell" — MainActivity's
+    // EditText/formula bar overlays live outside DrawingView entirely, so there's no other way
+    // for them to find out a tap-outside just happened.
+    var onTableCellEditorCloseRequest: (() -> Unit)? = null
+    private var lastOutsideTapTime = 0L
+    private var lastOutsideTapWx = 0f
+    private var lastOutsideTapWy = 0f
     private var tableDragConfirmed = false
     // Dedicated move/rotate handles for the whole table — separate from cell selection/border-drag
     private var tableHandleMode = 0 // 0=none, 1=moving, 2=rotating
@@ -3430,8 +3437,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                     val cell = table.hitTestCell(wx, wy)
                     if (cell == null) {
-                        if (tableIsActive) { currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT) }
-                        tableIsActive = false; tableSelStart = null; tableSelEnd = null; activeTableItem = null
+                        val now = System.currentTimeMillis()
+                        val isDoubleTap = (now - lastOutsideTapTime) < 350L && distance(wx, wy, lastOutsideTapWx, lastOutsideTapWy) < (30f / scaleFactor)
+                        lastOutsideTapTime = now; lastOutsideTapWx = wx; lastOutsideTapWy = wy
+                        val wasEditingCell = tableIsActive
+                        tableIsActive = false; tableSelStart = null; tableSelEnd = null
+                        if (isDoubleTap) {
+                            // Double tap outside: fully exit — table deselected, back to Select tool.
+                            currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT)
+                            activeTableItem = null
+                        }
+                        // Either way, if a cell was being edited, tell MainActivity to close its
+                        // EditText/formula bar overlays — those live outside this view entirely and
+                        // have no other way to find out a tap-outside just happened.
+                        if (wasEditingCell) onTableCellEditorCloseRequest?.invoke()
                         invalidate(); return
                     }
                     // Defer open-vs-range-select-drag until ACTION_MOVE/ACTION_UP decides — applies

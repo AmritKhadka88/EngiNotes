@@ -713,6 +713,7 @@ class MainActivity : AppCompatActivity() {
         }
         drawingView.onTableCellEditRequest = { table, row, col, sx, sy -> showTableCellEditor(table, row, col, sx, sy) }
         drawingView.onFormulaCellRefTap = { row, col -> insertCellRefIntoFormula(row, col) }
+        drawingView.onTableCellEditorCloseRequest = { dismissCellEditor() }
         drawingView.onTableActiveChanged = { table -> updateTableButton(table) }
         drawingView.onMultiSelectionChanged = { items ->
             runOnUiThread {
@@ -5051,8 +5052,12 @@ class MainActivity : AppCompatActivity() {
                     } else {
                         // Cell's text is already saved (the TextWatcher below writes to cell.text
                         // on every keystroke), so it's safe to just tear this editor down and open
-                        // the one below — same as tapping that cell directly would do.
+                        // the one below — same as tapping that cell directly would do. On the last
+                        // row there's no cell below to open — just commit and leave this one
+                        // selected instead of silently doing nothing (previously true was returned
+                        // either way, so Enter on the last row just ate the keypress and went nowhere).
                         if (row + 1 < table.rows) showTableCellEditor(table, row + 1, col, screenX, screenY)
+                        else dismissCellEditor(keepSelection = true)
                         true // consume — don't also insert a newline
                     }
                 } else false
