@@ -4871,7 +4871,7 @@ class MainActivity : AppCompatActivity() {
         animatePanelIn(scroll)
     }
 
-    internal fun dismissCellEditor() {
+    internal fun dismissCellEditor(keepSelection: Boolean = false) {
         val et=activeCellEditText?:return
         try{ canvasContainer.removeView(activeCellToolbar) }catch(e:Exception){}
         try{ canvasContainer.removeView(tableToolbarOverlay) }catch(e:Exception){}
@@ -4881,7 +4881,10 @@ class MainActivity : AppCompatActivity() {
         dismissFormulaBar()
         val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(et.windowToken,0)
-        drawingView.exitTableEditMode()
+        // exitTableEditMode() sets tableIsActive=false, which also turns off the cell-highlight
+        // overlay (see drawTableOverlay) — skip it when the caller wants the cell to still look
+        // selected after closing (e.g. pressing Enter in the formula bar).
+        if (!keepSelection) drawingView.exitTableEditMode()
         drawingView.onCanvasTransformed = null
         setBottomBarVisible(true)
         if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
@@ -4936,7 +4939,9 @@ class MainActivity : AppCompatActivity() {
             setText(cell.text); textSize = 14f; setPadding(dp(6), dp(4), dp(6), dp(4)); isSingleLine = true
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             imeOptions = EditorInfo.IME_ACTION_DONE
-            setOnEditorActionListener { _, actionId, _ -> if (actionId == EditorInfo.IME_ACTION_DONE) { clearFocus(); true } else false }
+            setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_DONE) { dismissCellEditor(keepSelection = true); true } else false
+            }
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun afterTextChanged(s: Editable?) {}
@@ -5002,6 +5007,7 @@ class MainActivity : AppCompatActivity() {
         // needed, so simplest fix is just hiding this row entirely while editing.
         findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
         val cell=table.cells[row][col]
+        if (table.showFormulaBar && !cell.formulaEnabled) { cell.formulaEnabled = true; table.recalcAllFormulas(); drawingView.invalidate() }
         val density = resources.displayMetrics.density
 
         fun cellScreenRect(): RectF {

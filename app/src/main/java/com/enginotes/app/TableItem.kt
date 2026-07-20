@@ -37,6 +37,11 @@ class TableCell(
     // ordinary (non-formula) cells, which just render `text` directly as before.
     var formulaCache: String = ""
     var formulaError: Boolean = false
+    // Set true the first time this specific cell is opened for editing while the table's
+    // showFormulaBar toggle is on. Deliberately per-cell, not just "table.showFormulaBar is on":
+    // otherwise turning formula mode on would retroactively start evaluating every pre-existing
+    // "=" in the table that was only ever meant as literal text, typed before the toggle existed.
+    var formulaEnabled: Boolean = false
 }
 
 class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
@@ -194,11 +199,15 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
 
     // Builds a StaticLayout for a cell's text wrapped to the given width - used both for drawing
     // and for measuring how tall the cell needs to be once text wraps.
+    // A cell's "=" only counts as a real formula when BOTH are true: the table's global toggle
+    // is on, AND this specific cell has been marked formulaEnabled (see that field's comment).
+    private fun TableCell.isFormulaActive(): Boolean = showFormulaBar && formulaEnabled && text.startsWith("=") && text.length > 1
+
     private fun buildCellLayout(cell: TableCell, wrapWidth: Int): StaticLayout {
         val w = wrapWidth.coerceAtLeast(20)
         // Formula cells (text starting with "=") show their computed result, not the raw source —
         // formulaCache is kept up to date by recalcAllFormulas() in FormulaEngine.kt.
-        val effectiveText = if (cell.text.startsWith("=") && cell.text.length > 1) cell.formulaCache else cell.text
+        val effectiveText = if (cell.isFormulaActive()) cell.formulaCache else cell.text
         val key = "$effectiveText|${cell.textColor}|${cell.textSize}|${cell.bold}|${cell.italic}|${cell.underline}|${cell.fontFamily}|$w"
         cell.cachedLayout?.let { if (cell.cachedLayoutKey == key) return it }
         val tp = TextPaint(); tp.color = if (cell.formulaError) Color.RED else cell.textColor; tp.textSize = cell.textSize; tp.isAntiAlias = true
@@ -224,7 +233,7 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
         val tp = TextPaint(); tp.textSize = cell.textSize; tp.isAntiAlias = true
         val style = when { cell.bold && cell.italic -> Typeface.BOLD_ITALIC; cell.bold -> Typeface.BOLD; cell.italic -> Typeface.ITALIC; else -> Typeface.NORMAL }
         tp.typeface = resolveTypeface(cell.fontFamily, style)
-        val effectiveText = if (cell.text.startsWith("=") && cell.text.length > 1) cell.formulaCache else cell.text
+        val effectiveText = if (cell.isFormulaActive()) cell.formulaCache else cell.text
         val longestLineWidth = (effectiveText.split("\n").maxOfOrNull { tp.measureText(it) } ?: 0f) + 16f
 
         val curColWidth = colWidths.getOrElse(col) { 100f }
@@ -346,7 +355,7 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
         sb.append("COLRESIZED\u0001${colManuallyResized.joinToString(",")}\n")
         for (r in 0 until rows) for (c in 0 until cols) {
             val cell = getCellSafe(r, c); val mi = cell.mergedInto
-            sb.append("CELL\u0001$r\u0001$c\u0001${cell.textColor}\u0001${cell.bgColor}\u0001${cell.textSize}\u0001${cell.borderColor}\u0001${cell.borderWidth}\u0001${cell.alignment}\u0001${mi?.first ?: -1}\u0001${mi?.second ?: -1}\u0001${cell.bold}\u0001${cell.italic}\u0001${cell.underline}\u0001${cell.fontFamily ?: ""}\u0001${cell.text.replace("\n", "\u0002")}\n")
+            sb.append("CELL\u0001$r\u0001$c\u0001${cell.textColor}\u0001${cell.bgColor}\u0001${cell.textSize}\u0001${cell.borderColor}\u0001${cell.borderWidth}\u0001${cell.alignment}\u0001${mi?.first ?: -1}\u0001${mi?.second ?: -1}\u0001${cell.bold}\u0001${cell.italic}\u0001${cell.underline}\u0001${cell.fontFamily ?: ""}\u0001${cell.text.replace("\n", "\u0002")}\u0001${cell.formulaEnabled}\n")
         }
         for ((key, span) in mergeSpans) sb.append("MERGE\u0001${key.first}\u0001${key.second}\u0001${span.rowSpan}\u0001${span.colSpan}\n")
         sb.append("TABLEEND\n")
@@ -412,6 +421,7 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
                                 cell.bold = p[11].toBoolean(); cell.italic = p[12].toBoolean(); cell.underline = p[13].toBoolean()
                                 cell.fontFamily = p[14].ifEmpty { null }
                                 cell.text = p[15].replace("\u0002", "\n")
+                                if (p.size >= 17) cell.formulaEnabled = p[16].toBoolean()
                             } else {
                                 cell.text = p[11].replace("\u0002", "\n")
                             }

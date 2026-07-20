@@ -941,14 +941,15 @@ object FormulaEngine {
 
     // Live preview for the formula bar: evaluates against the table's CURRENT cached values
     // (doesn't trigger a full dependency-graph recalc — cheap enough to call on every keystroke).
-    // Returns the raw text unchanged if it isn't a formula, so it's safe to call unconditionally.
+    // Returns the raw text unchanged if it isn't an ACTIVE formula (global toggle off, or this
+    // particular cell hasn't been formula-enabled — see TableCell.formulaEnabled).
     fun previewFormula(rawText: String, table: TableItem): String {
-        if (!rawText.startsWith("=") || rawText.length <= 1) return rawText
+        if (!table.showFormulaBar || !rawText.startsWith("=") || rawText.length <= 1) return rawText
         val result = evalFormula(rawText.substring(1)) { r, c ->
             if (r < 0 || c < 0 || r >= table.rows || c >= table.cols) FV.Err("#REF!")
             else {
                 val cell = table.getCellPublic(r, c)
-                if (cell.text.startsWith("=") && cell.text.length > 1) parseLiteral(cell.formulaCache) else parseLiteral(cell.text)
+                if (table.showFormulaBar && cell.formulaEnabled && cell.text.startsWith("=") && cell.text.length > 1) parseLiteral(cell.formulaCache) else parseLiteral(cell.text)
             }
         }
         return render(result)
@@ -971,7 +972,7 @@ object FormulaEngine {
             visiting.add(k)
             val cell = table.getCellPublic(r, c)
             val raw = cell.text
-            val result: FV = if (raw.startsWith("=") && raw.length > 1) {
+            val result: FV = if (table.showFormulaBar && cell.formulaEnabled && raw.startsWith("=") && raw.length > 1) {
                 try { evalFormula(raw.substring(1)) { rr, cc -> resolve(rr, cc) } } catch (e: Exception) { FV.Err("#ERROR!") }
             } else parseLiteral(raw)
             visiting.remove(k)
