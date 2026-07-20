@@ -1275,6 +1275,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // EditText/formula bar overlays live outside DrawingView entirely, so there's no other way
     // for them to find out a tap-outside just happened.
     var onTableCellEditorCloseRequest: (() -> Unit)? = null
+    var onTableDeleteRequest: ((TableItem) -> Unit)? = null
     private var lastOutsideTapTime = 0L
     private var lastOutsideTapWx = 0f
     private var lastOutsideTapWy = 0f
@@ -3347,24 +3348,39 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Single source of truth for where the table's move/rotate handles sit, in world space,
     // already accounting for the table's current rotation — used identically by both drawing
     // and hit-testing so they can never drift apart.
-    private fun tableHandlePositions(table: TableItem): Pair<FloatArray, FloatArray> {
-        val bounds = getBounds(table) ?: return Pair(floatArrayOf(table.x, table.y), floatArrayOf(table.x, table.y))
+    private fun tableHandlePositions(table: TableItem): Triple<FloatArray, FloatArray, FloatArray> {
+        val bounds = getBounds(table) ?: return Triple(floatArrayOf(table.x, table.y), floatArrayOf(table.x, table.y), floatArrayOf(table.x, table.y))
         val cx = (bounds[0] + bounds[2]) / 2f; val cy = (bounds[1] + bounds[3]) / 2f
         val hr = 26f / scaleFactor
         val moveLocalX = bounds[0] - hr * 1.8f; val moveLocalY = bounds[1] - hr * 1.8f
         val rotLocalX = cx; val rotLocalY = bounds[1] - 60f / scaleFactor
+        val delLocalX = bounds[2] + hr * 1.8f; val delLocalY = bounds[1] - hr * 1.8f
         val rad = Math.toRadians(table.rotation.toDouble())
         val cosT = Math.cos(rad).toFloat(); val sinT = Math.sin(rad).toFloat()
         fun rotateAround(px: Float, py: Float): FloatArray {
             val dx = px - cx; val dy = py - cy
             return floatArrayOf(cx + dx * cosT - dy * sinT, cy + dx * sinT + dy * cosT)
         }
-        return Pair(rotateAround(moveLocalX, moveLocalY), rotateAround(rotLocalX, rotLocalY))
+        return Triple(
+            clampHandleToScreen(rotateAround(moveLocalX, moveLocalY)),
+            clampHandleToScreen(rotateAround(rotLocalX, rotLocalY)),
+            clampHandleToScreen(rotateAround(delLocalX, delLocalY))
+        )
+    }
+
+    // If a handle's natural position would land off (or right at the edge of) the visible
+    // screen — e.g. the table is bigger than the viewport, so its corner is scrolled out of
+    // view — pull it back onto screen instead, so it's always reachable regardless of zoom/pan.
+    private fun clampHandleToScreen(worldPos: FloatArray): FloatArray {
+        val margin = 40f
+        val sx = worldToScreenX(worldPos[0]).coerceIn(margin, (width - margin).coerceAtLeast(margin))
+        val sy = worldToScreenY(worldPos[1]).coerceIn(margin, (height - margin).coerceAtLeast(margin))
+        return floatArrayOf(screenToWorldX(sx), screenToWorldY(sy))
     }
 
     private fun drawTableHandles(canvas: Canvas, table: TableItem) {
         val bounds = getBounds(table) ?: return
-        val (movePos, rotPos) = tableHandlePositions(table)
+        val (movePos, rotPos, delPos) = tableHandlePositions(table)
         val hr = 26f / scaleFactor
         val cx = (bounds[0] + bounds[2]) / 2f; val cy = (bounds[1] + bounds[3]) / 2f
         canvas.save(); canvas.rotate(table.rotation, cx, cy)
@@ -3382,6 +3398,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         canvas.drawCircle(rotPos[0], rotPos[1], hr, rotFill); canvas.drawCircle(rotPos[0], rotPos[1], hr, whiteStroke)
         val rp = Paint(); rp.color = Color.WHITE; rp.textSize = hr * 1.2f; rp.textAlign = Paint.Align.CENTER; rp.isAntiAlias = true
         canvas.drawText("\u21bb", rotPos[0], rotPos[1] + hr * 0.4f, rp)
+        val delFill = Paint(); delFill.style = Paint.Style.FILL; delFill.color = Color.parseColor("#E53935"); delFill.isAntiAlias = true
+        canvas.drawCircle(delPos[0], delPos[1], hr, delFill); canvas.drawCircle(delPos[0], delPos[1], hr, whiteStroke)
+        val dp = Paint(); dp.color = Color.WHITE; dp.textSize = hr * 1.1f; dp.textAlign = Paint.Align.CENTER; dp.isAntiAlias = true
+        canvas.drawText("\u2715", delPos[0], delPos[1] + hr * 0.35f, dp)
     }
 
     private fun handleTable(event: MotionEvent) {
@@ -3401,7 +3421,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // Dedicated move/rotate handles take priority over everything else — checked
                 // whenever a table is active at all, whether or not you're inside cell-editing.
                 if (activeForHandles != null) {
-                    val (movePos, rotPos) = tableHandlePositions(activeForHandles)
+                    val (movePos, rotPos, delPos) = tableHandlePositions(activeForHandles)
                     val hitR = 30f / scaleFactor
                     if (distance(wx, wy, movePos[0], movePos[1]) <= hitR) {
                         tableHandleMode = 1; tableMoveStartWx = wx; tableMoveStartWy = wy
@@ -3415,6 +3435,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         tableHandleMode = 2
                         tableRotateStartAngleDeg = Math.toDegrees(kotlin.math.atan2((wy - cy).toDouble(), (wx - cx).toDouble())).toFloat()
                         tableRotateStartRotation = activeForHandles.rotation
+                        return
+                    }
+                    if (distance(wx, wy, delPos[0], delPos[1]) <= hitR) {
+                        onTableDeleteRequest?.invoke(activeForHandles)
                         return
                     }
                 }
@@ -3437,6 +3461,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                     val cell = table.hitTestCell(wx, wy)
                     if (cell == null) {
+                        // Clear stale tap-candidate state from any previous successful cell tap —
+                        // without this, THIS tap's own ACTION_UP would still see the old
+                        // tableTapCandidateCell and silently reopen that previous cell's editor,
+                        // which is what made "double tap outside" (and even a clean single tap
+                        // outside) behave inconsistently: the first tap's DOWN correctly closed
+                        // things, but its own UP immediately reopened the last-edited cell.
+                        tableTapCandidateCell = null; tableDragConfirmed = false
                         val now = System.currentTimeMillis()
                         val isDoubleTap = (now - lastOutsideTapTime) < 350L && distance(wx, wy, lastOutsideTapWx, lastOutsideTapWy) < (30f / scaleFactor)
                         lastOutsideTapTime = now; lastOutsideTapWx = wx; lastOutsideTapWy = wy

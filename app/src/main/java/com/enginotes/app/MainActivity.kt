@@ -714,6 +714,11 @@ class MainActivity : AppCompatActivity() {
         drawingView.onTableCellEditRequest = { table, row, col, sx, sy -> showTableCellEditor(table, row, col, sx, sy) }
         drawingView.onFormulaCellRefTap = { row, col -> insertCellRefIntoFormula(row, col) }
         drawingView.onTableCellEditorCloseRequest = { dismissCellEditor() }
+        drawingView.onTableDeleteRequest = { table ->
+            AlertDialog.Builder(this).setTitle("Delete table?").setMessage("This removes the whole table.")
+                .setPositiveButton("Delete") { _, _ -> dismissCellEditor(); drawingView.deleteAnyItem(table) }
+                .setNegativeButton("Cancel", null).show()
+        }
         drawingView.onTableActiveChanged = { table -> updateTableButton(table) }
         drawingView.onMultiSelectionChanged = { items ->
             runOnUiThread {
@@ -4952,7 +4957,7 @@ class MainActivity : AppCompatActivity() {
                     val c = t.getCellPublic(formulaBarRow, formulaBarCol)
                     c.text = s?.toString() ?: ""
                     t.recalcAllFormulas(); t.recalcCellSize(formulaBarRow, formulaBarCol)
-                    drawingView.formulaRefMode = c.text.startsWith("=")
+                    drawingView.formulaRefMode = t.showFormulaBar && c.text.startsWith("=")
                     syncingFormulaText = true
                     activeCellEditText?.let { if (it.text.toString() != c.text) it.setText(c.text) }
                     syncingFormulaText = false
@@ -5064,7 +5069,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         applyTypefaceToEt(et)
-        drawingView.formulaRefMode = cell.text.startsWith("=")
+        drawingView.formulaRefMode = table.showFormulaBar && cell.text.startsWith("=")
         et.addTextChangedListener(object:TextWatcher{
             override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
             override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){
@@ -5075,7 +5080,7 @@ class MainActivity : AppCompatActivity() {
                 table.recalcCellSize(row, col)
                 drawingView.invalidate()
                 repositionToCellFn(et)
-                drawingView.formulaRefMode = cell.text.startsWith("=")
+                drawingView.formulaRefMode = table.showFormulaBar && cell.text.startsWith("=")
                 if (!syncingFormulaText && formulaBarTable === table && formulaBarRow == row && formulaBarCol == col) {
                     syncingFormulaText = true
                     formulaBarEditText?.let { if (it.text.toString() != cell.text) it.setText(cell.text) }
