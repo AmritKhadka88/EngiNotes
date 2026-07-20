@@ -2697,16 +2697,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
 
         canvas.save(); canvas.translate(item.x, topY)
-        // Rotate around the SAME center that getBounds() reports for the selection box, not
-        // just this item's raw content height. getBounds() pads short/single-line text up to
-        // a minimum height of item.size * 1.2f so the box never gets absurdly thin — but this
-        // rotate() used to pivot on the raw, unpadded contentH. When the two disagreed, the
-        // box and the glyphs rotated around different centers, so the gap between them grew
-        // on one side and shrank on the other instead of staying even. Mirroring the same
-        // coerceAtLeast here keeps both pivots identical.
-        val boundsH = contentH.coerceAtLeast(item.size * 1.2f)
-        val pivotYLocal = contentH - boundsH / 2f
-        canvas.rotate(item.rotation, contentW / 2f, pivotYLocal); layout.draw(canvas); canvas.restore()
+        canvas.rotate(item.rotation, contentW / 2f, contentH / 2f); layout.draw(canvas); canvas.restore()
     }
 
     private fun bboxHandlePositions(bounds: FloatArray): List<Pair<HandleType, Pair<Float, Float>>> {
@@ -2842,10 +2833,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         val item = selectedItem ?: return
         if (item is TextItem) {
-            val tp = android.text.TextPaint(); tp.textSize = item.size
-            try { tp.typeface = typefaceFromFamily(item.fontFamily) } catch (e: Exception) {}
-            val wrapW = textWrapWidth(item)
-            val layout = android.text.StaticLayout.Builder.obtain(item.text, 0, item.text.length, tp, wrapW).setIncludePad(true).build()
+            // Was rebuilding its own plain StaticLayout here (no spans, separate TextPaint)
+            // instead of reusing getOrBuildLayout() — the exact layout drawTextItem() actually
+            // renders with. Two independently-built layouts can silently differ in width/height
+            // (e.g. any bold/italic/color span here got dropped, since this passed item.text
+            // directly instead of the spannable), so the box rotated around a different pivot
+            // than the glyphs did — the box and text visibly drifted apart when rotated. Reusing
+            // the same cached layout guarantees the box and the glyphs always agree.
+            val layout = getOrBuildLayout(item)
             val contentW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
             val contentH = layout.height.toFloat()
             canvas.save()
