@@ -32,6 +32,11 @@ class TableCell(
     // rendered layout has changed.
     @Volatile var cachedLayout: StaticLayout? = null
     var cachedLayoutKey: String = ""
+    // Populated by FormulaEngine.kt's TableItem.recalcAllFormulas() whenever text starts with
+    // "=" — draw() shows this computed value instead of the raw formula source. Left blank for
+    // ordinary (non-formula) cells, which just render `text` directly as before.
+    var formulaCache: String = ""
+    var formulaError: Boolean = false
 }
 
 class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
@@ -44,6 +49,9 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
     // Screen-space pt size for the A/B/C + 1/2/3 header labels. Adjustable via +/- in Table
     // Properties. Was hardcoded at 12f before, which read as basically invisible on a phone.
     var headerTextSize: Float = 22f
+    // Toggled from Table Properties. Shows the fx formula bar above the table when a cell is
+    // selected, displaying (and letting you edit) that cell's raw formula source.
+    var showFormulaBar: Boolean = false
 
     // Column auto-grows up to this width as the user types; beyond it, text wraps to new lines
     // instead of pushing the column wider. Merged cells are exempt (they can grow freely).
@@ -188,12 +196,15 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
     // and for measuring how tall the cell needs to be once text wraps.
     private fun buildCellLayout(cell: TableCell, wrapWidth: Int): StaticLayout {
         val w = wrapWidth.coerceAtLeast(20)
-        val key = "${cell.text}|${cell.textColor}|${cell.textSize}|${cell.bold}|${cell.italic}|${cell.underline}|${cell.fontFamily}|$w"
+        // Formula cells (text starting with "=") show their computed result, not the raw source —
+        // formulaCache is kept up to date by recalcAllFormulas() in FormulaEngine.kt.
+        val effectiveText = if (cell.text.startsWith("=") && cell.text.length > 1) cell.formulaCache else cell.text
+        val key = "$effectiveText|${cell.textColor}|${cell.textSize}|${cell.bold}|${cell.italic}|${cell.underline}|${cell.fontFamily}|$w"
         cell.cachedLayout?.let { if (cell.cachedLayoutKey == key) return it }
-        val tp = TextPaint(); tp.color = cell.textColor; tp.textSize = cell.textSize; tp.isAntiAlias = true
+        val tp = TextPaint(); tp.color = if (cell.formulaError) Color.RED else cell.textColor; tp.textSize = cell.textSize; tp.isAntiAlias = true
         val style = when { cell.bold && cell.italic -> Typeface.BOLD_ITALIC; cell.bold -> Typeface.BOLD; cell.italic -> Typeface.ITALIC; else -> Typeface.NORMAL }
         tp.typeface = resolveTypeface(cell.fontFamily, style)
-        val text = if (cell.text.isEmpty()) " " else cell.text
+        val text = if (effectiveText.isEmpty()) " " else effectiveText
         val cs: CharSequence = if (cell.underline) SpannableString(text).apply { setSpan(UnderlineSpan(), 0, text.length, 0) } else text
         val layout = StaticLayout.Builder.obtain(cs, 0, cs.length, tp, w).setIncludePad(false).build()
         cell.cachedLayout = layout; cell.cachedLayoutKey = key
@@ -213,7 +224,8 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
         val tp = TextPaint(); tp.textSize = cell.textSize; tp.isAntiAlias = true
         val style = when { cell.bold && cell.italic -> Typeface.BOLD_ITALIC; cell.bold -> Typeface.BOLD; cell.italic -> Typeface.ITALIC; else -> Typeface.NORMAL }
         tp.typeface = resolveTypeface(cell.fontFamily, style)
-        val longestLineWidth = (cell.text.split("\n").maxOfOrNull { tp.measureText(it) } ?: 0f) + 16f
+        val effectiveText = if (cell.text.startsWith("=") && cell.text.length > 1) cell.formulaCache else cell.text
+        val longestLineWidth = (effectiveText.split("\n").maxOfOrNull { tp.measureText(it) } ?: 0f) + 16f
 
         val curColWidth = colWidths.getOrElse(col) { 100f }
         val manuallyResized = col < colManuallyResized.size && colManuallyResized[col]
@@ -328,7 +340,7 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
 
     fun serialize(): String {
         val sb = StringBuilder()
-        sb.append("TABLE\u0001$x\u0001$y\u0001$rotation\u0001$rows\u0001$cols\u0001$showHeaders\u0001$headerTextSize\n")
+        sb.append("TABLE\u0001$x\u0001$y\u0001$rotation\u0001$rows\u0001$cols\u0001$showHeaders\u0001$headerTextSize\u0001$showFormulaBar\n")
         sb.append("ROWHEIGHTS\u0001${rowHeights.joinToString(",")}\n")
         sb.append("COLWIDTHS\u0001${colWidths.joinToString(",")}\n")
         sb.append("COLRESIZED\u0001${colManuallyResized.joinToString(",")}\n")
@@ -375,6 +387,7 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
             item.rows = header[4].toIntOrNull() ?: 3; item.cols = header[5].toIntOrNull() ?: 3
             if (header.size >= 7) item.showHeaders = header[6].toBoolean()
             if (header.size >= 8) item.headerTextSize = header[7].toFloatOrNull() ?: 22f
+            if (header.size >= 9) item.showFormulaBar = header[8].toBoolean()
             var idx = startIdx + 1
             while (idx < lines.size && !lines[idx].startsWith("TABLEEND")) {
                 val line = lines[idx]

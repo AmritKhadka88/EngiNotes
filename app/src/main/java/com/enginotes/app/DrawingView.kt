@@ -6962,7 +6962,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val tableLines = mutableListOf<String>(); var j = i
                         while (j < lines.size && !lines[j].startsWith("TABLEEND")) { tableLines.add(lines[j]); j++ }
                         val (tableItem, _) = TableItem.deserialize(tableLines, 0)
-                        if (tableItem != null) actions.add(tableItem); i = j + 1
+                        if (tableItem != null) { tableItem.recalcAllFormulas(); actions.add(tableItem) }; i = j + 1
                     }
                     line.startsWith("AUDIO\u0001") -> {
                         val p = line.split("\u0001")

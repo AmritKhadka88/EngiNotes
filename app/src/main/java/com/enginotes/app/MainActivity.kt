@@ -170,6 +170,10 @@ class MainActivity : AppCompatActivity() {
     private var activeCellEditText: EditText? = null
     private var activeCellToolbar: View? = null
     private var tableToolbarOverlay: View? = null
+    private var formulaBarView: View? = null
+    private var formulaBarTable: TableItem? = null
+    private var formulaBarRow = 0
+    private var formulaBarCol = 0
 
     private var isRecording = false
     private var recordingFile: File? = null
@@ -4761,6 +4765,17 @@ class MainActivity : AppCompatActivity() {
         rulerSizeRow.addView(stepBtn("+", 2f))
         container.addView(rulerSizeRow)
 
+        // Formula bar toggle — shows an fx row above the table with the selected cell's raw
+        // formula, editable there instead of only in-cell. All the actual formula logic lives
+        // in FormulaEngine.kt; this is just flipping the flag it reads and refreshing the bar.
+        val fxRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(2), 0, dp(4)) }
+        fxRow.addView(TextView(this).apply { text = "Show formula bar (fx)"; textSize = 13f; setTextColor(Color.parseColor("#2A2A2A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+        fxRow.addView(android.widget.CheckBox(this).apply {
+            isChecked = table.showFormulaBar
+            setOnCheckedChangeListener { _, v -> table.showFormulaBar = v; if (v) showFormulaBarFor(table, row, col) else dismissFormulaBar() }
+        })
+        container.addView(fxRow)
+
         lbl("Text Style")
         val styleRow=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setPadding(0,dp(4),0,dp(4)) }
         fun styleBtn(label:String, pressed:Boolean, action:()->Unit): Button = Button(this).apply{
@@ -4859,6 +4874,7 @@ class MainActivity : AppCompatActivity() {
         try{ canvasContainer.removeView(tableToolbarOverlay) }catch(e:Exception){}
         try{ canvasContainer.removeView(et) }catch(e:Exception){}
         activeCellEditText=null; activeCellToolbar=null; tableToolbarOverlay=null
+        dismissFormulaBar()
         val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(et.windowToken,0)
         drawingView.exitTableEditMode()
@@ -4867,6 +4883,54 @@ class MainActivity : AppCompatActivity() {
         if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
             findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
         }
+    }
+
+    private fun dismissFormulaBar() {
+        formulaBarView?.let { try { canvasContainer.removeView(it) } catch (e: Exception) {} }
+        formulaBarView = null; formulaBarTable = null
+    }
+
+    // Thin fx row above the table showing the selected cell's raw formula source, editable
+    // there instead of only in-cell. Kept deliberately simple — no live per-keystroke sync back
+    // to the in-place cell EditText, just commits to the cell on Done/focus-loss like a normal
+    // text field. All the actual evaluation happens in FormulaEngine.kt.
+    internal fun showFormulaBarFor(table: TableItem, row: Int, col: Int) {
+        dismissFormulaBar()
+        if (!table.showFormulaBar) return
+        formulaBarTable = table; formulaBarRow = row; formulaBarCol = col
+        val cell = table.getCellPublic(row, col)
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(Color.WHITE); elevation = dp(8).toFloat(); setPadding(dp(10), dp(6), dp(10), dp(6))
+        }
+        bar.addView(TextView(this).apply {
+            text = "fx"; textSize = 14f; setTypeface(null, Typeface.ITALIC); setTextColor(Color.parseColor("#4527A0")); setPadding(0, 0, dp(10), 0)
+        })
+        val et = EditText(this).apply {
+            setText(cell.text); textSize = 14f; setPadding(dp(6), dp(4), dp(6), dp(4)); isSingleLine = true
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            imeOptions = EditorInfo.IME_ACTION_DONE
+            setOnEditorActionListener { _, actionId, _ -> if (actionId == EditorInfo.IME_ACTION_DONE) { commitFormulaBarEdit(this); true } else false }
+            setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) commitFormulaBarEdit(this) }
+        }
+        bar.addView(et)
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        lp.gravity = Gravity.TOP
+        lp.topMargin = findViewById<View?>(R.id.topBarContainer)?.height ?: 0
+        canvasContainer.addView(bar, lp)
+        formulaBarView = bar
+    }
+
+    private fun commitFormulaBarEdit(et: EditText) {
+        val table = formulaBarTable ?: return
+        val cell = table.getCellPublic(formulaBarRow, formulaBarCol)
+        val newText = et.text.toString()
+        if (newText == cell.text) return
+        cell.text = newText
+        table.recalcAllFormulas()
+        table.recalcCellSize(formulaBarRow, formulaBarCol)
+        activeCellEditText?.setText(cell.text) // keep the in-place cell editor showing the same thing, if still open
+        drawingView.invalidate()
     }
 
     // True in-place cell editor: the EditText is positioned and sized to sit exactly on top of
@@ -4950,6 +5014,7 @@ class MainActivity : AppCompatActivity() {
             override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
             override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){
                 cell.text=s?.toString()?:""
+                table.recalcAllFormulas()
                 // Auto-grow column width / row height live as the user types, unless the
                 // column was manually resized or this is a merged cell.
                 table.recalcCellSize(row, col)
@@ -4965,6 +5030,7 @@ class MainActivity : AppCompatActivity() {
         initParams.leftMargin = initialRect.left.toInt(); initParams.topMargin = initialRect.top.toInt()
         et.textSize = (cell.textSize * drawingView.getScaleFactor() / density).coerceAtLeast(8f)
         canvasContainer.addView(et, initParams)
+        showFormulaBarFor(table, row, col)
 
         // Floating actions strip, positioned just above the whole TABLE (not the cell)
         val actionsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(6).toFloat(); setPadding(dp(4),dp(4),dp(4),dp(4)) }
