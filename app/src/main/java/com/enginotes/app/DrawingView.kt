@@ -1176,6 +1176,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var paperType: PaperType = PaperType.GRID
     var paperColor: Int = Color.parseColor("#FFFDE7")
     var defaultTextSize: Float = 50f * 1.333f
+    // Sticky defaults for BRAND NEW table cells — same "must not change unless I rechange it"
+    // requirement as text. Updated by the Table Properties formatting controls (B/I/U, font,
+    // text color) whenever applied to a selection; addTable() uses these for new cells instead
+    // of TableCell's hardcoded class defaults.
+    var defaultCellTextColor: Int = Color.BLACK
+    var defaultCellFontFamily: String? = null
+    var defaultCellBold: Boolean = false
+    var defaultCellItalic: Boolean = false
+    var defaultCellUnderline: Boolean = false
 
     var canvasMode: CanvasMode = CanvasMode.CONVENIENT
     var paperSize: PaperSizeOption = PaperSizeOption.A4
@@ -6835,7 +6844,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val cellW = (screenWidth / scaleFactor / 2f) / cols; val cellH = 60f
         table.rowHeights.clear(); repeat(rows) { table.rowHeights.add(cellH) }
         table.colWidths.clear(); repeat(cols) { table.colWidths.add(cellW) }
-        for (r in 0 until rows) for (c in 0 until cols) table.getCellPublic(r, c).textSize = defaultTextSize
+        for (r in 0 until rows) for (c in 0 until cols) {
+            val cell = table.getCellPublic(r, c)
+            cell.textSize = defaultTextSize
+            cell.textColor = defaultCellTextColor; cell.fontFamily = defaultCellFontFamily
+            cell.bold = defaultCellBold; cell.italic = defaultCellItalic; cell.underline = defaultCellUnderline
+        }
         actions.add(table); redoStack.clear(); activeTableItem = table; markSpatialDirty(); invalidate()
     }
 

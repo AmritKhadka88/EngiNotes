@@ -129,8 +129,6 @@ class MainActivity : AppCompatActivity() {
     internal var pendingBold = false; internal var pendingItalic = false
     internal var pendingUnderline = false; internal var pendingHighlight: Int? = null
     internal var pendingFontFamily: String = "sans-serif"
-    private var lastRowEnterTime = 0L
-    private var lastRowEnterCell: Pair<Int, Int>? = null
     // These four are read/written across many separate function calls (showTextSelectionBox,
     // dismissTextSelectionBox, the shared context bar, etc.), so — unlike the functions that use
     // them — they can't move into TextEditingExtensions.kt as part of the split. An extension
@@ -1766,7 +1764,7 @@ class MainActivity : AppCompatActivity() {
                     rebuildContextBar()
                 }
                 divider()
-                sizeButton(drawingView.currentStrokeWidth, 60) { drawingView.currentStrokeWidth = it }
+                sizeButton(drawingView.brushThickness, 60) { drawingView.brushThickness = it }
                 opacityButton(drawingView.brushOpacity) { drawingView.brushOpacity = it; drawingView.invalidate() }
                 divider()
                 eightColors(drawingView.currentColor) { c -> drawingView.currentColor = c }
@@ -4798,9 +4796,9 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(4),dp(6),dp(4),dp(6)); minWidth=0; minimumWidth=0
             setOnClickListener{ action(); dismissTablePropertiesPanel(); showTablePropertiesDialog(table) } // rebuild to reflect new pressed state
         }
-        styleRow.addView(styleBtn("B", cell.bold){ val v=!cell.bold; applyToSel{it.bold=v} })
-        styleRow.addView(styleBtn("I", cell.italic){ val v=!cell.italic; applyToSel{it.italic=v} })
-        styleRow.addView(styleBtn("U", cell.underline){ val v=!cell.underline; applyToSel{it.underline=v} })
+        styleRow.addView(styleBtn("B", cell.bold){ val v=!cell.bold; applyToSel{it.bold=v}; drawingView.defaultCellBold=v })
+        styleRow.addView(styleBtn("I", cell.italic){ val v=!cell.italic; applyToSel{it.italic=v}; drawingView.defaultCellItalic=v })
+        styleRow.addView(styleBtn("U", cell.underline){ val v=!cell.underline; applyToSel{it.underline=v}; drawingView.defaultCellUnderline=v })
         container.addView(styleRow)
         Button(this).apply{ text="Fonts"; textSize=13f; setBackgroundColor(Color.parseColor("#EDE7F6")); setTextColor(Color.parseColor("#4527A0"))
             setOnClickListener{ loadCustomFonts()
@@ -4808,7 +4806,7 @@ class MainActivity : AppCompatActivity() {
                 lateinit var fdlg: AlertDialog
                 fun row(label:String, family:String, tf:android.graphics.Typeface?){ fc.addView(TextView(this@MainActivity).apply{
                     text=label; textSize=17f; setPadding(dp(20),dp(12),dp(20),dp(12)); if(tf!=null) typeface=tf
-                    setOnClickListener{ applyToSel{it.fontFamily=family}; fdlg.dismiss(); dismissTablePropertiesPanel(); showTablePropertiesDialog(table) }
+                    setOnClickListener{ applyToSel{it.fontFamily=family}; drawingView.defaultCellFontFamily=family; fdlg.dismiss(); dismissTablePropertiesPanel(); showTablePropertiesDialog(table) }
                 }) }
                 for((label,family) in availableFonts) row(label, family, try{Typeface.create(family,Typeface.NORMAL)}catch(e:Exception){null})
                 for((label,path) in customFonts) row(label, path, try{android.graphics.Typeface.createFromFile(path)}catch(e:Exception){null})
@@ -4828,7 +4826,7 @@ class MainActivity : AppCompatActivity() {
 
         val div2=View(this); div2.layoutParams=LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,dp(1)).also{it.setMargins(0,dp(12),0,dp(4))}; div2.setBackgroundColor(Color.LTGRAY); container.addView(div2)
 
-        lbl("Text Color"); val tcBtn=Button(this).apply{ text="Pick Text Color"; textSize=13f; setBackgroundColor(cell.textColor); setTextColor(Color.WHITE); setOnClickListener{ showColorGridDialog{ c->applyToSel{it.textColor=c}; setBackgroundColor(c) } } }; container.addView(tcBtn)
+        lbl("Text Color"); val tcBtn=Button(this).apply{ text="Pick Text Color"; textSize=13f; setBackgroundColor(cell.textColor); setTextColor(Color.WHITE); setOnClickListener{ showColorGridDialog{ c->applyToSel{it.textColor=c}; drawingView.defaultCellTextColor=c; setBackgroundColor(c) } } }; container.addView(tcBtn)
         lbl("Background Color"); val bgBtn=Button(this).apply{ text="Pick Background"; textSize=13f; setBackgroundColor(cell.bgColor); setOnClickListener{ showColorGridDialog{ c->applyToSel{it.bgColor=c}; setBackgroundColor(c) } } }; container.addView(bgBtn)
         lbl("Border Color"); val bcBtn=Button(this).apply{ text="Pick Border Color"; textSize=13f; setBackgroundColor(cell.borderColor); setTextColor(Color.WHITE); setOnClickListener{ showColorGridDialog{ c->applyToSel{it.borderColor=c}; setBackgroundColor(c) } } }; container.addView(bcBtn)
 
@@ -5073,23 +5071,8 @@ class MainActivity : AppCompatActivity() {
                         // row there's no cell below to open — just commit and leave this one
                         // selected instead of silently doing nothing (previously true was returned
                         // either way, so Enter on the last row just ate the keypress and went nowhere).
-                        if (row + 1 < table.rows) {
-                            showTableCellEditor(table, row + 1, col, screenX, screenY)
-                        } else {
-                            // Double-Enter on the last row (same cell, within 600ms) adds a new
-                            // row and moves into it — matches "keep pressing Enter to keep adding
-                            // rows" from Excel/Sheets. A single Enter just commits and stays put.
-                            val now = System.currentTimeMillis()
-                            val isDoubleEnter = lastRowEnterCell == Pair(row, col) && (now - lastRowEnterTime) < 600L
-                            if (isDoubleEnter) {
-                                lastRowEnterTime = 0L; lastRowEnterCell = null
-                                drawingView.addTableRow(row)
-                                showTableCellEditor(table, row + 1, col, screenX, screenY)
-                            } else {
-                                lastRowEnterTime = now; lastRowEnterCell = Pair(row, col)
-                                dismissCellEditor(keepSelection = true)
-                            }
-                        }
+                        if (row + 1 < table.rows) showTableCellEditor(table, row + 1, col, screenX, screenY)
+                        else dismissCellEditor(keepSelection = true)
                         true // consume — don't also insert a newline
                     }
                 } else false
