@@ -174,6 +174,8 @@ class MainActivity : AppCompatActivity() {
     private var formulaBarTable: TableItem? = null
     private var formulaBarRow = 0
     private var formulaBarCol = 0
+    private var formulaBarEditText: EditText? = null
+    private var syncingFormulaText = false
 
     private var isRecording = false
     private var recordingFile: File? = null
@@ -4887,13 +4889,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun dismissFormulaBar() {
         formulaBarView?.let { try { canvasContainer.removeView(it) } catch (e: Exception) {} }
-        formulaBarView = null; formulaBarTable = null
+        formulaBarView = null; formulaBarTable = null; formulaBarEditText = null
     }
 
     // Thin fx row above the table showing the selected cell's raw formula source, editable
-    // there instead of only in-cell. Kept deliberately simple — no live per-keystroke sync back
-    // to the in-place cell EditText, just commits to the cell on Done/focus-loss like a normal
-    // text field. All the actual evaluation happens in FormulaEngine.kt.
+    // there instead of only in-cell. Live-mirrors the in-place cell EditText via TextWatchers on
+    // both sides (guarded by syncingFormulaText to avoid an update loop) — the earlier version
+    // only committed this box's text on Done/focus-loss, which meant typing in the OTHER editor
+    // (the in-place one) left this one stale, and losing focus here would overwrite the cell with
+    // that stale — often empty — text, silently wiping out what you'd just typed elsewhere.
     internal fun showFormulaBarFor(table: TableItem, row: Int, col: Int) {
         dismissFormulaBar()
         if (!table.showFormulaBar) return
@@ -4910,8 +4914,22 @@ class MainActivity : AppCompatActivity() {
             setText(cell.text); textSize = 14f; setPadding(dp(6), dp(4), dp(6), dp(4)); isSingleLine = true
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             imeOptions = EditorInfo.IME_ACTION_DONE
-            setOnEditorActionListener { _, actionId, _ -> if (actionId == EditorInfo.IME_ACTION_DONE) { commitFormulaBarEdit(this); true } else false }
-            setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) commitFormulaBarEdit(this) }
+            setOnEditorActionListener { _, actionId, _ -> if (actionId == EditorInfo.IME_ACTION_DONE) { clearFocus(); true } else false }
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun afterTextChanged(s: Editable?) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    if (syncingFormulaText) return
+                    val t = formulaBarTable ?: return
+                    val c = t.getCellPublic(formulaBarRow, formulaBarCol)
+                    c.text = s?.toString() ?: ""
+                    t.recalcAllFormulas(); t.recalcCellSize(formulaBarRow, formulaBarCol)
+                    syncingFormulaText = true
+                    activeCellEditText?.let { if (it.text.toString() != c.text) it.setText(c.text) }
+                    syncingFormulaText = false
+                    drawingView.invalidate()
+                }
+            })
         }
         bar.addView(et)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
@@ -4919,18 +4937,7 @@ class MainActivity : AppCompatActivity() {
         lp.topMargin = findViewById<View?>(R.id.topBarContainer)?.height ?: 0
         canvasContainer.addView(bar, lp)
         formulaBarView = bar
-    }
-
-    private fun commitFormulaBarEdit(et: EditText) {
-        val table = formulaBarTable ?: return
-        val cell = table.getCellPublic(formulaBarRow, formulaBarCol)
-        val newText = et.text.toString()
-        if (newText == cell.text) return
-        cell.text = newText
-        table.recalcAllFormulas()
-        table.recalcCellSize(formulaBarRow, formulaBarCol)
-        activeCellEditText?.setText(cell.text) // keep the in-place cell editor showing the same thing, if still open
-        drawingView.invalidate()
+        formulaBarEditText = et
     }
 
     // True in-place cell editor: the EditText is positioned and sized to sit exactly on top of
@@ -5008,6 +5015,19 @@ class MainActivity : AppCompatActivity() {
             gravity = when (cell.alignment) { 1 -> Gravity.CENTER; 2 -> Gravity.END or Gravity.CENTER_VERTICAL; else -> Gravity.START or Gravity.CENTER_VERTICAL }
             isSingleLine = false
             imeOptions = EditorInfo.IME_FLAG_NO_ENTER_ACTION
+            setOnKeyListener { _, keyCode, event ->
+                if (keyCode == android.view.KeyEvent.KEYCODE_ENTER && event.action == android.view.KeyEvent.ACTION_DOWN) {
+                    if (event.isShiftPressed) {
+                        false // let the EditText insert a normal newline
+                    } else {
+                        // Cell's text is already saved (the TextWatcher below writes to cell.text
+                        // on every keystroke), so it's safe to just tear this editor down and open
+                        // the one below — same as tapping that cell directly would do.
+                        if (row + 1 < table.rows) showTableCellEditor(table, row + 1, col, screenX, screenY)
+                        true // consume — don't also insert a newline
+                    }
+                } else false
+            }
         }
         applyTypefaceToEt(et)
         et.addTextChangedListener(object:TextWatcher{
@@ -5020,6 +5040,11 @@ class MainActivity : AppCompatActivity() {
                 table.recalcCellSize(row, col)
                 drawingView.invalidate()
                 repositionToCellFn(et)
+                if (!syncingFormulaText && formulaBarTable === table && formulaBarRow == row && formulaBarCol == col) {
+                    syncingFormulaText = true
+                    formulaBarEditText?.let { if (it.text.toString() != cell.text) it.setText(cell.text) }
+                    syncingFormulaText = false
+                }
             }
             override fun afterTextChanged(s:Editable?){}
         })
