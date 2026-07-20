@@ -716,7 +716,7 @@ class MainActivity : AppCompatActivity() {
         drawingView.onTableCellEditorCloseRequest = { dismissCellEditor() }
         drawingView.onTableDeleteRequest = { table ->
             AlertDialog.Builder(this).setTitle("Delete table?").setMessage("This removes the whole table.")
-                .setPositiveButton("Delete") { _, _ -> dismissCellEditor(); drawingView.deleteAnyItem(table) }
+                .setPositiveButton("Delete") { _, _ -> dismissCellEditor(); drawingView.deleteActiveTable(table) }
                 .setNegativeButton("Cancel", null).show()
         }
         drawingView.onTableActiveChanged = { table -> updateTableButton(table) }
@@ -4862,7 +4862,7 @@ class MainActivity : AppCompatActivity() {
         Button(this).apply{ text="Insert Chart from Table"; textSize=13f; setBackgroundColor(Color.parseColor("#E3F2FD")); setTextColor(Color.parseColor("#1565C0")); setOnClickListener{ dismissTablePropertiesPanel(); launchChartFromTable(table) } }.also{ container.addView(it) }
         Button(this).apply{ text="Delete Whole Table"; textSize=13f; setBackgroundColor(Color.parseColor("#FFEBEE")); setTextColor(Color.parseColor("#C62828")); setOnClickListener{
             AlertDialog.Builder(this@MainActivity).setTitle("Delete table?").setMessage("This removes the whole table.")
-                .setPositiveButton("Delete"){ _,_ -> drawingView.deleteAnyItem(table); dismissTablePropertiesPanel() }.setNegativeButton("Cancel",null).show()
+                .setPositiveButton("Delete"){ _,_ -> drawingView.deleteActiveTable(table); dismissTablePropertiesPanel() }.setNegativeButton("Cancel",null).show()
         } }.also{ container.addView(it) }
 
         val scroll=ScrollView(this); scroll.addView(container)

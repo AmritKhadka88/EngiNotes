@@ -3351,7 +3351,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun tableHandlePositions(table: TableItem): Triple<FloatArray, FloatArray, FloatArray> {
         val bounds = getBounds(table) ?: return Triple(floatArrayOf(table.x, table.y), floatArrayOf(table.x, table.y), floatArrayOf(table.x, table.y))
         val cx = (bounds[0] + bounds[2]) / 2f; val cy = (bounds[1] + bounds[3]) / 2f
-        val hr = 26f / scaleFactor
+        val hr = 34f / scaleFactor
         val moveLocalX = bounds[0] - hr * 1.8f; val moveLocalY = bounds[1] - hr * 1.8f
         val rotLocalX = cx; val rotLocalY = bounds[1] - 60f / scaleFactor
         val delLocalX = bounds[2] + hr * 1.8f; val delLocalY = bounds[1] - hr * 1.8f
@@ -3381,7 +3381,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun drawTableHandles(canvas: Canvas, table: TableItem) {
         val bounds = getBounds(table) ?: return
         val (movePos, rotPos, delPos) = tableHandlePositions(table)
-        val hr = 26f / scaleFactor
+        val hr = 34f / scaleFactor
         val cx = (bounds[0] + bounds[2]) / 2f; val cy = (bounds[1] + bounds[3]) / 2f
         canvas.save(); canvas.rotate(table.rotation, cx, cy)
         val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE; selP.strokeWidth = 2f / scaleFactor
@@ -3422,7 +3422,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // whenever a table is active at all, whether or not you're inside cell-editing.
                 if (activeForHandles != null) {
                     val (movePos, rotPos, delPos) = tableHandlePositions(activeForHandles)
-                    val hitR = 30f / scaleFactor
+                    val hitR = 40f / scaleFactor
                     if (distance(wx, wy, movePos[0], movePos[1]) <= hitR) {
                         tableHandleMode = 1; tableMoveStartWx = wx; tableMoveStartWy = wy
                         tableOrigX = activeForHandles.x; tableOrigY = activeForHandles.y
@@ -3528,6 +3528,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     delta = if (lower <= upper) delta.coerceIn(lower, upper) else 0f
                     table.colWidths[tableDragColBorder] = tableDragOrigSize + delta
                     table.colWidths[tableDragColBorder + 1] = tableDragOrigSizeAdjacent - delta
+                    // Narrowing a column makes its text wrap into more lines — without this, rows
+                    // stayed whatever height they were before the drag, so the extra wrapped lines
+                    // just spilled straight through into the row below instead of the row growing
+                    // to fit them. markColManuallyResized keeps recalcCellSize from also snapping
+                    // the column's WIDTH back to fit content, which would undo the drag entirely.
+                    table.markColManuallyResized(tableDragColBorder); table.markColManuallyResized(tableDragColBorder + 1)
+                    for (r in 0 until table.rows) { table.recalcCellSize(r, tableDragColBorder); table.recalcCellSize(r, tableDragColBorder + 1) }
                     invalidate(); return
                 }
                 if (tableDragOuterEdge >= 0) {
@@ -3545,9 +3552,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             val newW = (tableDragOrigSize + (tableDragStartX - wx)).coerceAtLeast(minW)
                             table.colWidths[0] = newW
                             table.x = tableDragOrigX - (newW - tableDragOrigSize)
+                            table.markColManuallyResized(0)
+                            for (r in 0 until table.rows) table.recalcCellSize(r, 0)
                         }
                         3 -> { // right: just grows the last column in place
                             table.colWidths[table.cols - 1] = (tableDragOrigSize + (wx - tableDragStartX)).coerceAtLeast(minW)
+                            table.markColManuallyResized(table.cols - 1)
+                            for (r in 0 until table.rows) table.recalcCellSize(r, table.cols - 1)
                         }
                     }
                     invalidate(); return
@@ -6165,6 +6176,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (selectedItem === item) selectedItem = null
         selectedItems.remove(item)
         markSpatialDirty(); invalidate()
+    }
+
+    // deleteAnyItem() above has no idea about any of DrawingView's table-specific state — it only
+    // knows actions/selectedItem/selectedItems. Deleting a table through it left activeTableItem
+    // still pointing at the now-removed object, so onTouchEvent's "if (activeTableItem != null)"
+    // gate kept routing every subsequent touch into handleTable() for an item that no longer
+    // existed in actions — that's what actually crashed, not the deletion itself.
+    fun deleteActiveTable(table: TableItem) {
+        deleteAnyItem(table)
+        if (activeTableItem === table) activeTableItem = null
+        tableIsActive = false
+        tableSelStart = null; tableSelEnd = null
+        tableHandleMode = 0
+        tableTapCandidateCell = null; tableDragConfirmed = false
+        tableDragRowBorder = -1; tableDragColBorder = -1; tableDragOuterEdge = -1
+        tableLongPressSelectOnly = false
+        formulaRefMode = false
+        invalidate()
     }
 
     private fun distanceToShapeOutline(data: StrokeData, x: Float, y: Float): Float {
