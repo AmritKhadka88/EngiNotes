@@ -473,6 +473,11 @@ internal fun MainActivity.showTextSelectionBox(item: TextItem, screenX: Float, s
             val mlp = moveSurface.layoutParams as FrameLayout.LayoutParams
             mlp.leftMargin = sx.toInt(); mlp.topMargin = (sy - boxH).toInt()
             moveSurface.layoutParams = mlp
+            // View.rotation defaults to pivoting around the view's own center — the same pivot
+            // TextItem's own canvas.rotate() uses (contentW/2, contentH/2) — so this lines up
+            // exactly with how the actual text renders. Previously this was never set at all,
+            // so the highlighted box stayed axis-aligned no matter how the text was rotated.
+            moveSurface.rotation = item.rotation
             // toolbar is now a fixed bottom bar (see its own LayoutParams, gravity BOTTOM) — it
             // no longer tracks item.x/item.y at all, unlike moveSurface and rotateHandle below.
             // Anchored to the box's actual TOP edge (not a fixed 90dp above the BOTTOM, which
@@ -483,8 +488,17 @@ internal fun MainActivity.showTextSelectionBox(item: TextItem, screenX: Float, s
             // rotateHandle owns its own touch bounds directly now (its own dedicated listener,
             // not a distance check against some other view), so there's no separate "hit zone
             // center" to keep in sync here anymore — just its visible position.
-            val rsx = drawingView.worldToScreenX(item.x) + boxW / 2f
-            val rsy = (drawingView.worldToScreenY(item.y) - boxH) - dp(40)
+            // The handle's natural (unrotated) position is directly above the box's center —
+            // rotate THAT offset around the box's own center by item.rotation, matching the same
+            // pivot moveSurface itself now rotates around, so the handle visually orbits the box
+            // instead of staying frozen at its pre-rotation spot.
+            val pivotX = sx + boxW / 2f; val pivotY = sy - boxH / 2f
+            val localHandleX = sx + boxW / 2f; val localHandleY = (sy - boxH) - dp(40)
+            val rad = Math.toRadians(item.rotation.toDouble())
+            val cosT = Math.cos(rad).toFloat(); val sinT = Math.sin(rad).toFloat()
+            val dx = localHandleX - pivotX; val dy = localHandleY - pivotY
+            val rsx = pivotX + dx * cosT - dy * sinT
+            val rsy = pivotY + dx * sinT + dy * cosT
             val rlp = rotateHandle.layoutParams as FrameLayout.LayoutParams
             rlp.leftMargin = (rsx - dp(20)).toInt().coerceIn(0, canvasContainer.width - dp(40))
             rlp.topMargin = (rsy - dp(20)).toInt().coerceIn(0, maxTop)
