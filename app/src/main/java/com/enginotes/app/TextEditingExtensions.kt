@@ -394,6 +394,7 @@ internal fun MainActivity.showTextSelectionBox(item: TextItem, screenX: Float, s
                 android.view.MotionEvent.ACTION_MOVE -> {
                     val currentAngleDeg = angleDegrees(rotPivotScreenX, rotPivotScreenY, ev.rawX, ev.rawY)
                     item.rotation = rotStartRotation2 + (currentAngleDeg - rotStartAngleDeg)
+                    updateToolbarPos() // live-updates moveSurface.rotation + handle position, not just on next selection
                     drawingView.invalidate()
                     true
                 }
