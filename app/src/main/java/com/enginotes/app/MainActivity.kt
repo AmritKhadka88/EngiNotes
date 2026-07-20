@@ -464,6 +464,11 @@ class MainActivity : AppCompatActivity() {
 
         drawingView     = findViewById(R.id.drawingView)
         drawingView.inputMode = try { InputMode.valueOf(getPrefs().getString("input_mode", "AUTO") ?: "AUTO") } catch (e: Exception) { InputMode.AUTO }
+        // snapEnabled used to be an in-memory-only field with no persistence at all, so it reset
+        // to false on every Activity recreation (rotation, backgrounding, switching notes) even
+        // though the user had explicitly turned it on — restoring here fixes that at the source,
+        // rather than just re-syncing a pill against a value that was itself wrong.
+        drawingView.snapEnabled = getPrefs().getBoolean("snap_enabled", false)
 
         applyToolbarTheme()
         repositionContextBar()
@@ -3918,7 +3923,7 @@ class MainActivity : AppCompatActivity() {
         sectionLabel("Snap to Endpoints")
         val snapRowS = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(4)) }
         val snapDescS = TextView(this).apply { text = "Lines snap to nearby endpoints"; textSize = 12f; setTextColor(Color.parseColor("#6A6A6A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
-        val snapSwitchS = android.widget.Switch(this).apply { isChecked = drawingView.snapEnabled; setOnCheckedChangeListener { _, on -> drawingView.snapEnabled = on; updateSnapOptionsButton() } }
+        val snapSwitchS = android.widget.Switch(this).apply { isChecked = drawingView.snapEnabled; setOnCheckedChangeListener { _, on -> drawingView.snapEnabled = on; getPrefs().edit().putBoolean("snap_enabled", on).apply(); updateSnapOptionsButton() } }
         snapRowS.addView(snapDescS); snapRowS.addView(snapSwitchS); panel.addView(snapRowS)
 
         // Color row
@@ -4311,7 +4316,7 @@ class MainActivity : AppCompatActivity() {
         sectionLabel("Snap to Endpoints")
         val snapRowP = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(4)) }
         val snapDescP = TextView(this).apply { text = "Lines snap to nearby endpoints"; textSize = 12f; setTextColor(Color.parseColor("#6A6A6A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
-        val snapSwitchP = android.widget.Switch(this).apply { isChecked = drawingView.snapEnabled; setOnCheckedChangeListener { _, on -> drawingView.snapEnabled = on; updateSnapOptionsButton() } }
+        val snapSwitchP = android.widget.Switch(this).apply { isChecked = drawingView.snapEnabled; setOnCheckedChangeListener { _, on -> drawingView.snapEnabled = on; getPrefs().edit().putBoolean("snap_enabled", on).apply(); updateSnapOptionsButton() } }
         snapRowP.addView(snapDescP); snapRowP.addView(snapSwitchP); panel.addView(snapRowP)
 
         // Line type section
@@ -5373,6 +5378,13 @@ class MainActivity : AppCompatActivity() {
         // backgrounding, switching notes) without the user re-touching that exact switch. This
         // re-syncs it every time the screen becomes visible again, regardless of how it got here.
         updateSnapOptionsButton()
+        // Same problem, same fix, for the "⚙ Group"/"⚙ Indiv" multiselect pill — it only ever
+        // updated from drawingView.onMultiSelectionChanged firing on a live selection change.
+        // If the Activity got recreated while a multi-selection already existed (selectedItems
+        // itself lives on DrawingView and can survive), the newly-registered callback wouldn't
+        // fire again on its own — nothing had actually changed from ITS point of view — so the
+        // pill just silently stayed gone until the next selection edit. Resync directly instead.
+        updateGroupModeToggle(drawingView.selectedItems.isNotEmpty())
     }
 
     override fun onDestroy() {
