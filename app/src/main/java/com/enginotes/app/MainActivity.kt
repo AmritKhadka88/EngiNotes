@@ -1941,6 +1941,10 @@ class MainActivity : AppCompatActivity() {
         // Hides the actual phone status bar (battery/time/etc), not just this app's own top bar —
         // previously "fullscreen" only ever hid EngiNotes's own UI, leaving the real system bar
         // untouched, which isn't true fullscreen.
+        // setDecorFitsSystemWindows(false) is required here too — without it, the window still
+        // reserves layout space for the status bar even once it's hidden, so that strip just
+        // rendered as blank black space instead of the canvas extending up into it.
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
         insetsController.hide(androidx.core.view.WindowInsetsCompat.Type.statusBars())
         insetsController.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -1968,6 +1972,7 @@ class MainActivity : AppCompatActivity() {
             findViewById<View?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
         }
         androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, true)
         fullscreenRestoreBtn?.let { canvasContainer.removeView(it) }
         fullscreenRestoreBtn = null
     }
@@ -2870,6 +2875,7 @@ class MainActivity : AppCompatActivity() {
         dismissHighlighterOptionsPanel()
         dismissBrushOptionsPanel()
         dismissTextOptionsPanel()
+        dismissTablePropertiesPanel()
     }
 
     private fun showInsertMenu() {
@@ -3538,6 +3544,7 @@ class MainActivity : AppCompatActivity() {
     private var contextBarPage = 0 // 0 = default, increments on swipe-up
 
     private var textOptionsPanel: View? = null
+    private var tablePropertiesPanel: View? = null
     private fun dismissTextOptionsPanel() {
         val p = textOptionsPanel ?: return
         textOptionsPanel = null
@@ -4694,7 +4701,14 @@ class MainActivity : AppCompatActivity() {
         chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java).putExtra("table_csv", sb.toString()))
     }
 
+    private fun dismissTablePropertiesPanel() {
+        val p = tablePropertiesPanel ?: return
+        tablePropertiesPanel = null
+        animatePanelOut(p) { canvasContainer.removeView(p) }
+    }
+
     private fun showTablePropertiesDialog(table: TableItem) {
+        dismissAllFloatingPanels()
         val (selStartRaw, selEnd) = drawingView.getTableSelection()
         val selStart = selStartRaw ?: Pair(0, 0)
         val row = selStart.first; val col = selStart.second
@@ -4703,12 +4717,30 @@ class MainActivity : AppCompatActivity() {
         val minC=minOf(col,selEnd?.second?:col); val maxC=maxOf(col,selEnd?.second?:col).coerceIn(0,table.cols-1)
         fun applyToSel(action:(TableCell)->Unit){ for(r in minR..maxR) for(c in minC..maxC) action(table.getCellPublic(r,c)); drawingView.invalidate() }
 
-        val container=LinearLayout(this).apply{ orientation=LinearLayout.VERTICAL; setPadding(dp(16),dp(8),dp(16),dp(8)) }
-        fun lbl(t:String){ container.addView(TextView(this).apply{ text=t;textSize=13f;setTextColor(Color.parseColor("#7B61FF"));setPadding(0,dp(10),0,dp(4)) }) }
-        lateinit var dialog: AlertDialog
+        // Same lightweight-panel pattern as showTextOptionsPanel — a plain LinearLayout attached
+        // straight to canvasContainer and animated in/out, instead of an AlertDialog. The old
+        // version dismissed and recreated a whole separate dialog Window on every single B/I/U
+        // tap just to reflect the new pressed state — that window-level teardown/rebuild is what
+        // caused the visible blink (and the extra memory churn from rebuilding a fresh dialog
+        // hierarchy each time). Now "rebuild to reflect new state" just re-runs this function to
+        // repopulate the same kind of panel, which fades/slides instead of flashing.
+        val container=LinearLayout(this).apply{ orientation=LinearLayout.VERTICAL; setPadding(dp(16),dp(12),dp(16),dp(16)) }
+        fun lbl(t:String){ container.addView(TextView(this).apply{ text=t;textSize=13f;setTextColor(Color.parseColor("#8A8580"));setPadding(0,dp(10),0,dp(4)) }) }
 
+        // Title + close, matching the Text panel's header row
+        val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        titleRow.addView(TextView(this).apply { text = "Table"; textSize = 18f; setTypeface(null, android.graphics.Typeface.BOLD); setTextColor(Color.parseColor("#1C1C1E")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+        titleRow.addView(TextView(this).apply { text = "✕"; textSize = 18f; setTextColor(Color.parseColor("#8A8580")); gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(dp(36), dp(36)); setOnClickListener { dismissTablePropertiesPanel() } })
+        container.addView(titleRow)
         val selDesc=if(selEnd!=null) "R${minR+1}C${minC+1} to R${maxR+1}C${maxC+1}" else "R${row+1}C${col+1}"
         lbl("Selection: $selDesc")
+
+        // Ruler toggle — Excel-style A/B/C + 1/2/3 header, aligned to this table's own column
+        // widths/row heights. Just a checkbox flipping a flag + invalidate, no rebuild needed.
+        val rulerRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(4)) }
+        rulerRow.addView(TextView(this).apply { text = "Show column/row headers"; textSize = 13f; setTextColor(Color.parseColor("#2A2A2A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+        rulerRow.addView(android.widget.CheckBox(this).apply { isChecked = table.showHeaders; setOnCheckedChangeListener { _, v -> table.showHeaders = v; drawingView.invalidate() } })
+        container.addView(rulerRow)
 
         lbl("Text Style")
         val styleRow=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setPadding(0,dp(4),0,dp(4)) }
@@ -4718,7 +4750,7 @@ class MainActivity : AppCompatActivity() {
             setTextColor(if(pressed) Color.WHITE else Color.parseColor("#4527A0"))
             val p=LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f); p.setMargins(dp(2),0,dp(2),0); layoutParams=p
             setPadding(dp(4),dp(6),dp(4),dp(6)); minWidth=0; minimumWidth=0
-            setOnClickListener{ action(); dialog.dismiss(); showTablePropertiesDialog(table) } // rebuild to reflect new pressed state
+            setOnClickListener{ action(); dismissTablePropertiesPanel(); showTablePropertiesDialog(table) } // rebuild to reflect new pressed state
         }
         styleRow.addView(styleBtn("B", cell.bold){ val v=!cell.bold; applyToSel{it.bold=v} })
         styleRow.addView(styleBtn("I", cell.italic){ val v=!cell.italic; applyToSel{it.italic=v} })
@@ -4730,7 +4762,7 @@ class MainActivity : AppCompatActivity() {
                 lateinit var fdlg: AlertDialog
                 fun row(label:String, family:String, tf:android.graphics.Typeface?){ fc.addView(TextView(this@MainActivity).apply{
                     text=label; textSize=17f; setPadding(dp(20),dp(12),dp(20),dp(12)); if(tf!=null) typeface=tf
-                    setOnClickListener{ applyToSel{it.fontFamily=family}; fdlg.dismiss(); dialog.dismiss(); showTablePropertiesDialog(table) }
+                    setOnClickListener{ applyToSel{it.fontFamily=family}; fdlg.dismiss(); dismissTablePropertiesPanel(); showTablePropertiesDialog(table) }
                 }) }
                 for((label,family) in availableFonts) row(label, family, try{Typeface.create(family,Typeface.NORMAL)}catch(e:Exception){null})
                 for((label,path) in customFonts) row(label, path, try{android.graphics.Typeface.createFromFile(path)}catch(e:Exception){null})
@@ -4773,25 +4805,28 @@ class MainActivity : AppCompatActivity() {
         if (selEnd != null) {
             lbl("Rows & Columns (applies to selection anchor)")
             val rcRow=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setPadding(0,dp(4),0,dp(4)) }
-            fun rcBtn(label:String, action:()->Unit){ Button(this).apply{ text=label; textSize=11f; setBackgroundColor(Color.parseColor("#EDE7F6")); setTextColor(Color.parseColor("#4527A0")); val p=LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f); p.setMargins(dp(2),0,dp(2),0); layoutParams=p; setPadding(dp(4),dp(6),dp(4),dp(6)); minWidth=0; minimumWidth=0; setOnClickListener{ action(); dialog.dismiss() }; rcRow.addView(this) } }
+            fun rcBtn(label:String, action:()->Unit){ Button(this).apply{ text=label; textSize=11f; setBackgroundColor(Color.parseColor("#EDE7F6")); setTextColor(Color.parseColor("#4527A0")); val p=LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f); p.setMargins(dp(2),0,dp(2),0); layoutParams=p; setPadding(dp(4),dp(6),dp(4),dp(6)); minWidth=0; minimumWidth=0; setOnClickListener{ action(); dismissTablePropertiesPanel() }; rcRow.addView(this) } }
             rcBtn("+Row"){ drawingView.addTableRow(row) }; rcBtn("+Col"){ drawingView.addTableCol(col) }
             rcBtn("-Row"){ drawingView.removeTableRow(row) }; rcBtn("-Col"){ drawingView.removeTableCol(col) }
             container.addView(rcRow)
-            Button(this).apply{ text="Merge Selection"; textSize=13f; setBackgroundColor(Color.parseColor("#EDE7F6")); setTextColor(Color.parseColor("#4527A0")); setOnClickListener{ drawingView.mergeCellSelection(); dialog.dismiss() } }.also{ container.addView(it) }
+            Button(this).apply{ text="Merge Selection"; textSize=13f; setBackgroundColor(Color.parseColor("#EDE7F6")); setTextColor(Color.parseColor("#4527A0")); setOnClickListener{ drawingView.mergeCellSelection(); dismissTablePropertiesPanel() } }.also{ container.addView(it) }
         }
         if (table.mergeSpans.containsKey(Pair(row, col))) {
-            Button(this).apply{ text="Unmerge"; textSize=13f; setBackgroundColor(Color.parseColor("#EDE7F6")); setTextColor(Color.parseColor("#4527A0")); setOnClickListener{ drawingView.unmergeCellSelection(); dialog.dismiss() } }.also{ container.addView(it) }
+            Button(this).apply{ text="Unmerge"; textSize=13f; setBackgroundColor(Color.parseColor("#EDE7F6")); setTextColor(Color.parseColor("#4527A0")); setOnClickListener{ drawingView.unmergeCellSelection(); dismissTablePropertiesPanel() } }.also{ container.addView(it) }
         }
 
         val div4=View(this); div4.layoutParams=LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,dp(1)).also{it.setMargins(0,dp(12),0,dp(4))}; div4.setBackgroundColor(Color.LTGRAY); container.addView(div4)
-        Button(this).apply{ text="Insert Chart from Table"; textSize=13f; setBackgroundColor(Color.parseColor("#E3F2FD")); setTextColor(Color.parseColor("#1565C0")); setOnClickListener{ dialog.dismiss(); launchChartFromTable(table) } }.also{ container.addView(it) }
+        Button(this).apply{ text="Insert Chart from Table"; textSize=13f; setBackgroundColor(Color.parseColor("#E3F2FD")); setTextColor(Color.parseColor("#1565C0")); setOnClickListener{ dismissTablePropertiesPanel(); launchChartFromTable(table) } }.also{ container.addView(it) }
         Button(this).apply{ text="Delete Whole Table"; textSize=13f; setBackgroundColor(Color.parseColor("#FFEBEE")); setTextColor(Color.parseColor("#C62828")); setOnClickListener{
             AlertDialog.Builder(this@MainActivity).setTitle("Delete table?").setMessage("This removes the whole table.")
-                .setPositiveButton("Delete"){ _,_ -> drawingView.deleteAnyItem(table); dialog.dismiss() }.setNegativeButton("Cancel",null).show()
+                .setPositiveButton("Delete"){ _,_ -> drawingView.deleteAnyItem(table); dismissTablePropertiesPanel() }.setNegativeButton("Cancel",null).show()
         } }.also{ container.addView(it) }
 
         val scroll=ScrollView(this); scroll.addView(container)
-        dialog=AlertDialog.Builder(this).setTitle("Table Properties").setView(scroll).setPositiveButton("Done",null).show()
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        canvasContainer.addView(scroll, lp)
+        tablePropertiesPanel = scroll
+        animatePanelIn(scroll)
     }
 
     internal fun dismissCellEditor() {

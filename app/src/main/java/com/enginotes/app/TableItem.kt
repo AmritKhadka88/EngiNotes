@@ -37,6 +37,10 @@ class TableCell(
 class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
     var rows: Int = 3
     var cols: Int = 3
+    // Toggled from Table Properties. Draws A/B/C... above each column and 1/2/3... to the left
+    // of each row, aligned to this table's own colWidths/rowHeights (not the whole canvas) —
+    // matches what a formula/cell-reference system will need later (e.g. "B3").
+    var showHeaders: Boolean = false
 
     // Column auto-grows up to this width as the user types; beyond it, text wraps to new lines
     // instead of pushing the column wider. Merged cells are exempt (they can grow freely).
@@ -219,6 +223,49 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
         canvas.restore()
     }
 
+    fun drawHeaders(canvas: Canvas, scaleFactor: Float) {
+        canvas.save()
+        val pivotX = x + totalWidth() / 2f; val pivotY = y + totalHeight() / 2f
+        canvas.rotate(rotation, pivotX, pivotY)
+
+        // Constant SCREEN size regardless of zoom, matching how selection handles do it elsewhere.
+        val barSize = 20f / scaleFactor
+        val strokeW = 1f / scaleFactor
+        val textSize = 12f / scaleFactor
+
+        val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#F5F5F0"); style = Paint.Style.FILL }
+        val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#B0B0A8"); strokeWidth = strokeW; style = Paint.Style.STROKE }
+        val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#5A5A55"); this.textSize = textSize; textAlign = Paint.Align.CENTER }
+
+        // Column letters above the table, one cell per column, matching that column's width
+        canvas.drawRect(x, y - barSize, x + totalWidth(), y, bg)
+        var cx = x
+        for (c in 0 until cols) {
+            val w = colWidths.getOrElse(c) { 100f }
+            canvas.drawText(columnLabel(c), cx + w / 2f, y - barSize * 0.28f, text)
+            cx += w
+            canvas.drawLine(cx, y - barSize, cx, y, line)
+        }
+        canvas.drawRect(x, y - barSize, x + totalWidth(), y, line)
+
+        // Row numbers to the left of the table, one cell per row, matching that row's height
+        canvas.drawRect(x - barSize, y, x, y + totalHeight(), bg)
+        var cy = y
+        for (r in 0 until rows) {
+            val h = rowHeights.getOrElse(r) { 60f }
+            canvas.drawText((r + 1).toString(), x - barSize / 2f, cy + h / 2f + textSize * 0.35f, text)
+            cy += h
+            canvas.drawLine(x - barSize, cy, x, cy, line)
+        }
+        canvas.drawRect(x - barSize, y, x, y + totalHeight(), line)
+
+        // Corner square where the two header strips meet
+        canvas.drawRect(x - barSize, y - barSize, x, y, bg)
+        canvas.drawRect(x - barSize, y - barSize, x, y, line)
+
+        canvas.restore()
+    }
+
     fun mergeCells(r1: Int, c1: Int, r2: Int, c2: Int) {
         val minR = minOf(r1, r2); val maxR = maxOf(r1, r2)
         val minC = minOf(c1, c2); val maxC = maxOf(c1, c2)
@@ -241,7 +288,7 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
 
     fun serialize(): String {
         val sb = StringBuilder()
-        sb.append("TABLE\u0001$x\u0001$y\u0001$rotation\u0001$rows\u0001$cols\n")
+        sb.append("TABLE\u0001$x\u0001$y\u0001$rotation\u0001$rows\u0001$cols\u0001$showHeaders\n")
         sb.append("ROWHEIGHTS\u0001${rowHeights.joinToString(",")}\n")
         sb.append("COLWIDTHS\u0001${colWidths.joinToString(",")}\n")
         sb.append("COLRESIZED\u0001${colManuallyResized.joinToString(",")}\n")
@@ -255,6 +302,19 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
     }
 
     companion object {
+        // Converts a 0-based column index into Excel-style letters: 0->A, 25->Z, 26->AA, 27->AB...
+        // Kept here (not private) so a future formula parser can reuse it for cell references.
+        fun columnLabel(index: Int): String {
+            var n = index
+            val sb = StringBuilder()
+            while (true) {
+                sb.insert(0, ('A' + (n % 26)))
+                n = n / 26 - 1
+                if (n < 0) break
+            }
+            return sb.toString()
+        }
+
         // Shared across every cell/table — Typeface.create() is a genuinely expensive call
         // (native font lookup); a table with many cells in the same font/style shouldn't pay
         // that cost once per cell.
@@ -273,6 +333,7 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
             if (header.size < 6) return Pair(null, startIdx)
             val item = try { TableItem(header[1].toFloat(), header[2].toFloat(), header[3].toFloat()) } catch (e: Exception) { return Pair(null, startIdx) }
             item.rows = header[4].toIntOrNull() ?: 3; item.cols = header[5].toIntOrNull() ?: 3
+            if (header.size >= 7) item.showHeaders = header[6].toBoolean()
             var idx = startIdx + 1
             while (idx < lines.size && !lines[idx].startsWith("TABLEEND")) {
                 val line = lines[idx]
