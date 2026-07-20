@@ -4724,7 +4724,7 @@ class MainActivity : AppCompatActivity() {
         // caused the visible blink (and the extra memory churn from rebuilding a fresh dialog
         // hierarchy each time). Now "rebuild to reflect new state" just re-runs this function to
         // repopulate the same kind of panel, which fades/slides instead of flashing.
-        val container=LinearLayout(this).apply{ orientation=LinearLayout.VERTICAL; setPadding(dp(16),dp(12),dp(16),dp(16)) }
+        val container=LinearLayout(this).apply{ orientation=LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE); elevation = dp(10).toFloat(); setPadding(dp(16),dp(12),dp(16),dp(16)) }
         fun lbl(t:String){ container.addView(TextView(this).apply{ text=t;textSize=13f;setTextColor(Color.parseColor("#8A8580"));setPadding(0,dp(10),0,dp(4)) }) }
 
         // Title + close, matching the Text panel's header row
@@ -4741,6 +4741,25 @@ class MainActivity : AppCompatActivity() {
         rulerRow.addView(TextView(this).apply { text = "Show column/row headers"; textSize = 13f; setTextColor(Color.parseColor("#2A2A2A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
         rulerRow.addView(android.widget.CheckBox(this).apply { isChecked = table.showHeaders; setOnCheckedChangeListener { _, v -> table.showHeaders = v; drawingView.invalidate() } })
         container.addView(rulerRow)
+
+        val rulerSizeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(2), 0, dp(4)) }
+        rulerSizeRow.addView(TextView(this).apply { text = "Header text size"; textSize = 13f; setTextColor(Color.parseColor("#2A2A2A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+        lateinit var rulerSizeLabel: TextView
+        fun stepBtn(label: String, delta: Float): TextView = TextView(this).apply {
+            text = label; textSize = 15f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#4527A0"))
+            val p = LinearLayout.LayoutParams(dp(32), dp(32)); layoutParams = p
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#EDE7F6")); cornerRadius = dp(6).toFloat() }
+            setOnClickListener {
+                table.headerTextSize = (table.headerTextSize + delta).coerceIn(10f, 60f)
+                rulerSizeLabel.text = table.headerTextSize.toInt().toString()
+                drawingView.invalidate()
+            }
+        }
+        rulerSizeRow.addView(stepBtn("−", -2f))
+        rulerSizeLabel = TextView(this).apply { text = table.headerTextSize.toInt().toString(); textSize = 14f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#2A2A2A")); layoutParams = LinearLayout.LayoutParams(dp(36), LinearLayout.LayoutParams.WRAP_CONTENT) }
+        rulerSizeRow.addView(rulerSizeLabel)
+        rulerSizeRow.addView(stepBtn("+", 2f))
+        container.addView(rulerSizeRow)
 
         lbl("Text Style")
         val styleRow=LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; setPadding(0,dp(4),0,dp(4)) }
@@ -4823,7 +4842,12 @@ class MainActivity : AppCompatActivity() {
         } }.also{ container.addView(it) }
 
         val scroll=ScrollView(this); scroll.addView(container)
-        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        // Table Properties has a lot more sections than the other panels, so unlike them it needs
+        // an explicit height cap — otherwise WRAP_CONTENT just grows to fit everything, which was
+        // covering almost the entire screen (canvas included) instead of leaving the table visible
+        // above it the way Text/Eraser/Highlighter panels do.
+        val maxPanelHeight = (canvasContainer.height * 0.55f).toInt().coerceAtLeast(dp(280))
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, maxPanelHeight, Gravity.BOTTOM)
         canvasContainer.addView(scroll, lp)
         tablePropertiesPanel = scroll
         animatePanelIn(scroll)
@@ -5011,10 +5035,12 @@ class MainActivity : AppCompatActivity() {
             actionBtn("B", pressed = cell.bold) { cell.bold = !cell.bold; applyTypefaceToEt(et); table.recalcCellSize(row,col); drawingView.invalidate(); refreshToolbar() }
             actionBtn("I", pressed = cell.italic) { cell.italic = !cell.italic; applyTypefaceToEt(et); table.recalcCellSize(row,col); drawingView.invalidate(); refreshToolbar() }
             actionBtn("U", pressed = cell.underline) { cell.underline = !cell.underline; applyTypefaceToEt(et); drawingView.invalidate(); refreshToolbar() }
-            actionBtn("A-") { applySizeChangePx(cell.textSize - PT_TO_PX) }
+            actionBtn("+Row") { drawingView.addTableRow(row); dismissCellEditor() }
+            actionBtn("-Row") { drawingView.removeTableRow(row); dismissCellEditor() }
+            actionBtn("+Col") { drawingView.addTableCol(col); dismissCellEditor() }
+            actionBtn("-Col") { drawingView.removeTableCol(col); dismissCellEditor() }
             val sizeChip = actionBtn(ptLabel(cell.textSize / PT_TO_PX)) {}
             sizeChip.setOnClickListener { openSizePicker(sizeChip) }
-            actionBtn("A+") { applySizeChangePx(cell.textSize + PT_TO_PX) }
             actionBtn("Del") {
                 cell.text = ""; et.setText(""); table.recalcCellSize(row,col); drawingView.invalidate()
             }

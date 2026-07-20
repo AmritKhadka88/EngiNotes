@@ -41,6 +41,9 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
     // of each row, aligned to this table's own colWidths/rowHeights (not the whole canvas) —
     // matches what a formula/cell-reference system will need later (e.g. "B3").
     var showHeaders: Boolean = false
+    // Screen-space pt size for the A/B/C + 1/2/3 header labels. Adjustable via +/- in Table
+    // Properties. Was hardcoded at 12f before, which read as basically invisible on a phone.
+    var headerTextSize: Float = 22f
 
     // Column auto-grows up to this width as the user types; beyond it, text wraps to new lines
     // instead of pushing the column wider. Merged cells are exempt (they can grow freely).
@@ -229,13 +232,16 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
         canvas.rotate(rotation, pivotX, pivotY)
 
         // Constant SCREEN size regardless of zoom, matching how selection handles do it elsewhere.
-        val barSize = 20f / scaleFactor
+        // Was a fixed 20f/12f before — genuinely too small to read on a phone screen next to normal
+        // cell text. barSize now derives from headerTextSize so the strip always comfortably fits
+        // the label instead of clipping it as the text size is turned up.
+        val textSize = headerTextSize / scaleFactor
+        val barSize = textSize * 1.8f
         val strokeW = 1f / scaleFactor
-        val textSize = 12f / scaleFactor
 
         val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#F5F5F0"); style = Paint.Style.FILL }
         val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#B0B0A8"); strokeWidth = strokeW; style = Paint.Style.STROKE }
-        val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#5A5A55"); this.textSize = textSize; textAlign = Paint.Align.CENTER }
+        val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#3A3A36"); this.textSize = textSize; textAlign = Paint.Align.CENTER; isFakeBoldText = true }
 
         // Column letters above the table, one cell per column, matching that column's width
         canvas.drawRect(x, y - barSize, x + totalWidth(), y, bg)
@@ -288,7 +294,7 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
 
     fun serialize(): String {
         val sb = StringBuilder()
-        sb.append("TABLE\u0001$x\u0001$y\u0001$rotation\u0001$rows\u0001$cols\u0001$showHeaders\n")
+        sb.append("TABLE\u0001$x\u0001$y\u0001$rotation\u0001$rows\u0001$cols\u0001$showHeaders\u0001$headerTextSize\n")
         sb.append("ROWHEIGHTS\u0001${rowHeights.joinToString(",")}\n")
         sb.append("COLWIDTHS\u0001${colWidths.joinToString(",")}\n")
         sb.append("COLRESIZED\u0001${colManuallyResized.joinToString(",")}\n")
@@ -334,6 +340,7 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
             val item = try { TableItem(header[1].toFloat(), header[2].toFloat(), header[3].toFloat()) } catch (e: Exception) { return Pair(null, startIdx) }
             item.rows = header[4].toIntOrNull() ?: 3; item.cols = header[5].toIntOrNull() ?: 3
             if (header.size >= 7) item.showHeaders = header[6].toBoolean()
+            if (header.size >= 8) item.headerTextSize = header[7].toFloatOrNull() ?: 22f
             var idx = startIdx + 1
             while (idx < lines.size && !lines[idx].startsWith("TABLEEND")) {
                 val line = lines[idx]
