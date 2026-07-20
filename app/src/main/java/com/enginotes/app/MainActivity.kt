@@ -5367,6 +5367,12 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (currentAppTheme() == "GLASS") scheduleBlurUpdate()
+        // updateSnapOptionsButton() previously only ran reactively from inside the two Snap
+        // switches themselves — so the "Snap ⚙" pill's visibility could drift out of sync with
+        // drawingView.snapEnabled's real value any time the Activity got recreated (rotation,
+        // backgrounding, switching notes) without the user re-touching that exact switch. This
+        // re-syncs it every time the screen becomes visible again, regardless of how it got here.
+        updateSnapOptionsButton()
     }
 
     override fun onDestroy() {
