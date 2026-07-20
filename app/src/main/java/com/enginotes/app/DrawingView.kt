@@ -1254,6 +1254,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var tableDragStartY = 0f
     private var tableDragStartX = 0f
     private var tableDragOrigSize = 0f
+    private var tableDragOrigSizeAdjacent = 0f
     private var tableSelStart: Pair<Int, Int>? = null
     private var tableSelEnd: Pair<Int, Int>? = null
     private var tableIsActive: Boolean = false
@@ -3397,8 +3398,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (table != null) {
                     if (tableIsActive) {
                         val rb = table.hitTestRowBorder(wx, wy, tol); val cb = table.hitTestColBorder(wx, wy, tol)
-                        if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; return }
-                        if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; return }
+                        if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; tableDragOrigSizeAdjacent = table.rowHeights.getOrElse(rb + 1) { 60f }; return }
+                        if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; tableDragOrigSizeAdjacent = table.colWidths.getOrElse(cb + 1) { 100f }; return }
                     }
                     val cell = table.hitTestCell(wx, wy)
                     if (cell == null) {
@@ -3434,8 +3435,25 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     invalidate(); return
                 }
                 val table = activeTableItem ?: return; if (!tableIsActive) return
-                if (tableDragRowBorder >= 0) { table.rowHeights[tableDragRowBorder] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(20f); invalidate(); return }
-                if (tableDragColBorder >= 0) { table.colWidths[tableDragColBorder] = (tableDragOrigSize + (wx - tableDragStartX)).coerceAtLeast(30f); invalidate(); return }
+                if (tableDragRowBorder >= 0) {
+                    val minH = 20f
+                    val lower = minH - tableDragOrigSize; val upper = tableDragOrigSizeAdjacent - minH
+                    var delta = (wy - tableDragStartY)
+                    delta = if (lower <= upper) delta.coerceIn(lower, upper) else 0f
+                    table.rowHeights[tableDragRowBorder] = tableDragOrigSize + delta
+                    table.rowHeights[tableDragRowBorder + 1] = tableDragOrigSizeAdjacent - delta
+                    invalidate(); return
+                }
+                if (tableDragColBorder >= 0) {
+                    val minW = 30f
+                    val lower = minW - tableDragOrigSize; val upper = tableDragOrigSizeAdjacent - minW
+                    var delta = (wx - tableDragStartX)
+                    delta = if (lower <= upper) delta.coerceIn(lower, upper) else 0f
+                    table.colWidths[tableDragColBorder] = tableDragOrigSize + delta
+                    table.colWidths[tableDragColBorder + 1] = tableDragOrigSizeAdjacent - delta
+                    invalidate(); return
+                }
+                if (tableLongPressSelectOnly) return  // long press already locked a single-cell selection; ignore further movement this touch
                 val candidate = tableTapCandidateCell ?: return
                 if (!tableDragConfirmed) {
                     val dragThreshold = 10f / scaleFactor
