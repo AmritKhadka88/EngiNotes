@@ -1255,12 +1255,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var tableDragStartX = 0f
     private var tableDragOrigSize = 0f
     private var tableDragOrigSizeAdjacent = 0f
+    private var tableDragOuterEdge = -1  // 0=top,1=bottom,2=left,3=right, -1=none
+    private var tableDragOrigX = 0f
+    private var tableDragOrigY = 0f
     private var tableSelStart: Pair<Int, Int>? = null
     private var tableSelEnd: Pair<Int, Int>? = null
     private var tableIsActive: Boolean = false
     private var tableSingleTapCell: Pair<Int, Int>? = null
     private var tableTapDownWx = 0f; private var tableTapDownWy = 0f
     private var tableTapCandidateCell: Pair<Int, Int>? = null
+    private var tableTapDownTime = 0L
     private var tableLongPressSelectOnly = false
     private var tableDragConfirmed = false
     // Dedicated move/rotate handles for the whole table — separate from cell selection/border-drag
@@ -3400,6 +3404,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val rb = table.hitTestRowBorder(wx, wy, tol); val cb = table.hitTestColBorder(wx, wy, tol)
                         if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; tableDragOrigSizeAdjacent = table.rowHeights.getOrElse(rb + 1) { 60f }; return }
                         if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; tableDragOrigSizeAdjacent = table.colWidths.getOrElse(cb + 1) { 100f }; return }
+                        val edge = table.hitTestOuterEdge(wx, wy, tol)
+                        if (edge >= 0) {
+                            tableDragOuterEdge = edge; tableDragStartX = wx; tableDragStartY = wy
+                            tableDragOrigX = table.x; tableDragOrigY = table.y
+                            tableDragOrigSize = when (edge) {
+                                0 -> table.rowHeights[0]; 1 -> table.rowHeights[table.rows - 1]
+                                2 -> table.colWidths[0]; else -> table.colWidths[table.cols - 1]
+                            }
+                            return
+                        }
                     }
                     val cell = table.hitTestCell(wx, wy)
                     if (cell == null) {
@@ -3410,7 +3424,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     // Defer open-vs-range-select-drag until ACTION_MOVE/ACTION_UP decides — applies
                     // whether this is the very first tap into the table or a later one.
                     tableIsActive = true
-                    tableTapDownWx = wx; tableTapDownWy = wy; tableTapCandidateCell = cell; tableDragConfirmed = false
+                    tableTapDownWx = wx; tableTapDownWy = wy; tableTapCandidateCell = cell; tableDragConfirmed = false; tableTapDownTime = System.currentTimeMillis()
                 } else {
                     for (action in actions.reversed()) {
                         if (action is TableItem && action.hitTestCell(wx, wy) != null) {
@@ -3436,12 +3450,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 val table = activeTableItem ?: return; if (!tableIsActive) return
                 if (tableDragRowBorder >= 0) {
-                    val minH = 20f
-                    val lower = minH - tableDragOrigSize; val upper = tableDragOrigSizeAdjacent - minH
-                    var delta = (wy - tableDragStartY)
-                    delta = if (lower <= upper) delta.coerceIn(lower, upper) else 0f
-                    table.rowHeights[tableDragRowBorder] = tableDragOrigSize + delta
-                    table.rowHeights[tableDragRowBorder + 1] = tableDragOrigSizeAdjacent - delta
+                    // Unlike columns, rows push/extend rather than trade height with the neighbor —
+                    // a table's width is naturally page-constrained (so growing one column should
+                    // borrow from the next to keep the total width fixed), but its height isn't;
+                    // growing a row is expected to just grow the whole table and push everything
+                    // below it down, the way Word/Excel row-resize works.
+                    table.rowHeights[tableDragRowBorder] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(20f)
                     invalidate(); return
                 }
                 if (tableDragColBorder >= 0) {
@@ -3453,20 +3467,58 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     table.colWidths[tableDragColBorder + 1] = tableDragOrigSizeAdjacent - delta
                     invalidate(); return
                 }
+                if (tableDragOuterEdge >= 0) {
+                    val minH = 20f; val minW = 30f
+                    when (tableDragOuterEdge) {
+                        0 -> { // top: grows upward, table.y shifts up to match so the internal borders below stay put
+                            val newH = (tableDragOrigSize + (tableDragStartY - wy)).coerceAtLeast(minH)
+                            table.rowHeights[0] = newH
+                            table.y = tableDragOrigY - (newH - tableDragOrigSize)
+                        }
+                        1 -> { // bottom: just grows the last row in place
+                            table.rowHeights[table.rows - 1] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(minH)
+                        }
+                        2 -> { // left: grows leftward, table.x shifts left to match
+                            val newW = (tableDragOrigSize + (tableDragStartX - wx)).coerceAtLeast(minW)
+                            table.colWidths[0] = newW
+                            table.x = tableDragOrigX - (newW - tableDragOrigSize)
+                        }
+                        3 -> { // right: just grows the last column in place
+                            table.colWidths[table.cols - 1] = (tableDragOrigSize + (wx - tableDragStartX)).coerceAtLeast(minW)
+                        }
+                    }
+                    invalidate(); return
+                }
                 if (tableLongPressSelectOnly) return  // long press already locked a single-cell selection; ignore further movement this touch
                 val candidate = tableTapCandidateCell ?: return
                 if (!tableDragConfirmed) {
+                    val dist = distance(wx, wy, tableTapDownWx, tableTapDownWy)
                     val dragThreshold = 10f / scaleFactor
-                    if (distance(wx, wy, tableTapDownWx, tableTapDownWy) > dragThreshold) {
+                    if (dist > dragThreshold) {
                         tableDragConfirmed = true
                         tableSelStart = candidate; tableSelEnd = null
+                    } else {
+                        // Manual long-press: relying on the system GestureDetector's onLongPress
+                        // was unreliable here — its own internal slop cancels the long-press the
+                        // instant the finger drifts even slightly during the hold, which is normal
+                        // human tremor, not an intentional drag. Polling elapsed time + a small
+                        // movement allowance on every MOVE event (same pattern already used for
+                        // text hold-selection above) doesn't have that failure mode.
+                        val heldMs = System.currentTimeMillis() - tableTapDownTime
+                        val smallMoveAllowance = 8f / scaleFactor
+                        if (heldMs >= 400L && dist <= smallMoveAllowance) {
+                            tableSelStart = candidate; tableSelEnd = null
+                            tableLongPressSelectOnly = true
+                            performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                            invalidate(); return
+                        }
                     }
                 }
                 if (tableDragConfirmed) extendTableSelection(wx, wy)
             }
             MotionEvent.ACTION_UP -> {
                 if (tableHandleMode != 0) { tableHandleMode = 0; markSpatialDirty(); return }
-                if (tableDragRowBorder >= 0 || tableDragColBorder >= 0) { tableDragRowBorder = -1; tableDragColBorder = -1; return }
+                if (tableDragRowBorder >= 0 || tableDragColBorder >= 0 || tableDragOuterEdge >= 0) { tableDragRowBorder = -1; tableDragColBorder = -1; tableDragOuterEdge = -1; return }
                 if (tableLongPressSelectOnly) { tableLongPressSelectOnly = false; tableTapCandidateCell = null; tableDragConfirmed = false; invalidate(); return }
                 val candidate = tableTapCandidateCell
                 if (candidate != null && !tableDragConfirmed) {

@@ -163,6 +163,24 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
         return -1
     }
 
+    // hitTestRowBorder/hitTestColBorder above only ever tested INTERNAL borders (between two
+    // existing rows/columns) — the table's own outer edges had no hit-test at all, so there was
+    // no way to resize the whole table by dragging it, only to trade size between two existing
+    // rows/columns. Returns which outer edge (if any) the point is near: 0=top, 1=bottom,
+    // 2=left, 3=right, or -1. Only tests within the perpendicular span of that edge (e.g. top/
+    // bottom only within the table's own width) so a touch off to the side doesn't false-hit.
+    fun hitTestOuterEdge(wxIn: Float, wyIn: Float, tolerance: Float): Int {
+        val local = toLocal(wxIn, wyIn); val wx = local[0]; val wy = local[1]
+        val w = totalWidth(); val h = totalHeight()
+        val withinX = wx >= x - tolerance && wx <= x + w + tolerance
+        val withinY = wy >= y - tolerance && wy <= y + h + tolerance
+        if (withinX && kotlin.math.abs(wy - y) <= tolerance) return 0
+        if (withinX && kotlin.math.abs(wy - (y + h)) <= tolerance) return 1
+        if (withinY && kotlin.math.abs(wx - x) <= tolerance) return 2
+        if (withinY && kotlin.math.abs(wx - (x + w)) <= tolerance) return 3
+        return -1
+    }
+
     // Marks a column as manually resized (called when the user drags a column border directly)
     fun markColManuallyResized(col: Int) { ensureColFlagSize(); if (col in colManuallyResized.indices) colManuallyResized[col] = true }
 
