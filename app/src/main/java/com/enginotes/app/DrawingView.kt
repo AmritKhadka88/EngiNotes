@@ -1130,6 +1130,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         invalidate()
     }
     var snapEnabled: Boolean = false
+    // Excel-style A/B/C... column header + 1/2/3... row header along the top/left edges of the
+    // screen, toggled from Settings. Purely a screen-space overlay — doesn't affect the document.
+    var showRuler: Boolean = false
     var snapEndpoint: Boolean = true
     var snapMidpoint: Boolean = true
     var snapIntersection: Boolean = true
@@ -2020,6 +2023,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         canvas.scale(scaleFactor, scaleFactor)
         drawBackground(canvas)
         for (action in actions) drawActionItem(canvas, action, includeFills = true)
+        // The polyline being actively placed isn't in `actions` yet (it lives in polylinePoints
+        // until you finish it), so without this the lens showed every other item correctly but
+        // the one polyline you're actually mid-way through drawing just wasn't there.
+        drawPolylinePreview(canvas)
 
         canvas.restore()
 
@@ -2041,6 +2048,71 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     // customHatchBitmapCache field moved near `actions` above; loadCustomHatchBitmap,
     // drawHatchPattern, and drawHatchLocal moved to HatchRenderingExtensions.kt.
+
+    // Converts a 0-based column index into Excel-style letters: 0->A, 25->Z, 26->AA, 27->AB...
+    private fun columnLabel(index: Int): String {
+        var n = index
+        val sb = StringBuilder()
+        while (true) {
+            sb.insert(0, ('A' + (n % 26)))
+            n = n / 26 - 1
+            if (n < 0) break
+        }
+        return sb.toString()
+    }
+
+    private val rulerBarSize = 24f  // screen-space thickness of both header strips, in px
+
+    private fun drawRulers(canvas: Canvas) {
+        val cell = gridSpacingPx()  // world-space spacing between ruler ticks, reuses the grid interval
+        if (cell <= 0f) return
+
+        val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#F5F5F0"); style = Paint.Style.FILL }
+        val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#D0D0C8"); strokeWidth = 1f; style = Paint.Style.STROKE }
+        val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#6B6B66"); textSize = 12f; textAlign = Paint.Align.CENTER }
+
+        // Top column header
+        canvas.drawRect(rulerBarSize, 0f, width.toFloat(), rulerBarSize, bg)
+        canvas.drawLine(0f, rulerBarSize, width.toFloat(), rulerBarSize, line)
+        val worldLeft = screenToWorldX(rulerBarSize); val worldRight = screenToWorldX(width.toFloat())
+        var colIdx = kotlin.math.floor(worldLeft / cell).toInt()
+        while (true) {
+            val wx = colIdx * cell
+            if (wx > worldRight) break
+            val sx = worldToScreenX(wx)
+            if (sx >= rulerBarSize) {
+                canvas.drawLine(sx, rulerBarSize * 0.6f, sx, rulerBarSize, line)
+                val nextSx = worldToScreenX(wx + cell)
+                canvas.drawText(columnLabel(colIdx), (sx + nextSx) / 2f, rulerBarSize * 0.72f, text)
+            }
+            colIdx++
+        }
+
+        // Left row header
+        canvas.drawRect(0f, rulerBarSize, rulerBarSize, height.toFloat(), bg)
+        canvas.drawLine(rulerBarSize, 0f, rulerBarSize, height.toFloat(), line)
+        val worldTop = screenToWorldY(rulerBarSize); val worldBottom = screenToWorldY(height.toFloat())
+        var rowIdx = kotlin.math.floor(worldTop / cell).toInt()
+        while (true) {
+            val wy = rowIdx * cell
+            if (wy > worldBottom) break
+            val sy = worldToScreenY(wy)
+            if (sy >= rulerBarSize) {
+                canvas.drawLine(rulerBarSize * 0.6f, sy, rulerBarSize, sy, line)
+                val nextSy = worldToScreenY(wy + cell)
+                canvas.save()
+                canvas.rotate(-90f, rulerBarSize / 2f, (sy + nextSy) / 2f)
+                canvas.drawText((rowIdx + 1).toString(), rulerBarSize / 2f, (sy + nextSy) / 2f + 4f, text)
+                canvas.restore()
+            }
+            rowIdx++
+        }
+
+        // Corner square where the two headers meet
+        canvas.drawRect(0f, 0f, rulerBarSize, rulerBarSize, bg)
+        canvas.drawLine(0f, rulerBarSize, rulerBarSize, rulerBarSize, line)
+        canvas.drawLine(rulerBarSize, 0f, rulerBarSize, rulerBarSize, line)
+    }
 
 
     // Cache brush strokes as world-space bitmaps at a fixed resolution (CACHE_SCALE px per world unit).
@@ -2497,6 +2569,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (polylineFingerDown) drawMagnifierLens(canvas, polylineCursorX, polylineCursorY)
         }
         canvas.restore()
+        if (showRuler) drawRulers(canvas)
         drawCursor(canvas)
     }
 
