@@ -133,6 +133,22 @@ class TableItem(var x: Float, var y: Float, var rotation: Float = 0f) {
         return cell.mergedInto ?: Pair(row, col)
     }
 
+    // Like hitTestCell, but never returns null — clamps the point into the table's own bounds
+    // first. Used while dragging out a selection: without this, dragging your finger past the
+    // table's edge just fell outside hitTestCell's bounds check and froze the selection wherever
+    // it last was inside, instead of extending to the nearest edge row/column the way Excel does.
+    fun hitTestCellClamped(wxIn: Float, wyIn: Float): Pair<Int, Int> {
+        val local = toLocal(wxIn, wyIn)
+        val wx = local[0].coerceIn(x, x + totalWidth() - 0.01f)
+        val wy = local[1].coerceIn(y, y + totalHeight() - 0.01f)
+        var row = rows - 1; var cy = y
+        for (r in 0 until rows) { if (wy < cy + rowHeights.getOrElse(r) { 60f }) { row = r; break }; cy += rowHeights.getOrElse(r) { 60f } }
+        var col = cols - 1; var cx = x
+        for (c in 0 until cols) { if (wx < cx + colWidths.getOrElse(c) { 100f }) { col = c; break }; cx += colWidths.getOrElse(c) { 100f } }
+        val cell = getCellSafe(row, col)
+        return cell.mergedInto ?: Pair(row, col)
+    }
+
     fun hitTestRowBorder(wxIn: Float, wyIn: Float, tolerance: Float): Int {
         val wy = toLocal(wxIn, wyIn)[1]
         var cy = y

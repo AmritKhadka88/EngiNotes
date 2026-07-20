@@ -4864,6 +4864,9 @@ class MainActivity : AppCompatActivity() {
         drawingView.exitTableEditMode()
         drawingView.onCanvasTransformed = null
         setBottomBarVisible(true)
+        if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
+            findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
+        }
     }
 
     // True in-place cell editor: the EditText is positioned and sized to sit exactly on top of
@@ -4897,6 +4900,13 @@ class MainActivity : AppCompatActivity() {
     private fun showTableCellEditor(table:TableItem,row:Int,col:Int,screenX:Float,screenY:Float) {
         dismissCellEditor() // a previous cell's editor+toolbar must be fully torn down first, or they stack
         setBottomBarVisible(false)
+        // rebuildContextBar() renders purely off drawingView.currentTool, which stays Tool.SELECT
+        // the whole time you're editing a table cell — so without this, the bottom context row
+        // just kept showing the leftover Select/Lasso/Rect/Multi picker from before you tapped
+        // into the cell, which has nothing to do with what you're doing. The floating cell
+        // toolbar (B/I/U/+Row/-Row/etc, positioned right above the table) already covers what's
+        // needed, so simplest fix is just hiding this row entirely while editing.
+        findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
         val cell=table.cells[row][col]
         val density = resources.displayMetrics.density
 

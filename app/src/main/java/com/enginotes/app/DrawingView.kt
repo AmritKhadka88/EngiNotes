@@ -1260,6 +1260,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var tableSingleTapCell: Pair<Int, Int>? = null
     private var tableTapDownWx = 0f; private var tableTapDownWy = 0f
     private var tableTapCandidateCell: Pair<Int, Int>? = null
+    private var tableLongPressSelectOnly = false
     private var tableDragConfirmed = false
     // Dedicated move/rotate handles for the whole table — separate from cell selection/border-drag
     private var tableHandleMode = 0 // 0=none, 1=moving, 2=rotating
@@ -1583,6 +1584,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 selectedItem = hit; invalidate()
                 onTextSelectRequest?.invoke(hit, e.x, e.y, e.rawX, e.rawY)
                 return
+            }
+            // Long-pressing a single table cell (no drag) selects that cell without popping the
+            // keyboard open — previously there was no table branch here at all, so holding still
+            // on one cell did nothing; only dragging across multiple cells worked, since that path
+            // goes through extendTableSelection() on ACTION_MOVE instead of this callback.
+            val table = activeTableItem
+            if (table != null && tableIsActive) {
+                val cell = table.hitTestCell(wx, wy)
+                if (cell != null) {
+                    tableSelStart = cell; tableSelEnd = null
+                    tableLongPressSelectOnly = true
+                    performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                    invalidate()
+                    return
+                }
             }
         }
     })
@@ -3433,6 +3449,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_UP -> {
                 if (tableHandleMode != 0) { tableHandleMode = 0; markSpatialDirty(); return }
                 if (tableDragRowBorder >= 0 || tableDragColBorder >= 0) { tableDragRowBorder = -1; tableDragColBorder = -1; return }
+                if (tableLongPressSelectOnly) { tableLongPressSelectOnly = false; tableTapCandidateCell = null; tableDragConfirmed = false; invalidate(); return }
                 val candidate = tableTapCandidateCell
                 if (candidate != null && !tableDragConfirmed) {
                     // Plain tap, or a hold that never turned into a slide — open this cell
@@ -3453,7 +3470,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Long-press extends selection to a range (for merge) without opening the editor
     fun extendTableSelection(wx: Float, wy: Float) {
         val table = activeTableItem ?: return; if (!tableIsActive) return
-        val cell = table.hitTestCell(wx, wy) ?: return
+        val cell = table.hitTestCellClamped(wx, wy)
         if (tableSelStart == null) tableSelStart = cell else tableSelEnd = cell
         invalidate()
     }
