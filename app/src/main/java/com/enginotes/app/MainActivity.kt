@@ -1358,13 +1358,6 @@ class MainActivity : AppCompatActivity() {
     internal fun applyBarIconSize(barSizeDp: Int) {
         val sz = dp(barSizeDp)
         val primaryBar = findViewById<HorizontalScrollView?>(R.id.primaryToolbarScroll)
-        // Was only resizing the individual ImageButtons — the shell (this ScrollView) kept
-        // whatever fixed height its XML layout_height gave it, so "Small" just left tiny icons
-        // floating in the same amount of surrounding empty space instead of the bar itself
-        // shrinking. Overriding the height here to hug the icon size (plus the row's own small
-        // vertical padding, dp(2) top + dp(2) bottom — see the shell-padding setup above) makes
-        // the whole bar responsive to this setting, not just its contents.
-        primaryBar?.layoutParams?.let { lp -> lp.height = sz + dp(4); primaryBar.layoutParams = lp }
         (primaryBar?.getChildAt(0) as? LinearLayout)?.let { ll ->
             for (i in 0 until ll.childCount) {
                 val child = ll.getChildAt(i) as? ImageButton ?: continue
