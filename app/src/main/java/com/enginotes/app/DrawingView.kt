@@ -7196,4 +7196,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         invalidate()
     }
+
+    // Used by BooksActivity to render an off-screen thumbnail of this note's first page.
+    // scaleFactor/translateX/translateY are private, so this is the one narrow door in — resets
+    // pan to the page's top-left corner at whatever scale the caller computed to fit their
+    // thumbnail bitmap size (typically minOf(thumbWidth/pageWidthPx(), thumbHeight/pageHeightPx())).
+    fun resetViewForThumbnail(scale: Float) {
+        scaleFactor = scale
+        translateX = 0f; translateY = 0f
+    }
 }

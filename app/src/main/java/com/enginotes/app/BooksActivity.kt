@@ -2,6 +2,7 @@ package com.enginotes.app
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -9,6 +10,7 @@ import android.widget.*
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -48,7 +50,7 @@ class BooksActivity : AppCompatActivity() {
         appTitle.setOnClickListener { showAppMenu(it) }
         topBar.addView(appTitle)
 
-        fun topBtn(emoji: String, action: () -> Unit) {
+        fun topBtn(emoji: String, action: () -> Unit): Button {
             val b = Button(this); b.text = emoji; b.textSize = 18f
             b.setBackgroundColor(android.graphics.Color.TRANSPARENT)
             b.setTextColor(android.graphics.Color.WHITE)
@@ -56,9 +58,19 @@ class BooksActivity : AppCompatActivity() {
             b.setPadding(dp(8), 0, dp(8), 0)
             b.setOnClickListener { action() }
             topBar.addView(b)
+            return b
         }
 
         topBtn("\uD83D\uDD0D") { showSearchDialog() }
+        // Icon shown is the mode you'd SWITCH TO (grid icon while in list mode, and vice versa),
+        // matching how this kind of toggle usually reads in other apps. Persisted so it survives
+        // restarting the app, not just this session.
+        lateinit var layoutToggleBtn: Button
+        layoutToggleBtn = topBtn(if (layoutMode == 0) "\u25A6" else "\u2261") {
+            layoutMode = if (layoutMode == 0) 1 else 0
+            layoutToggleBtn.text = if (layoutMode == 0) "\u25A6" else "\u2261"
+            refreshRecent()
+        }
         topBtn("\uD83D\uDCDA") { showBooksManagerDialog() }
         topBtn("\u2699") { showSettingsDialog() }
 
@@ -180,6 +192,65 @@ class BooksActivity : AppCompatActivity() {
         return result.sortedByDescending { it.first.lastModified() }
     }
 
+    // 0 = list (current row style), 1 = grid (thumbnail cards). Persisted so it survives
+    // restarting the app.
+    private var layoutMode: Int
+        get() = getPrefs().getInt("home_layout_mode", 0)
+        set(v) { getPrefs().edit().putInt("home_layout_mode", v).apply() }
+
+    private fun thumbnailCacheDir(): File {
+        val d = File(cacheDir, "thumbnails"); if (!d.exists()) d.mkdirs(); return d
+    }
+
+    private fun thumbnailFileFor(note: File): File =
+        File(thumbnailCacheDir(), "${note.nameWithoutExtension}_${note.lastModified()}.png")
+
+    // Renders a note's first page to a bitmap by loading it into an off-screen DrawingView and
+    // drawing that View directly — reuses all of DrawingView's actual rendering logic (strokes,
+    // tables, text, hatch fills, everything) instead of a second, simplified renderer that would
+    // inevitably drift out of sync with what the note actually looks like when opened for real.
+    private fun renderThumbnail(note: File, widthPx: Int, heightPx: Int): Bitmap? {
+        val dv = DrawingView(this)
+        dv.loadFromString(note.readText())
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(widthPx, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(heightPx, View.MeasureSpec.EXACTLY)
+        dv.measure(widthSpec, heightSpec)
+        dv.layout(0, 0, widthPx, heightPx)
+        val scale = minOf(widthPx / dv.pageWidthPx(), heightPx / dv.pageHeightPx())
+        dv.resetViewForThumbnail(if (scale.isFinite() && scale > 0f) scale else 1f)
+        val bmp = Bitmap.createBitmap(widthPx, heightPx, Bitmap.Config.ARGB_8888)
+        dv.draw(android.graphics.Canvas(bmp))
+        return bmp
+    }
+
+    // Cached thumbnails decode off the main thread (pure bitmap decoding — no View involved, so
+    // this part is safe to background). An uncached thumbnail renders synchronously on the main
+    // thread instead: Android Views aren't safe to construct, measure, or draw from a background
+    // thread even when never attached to a window, so that part can't be backgrounded. Only 5
+    // "Recent Notes" render at a time, so the one-time cost per note-version should stay small;
+    // every render after the first hits the disk cache instead.
+    private fun getOrCreateThumbnail(note: File, widthPx: Int, heightPx: Int, onReady: (Bitmap?) -> Unit) {
+        val cached = thumbnailFileFor(note)
+        if (cached.exists()) {
+            Thread {
+                val bmp = try { android.graphics.BitmapFactory.decodeFile(cached.absolutePath) } catch (e: Exception) { null }
+                runOnUiThread { onReady(bmp) }
+            }.start()
+            return
+        }
+        val bmp = try { renderThumbnail(note, widthPx, heightPx) } catch (e: Exception) { null }
+        onReady(bmp)
+        if (bmp != null) {
+            Thread {
+                try {
+                    // Clear any stale cached file(s) for this note (old mtime baked into the old filename)
+                    thumbnailCacheDir().listFiles()?.filter { it.name.startsWith("${note.nameWithoutExtension}_") }?.forEach { it.delete() }
+                    FileOutputStream(cached).use { bmp.compress(Bitmap.CompressFormat.PNG, 90, it) }
+                } catch (e: Exception) {}
+            }.start()
+        }
+    }
+
     private fun refresh() {
         refreshRecent()
         refreshBooks()
@@ -194,9 +265,23 @@ class BooksActivity : AppCompatActivity() {
             tv.setPadding(dp(4), 0, 0, 0)
             recentContainer.addView(tv); return
         }
-        for ((file, bookName) in recent) {
-            val card = makePageCard(file, bookName)
-            recentContainer.addView(card)
+        if (layoutMode == 0) {
+            for ((file, bookName) in recent) recentContainer.addView(makePageCard(file, bookName))
+        } else {
+            val cols = 3
+            var i = 0
+            while (i < recent.size) {
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                for (c in 0 until cols) {
+                    if (i < recent.size) {
+                        val (file, bookName) = recent[i]; row.addView(makeThumbnailCard(file, bookName)); i++
+                    } else {
+                        // Empty spacer so a short last row doesn't stretch its cards wider than the rest
+                        row.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 0, 1f) })
+                    }
+                }
+                recentContainer.addView(row)
+            }
         }
     }
 
@@ -289,6 +374,49 @@ class BooksActivity : AppCompatActivity() {
         card.setOnLongClickListener {
             showPageOptions(file, bookName); true
         }
+        return card
+    }
+
+    private fun makeThumbnailCard(file: File, bookName: String): View {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).also {
+                it.setMargins(dp(4), 0, dp(4), dp(14))
+            }
+        }
+        val thumbW = dp(160); val thumbH = dp(200)
+        val imageView = ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(140))
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(android.graphics.Color.WHITE); cornerRadius = dp(10).toFloat()
+                setStroke(dp(1), android.graphics.Color.parseColor("#E0E0E0"))
+            }
+            elevation = dp(1).toFloat()
+        }
+        card.addView(imageView)
+        val nameView = TextView(this).apply {
+            text = file.nameWithoutExtension; textSize = 12f
+            maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+            setTextColor(android.graphics.Color.parseColor("#2A2A2A"))
+            setPadding(dp(2), dp(4), dp(2), 0)
+        }
+        card.addView(nameView)
+        val metaView = TextView(this).apply {
+            text = dateFormat.format(Date(file.lastModified()))
+            textSize = 10f; setTextColor(android.graphics.Color.parseColor("#9E9E9E"))
+            setPadding(dp(2), dp(1), dp(2), 0)
+        }
+        card.addView(metaView)
+
+        getOrCreateThumbnail(file, thumbW, thumbH) { bmp -> if (bmp != null) imageView.setImageBitmap(bmp) }
+
+        card.setOnClickListener {
+            startActivity(Intent(this, MainActivity::class.java)
+                .putExtra("book_name", bookName)
+                .putExtra("filename", file.nameWithoutExtension))
+        }
+        card.setOnLongClickListener { showPageOptions(file, bookName); true }
         return card
     }
 
