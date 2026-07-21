@@ -889,7 +889,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     internal val actions = mutableListOf<Any>()
 
     // ── Layers (AutoCAD-style: named containers of many items, not one layer per shape) ──────
-    class Layer(val id: Int, var name: String, var visible: Boolean = true)
+    // Per-layer defaults — all nullable. Null means "not set for this layer," which falls back
+    // to the normal global sticky default (currentColor, currentLineType, etc.) exactly as
+    // before; only an explicitly-set (non-null) value here overrides that for new items created
+    // while this layer is active.
+    class Layer(val id: Int, var name: String, var visible: Boolean = true) {
+        var defaultColor: Int? = null
+        var defaultLineType: LineType? = null
+        var defaultStrokeWidth: Float? = null
+        var defaultFontSize: Float? = null
+        var defaultFontFamily: String? = null
+        var defaultBold: Boolean? = null
+        var defaultItalic: Boolean? = null
+        var defaultUnderline: Boolean? = null
+        var defaultOpacity: Int? = null
+        var locked: Boolean = false  // locked layers can't be drawn on or edited — common CAD/design-tool convention, useful alongside per-layer defaults for e.g. a reference/background layer
+    }
     val layers = mutableListOf(Layer(0, "Layer 1"))
     var currentLayerId: Int = 0  // new items are tagged with whichever layer is active
     private var nextLayerId = 1
@@ -918,6 +933,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         is DimensionItem -> item.layerId = id
         else -> {}
     } }
+    // Public entry point for "Add to Layer" — moves whatever's currently selected (single-select
+    // or multi-select, whichever is active) into the given layer.
+    fun moveSelectionToLayer(layerId: Int) {
+        val targets = (selectedItems + setOfNotNull(selectedItem)).toSet()
+        for (item in targets) setItemLayerId(item, layerId)
+        if (targets.isNotEmpty()) { markSpatialDirty(); invalidate() }
+    }
 
     // New layer goes to the TOP of the list (frontmost) and becomes active — this is what makes
     // "applying a hatch/color creates an instant new layer" put that hatch visibly on top of
@@ -932,6 +954,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun dimensionsLayerId(): Int {
         layers.find { it.name == "Dimensions" }?.let { return it.id }
         val l = Layer(nextLayerId++, "Dimensions")
+        layers.add(0, l)
+        invalidate()
+        return l.id
+    }
+    // Same idea, for hatches — replaces the old "new layer per hatch material" behavior, which
+    // cluttered the layer list with a "Hatch: Bronze", "Hatch: Copper", etc. for every material
+    // used on the drawing instead of one shared "Hatch" layer.
+    private fun hatchLayerId(): Int {
+        layers.find { it.name == "Hatch" }?.let { return it.id }
+        val l = Layer(nextLayerId++, "Hatch")
         layers.add(0, l)
         invalidate()
         return l.id
@@ -1102,6 +1134,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var currentPenStyle: PenStyle = PenStyle.FOUNTAIN
     var currentCalligraphySlant: Float = 0.65f  // applied to new fountain-pen strokes; adjustable separately from base thickness
     var currentLineType: LineType = LineType.CONTINUOUS
+    // Resolves "what should a brand-new item actually use" — the active layer's explicit
+    // override if it has one set, otherwise the normal global sticky default (unchanged
+    // behavior from before per-layer defaults existed).
+    private fun activeLayer(): Layer? = layers.find { it.id == currentLayerId }
+    fun effectiveColor(): Int = activeLayer()?.defaultColor ?: currentColor
+    fun effectiveStrokeWidth(): Float = activeLayer()?.defaultStrokeWidth ?: currentStrokeWidth
+    fun effectiveLineType(): LineType = activeLayer()?.defaultLineType ?: currentLineType
+    fun effectiveFontSize(): Float = activeLayer()?.defaultFontSize ?: defaultTextSize
+    fun effectiveFontFamily(): String? = activeLayer()?.defaultFontFamily
+    fun effectiveBold(): Boolean? = activeLayer()?.defaultBold
+    fun effectiveItalic(): Boolean? = activeLayer()?.defaultItalic
+    fun effectiveUnderline(): Boolean? = activeLayer()?.defaultUnderline
     // Snap-to-endpoint: snaps stroke start/end to nearby existing endpoints within snapRadius world units.
     // snapRadius is in screen pixels and converted to world space on use, so it stays consistent at any zoom.
     var snapToEndpoints: Boolean
@@ -1129,7 +1173,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // selected pen style so drawn thickness matches the thickness slider (PenStyle.BALL
         // renders at 0.65x strokeWidth, which was silently shrinking every polyline).
         val d = StrokeData(Tool.PEN, polylinePoints.toMutableList(),
-            currentColor, currentStrokeWidth, false, lineType = currentLineType, penStyle = currentPenStyle, isPolyline = true)
+            effectiveColor(), effectiveStrokeWidth(), false, lineType = effectiveLineType(), penStyle = currentPenStyle, isPolyline = true)
         val si = StrokeItem(d, d.buildPath(), d.toPaint())
         actions.add(si)
         redoStack.clear(); markSpatialDirty()
@@ -5402,13 +5446,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val data = when {
                     currentTool == Tool.PEN -> {
                         // Ball pen is strictly uniform - no pressure or speed sensitivity, per spec.
-                        val baseW = if (currentPenStyle == PenStyle.BALL) currentStrokeWidth else currentStrokeWidth * pressure
-                        StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, baseW, false, rotation = 0f, penStyle = currentPenStyle, opacity = if (currentPenStyle == PenStyle.BALL) 255 else brushOpacity, lineType = currentLineType, calligraphySlantThickness = currentCalligraphySlant)
+                        val baseW = if (currentPenStyle == PenStyle.BALL) effectiveStrokeWidth() else effectiveStrokeWidth() * pressure
+                        StrokeData(Tool.PEN, mutableListOf(wx, wy), effectiveColor(), baseW, false, rotation = 0f, penStyle = currentPenStyle, opacity = if (currentPenStyle == PenStyle.BALL) 255 else brushOpacity, lineType = effectiveLineType(), calligraphySlantThickness = currentCalligraphySlant)
                     }
-                    currentTool == Tool.HIGHLIGHTER -> StrokeData(Tool.HIGHLIGHTER, mutableListOf(wx, wy), currentColor, highlighterThickness, false, rotation = 0f, penStyle = PenStyle.MARKER, opacity = (highlighterOpacity * 255 / 100))
-                    currentTool == Tool.BRUSH -> StrokeData(Tool.BRUSH, mutableListOf(wx, wy), currentColor, brushThickness * pressure, false, rotation = 0f, brushStyle = currentBrushStyle, opacity = brushOpacity)
-                    SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, fillShapes, lineType = currentLineType)
-                    else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = brushOpacity, lineType = currentLineType, calligraphySlantThickness = currentCalligraphySlant)
+                    currentTool == Tool.HIGHLIGHTER -> StrokeData(Tool.HIGHLIGHTER, mutableListOf(wx, wy), effectiveColor(), highlighterThickness, false, rotation = 0f, penStyle = PenStyle.MARKER, opacity = (highlighterOpacity * 255 / 100))
+                    currentTool == Tool.BRUSH -> StrokeData(Tool.BRUSH, mutableListOf(wx, wy), effectiveColor(), brushThickness * pressure, false, rotation = 0f, brushStyle = currentBrushStyle, opacity = brushOpacity)
+                    SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), effectiveColor(), effectiveStrokeWidth(), fillShapes, lineType = effectiveLineType())
+                    else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), effectiveColor(), effectiveStrokeWidth() * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = brushOpacity, lineType = effectiveLineType(), calligraphySlantThickness = currentCalligraphySlant)
                 }
                 if (currentTool == Tool.PEN && currentPenStyle == PenStyle.FOUNTAIN) data.widths.add(currentStrokeWidth)
                 if (currentTool == Tool.PEN && currentPenStyle == PenStyle.PENCIL) data.widths.add(1f)
@@ -7023,12 +7067,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     // be active. createLayer() already puts the new layer at the top of the list
                     // (frontmost) and makes it active, so the fill lands visibly on top of
                     // whatever it's covering rather than silently behind it.
-                    val layerName = when {
-                        pendingHatchPattern != null -> "Hatch: ${pendingHatchPattern!!.name.lowercase().replace('_',' ').replaceFirstChar { it.uppercase() }}"
-                        pendingCustomHatchPath != null -> "Hatch: Custom"
-                        else -> "Fill: #%06X".format(fillColor and 0xFFFFFF)
+                    // Hatches all go into ONE shared "Hatch" layer (unless the user manually
+                    // moves one elsewhere afterward) rather than a new layer per material — the
+                    // old per-material-layer behavior ("Hatch: Bronze", "Hatch: Copper", one for
+                    // every material used) cluttered the layer list badly on any real drawing.
+                    // Plain color fills (no hatch pattern) keep their own per-color layer, since
+                    // that wasn't part of this — only hatches were asked to consolidate.
+                    fi.layerId = if (pendingHatchPattern != null || pendingCustomHatchPath != null) {
+                        hatchLayerId()
+                    } else {
+                        createLayer("Fill: #%06X".format(fillColor and 0xFFFFFF)).id
                     }
-                    fi.layerId = createLayer(layerName).id
                     // Only remove an existing FillItem if the tap pixel lands inside it AND the
                     // new fill is roughly the same size as the existing one — meaning the user
                     // re-tapped the same closed region to replace its color. If the new fill is

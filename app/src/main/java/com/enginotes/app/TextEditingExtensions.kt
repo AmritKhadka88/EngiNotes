@@ -516,12 +516,34 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
         dismissCellEditor()
         dismissAllFloatingPanels()
         drawingView.isTextEditorOpen = true
-        pendingBold=false; pendingItalic=false; pendingUnderline=false; pendingHighlight=null
-        // Default font size: 50pt in Convenient layout (large, comfortable writing feel),
-        // 12pt in Print/Infinite layouts (true-to-scale, matches standard document text).
-        val layoutDefaultSize = if (drawingView.canvasMode == CanvasMode.CONVENIENT) 50f * PT_TO_PX else 12f * PT_TO_PX
-        editingItem=item; editWorldX=item?.x?:worldX; editWorldY=item?.y?:worldY; editRotation=item?.rotation?:0f; editColor=item?.color?:drawingView.currentColor; editSize=item?.size?:layoutDefaultSize
-        editOpacity = item?.opacity ?: 255
+        // Was unconditionally pendingBold=false/pendingItalic=false/pendingUnderline=false here,
+        // for BOTH new and existing items — meaning bold/italic/underline never stuck as a default
+        // for the next text item you created, even though B/I/U had just been toggled on for the
+        // previous one. Only reset these when reopening an EXISTING item (its own look is already
+        // in its spans, so the "what will new keystrokes look like" toggle should start neutral);
+        // a brand new item keeps whatever was last used.
+        if (item != null) { pendingBold=false; pendingItalic=false; pendingUnderline=false }
+        else {
+            // Brand-new text item: the active layer's explicit style defaults (if set) take
+            // priority over the normal sticky "last used" toggle state.
+            val layer = drawingView.layers.find { it.id == drawingView.currentLayerId }
+            layer?.defaultBold?.let { pendingBold = it }
+            layer?.defaultItalic?.let { pendingItalic = it }
+            layer?.defaultUnderline?.let { pendingUnderline = it }
+        }
+        pendingHighlight=null
+        // editColor and editSize used to fall back to drawingView.currentColor / a fixed
+        // layoutDefaultSize for brand-new items — currentColor is the unrelated PEN/drawing-tool
+        // color (shared by strokes, shapes, arcs — nothing to do with text), and the fixed default
+        // ignored whatever size you'd actually picked via the Text panel. Both now fall back to
+        // their own last-used value instead, matching how pendingFontFamily already worked below.
+        editingItem=item; editWorldX=item?.x?:worldX; editWorldY=item?.y?:worldY; editRotation=item?.rotation?:0f
+        run {
+            val layer = drawingView.layers.find { it.id == drawingView.currentLayerId }
+            editColor = item?.color ?: layer?.defaultColor ?: editColor
+            editSize = item?.size ?: layer?.defaultFontSize ?: editSize
+        }
+        editOpacity = item?.opacity ?: editOpacity
         // editWorldY (like TextItem.y) means BOTTOM everywhere else in this app — but what we
         // actually want while typing/pasting is for the TOP to stay fixed and the box to grow
         // DOWNWARD as content is added, the way any normal text editor behaves. Without this
@@ -532,7 +554,7 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
         editTopAnchorY = if (item != null) item.y - drawingView.textItemHeight(item) else worldY
         // For new text: use last-saved font from prefs (most reliable — survives any intermediate resets)
         // For existing text: load that item's own font
-        pendingFontFamily = item?.fontFamily ?: (getPrefs().getString("last_font", pendingFontFamily) ?: pendingFontFamily)
+        pendingFontFamily = item?.fontFamily ?: drawingView.layers.find { it.id == drawingView.currentLayerId }?.defaultFontFamily ?: (getPrefs().getString("last_font", pendingFontFamily) ?: pendingFontFamily)
         // The panel (Default/Serif/Monospace/size) reads editSize/editColor/pendingFontFamily
         // directly but was never told to rebuild when editing actually started — so it kept
         // showing whatever it displayed before (often a stale default), even though the text

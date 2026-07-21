@@ -2131,6 +2131,132 @@ class MainActivity : AppCompatActivity() {
         return android.graphics.drawable.BitmapDrawable(resources, bmp)
     }
 
+    private fun showLayerPropertiesDialog(layer: DrawingView.Layer, onDone: () -> Unit) {
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        fun sectionLabel(t: String) { container.addView(TextView(this).apply { text = t; textSize = 13f; setTextColor(Color.parseColor("#7B61FF")); setPadding(0, dp(10), 0, dp(4)) }) }
+        fun rowOf(vararg views: View): LinearLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; views.forEach { addView(it) } }
+
+        sectionLabel("Default Color (new items on this layer)")
+        val colorBtn = Button(this)
+        fun refreshColorBtn() {
+            val c = layer.defaultColor
+            colorBtn.text = if (c != null) "Set — tap to clear" else "Not set — tap to choose"
+            colorBtn.setBackgroundColor(c ?: Color.parseColor("#E0E0E0"))
+            colorBtn.setTextColor(if (c != null) Color.WHITE else Color.parseColor("#2A2A2A"))
+        }
+        refreshColorBtn()
+        colorBtn.setOnClickListener {
+            if (layer.defaultColor != null) { layer.defaultColor = null; refreshColorBtn() }
+            else showColorGridDialog { c -> layer.defaultColor = c; refreshColorBtn() }
+        }
+        container.addView(colorBtn)
+
+        sectionLabel("Default Line Type")
+        val lineTypeBtn = Button(this)
+        fun refreshLineTypeBtn() { lineTypeBtn.text = layer.defaultLineType?.label ?: "Not set — tap to choose" }
+        refreshLineTypeBtn()
+        lineTypeBtn.setOnClickListener {
+            val options = (listOf("Not set") + LineType.values().map { it.label }).toTypedArray()
+            AlertDialog.Builder(this).setTitle("Default line type").setItems(options) { _, idx ->
+                layer.defaultLineType = if (idx == 0) null else LineType.values()[idx - 1]
+                refreshLineTypeBtn()
+            }.show()
+        }
+        container.addView(lineTypeBtn)
+
+        sectionLabel("Default Stroke Width")
+        val widthLabel = TextView(this).apply { textSize = 13f; layoutParams = LinearLayout.LayoutParams(dp(90), LinearLayout.LayoutParams.WRAP_CONTENT) }
+        fun refreshWidthLabel() { widthLabel.text = layer.defaultStrokeWidth?.let { "%.1f".format(it) } ?: "Not set" }
+        refreshWidthLabel()
+        val widthSeek = SeekBar(this).apply {
+            max = 200; progress = ((layer.defaultStrokeWidth ?: 0f) * 10f).toInt().coerceIn(0, 200)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                    layer.defaultStrokeWidth = if (p == 0) null else p / 10f; refreshWidthLabel()
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        container.addView(rowOf(widthSeek, widthLabel))
+
+        sectionLabel("Default Font Size")
+        val fontSizeLabel = TextView(this).apply { textSize = 13f; layoutParams = LinearLayout.LayoutParams(dp(90), LinearLayout.LayoutParams.WRAP_CONTENT) }
+        fun refreshFontSizeLabel() { fontSizeLabel.text = layer.defaultFontSize?.let { "%.0fpt".format(it / PT_TO_PX) } ?: "Not set" }
+        refreshFontSizeLabel()
+        val fontSizeSeek = SeekBar(this).apply {
+            max = 120; progress = ((layer.defaultFontSize ?: 0f) / PT_TO_PX).toInt().coerceIn(0, 120)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                    layer.defaultFontSize = if (p == 0) null else p * PT_TO_PX; refreshFontSizeLabel()
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        container.addView(rowOf(fontSizeSeek, fontSizeLabel))
+
+        sectionLabel("Default Font Family")
+        val fontFamilyBtn = Button(this)
+        fun refreshFontFamilyBtn() { fontFamilyBtn.text = layer.defaultFontFamily ?: "Not set — tap to choose" }
+        refreshFontFamilyBtn()
+        fontFamilyBtn.setOnClickListener {
+            val labels = arrayOf("Not set", "Default (Sans)", "Serif", "Monospace (LaTeX-style)")
+            val values = arrayOf(null, "sans-serif", "serif", "monospace")
+            AlertDialog.Builder(this).setTitle("Default font family").setItems(labels) { _, idx ->
+                layer.defaultFontFamily = values[idx]; refreshFontFamilyBtn()
+            }.show()
+        }
+        container.addView(fontFamilyBtn)
+
+        sectionLabel("Default Font Style")
+        fun triStateBtn(label: String, get: () -> Boolean?, set: (Boolean?) -> Unit): Button = Button(this).apply {
+            fun refresh() { val v = get(); text = "$label: ${if (v == null) "unset" else if (v) "on" else "off"}" }
+            refresh()
+            setOnClickListener {
+                // Cycles unset -> on -> off -> unset, so every layer starts neutral and you
+                // opt in explicitly rather than every layer silently forcing bold/italic off.
+                set(when (get()) { null -> true; true -> false; false -> null })
+                refresh()
+            }
+        }
+        val styleRow = rowOf(
+            triStateBtn("B", { layer.defaultBold }, { layer.defaultBold = it }),
+            triStateBtn("I", { layer.defaultItalic }, { layer.defaultItalic = it }),
+            triStateBtn("U", { layer.defaultUnderline }, { layer.defaultUnderline = it })
+        )
+        container.addView(styleRow)
+
+        sectionLabel("Default Opacity")
+        val opacityLabel = TextView(this).apply { textSize = 13f; layoutParams = LinearLayout.LayoutParams(dp(90), LinearLayout.LayoutParams.WRAP_CONTENT) }
+        fun refreshOpacityLabel() { opacityLabel.text = layer.defaultOpacity?.let { "$it" } ?: "Not set" }
+        refreshOpacityLabel()
+        val opacitySeek = SeekBar(this).apply {
+            max = 256; progress = (layer.defaultOpacity ?: 0)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                    layer.defaultOpacity = if (p == 0) null else p.coerceAtMost(255); refreshOpacityLabel()
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        container.addView(rowOf(opacitySeek, opacityLabel))
+
+        sectionLabel("Locked")
+        val lockRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        lockRow.addView(TextView(this).apply { text = "Prevent drawing/editing on this layer"; textSize = 13f; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+        lockRow.addView(android.widget.Switch(this).apply { isChecked = layer.locked; setOnCheckedChangeListener { _, v -> layer.locked = v } })
+        container.addView(lockRow)
+
+        AlertDialog.Builder(this).setTitle("Layer Properties: ${layer.name}")
+            .setView(ScrollView(this).apply { addView(container) })
+            .setPositiveButton("Done") { _, _ -> onDone() }.show()
+    }
+
     // Lists every item currently on the canvas, top-of-stack (frontmost, rendered last) shown
     // FIRST — standard layer-panel convention. Reuses the existing bringToFront/bringForward/
     // sendBackward/sendToBack rather than introducing a second way to reorder items, so this
@@ -2161,12 +2287,23 @@ class MainActivity : AppCompatActivity() {
                     setPadding(dp(8), dp(8), dp(8), dp(8))
                     if (isActive) setBackgroundColor(Color.parseColor("#E3EEFB"))
                 }
+                // Dedicated exclusive check-button for "this is the ONE layer new drawings go
+                // into" — separate from the row's own tap-to-rename-adjacent interactions, and
+                // from renaming (long-press). Only ever one checked at a time, like a radio group.
                 row.addView(TextView(this).apply {
-                    text = "${layer.name}  ($count)"
+                    text = if (isActive) "\u2611" else "\u2610"  // ☑ / ☐
+                    textSize = 18f; setTextColor(Color.parseColor(if (isActive) "#1565C0" else "#9E9E9E"))
+                    setPadding(dp(4), dp(4), dp(10), dp(4))
+                    setOnClickListener { drawingView.currentLayerId = layer.id; refresh() }
+                })
+                row.addView(TextView(this).apply {
+                    text = "${layer.name}  ($count)" + if (layer.locked) "  \uD83D\uDD12" else ""
                     textSize = 14f; setTextColor(if (layer.visible) Color.parseColor("#1C1C1E") else Color.parseColor("#B0AAA2"))
                     if (isActive) setTypeface(null, Typeface.BOLD)
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                    // Tap = make this the active layer (new items go here). Long-press = rename.
+                    // Tap = make this the active layer too (same action as the check-button —
+                    // most people will just tap the row without hunting for the tiny checkbox).
+                    // Long-press = rename.
                     setOnClickListener { drawingView.currentLayerId = layer.id; refresh() }
                     setOnLongClickListener { renameLayerDialog(layer.id, layer.name); true }
                 })
@@ -2174,6 +2311,7 @@ class MainActivity : AppCompatActivity() {
                     text = label; textSize = 15f; setPadding(dp(8), dp(6), dp(8), dp(6)); setTextColor(Color.parseColor(color))
                     setOnClickListener { action(); refresh() }
                 }
+                row.addView(iconBtn("\u2699") { showLayerPropertiesDialog(layer) { refresh() } })
                 row.addView(iconBtn(if (layer.visible) "👁" else "🚫") { drawingView.setLayerVisible(layer.id, !layer.visible) })
                 row.addView(iconBtn("⬆") { drawingView.moveLayerUp(layer.id) })
                 row.addView(iconBtn("⬇") { drawingView.moveLayerDown(layer.id) })
@@ -2193,20 +2331,54 @@ class MainActivity : AppCompatActivity() {
             }
         }
         refresh()
-        val scroll = ScrollView(this).apply { addView(list) }
+        val scroll = ScrollView(this).apply {
+            addView(list)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
         val outer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(scroll) }
-        dlg = AlertDialog.Builder(this).setTitle("Layers (tap = active, long-press = rename)")
-            .setView(outer)
-            .setNeutralButton("+ New Layer") { _, _ ->
-                val input = android.widget.EditText(this).apply { hint = "Layer name" }
-                AlertDialog.Builder(this).setTitle("New layer").setView(input)
-                    .setPositiveButton("Create") { _, _ ->
-                        val n = input.text.toString().trim().ifEmpty { "Layer ${drawingView.layers.size + 1}" }
-                        drawingView.createLayer(n)
-                        showLayersPanel()
-                    }.setNegativeButton("Cancel", null).show()
+
+        // Custom button row instead of native AlertDialog buttons — native negative/neutral/
+        // positive slots don't reliably give left-to-right control over ordering across Android
+        // versions/themes (neutral typically gets pushed off to its own far-left island), and
+        // "New Layer, Add to Layer, Done" specifically needs a guaranteed left-to-right order.
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(8), dp(4), dp(8), dp(8))
+        }
+        fun dlgBtn(label: String, action: () -> Unit) = Button(this).apply {
+            text = label; textSize = 13f
+            setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#7B61FF"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { action() }
+        }
+        btnRow.addView(dlgBtn("+ New Layer") {
+            val input = android.widget.EditText(this).apply { hint = "Layer name" }
+            AlertDialog.Builder(this).setTitle("New layer").setView(input)
+                .setPositiveButton("Create") { _, _ ->
+                    val n = input.text.toString().trim().ifEmpty { "Layer ${drawingView.layers.size + 1}" }
+                    drawingView.createLayer(n)
+                    showLayersPanel(); dlg?.dismiss()
+                }.setNegativeButton("Cancel", null).show()
+        })
+        btnRow.addView(dlgBtn("Add to Layer") {
+            val hasSelection = drawingView.selectedItem != null || drawingView.selectedItems.isNotEmpty()
+            if (!hasSelection) {
+                Toast.makeText(this, "Select something with the Select tool first, then Add to Layer", Toast.LENGTH_SHORT).show()
+                return@dlgBtn
             }
-            .setPositiveButton("Done", null).show()
+            val names = drawingView.layers.map { it.name }.toTypedArray()
+            AlertDialog.Builder(this).setTitle("Choose layer")
+                .setItems(names) { _, idx ->
+                    drawingView.moveSelectionToLayer(drawingView.layers[idx].id)
+                    Toast.makeText(this, "Moved to \"${drawingView.layers[idx].name}\"", Toast.LENGTH_SHORT).show()
+                    refresh()
+                }.show()
+        })
+        btnRow.addView(dlgBtn("Done") { dlg?.dismiss() })
+        outer.addView(btnRow)
+
+        dlg = AlertDialog.Builder(this).setTitle("Layers (tap = active, long-press = rename)")
+            .setView(outer).show()
     }
 
     fun onMenuClick(v: View) {
