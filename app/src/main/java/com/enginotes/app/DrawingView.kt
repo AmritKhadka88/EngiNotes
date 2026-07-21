@@ -184,7 +184,15 @@ class StrokeData(
     // (which every Tool.PEN render path below does, to remove hand tremor from natural
     // handwriting) would round off intentional sharp corners into a curve, which is wrong for
     // a tool whose entire purpose is precise straight segments.
-    var isPolyline: Boolean = false
+    var isPolyline: Boolean = false,
+    // Distance (in world/path units, same space PathMeasure works in) from the START of the
+    // ORIGINAL, never-erased stroke to this fragment's own first point. Used as the dash
+    // pattern's phase offset so a dashed/dotted line's pattern stays visually anchored to its
+    // true position along the original line, no matter how many times the area eraser has since
+    // split it into fragments — without this, every fragment's dash phase defaulted to 0 at
+    // wherever ITS OWN point list happened to start, so the visible pattern appeared to shift
+    // with every incremental erase as fragments were repeatedly re-split mid-drag.
+    var dashPhase: Float = 0f
 ) {
     fun buildPath(): Path {
         val path = Path()
@@ -708,7 +716,7 @@ class StrokeData(
         if (lineType != LineType.CONTINUOUS && penStyle != PenStyle.PENCIL && intervals != null) {
             val sw = p.strokeWidth.coerceAtLeast(1f)
             val scaled = intervals.map { it * sw / 3f }.toFloatArray()
-            p.pathEffect = android.graphics.DashPathEffect(scaled, 0f)
+            p.pathEffect = android.graphics.DashPathEffect(scaled, dashPhase)
             if (lineType.cap != android.graphics.Paint.Cap.BUTT) p.strokeCap = lineType.cap
         }
         return p
@@ -889,7 +897,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     internal val actions = mutableListOf<Any>()
 
     // ── Layers (AutoCAD-style: named containers of many items, not one layer per shape) ──────
-    class Layer(val id: Int, var name: String, var visible: Boolean = true)
+    // Per-layer defaults — all nullable. Null means "not set for this layer," which falls back
+    // to the normal global sticky default (currentColor, currentLineType, etc.) exactly as
+    // before; only an explicitly-set (non-null) value here overrides that for new items created
+    // while this layer is active.
+    class Layer(val id: Int, var name: String, var visible: Boolean = true) {
+        var defaultColor: Int? = null
+        var defaultLineType: LineType? = null
+        var defaultStrokeWidth: Float? = null
+        var defaultFontSize: Float? = null
+        var defaultFontFamily: String? = null
+        var defaultBold: Boolean? = null
+        var defaultItalic: Boolean? = null
+        var defaultUnderline: Boolean? = null
+        var defaultOpacity: Int? = null
+        var locked: Boolean = false  // locked layers can't be drawn on or edited — common CAD/design-tool convention, useful alongside per-layer defaults for e.g. a reference/background layer
+    }
     val layers = mutableListOf(Layer(0, "Layer 1"))
     var currentLayerId: Int = 0  // new items are tagged with whichever layer is active
     private var nextLayerId = 1
@@ -918,12 +941,40 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         is DimensionItem -> item.layerId = id
         else -> {}
     } }
+    // Public entry point for "Add to Layer" — moves whatever's currently selected (single-select
+    // or multi-select, whichever is active) into the given layer.
+    fun moveSelectionToLayer(layerId: Int) {
+        val targets = (selectedItems + setOfNotNull(selectedItem)).toSet()
+        for (item in targets) setItemLayerId(item, layerId)
+        if (targets.isNotEmpty()) { markSpatialDirty(); invalidate() }
+    }
 
     // New layer goes to the TOP of the list (frontmost) and becomes active — this is what makes
     // "applying a hatch/color creates an instant new layer" put that hatch visibly on top of
     // whatever it's covering, rather than silently behind it.
     fun createLayer(name: String): Layer {
         val l = Layer(nextLayerId++, name); layers.add(0, l); currentLayerId = l.id; invalidate(); return l
+    }
+    // Dimension items always go into their own dedicated "Dimensions" layer, auto-created on
+    // first use, regardless of whichever layer is currently active for other tools. Unlike
+    // createLayer() this does NOT switch currentLayerId — drawing a dimension shouldn't silently
+    // move the user away from whatever layer they're actively working in with other tools.
+    private fun dimensionsLayerId(): Int {
+        layers.find { it.name == "Dimensions" }?.let { return it.id }
+        val l = Layer(nextLayerId++, "Dimensions")
+        layers.add(0, l)
+        invalidate()
+        return l.id
+    }
+    // Same idea, for hatches — replaces the old "new layer per hatch material" behavior, which
+    // cluttered the layer list with a "Hatch: Bronze", "Hatch: Copper", etc. for every material
+    // used on the drawing instead of one shared "Hatch" layer.
+    private fun hatchLayerId(): Int {
+        layers.find { it.name == "Hatch" }?.let { return it.id }
+        val l = Layer(nextLayerId++, "Hatch")
+        layers.add(0, l)
+        invalidate()
+        return l.id
     }
     fun renameLayer(layerId: Int, name: String) { layers.find { it.id == layerId }?.name = name }
     // Deleting a layer deletes everything in it too — matches "if a layer is deleted, objects in
@@ -936,7 +987,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (currentLayerId == layerId) currentLayerId = layers.first().id
         redoStack.clear(); markSpatialDirty(); invalidate()
     }
-    fun setLayerVisible(layerId: Int, visible: Boolean) { layers.find { it.id == layerId }?.visible = visible; markSpatialDirty(); invalidate() }
+    fun setLayerVisible(layerId: Int, visible: Boolean) {
+        layers.find { it.id == layerId }?.visible = visible
+        if (!visible) {
+            // An item already selected right before its layer gets hidden would otherwise stay
+            // fully draggable/deletable via the still-active selection reference — hiding a
+            // layer must immediately drop anything of its that's currently selected, not just
+            // block NEW selection attempts.
+            val cur = selectedItem
+            if (cur != null && itemLayerId(cur) == layerId) selectedItem = null
+            selectedItems.removeAll { itemLayerId(it) == layerId }
+            selectedGroup = selectedGroup?.filter { itemLayerId(it) != layerId }?.toMutableList()?.takeIf { it.isNotEmpty() }
+        }
+        markSpatialDirty(); invalidate()
+    }
     fun moveLayerUp(layerId: Int) { val i = layers.indexOfFirst { it.id == layerId }; if (i > 0) { val l = layers.removeAt(i); layers.add(i - 1, l) }; invalidate() }
     fun moveLayerDown(layerId: Int) { val i = layers.indexOfFirst { it.id == layerId }; if (i in 0 until layers.size - 1) { val l = layers.removeAt(i); layers.add(i + 1, l) }; invalidate() }
     // Read/written by drawHatchPattern and loadCustomHatchBitmap in HatchRenderingExtensions.kt.
@@ -1008,9 +1072,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun itemsNear(x: Float, y: Float, r: Float): List<Any> {
         if (spatialDirty) rebuildSpatialIndex()
         val wx = x - r; val wy = y - r; val wx2 = x + r; val wy2 = y + r
+        // A hidden layer's items must act like they don't exist at all — not just invisible.
+        // Filtering here (the shared spatial-query primitive behind tap-to-select and other
+        // hit-testing) means every caller gets this for free instead of needing its own check.
+        val hiddenLayerIds = layers.filter { !it.visible }.map { it.id }.toHashSet()
         val seen = HashSet<Any>(); val result = mutableListOf<Any>()
         for (key in boundsToGridCells(wx, wy, wx2, wy2)) {
-            spatialGrid[key]?.forEach { a -> if (seen.add(a)) result.add(a) }
+            spatialGrid[key]?.forEach { a -> if (seen.add(a) && !hiddenLayerIds.contains(itemLayerId(a))) result.add(a) }
         }
         return result
     }
@@ -1091,6 +1159,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var currentPenStyle: PenStyle = PenStyle.FOUNTAIN
     var currentCalligraphySlant: Float = 0.65f  // applied to new fountain-pen strokes; adjustable separately from base thickness
     var currentLineType: LineType = LineType.CONTINUOUS
+    // Resolves "what should a brand-new item actually use" — the active layer's explicit
+    // override if it has one set, otherwise the normal global sticky default (unchanged
+    // behavior from before per-layer defaults existed).
+    private fun activeLayer(): Layer? = layers.find { it.id == currentLayerId }
+    fun effectiveColor(): Int = activeLayer()?.defaultColor ?: currentColor
+    fun effectiveStrokeWidth(): Float = activeLayer()?.defaultStrokeWidth ?: currentStrokeWidth
+    fun effectiveLineType(): LineType = activeLayer()?.defaultLineType ?: currentLineType
+    fun effectiveFontSize(): Float = activeLayer()?.defaultFontSize ?: defaultTextSize
+    fun effectiveFontFamily(): String? = activeLayer()?.defaultFontFamily
+    fun effectiveBold(): Boolean? = activeLayer()?.defaultBold
+    fun effectiveItalic(): Boolean? = activeLayer()?.defaultItalic
+    fun effectiveUnderline(): Boolean? = activeLayer()?.defaultUnderline
     // Snap-to-endpoint: snaps stroke start/end to nearby existing endpoints within snapRadius world units.
     // snapRadius is in screen pixels and converted to world space on use, so it stays consistent at any zoom.
     var snapToEndpoints: Boolean
@@ -1118,7 +1198,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // selected pen style so drawn thickness matches the thickness slider (PenStyle.BALL
         // renders at 0.65x strokeWidth, which was silently shrinking every polyline).
         val d = StrokeData(Tool.PEN, polylinePoints.toMutableList(),
-            currentColor, currentStrokeWidth, false, lineType = currentLineType, penStyle = currentPenStyle, isPolyline = true)
+            effectiveColor(), effectiveStrokeWidth(), false, lineType = effectiveLineType(), penStyle = currentPenStyle, isPolyline = true)
         val si = StrokeItem(d, d.buildPath(), d.toPaint())
         actions.add(si)
         redoStack.clear(); markSpatialDirty()
@@ -1179,6 +1259,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var paperType: PaperType = PaperType.GRID
     var paperColor: Int = Color.parseColor("#FFFDE7")
     var defaultTextSize: Float = 50f * 1.333f
+    // Sticky defaults for BRAND NEW table cells — same "must not change unless I rechange it"
+    // requirement as text. Updated by the Table Properties formatting controls (B/I/U, font,
+    // text color) whenever applied to a selection; addTable() uses these for new cells instead
+    // of TableCell's hardcoded class defaults.
+    var defaultCellTextColor: Int = Color.BLACK
+    var defaultCellFontFamily: String? = null
+    var defaultCellBold: Boolean = false
+    var defaultCellItalic: Boolean = false
+    var defaultCellUnderline: Boolean = false
 
     var canvasMode: CanvasMode = CanvasMode.CONVENIENT
     var paperSize: PaperSizeOption = PaperSizeOption.A4
@@ -1257,6 +1346,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var tableDragStartY = 0f
     private var tableDragStartX = 0f
     private var tableDragOrigSize = 0f
+    private var tableDragOrigSizeAdjacent = 0f
+    private var tableDragOuterEdge = -1  // 0=top,1=bottom,2=left,3=right, -1=none
+    private var tableDragOrigX = 0f
+    private var tableDragOrigY = 0f
     private var tableSelStart: Pair<Int, Int>? = null
     private var tableSelEnd: Pair<Int, Int>? = null
     private var tableIsActive: Boolean = false
@@ -1509,6 +1602,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // Double-tap on a DimensionItem → edit it
             if (currentTool == Tool.DIMENSION || currentTool == Tool.SELECT) {
                 val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
+                    if (layers.find { it.id == d.layerId }?.visible == false) return@firstOrNull false
                     val hr = 80f
                     kotlin.math.hypot((e.x - d.handleMidsx), (e.y - d.handleMidsy)) < hr ||
                     kotlin.math.hypot((e.x - d.handleP1sx), (e.y - d.handleP1sy)) < hr ||
@@ -1586,6 +1680,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 selectedItem = hit; invalidate()
                 onTextSelectRequest?.invoke(hit, e.x, e.y, e.rawX, e.rawY)
                 return
+            }
+            // Long-pressing a single table cell (no drag) selects that cell without popping the
+            // keyboard open — previously there was no table branch here at all, so holding still
+            // on one cell did nothing; only dragging across multiple cells worked, since that path
+            // goes through extendTableSelection() on ACTION_MOVE instead of this callback.
+            val table = activeTableItem
+            if (table != null && tableIsActive) {
+                val cell = table.hitTestCell(wx, wy)
+                if (cell != null) {
+                    tableSelStart = cell; tableSelEnd = null
+                    tableLongPressSelectOnly = true
+                    performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                    invalidate()
+                    return
+                }
             }
         }
     })
@@ -1697,7 +1806,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // ── End fast path ──────────────────────────────────────────────────────
         when (action) {
             is FillToggleAction -> return // no visual - just an undo record
-            is TableItem -> action.draw(canvas, scaleFactor)
+            is TableItem -> { action.draw(canvas, scaleFactor); if (action.showHeaders) action.drawHeaders(canvas, scaleFactor) }
             is AudioItem -> drawAudioItem(canvas, action)
             is FillItem -> {
                 if (!includeFills) return
@@ -1792,6 +1901,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
             }
             is TextItem -> { if (!action.isEditing) drawTextItem(canvas, action) }
+            is DimensionItem -> drawDimensionItem(canvas, action)
             is ImageItem -> {
                 val bmp = getOrLoadBitmap(action) ?: return
                 canvas.save()
@@ -3076,6 +3186,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is FillItem -> { item.x += dx; item.y += dy }
             is TextItem -> { item.x += dx; item.y += dy }
             is AudioItem -> { item.x += dx; item.y += dy }
+            is DimensionItem -> {
+                item.x1 += dx; item.y1 += dy; item.x2 += dx; item.y2 += dy
+                markSpatialDirty()  // bounds changed — spatial grid must update or hit-testing fails at the new position
+            }
             is StrokeItem -> {
                 var i = 0
                 while (i + 1 < item.data.points.size) { item.data.points[i] += dx; item.data.points[i + 1] += dy; i += 2 }
@@ -3317,6 +3431,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun findTextItemAt(x: Float, y: Float): TextItem? {
         for (a in actions.reversed()) {
             if (a is TextItem) {
+                if (layers.find { it.id == a.layerId }?.visible == false) continue
                 val layout = getOrBuildLayout(a)
                 val cw = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
                 val ch = layout.height.toFloat()
@@ -3522,7 +3637,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Long-press extends selection to a range (for merge) without opening the editor
     fun extendTableSelection(wx: Float, wy: Float) {
         val table = activeTableItem ?: return; if (!tableIsActive) return
-        val cell = table.hitTestCell(wx, wy) ?: return
+        val cell = table.hitTestCellClamped(wx, wy)
         if (tableSelStart == null) tableSelStart = cell else tableSelEnd = cell
         invalidate()
     }
@@ -4103,7 +4218,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun selectItemsInRegion(region: Region, regionBounds: FloatArray, windowMode: Boolean) {
         val group = mutableListOf<Any>()
         val rl = regionBounds[0]; val rt = regionBounds[1]; val rr = regionBounds[2]; val rb = regionBounds[3]
+        val hiddenLayerIds = layers.filter { !it.visible }.map { it.id }.toHashSet()
         for (action in actions) {
+            if (hiddenLayerIds.contains(itemLayerId(action))) continue
             val b = getBounds(action) ?: continue
             val matches = if (windowMode) {
                 // Window select (L→R): item's full bbox must be completely inside the rectangle
@@ -4905,6 +5022,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
                     val HR = 80f
                     val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
+                        if (layers.find { it.id == d.layerId }?.visible == false) return@firstOrNull false
                         kotlin.math.hypot((event.x - d.handleP1sx), (event.y - d.handleP1sy)) < HR ||
                         kotlin.math.hypot((event.x - d.handleP2sx), (event.y - d.handleP2sy)) < HR ||
                         kotlin.math.hypot((event.x - d.handleMidsx), (event.y - d.handleMidsy)) < HR
@@ -5019,6 +5137,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                     fontSize = defaultDimFontSize, arrowSize = defaultDimArrowSize, textColor = currentColor
                                 )
                                 newDim.unit = "${dimAngP3wx},${dimAngP3wy},false"
+                                newDim.layerId = dimensionsLayerId()
                                 actions.add(newDim); redoStack.clear(); markSpatialDirty(); invalidate()
                             }
                         }
@@ -5041,6 +5160,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             if (dimMode == DimMode.AUTO) {
                                 newDim.refLength = autoRefRealLen; newDim.unit = autoRefUnit
                             }
+                            newDim.layerId = dimensionsLayerId()
                             actions.add(newDim); redoStack.clear(); markSpatialDirty()
                             onDimensionCreated?.invoke(newDim)
                         }
@@ -5245,13 +5365,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val data = when {
                     currentTool == Tool.PEN -> {
                         // Ball pen is strictly uniform - no pressure or speed sensitivity, per spec.
-                        val baseW = if (currentPenStyle == PenStyle.BALL) currentStrokeWidth else currentStrokeWidth * pressure
-                        StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, baseW, false, rotation = 0f, penStyle = currentPenStyle, opacity = if (currentPenStyle == PenStyle.BALL) 255 else brushOpacity, lineType = currentLineType, calligraphySlantThickness = currentCalligraphySlant)
+                        val baseW = if (currentPenStyle == PenStyle.BALL) effectiveStrokeWidth() else effectiveStrokeWidth() * pressure
+                        StrokeData(Tool.PEN, mutableListOf(wx, wy), effectiveColor(), baseW, false, rotation = 0f, penStyle = currentPenStyle, opacity = if (currentPenStyle == PenStyle.BALL) 255 else brushOpacity, lineType = effectiveLineType(), calligraphySlantThickness = currentCalligraphySlant)
                     }
-                    currentTool == Tool.HIGHLIGHTER -> StrokeData(Tool.HIGHLIGHTER, mutableListOf(wx, wy), currentColor, highlighterThickness, false, rotation = 0f, penStyle = PenStyle.MARKER, opacity = (highlighterOpacity * 255 / 100))
-                    currentTool == Tool.BRUSH -> StrokeData(Tool.BRUSH, mutableListOf(wx, wy), currentColor, brushThickness * pressure, false, rotation = 0f, brushStyle = currentBrushStyle, opacity = brushOpacity)
-                    SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), currentColor, currentStrokeWidth, fillShapes, lineType = currentLineType)
-                    else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), currentColor, currentStrokeWidth * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = brushOpacity, lineType = currentLineType, calligraphySlantThickness = currentCalligraphySlant)
+                    currentTool == Tool.HIGHLIGHTER -> StrokeData(Tool.HIGHLIGHTER, mutableListOf(wx, wy), effectiveColor(), highlighterThickness, false, rotation = 0f, penStyle = PenStyle.MARKER, opacity = (highlighterOpacity * 255 / 100))
+                    currentTool == Tool.BRUSH -> StrokeData(Tool.BRUSH, mutableListOf(wx, wy), effectiveColor(), brushThickness * pressure, false, rotation = 0f, brushStyle = currentBrushStyle, opacity = brushOpacity)
+                    SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), effectiveColor(), effectiveStrokeWidth(), fillShapes, lineType = effectiveLineType())
+                    else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), effectiveColor(), effectiveStrokeWidth() * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = brushOpacity, lineType = effectiveLineType(), calligraphySlantThickness = currentCalligraphySlant)
                 }
                 if (currentTool == Tool.PEN && currentPenStyle == PenStyle.FOUNTAIN) data.widths.add(currentStrokeWidth)
                 if (currentTool == Tool.PEN && currentPenStyle == PenStyle.PENCIL) data.widths.add(1f)
@@ -5507,7 +5627,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val path = data.buildPath()
         val measure = android.graphics.PathMeasure(path, false)
         val allPts = mutableListOf<Float>()
+        val allDist = mutableListOf<Float>()  // parallel to allPts: along-path distance to each sampled point
         val pos = FloatArray(2)
+        var baseDist = 0f  // accumulates across multiple contours (measure.nextContour())
         do {
             val len = measure.length
             if (len <= 0f) continue
@@ -5520,16 +5642,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             while (dist <= len) {
                 measure.getPosTan(dist, pos, null)
                 allPts.add(pos[0]); allPts.add(pos[1])
+                allDist.add(baseDist + dist)
                 dist += step
             }
+            baseDist += len
         } while (measure.nextContour())
         if (allPts.size < 4) return emptyList()
 
         val segs = mutableListOf<MutableList<Float>>(); var cur = mutableListOf<Float>()
-        fun flush() { if (cur.size >= 4) segs.add(cur); cur = mutableListOf() }
+        val segDists = mutableListOf<Float>(); var curDist = mutableListOf<Float>()
+        fun flush() { if (cur.size >= 4) { segs.add(cur); segDists.add(curDist.firstOrNull() ?: 0f) }; cur = mutableListOf(); curDist = mutableListOf() }
         var i = 0
         var prevIn = distance(ex, ey, allPts[0], allPts[1]) <= r
-        if (!prevIn) { cur.add(allPts[0]); cur.add(allPts[1]) }
+        if (!prevIn) { cur.add(allPts[0]); cur.add(allPts[1]); curDist.add(allDist[0]) }
         while (i + 3 < allPts.size) {
             val x1 = allPts[i]; val y1 = allPts[i + 1]; val x2 = allPts[i + 2]; val y2 = allPts[i + 3]
             val segDist = distToSeg(ex, ey, x1, y1, x2, y2)
@@ -5537,16 +5662,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (curIn != prevIn) {
                 val cut = findCircleSegIntersection(ex, ey, r, x1, y1, x2, y2)
                 if (cut != null) {
-                    if (!prevIn) { cur.add(cut.first); cur.add(cut.second); flush() }
-                    else { cur.add(cut.first); cur.add(cut.second) }
+                    // Cut points are interpolated (not directly sampled), so their exact distance
+                    // isn't tracked — the nearest sample's distance is a fine approximation here,
+                    // since this only needs to keep the dash pattern visually stable, not be
+                    // pixel-perfect.
+                    if (!prevIn) { cur.add(cut.first); cur.add(cut.second); curDist.add(allDist[i / 2]); flush() }
+                    else { cur.add(cut.first); cur.add(cut.second); curDist.add(allDist[i / 2]) }
                 } else flush()
             }
-            if (!curIn) { cur.add(x2); cur.add(y2) }
+            if (!curIn) { cur.add(x2); cur.add(y2); curDist.add(allDist[i / 2 + 1]) }
             prevIn = curIn
             i += 2
         }
         flush()
-        return segs.map { sp ->
+        return segs.mapIndexed { idx, sp ->
             // isPolyline = true is the critical part here: without it, Tool.PEN's default
             // render path runs every stroke through quadratic-bezier smoothing to remove hand
             // tremor (see the comment on StrokeData.isPolyline above). That's correct for actual
@@ -5556,7 +5685,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // this same reconstruction on the now-already-curved path, the distortion compounds
             // worse with every erase. Marking it a polyline keeps the straight-line render path,
             // preserving the shape's actual geometry exactly as sampled.
-            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.FOUNTAIN, opacity = data.opacity, lineType = data.lineType, isPolyline = true)
+            // dashPhase = parent's own phase (0 for a never-erased shape, but non-zero if this
+            // shape is ITSELF already a fragment from an earlier erase) plus this fragment's own
+            // offset — chains correctly back to the true original shape's start no matter how
+            // many times it's been re-split.
+            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.FOUNTAIN, opacity = data.opacity, lineType = data.lineType, isPolyline = true, dashPhase = data.dashPhase + segDists[idx])
             StrokeItem(d, d.buildPath(), d.toPaint())
         }
     }
@@ -5732,6 +5865,30 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
     // sample-point distance), so erasing is accurate to what's visually under the eraser circle
     // regardless of how sparse the stroke's recorded points are.
+    // Finds how far (in world units) a point is along an original polyline, by walking its
+    // segments and finding the closest match. Used to compute an erased fragment's correct dash-
+    // phase anchor after the fact, rather than threading distance-tracking through the crossing
+    // detection above — same reasoning as splitShapeAroundEraser's dash-phase fix.
+    private fun cumulativeDistAlongPolyline(pts: List<Float>, targetX: Float, targetY: Float): Float {
+        var acc = 0f; var best = Float.MAX_VALUE; var bestAcc = 0f
+        var i = 0
+        while (i + 3 < pts.size) {
+            val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
+            val segLen = distance(x1, y1, x2, y2)
+            val d = distToSeg(targetX, targetY, x1, y1, x2, y2)
+            if (d < best) {
+                best = d
+                // Project onto the segment to get the exact point within it, not just its start.
+                val segLenSq = segLen * segLen
+                val t = if (segLenSq > 0.0001f) (((targetX - x1) * (x2 - x1) + (targetY - y1) * (y2 - y1)) / segLenSq).coerceIn(0f, 1f) else 0f
+                bestAcc = acc + t * segLen
+            }
+            acc += segLen
+            i += 2
+        }
+        return bestAcc
+    }
+
     private fun splitStrokeAroundEraser(data: StrokeData, ex: Float, ey: Float, r: Float): List<StrokeItem> {
         val pts = data.points
         if (pts.size < 4) { if (pts.size >= 2 && distance(ex, ey, pts[0], pts[1]) <= r) return emptyList(); return listOf(StrokeItem(data, data.buildPath(), data.toPaint())) }
@@ -5801,11 +5958,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val newSegs = mutableListOf<MutableList<Float>>()
                     newSegs.addAll(segs.subList(1, segs.size - 1))
                     newSegs.add(merged)
-                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline); StrokeItem(d, d.buildPath(), d.toPaint()) }
+                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1])); StrokeItem(d, d.buildPath(), d.toPaint()) }
                 }
             }
         }
-        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline); StrokeItem(d, d.buildPath(), d.toPaint()) }
+        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1])); StrokeItem(d, d.buildPath(), d.toPaint()) }
     }
 
     // Finds ALL points (as sorted t-values in [0,1]) where a segment crosses the eraser circle
@@ -6084,6 +6241,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (selectedItem === item) selectedItem = null
         selectedItems.remove(item)
         markSpatialDirty(); invalidate()
+    }
+
+    // deleteAnyItem() above has no idea about any of DrawingView's table-specific state — it only
+    // knows actions/selectedItem/selectedItems. Deleting a table through it left activeTableItem
+    // still pointing at the now-removed object, so onTouchEvent's "if (activeTableItem != null)"
+    // gate kept routing every subsequent touch into handleTable() for an item that no longer
+    // existed in actions — that's what actually crashed, not the deletion itself.
+    fun deleteActiveTable(table: TableItem) {
+        deleteAnyItem(table)
+        if (activeTableItem === table) activeTableItem = null
+        tableIsActive = false
+        tableSelStart = null; tableSelEnd = null
+        tableHandleMode = 0
+        tableTapCandidateCell = null; tableDragConfirmed = false
+        tableDragRowBorder = -1; tableDragColBorder = -1; tableDragOuterEdge = -1
+        tableLongPressSelectOnly = false
+        formulaRefMode = false
+        invalidate()
     }
 
     private fun distanceToShapeOutline(data: StrokeData, x: Float, y: Float): Float {
@@ -6843,12 +7018,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     // be active. createLayer() already puts the new layer at the top of the list
                     // (frontmost) and makes it active, so the fill lands visibly on top of
                     // whatever it's covering rather than silently behind it.
-                    val layerName = when {
-                        pendingHatchPattern != null -> "Hatch: ${pendingHatchPattern!!.name.lowercase().replace('_',' ').replaceFirstChar { it.uppercase() }}"
-                        pendingCustomHatchPath != null -> "Hatch: Custom"
-                        else -> "Fill: #%06X".format(fillColor and 0xFFFFFF)
+                    // Hatches all go into ONE shared "Hatch" layer (unless the user manually
+                    // moves one elsewhere afterward) rather than a new layer per material — the
+                    // old per-material-layer behavior ("Hatch: Bronze", "Hatch: Copper", one for
+                    // every material used) cluttered the layer list badly on any real drawing.
+                    // Plain color fills (no hatch pattern) keep their own per-color layer, since
+                    // that wasn't part of this — only hatches were asked to consolidate.
+                    fi.layerId = if (pendingHatchPattern != null || pendingCustomHatchPath != null) {
+                        hatchLayerId()
+                    } else {
+                        createLayer("Fill: #%06X".format(fillColor and 0xFFFFFF)).id
                     }
-                    fi.layerId = createLayer(layerName).id
                     // Only remove an existing FillItem if the tap pixel lands inside it AND the
                     // new fill is roughly the same size as the existing one — meaning the user
                     // re-tapped the same closed region to replace its color. If the new fill is
@@ -6894,7 +7074,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         sb.append("\n")
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
-            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}\n")
+            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}|${a.data.dashPhase}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\u0001${a.layerId}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\u0001${a.layerId}\u0001${a.flippedH}\u0001${a.flippedV}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.customHatchPath ?: ""}\u0001${a.hatchPattern?.name ?: ""}\u0001${a.hatchColor}\u0001${a.hatchScale}\u0001${a.layerId}\n")
@@ -6944,7 +7124,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val tableLines = mutableListOf<String>(); var j = i
                         while (j < lines.size && !lines[j].startsWith("TABLEEND")) { tableLines.add(lines[j]); j++ }
                         val (tableItem, _) = TableItem.deserialize(tableLines, 0)
-                        if (tableItem != null) actions.add(tableItem); i = j + 1
+                        if (tableItem != null) { tableItem.recalcAllFormulas(); actions.add(tableItem) }; i = j + 1
                     }
                     line.startsWith("AUDIO\u0001") -> {
                         val p = line.split("\u0001")
@@ -7021,7 +7201,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val slant = if (p.size >= 15) p[14].toFloatOrNull() ?: 0.65f else 0.65f
                                 val isPoly = if (p.size >= 16) p[15] == "true" else false
                                 val lid = if (p.size >= 17) p[16].toIntOrNull() ?: 0 else 0
-                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly); val si = StrokeItem(d, d.buildPath(), d.toPaint()); si.layerId = lid; actions.add(si)
+                                val dPhase = if (p.size >= 18) p[17].toFloatOrNull() ?: 0f else 0f
+                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly, dashPhase = dPhase); val si = StrokeItem(d, d.buildPath(), d.toPaint()); si.layerId = lid; actions.add(si)
                             } else {
                                 val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
                                 val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
@@ -7033,5 +7214,25 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             } catch (e: Exception) { i++ }
         }
         invalidate()
+    }
+
+    // Used by BooksActivity to render an off-screen thumbnail of this note's content.
+    // scaleFactor/translateX/translateY are private, so this is the one narrow door in — pans so
+    // that world position (worldX, worldY) lands at the top-left of the rendered bitmap, at
+    // whatever scale the caller computed. worldX/worldY default to (0,0) — page 1's origin —
+    // but see firstContentAnchor() below for notes whose real content isn't there at all.
+    fun resetViewForThumbnail(scale: Float, worldX: Float = 0f, worldY: Float = 0f) {
+        scaleFactor = scale
+        translateX = -worldX * scale; translateY = -worldY * scale
+    }
+
+    // Returns the top-left world position of the first item drawn in this note, or null if it
+    // has no content at all. Used so a thumbnail can anchor itself to wherever the note's actual
+    // content starts — an Infinite-canvas note could easily have nothing near world (0,0), which
+    // would otherwise render as a blank thumbnail despite the note having real content elsewhere.
+    fun firstContentAnchor(): Pair<Float, Float>? {
+        val first = actions.firstOrNull() ?: return null
+        val b = getBounds(first) ?: return null
+        return Pair(b[0], b[1])
     }
 }

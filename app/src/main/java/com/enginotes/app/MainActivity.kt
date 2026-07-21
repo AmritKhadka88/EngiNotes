@@ -170,6 +170,12 @@ class MainActivity : AppCompatActivity() {
     private var activeCellEditText: EditText? = null
     private var activeCellToolbar: View? = null
     private var tableToolbarOverlay: View? = null
+    private var formulaBarView: View? = null
+    private var formulaBarTable: TableItem? = null
+    private var formulaBarRow = 0
+    private var formulaBarCol = 0
+    private var formulaBarEditText: EditText? = null
+    private var syncingFormulaText = false
 
     private var isRecording = false
     private var recordingFile: File? = null
@@ -458,6 +464,11 @@ class MainActivity : AppCompatActivity() {
 
         drawingView     = findViewById(R.id.drawingView)
         drawingView.inputMode = try { InputMode.valueOf(getPrefs().getString("input_mode", "AUTO") ?: "AUTO") } catch (e: Exception) { InputMode.AUTO }
+        // snapEnabled used to be an in-memory-only field with no persistence at all, so it reset
+        // to false on every Activity recreation (rotation, backgrounding, switching notes) even
+        // though the user had explicitly turned it on — restoring here fixes that at the source,
+        // rather than just re-syncing a pill against a value that was itself wrong.
+        drawingView.snapEnabled = getPrefs().getBoolean("snap_enabled", false)
 
         applyToolbarTheme()
         repositionContextBar()
@@ -483,16 +494,34 @@ class MainActivity : AppCompatActivity() {
         // reflows - canvasContainer (weight=1) shrinks to make room, avoiding a visual gap.
         run {
             val primaryBar = findViewById<View?>(R.id.primaryToolbarScroll)
+            val contextBar = findViewById<View?>(R.id.toolbarScroll)
+            // Each bar's own starting bottomMargin, captured once before any keyboard adjustment.
+            // Every subsequent update sets margin = thisBar'sOwnBaseline + keyboardHeight,
+            // independently per bar. This can't double-shift or lose relative spacing no matter
+            // how they're actually nested/related in the layout — each bar only ever knows about
+            // its own original position, never inferred from the other bar's current state.
+            val baseMargins = HashMap<View, Int>()
+            for (bar in listOf(primaryBar, contextBar)) {
+                val lp0 = bar?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
+                if (bar != null && lp0 != null) baseMargins[bar] = lp0.bottomMargin
+            }
             androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { _, insets ->
                 val imeBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
                 val navBarBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars()).bottom
+                // imeBottom only reflects the portion of the keyboard actually overlapping the
+                // app's content — a floating/split keyboard that doesn't cover this area reports
+                // 0 here, so these bars correctly stay put in that case with no extra handling needed.
                 val extraForKeyboard = (imeBottom - navBarBottom).coerceAtLeast(0)
                 // Guard: only update bottomMargin when value changes — prevents layout
                 // thrashing and the blinking/lag caused by firing on every tiny inset update.
-                val lp = primaryBar?.layoutParams as? LinearLayout.LayoutParams
-                if (lp != null && lp.bottomMargin != extraForKeyboard) {
-                    lp.bottomMargin = extraForKeyboard
-                    primaryBar.layoutParams = lp
+                for (bar in listOf(primaryBar, contextBar)) {
+                    val base = baseMargins[bar] ?: continue
+                    val lp = bar?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
+                    val target = base + extraForKeyboard
+                    if (lp != null && lp.bottomMargin != target) {
+                        lp.bottomMargin = target
+                        bar.layoutParams = lp
+                    }
                 }
                 onImeBottomChanged?.invoke(imeBottom)  // notify inline editor keyboard listener
                 insets
@@ -967,28 +996,13 @@ class MainActivity : AppCompatActivity() {
     }
     internal fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
-    // Keeps the context (color/size) bar glued to the top edge of the primary toolbar, no
-    // matter what size the primary toolbar's buttons currently are. Previously this gap was
-    // a fixed 58dp set once in the XML, which only matched the DEFAULT medium icon size —
-    // shrinking or growing icons via Settings > Toolbar > Icon size left this margin
-    // unchanged, so the two bars drifted apart (small icons) or started overlapping (large
-    // icons). Also forces the context bar's own height to wrap its (now size-aware) content
-    // instead of a fixed 46dp, so it visually shrinks/grows in step with the primary bar.
-    private fun repositionContextBar() {
-        val primary = findViewById<View?>(R.id.primaryToolbarScroll) ?: return
-        val context = findViewById<HorizontalScrollView?>(R.id.toolbarScroll) ?: return
-        (context.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
-            if (lp.height != FrameLayout.LayoutParams.WRAP_CONTENT) {
-                lp.height = FrameLayout.LayoutParams.WRAP_CONTENT; context.layoutParams = lp
-            }
-        }
-        primary.post {
-            val lp = context.layoutParams as? FrameLayout.LayoutParams ?: return@post
-            val gap = dp(6)
-            val newMargin = (primary.height.takeIf { it > 0 } ?: dp(54)) + gap
-            if (lp.bottomMargin != newMargin) { lp.bottomMargin = newMargin; context.layoutParams = lp }
-        }
-    }
+    // No longer does anything — kept so existing call sites don't need to change. Previously
+    // this dynamically computed a bottomMargin to keep the context bar glued just above the
+    // primary toolbar, since they were two independently-positioned floating views (a fixed
+    // 58dp XML margin that only matched the default icon size, then a runtime patch on top of
+    // that). Now that both bars are children of one LinearLayout (bottomToolbarDock), normal
+    // layout stacking positions them correctly on its own — there's no gap left to compute.
+    private fun repositionContextBar() {}
 
     // iOS-style capsule toolbar with soft shadow, in one of three user-selectable themes.
     // GLASS uses a real frosted blur (RenderEffect) on Android 12+ and falls back to a more
@@ -997,23 +1011,35 @@ class MainActivity : AppCompatActivity() {
 
     private fun applyToolbarTheme() {
         val theme = currentAppTheme()
-        // Each bar now gets its OWN capsule "shell" background (visible fill + edge stroke),
-        // so the row of buttons reads as one enclosed navigation bar — like an iOS Control
-        // Center grouping — instead of icons floating with nothing behind them.
+        // Ensures the saved bar_icon_size preference is actually re-applied every time this
+        // runs (app launch included) — previously button sizing only ever happened inside the
+        // settings dialog's save handler, so a correctly-saved "Small" was silently ignored
+        // until the user revisited Settings and touched the option again.
+        applyBarIconSize(getPrefs().getInt("bar_icon_size", 44))
+        // The two bars now share ONE shell (bottomToolbarDock) — applied once here instead of
+        // looping over both bars individually and duplicating the same background/elevation on
+        // each. The visible capsule reads as one enclosed navigation bar with the context row on
+        // top and primary tool row on the bottom, like an iOS Control Center grouping.
+        findViewById<View?>(R.id.bottomToolbarDock)?.apply {
+            background = themedBarShellDrawable(theme)
+            elevation = themedPillElevation(theme)
+            // Without this, the row's rectangular content just paints over the shell's rounded
+            // corners instead of being cropped by them — which is why buttons and color chips
+            // were poking straight past the curved ends of the bar.
+            clipToOutline = true
+        }
         for (barId in listOf(R.id.primaryToolbarScroll, R.id.toolbarScroll)) {
-            findViewById<View?>(barId)?.apply {
-                background = themedBarShellDrawable(theme)
-                elevation = themedPillElevation(theme)
-                // Without this, the row's rectangular content just paints over the shell's
-                // rounded corners instead of being cropped by them — which is why buttons and
-                // color chips were poking straight past the curved ends of the bar.
-                clipToOutline = true
-            }
             // Give the inner row enough start/end padding that a button's own corner never sits
             // inside the shell's curved zone (the 8dp set in XML was tuned for the old
             // square/borderless bars, not this rounded shell).
+            // toolbarScroll holds text-label pills (Select/Lasso/Rect/Multi) and needs a little
+            // more vertical room than primaryToolbarScroll's plain icons so labels don't clip —
+            // but dp(10) here (stacked on top of the XML's own padding) was much more than that
+            // actually needed, and was the main reason both bars felt like they had a lot of
+            // empty space around the icons/labels rather than hugging them.
+            val vPad = if (barId == R.id.toolbarScroll) dp(5) else dp(1)
             ((findViewById<View?>(barId) as? HorizontalScrollView)?.getChildAt(0) as? LinearLayout)?.let { row ->
-                row.setPadding(dp(14), row.paddingTop, dp(14), row.paddingBottom)
+                row.setPadding(dp(14), vPad, dp(14), vPad)
             }
         }
         val primaryIds = listOf(R.id.btnSelect, R.id.btnText, R.id.btnDraw, R.id.btnHighlighter, R.id.btnBrush,
@@ -1031,6 +1057,21 @@ class MainActivity : AppCompatActivity() {
                 (layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
                     lp.marginStart = dp(3); lp.marginEnd = dp(3); layoutParams = lp
                 }
+                // The default ImageButton style reserves generous padding AND a minimum
+                // touch-target size (~48dp) around the icon graphic, regardless of the button's
+                // own explicit width/height — that minimum-size floor is almost certainly why
+                // reducing padding alone didn't shrink the visible empty space. Zeroing both
+                // out here lets the button's actual configured size (from bar_icon_size) be the
+                // real, final size, with just a little breathing room from padding.
+                minimumWidth = 0; minimumHeight = 0
+                // Proportional (not fixed) padding — fixed padding is a much smaller share of a
+                // big button than a small one, so icons ended up nearly filling the whole button
+                // at Small/Medium/Large while only Extra Large had real breathing room. This keeps
+                // the icon-to-button ratio consistent at every size.
+                val btnPx = getPrefs().getInt("bar_icon_size", 44)
+                val pad = dp((btnPx * 0.22f).toInt())
+                setPadding(pad, pad, pad, pad)
+                (this as? ImageButton)?.scaleType = ImageView.ScaleType.FIT_CENTER
             }
         }
         // Top bar (back/undo-redo/link/palm/menu row) — previously untouched by theming since
@@ -1062,8 +1103,7 @@ class MainActivity : AppCompatActivity() {
     // every touch/draw event would be wasteful — a real drawing surface doesn't need to look
     // freshly blurred within milliseconds of a pan/zoom, a brief lag behind is imperceptible.
     private var blurBackdropTop: ImageView? = null
-    private var blurBackdropPrimary: ImageView? = null
-    private var blurBackdropContext: ImageView? = null
+    private var blurBackdropDock: ImageView? = null
     private val blurHandler = Handler(Looper.getMainLooper())
     private var blurUpdateScheduled = false
 
@@ -1079,8 +1119,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun clearBlurBackdrops() {
         blurBackdropTop?.let { canvasContainer.removeView(it) }; blurBackdropTop = null
-        blurBackdropPrimary?.let { canvasContainer.removeView(it) }; blurBackdropPrimary = null
-        blurBackdropContext?.let { canvasContainer.removeView(it) }; blurBackdropContext = null
+        blurBackdropDock?.let { canvasContainer.removeView(it) }; blurBackdropDock = null
     }
 
     private fun updateBlurBackdrops() {
@@ -1119,8 +1158,7 @@ class MainActivity : AppCompatActivity() {
                 return iv
             }
             blurBackdropTop = applyBackdrop(findViewById(R.id.topBarContainer), blurBackdropTop)
-            blurBackdropPrimary = applyBackdrop(findViewById(R.id.primaryToolbarScroll), blurBackdropPrimary)
-            blurBackdropContext = applyBackdrop(findViewById(R.id.toolbarScroll), blurBackdropContext)
+            blurBackdropDock = applyBackdrop(findViewById(R.id.bottomToolbarDock), blurBackdropDock)
         } catch (e: Exception) {
             // Any failure here (view not laid out yet, OOM on a huge canvas, etc.) — silently
             // fall back to the existing tint-only glass look rather than crash the app over a
@@ -1294,7 +1332,30 @@ class MainActivity : AppCompatActivity() {
             .withEndAction { onEnd() }.start()
     }
 
-    private fun rebuildContextBar() {
+    // Actually resizes the primary toolbar's buttons to match bar_icon_size — separated out so
+    // it can run both when the setting is actively changed AND on every app launch. Previously
+    // this only ever lived inside the settings-save handler, so a correctly-saved "Small"
+    // preference was silently ignored on the next app launch until the user revisited Settings.
+    internal fun applyBarIconSize(barSizeDp: Int) {
+        val sz = dp(barSizeDp)
+        val primaryBar = findViewById<HorizontalScrollView?>(R.id.primaryToolbarScroll)
+        (primaryBar?.getChildAt(0) as? LinearLayout)?.let { ll ->
+            for (i in 0 until ll.childCount) {
+                val child = ll.getChildAt(i) as? ImageButton ?: continue
+                val lp = child.layoutParams as LinearLayout.LayoutParams
+                lp.width = sz; lp.height = sz; child.layoutParams = lp
+                // ImageButton defaults to ScaleType.CENTER — draws the icon at its own fixed
+                // intrinsic size and just re-centers it, ignoring the view's actual bounds
+                // entirely. FIT_CENTER scales the icon to genuinely fill the available space
+                // (minus padding), preserving aspect ratio.
+                child.scaleType = ImageView.ScaleType.FIT_CENTER
+                val pad = dp((barSizeDp * 0.22f).toInt())
+                child.setPadding(pad, pad, pad, pad)
+            }
+        }
+    }
+
+    internal fun rebuildContextBar() {
         val contextBar = findViewById<HorizontalScrollView>(R.id.toolbarScroll) ?: return
         val row = (contextBar.getChildAt(0) as? LinearLayout) ?: LinearLayout(this).also {
             it.orientation = LinearLayout.HORIZONTAL; it.gravity = Gravity.CENTER_VERTICAL
@@ -1689,7 +1750,7 @@ class MainActivity : AppCompatActivity() {
                     rebuildContextBar()
                 }
                 divider()
-                sizeButton(drawingView.currentStrokeWidth, 60) { drawingView.currentStrokeWidth = it }
+                sizeButton(drawingView.brushThickness, 60) { drawingView.brushThickness = it }
                 opacityButton(drawingView.brushOpacity) { drawingView.brushOpacity = it; drawingView.invalidate() }
                 divider()
                 eightColors(drawingView.currentColor) { c -> drawingView.currentColor = c }
@@ -1705,6 +1766,15 @@ class MainActivity : AppCompatActivity() {
                 eightColors(drawingView.fillColor) { c -> drawingView.fillColor = c; drawingView.pendingHatchPattern = null; drawingView.pendingCustomHatchPath = null }
             }
             Tool.TEXT -> {
+                // A specific existing item is selected (not actively being typed into) — sync the
+                // panel's working variables from its REAL stored values first. Without this, the
+                // panel just showed whatever editSize/editColor/etc were last left at (often the
+                // 12pt default from app init), with zero connection to this item's actual size —
+                // so it could display "12" while the item itself was really 50pt, and merely
+                // opening/closing the panel without picking a new value left it that way forever.
+                textSelectionItem?.let { sel ->
+                    editSize = sel.size; editColor = sel.color; editOpacity = sel.opacity; pendingFontFamily = sel.fontFamily
+                }
                 // Show 3 recently used fonts (no scrollable row — just 3 chips)
                 val recent = recentFonts.take(3)
                 val recentLabels = recent.map { fam -> (allFontFamilies.firstOrNull { it.second == fam }?.first ?: fontDisplayName(fam)) to (pendingFontFamily == fam) }
@@ -1813,11 +1883,16 @@ class MainActivity : AppCompatActivity() {
                     }
                     val col = LinearLayout(this).apply {
                         orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
-                        val lp = LinearLayout.LayoutParams(dp(50), BAR_H); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp
+                        // This column holds an icon AND a text label stacked vertically — it
+                        // needs more room than a plain icon button, so it can't just inherit
+                        // BAR_H's tight minimum (30dp), which is why the label was clipping at
+                        // the Small/Medium bar-size presets.
+                        val lp = LinearLayout.LayoutParams(dp(50), BAR_H.coerceAtLeast(dp(46))); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp
                         background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(14).toFloat(); setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")) }
                         setOnClickListener { setActiveTool(null, mode.tool) }
                     }
-                    col.addView(iconView, LinearLayout.LayoutParams(dp(28), dp(28)).also { it.gravity = Gravity.CENTER_HORIZONTAL })
+                    val iconSz = (BAR_H * 0.55f).toInt().coerceIn(dp(20), dp(34))
+                    col.addView(iconView, LinearLayout.LayoutParams(iconSz, iconSz).also { it.gravity = Gravity.CENTER_HORIZONTAL })
                     col.addView(TextView(this).apply { text = mode.label; textSize = 8f; gravity = Gravity.CENTER; setTextColor(if (active) Color.WHITE else Color.parseColor("#5C5856")) })
                     row.addView(col)
                 }
@@ -1863,6 +1938,16 @@ class MainActivity : AppCompatActivity() {
         findViewById<View?>(R.id.topBarContainer)?.visibility = View.GONE
         findViewById<View?>(R.id.primaryToolbarScroll)?.visibility = View.GONE
         findViewById<View?>(R.id.toolbarScroll)?.visibility = View.GONE
+        // Hides the actual phone status bar (battery/time/etc), not just this app's own top bar —
+        // previously "fullscreen" only ever hid EngiNotes's own UI, leaving the real system bar
+        // untouched, which isn't true fullscreen.
+        // setDecorFitsSystemWindows(false) is required here too — without it, the window still
+        // reserves layout space for the status bar even once it's hidden, so that strip just
+        // rendered as blank black space instead of the canvas extending up into it.
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+        val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+        insetsController.hide(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+        insetsController.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         if (fullscreenRestoreBtn != null) return
         val btn = TextView(this).apply {
             text = "⛶"; textSize = 16f; gravity = Gravity.CENTER
@@ -1886,6 +1971,8 @@ class MainActivity : AppCompatActivity() {
         if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
             findViewById<View?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
         }
+        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, true)
         fullscreenRestoreBtn?.let { canvasContainer.removeView(it) }
         fullscreenRestoreBtn = null
     }
@@ -2040,6 +2127,132 @@ class MainActivity : AppCompatActivity() {
         return android.graphics.drawable.BitmapDrawable(resources, bmp)
     }
 
+    private fun showLayerPropertiesDialog(layer: DrawingView.Layer, onDone: () -> Unit) {
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        fun sectionLabel(t: String) { container.addView(TextView(this).apply { text = t; textSize = 13f; setTextColor(Color.parseColor("#7B61FF")); setPadding(0, dp(10), 0, dp(4)) }) }
+        fun rowOf(vararg views: View): LinearLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; views.forEach { addView(it) } }
+
+        sectionLabel("Default Color (new items on this layer)")
+        val colorBtn = Button(this)
+        fun refreshColorBtn() {
+            val c = layer.defaultColor
+            colorBtn.text = if (c != null) "Set — tap to clear" else "Not set — tap to choose"
+            colorBtn.setBackgroundColor(c ?: Color.parseColor("#E0E0E0"))
+            colorBtn.setTextColor(if (c != null) Color.WHITE else Color.parseColor("#2A2A2A"))
+        }
+        refreshColorBtn()
+        colorBtn.setOnClickListener {
+            if (layer.defaultColor != null) { layer.defaultColor = null; refreshColorBtn() }
+            else showColorGridDialog { c -> layer.defaultColor = c; refreshColorBtn() }
+        }
+        container.addView(colorBtn)
+
+        sectionLabel("Default Line Type")
+        val lineTypeBtn = Button(this)
+        fun refreshLineTypeBtn() { lineTypeBtn.text = layer.defaultLineType?.label ?: "Not set — tap to choose" }
+        refreshLineTypeBtn()
+        lineTypeBtn.setOnClickListener {
+            val options = (listOf("Not set") + LineType.values().map { it.label }).toTypedArray()
+            AlertDialog.Builder(this).setTitle("Default line type").setItems(options) { _, idx ->
+                layer.defaultLineType = if (idx == 0) null else LineType.values()[idx - 1]
+                refreshLineTypeBtn()
+            }.show()
+        }
+        container.addView(lineTypeBtn)
+
+        sectionLabel("Default Stroke Width")
+        val widthLabel = TextView(this).apply { textSize = 13f; layoutParams = LinearLayout.LayoutParams(dp(90), LinearLayout.LayoutParams.WRAP_CONTENT) }
+        fun refreshWidthLabel() { widthLabel.text = layer.defaultStrokeWidth?.let { "%.1f".format(it) } ?: "Not set" }
+        refreshWidthLabel()
+        val widthSeek = SeekBar(this).apply {
+            max = 200; progress = ((layer.defaultStrokeWidth ?: 0f) * 10f).toInt().coerceIn(0, 200)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                    layer.defaultStrokeWidth = if (p == 0) null else p / 10f; refreshWidthLabel()
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        container.addView(rowOf(widthSeek, widthLabel))
+
+        sectionLabel("Default Font Size")
+        val fontSizeLabel = TextView(this).apply { textSize = 13f; layoutParams = LinearLayout.LayoutParams(dp(90), LinearLayout.LayoutParams.WRAP_CONTENT) }
+        fun refreshFontSizeLabel() { fontSizeLabel.text = layer.defaultFontSize?.let { "%.0fpt".format(it / PT_TO_PX) } ?: "Not set" }
+        refreshFontSizeLabel()
+        val fontSizeSeek = SeekBar(this).apply {
+            max = 120; progress = ((layer.defaultFontSize ?: 0f) / PT_TO_PX).toInt().coerceIn(0, 120)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                    layer.defaultFontSize = if (p == 0) null else p * PT_TO_PX; refreshFontSizeLabel()
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        container.addView(rowOf(fontSizeSeek, fontSizeLabel))
+
+        sectionLabel("Default Font Family")
+        val fontFamilyBtn = Button(this)
+        fun refreshFontFamilyBtn() { fontFamilyBtn.text = layer.defaultFontFamily ?: "Not set — tap to choose" }
+        refreshFontFamilyBtn()
+        fontFamilyBtn.setOnClickListener {
+            val labels = arrayOf("Not set", "Default (Sans)", "Serif", "Monospace (LaTeX-style)")
+            val values = arrayOf(null, "sans-serif", "serif", "monospace")
+            AlertDialog.Builder(this).setTitle("Default font family").setItems(labels) { _, idx ->
+                layer.defaultFontFamily = values[idx]; refreshFontFamilyBtn()
+            }.show()
+        }
+        container.addView(fontFamilyBtn)
+
+        sectionLabel("Default Font Style")
+        fun triStateBtn(label: String, get: () -> Boolean?, set: (Boolean?) -> Unit): Button = Button(this).apply {
+            fun refresh() { val v = get(); text = "$label: ${if (v == null) "unset" else if (v) "on" else "off"}" }
+            refresh()
+            setOnClickListener {
+                // Cycles unset -> on -> off -> unset, so every layer starts neutral and you
+                // opt in explicitly rather than every layer silently forcing bold/italic off.
+                set(when (get()) { null -> true; true -> false; false -> null })
+                refresh()
+            }
+        }
+        val styleRow = rowOf(
+            triStateBtn("B", { layer.defaultBold }, { layer.defaultBold = it }),
+            triStateBtn("I", { layer.defaultItalic }, { layer.defaultItalic = it }),
+            triStateBtn("U", { layer.defaultUnderline }, { layer.defaultUnderline = it })
+        )
+        container.addView(styleRow)
+
+        sectionLabel("Default Opacity")
+        val opacityLabel = TextView(this).apply { textSize = 13f; layoutParams = LinearLayout.LayoutParams(dp(90), LinearLayout.LayoutParams.WRAP_CONTENT) }
+        fun refreshOpacityLabel() { opacityLabel.text = layer.defaultOpacity?.let { "$it" } ?: "Not set" }
+        refreshOpacityLabel()
+        val opacitySeek = SeekBar(this).apply {
+            max = 256; progress = (layer.defaultOpacity ?: 0)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                    layer.defaultOpacity = if (p == 0) null else p.coerceAtMost(255); refreshOpacityLabel()
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        container.addView(rowOf(opacitySeek, opacityLabel))
+
+        sectionLabel("Locked")
+        val lockRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        lockRow.addView(TextView(this).apply { text = "Prevent drawing/editing on this layer"; textSize = 13f; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
+        lockRow.addView(android.widget.Switch(this).apply { isChecked = layer.locked; setOnCheckedChangeListener { _, v -> layer.locked = v } })
+        container.addView(lockRow)
+
+        AlertDialog.Builder(this).setTitle("Layer Properties: ${layer.name}")
+            .setView(ScrollView(this).apply { addView(container) })
+            .setPositiveButton("Done") { _, _ -> onDone() }.show()
+    }
+
     // Lists every item currently on the canvas, top-of-stack (frontmost, rendered last) shown
     // FIRST — standard layer-panel convention. Reuses the existing bringToFront/bringForward/
     // sendBackward/sendToBack rather than introducing a second way to reorder items, so this
@@ -2070,12 +2283,23 @@ class MainActivity : AppCompatActivity() {
                     setPadding(dp(8), dp(8), dp(8), dp(8))
                     if (isActive) setBackgroundColor(Color.parseColor("#E3EEFB"))
                 }
+                // Dedicated exclusive check-button for "this is the ONE layer new drawings go
+                // into" — separate from the row's own tap-to-rename-adjacent interactions, and
+                // from renaming (long-press). Only ever one checked at a time, like a radio group.
                 row.addView(TextView(this).apply {
-                    text = "${layer.name}  ($count)"
+                    text = if (isActive) "\u2611" else "\u2610"  // ☑ / ☐
+                    textSize = 18f; setTextColor(Color.parseColor(if (isActive) "#1565C0" else "#9E9E9E"))
+                    setPadding(dp(4), dp(4), dp(10), dp(4))
+                    setOnClickListener { drawingView.currentLayerId = layer.id; refresh() }
+                })
+                row.addView(TextView(this).apply {
+                    text = "${layer.name}  ($count)" + if (layer.locked) "  \uD83D\uDD12" else ""
                     textSize = 14f; setTextColor(if (layer.visible) Color.parseColor("#1C1C1E") else Color.parseColor("#B0AAA2"))
                     if (isActive) setTypeface(null, Typeface.BOLD)
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                    // Tap = make this the active layer (new items go here). Long-press = rename.
+                    // Tap = make this the active layer too (same action as the check-button —
+                    // most people will just tap the row without hunting for the tiny checkbox).
+                    // Long-press = rename.
                     setOnClickListener { drawingView.currentLayerId = layer.id; refresh() }
                     setOnLongClickListener { renameLayerDialog(layer.id, layer.name); true }
                 })
@@ -2083,6 +2307,7 @@ class MainActivity : AppCompatActivity() {
                     text = label; textSize = 15f; setPadding(dp(8), dp(6), dp(8), dp(6)); setTextColor(Color.parseColor(color))
                     setOnClickListener { action(); refresh() }
                 }
+                row.addView(iconBtn("\u2699") { showLayerPropertiesDialog(layer) { refresh() } })
                 row.addView(iconBtn(if (layer.visible) "👁" else "🚫") { drawingView.setLayerVisible(layer.id, !layer.visible) })
                 row.addView(iconBtn("⬆") { drawingView.moveLayerUp(layer.id) })
                 row.addView(iconBtn("⬇") { drawingView.moveLayerDown(layer.id) })
@@ -2102,20 +2327,54 @@ class MainActivity : AppCompatActivity() {
             }
         }
         refresh()
-        val scroll = ScrollView(this).apply { addView(list) }
+        val scroll = ScrollView(this).apply {
+            addView(list)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
         val outer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(scroll) }
-        dlg = AlertDialog.Builder(this).setTitle("Layers (tap = active, long-press = rename)")
-            .setView(outer)
-            .setNeutralButton("+ New Layer") { _, _ ->
-                val input = android.widget.EditText(this).apply { hint = "Layer name" }
-                AlertDialog.Builder(this).setTitle("New layer").setView(input)
-                    .setPositiveButton("Create") { _, _ ->
-                        val n = input.text.toString().trim().ifEmpty { "Layer ${drawingView.layers.size + 1}" }
-                        drawingView.createLayer(n)
-                        showLayersPanel()
-                    }.setNegativeButton("Cancel", null).show()
+
+        // Custom button row instead of native AlertDialog buttons — native negative/neutral/
+        // positive slots don't reliably give left-to-right control over ordering across Android
+        // versions/themes (neutral typically gets pushed off to its own far-left island), and
+        // "New Layer, Add to Layer, Done" specifically needs a guaranteed left-to-right order.
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(8), dp(4), dp(8), dp(8))
+        }
+        fun dlgBtn(label: String, action: () -> Unit) = Button(this).apply {
+            text = label; textSize = 13f
+            setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#7B61FF"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { action() }
+        }
+        btnRow.addView(dlgBtn("+ New Layer") {
+            val input = android.widget.EditText(this).apply { hint = "Layer name" }
+            AlertDialog.Builder(this).setTitle("New layer").setView(input)
+                .setPositiveButton("Create") { _, _ ->
+                    val n = input.text.toString().trim().ifEmpty { "Layer ${drawingView.layers.size + 1}" }
+                    drawingView.createLayer(n)
+                    showLayersPanel(); dlg?.dismiss()
+                }.setNegativeButton("Cancel", null).show()
+        })
+        btnRow.addView(dlgBtn("Add to Layer") {
+            val hasSelection = drawingView.selectedItem != null || drawingView.selectedItems.isNotEmpty()
+            if (!hasSelection) {
+                Toast.makeText(this, "Select something with the Select tool first, then Add to Layer", Toast.LENGTH_SHORT).show()
+                return@dlgBtn
             }
-            .setPositiveButton("Done", null).show()
+            val names = drawingView.layers.map { it.name }.toTypedArray()
+            AlertDialog.Builder(this).setTitle("Choose layer")
+                .setItems(names) { _, idx ->
+                    drawingView.moveSelectionToLayer(drawingView.layers[idx].id)
+                    Toast.makeText(this, "Moved to \"${drawingView.layers[idx].name}\"", Toast.LENGTH_SHORT).show()
+                    refresh()
+                }.show()
+        })
+        btnRow.addView(dlgBtn("Done") { dlg?.dismiss() })
+        outer.addView(btnRow)
+
+        dlg = AlertDialog.Builder(this).setTitle("Layers (tap = active, long-press = rename)")
+            .setView(outer).show()
     }
 
     fun onMenuClick(v: View) {
@@ -2788,6 +3047,7 @@ class MainActivity : AppCompatActivity() {
         dismissHighlighterOptionsPanel()
         dismissBrushOptionsPanel()
         dismissTextOptionsPanel()
+        dismissTablePropertiesPanel()
     }
 
     private fun showInsertMenu() {
@@ -3187,8 +3447,8 @@ class MainActivity : AppCompatActivity() {
         })
 
         div(); hdr("TOOLBAR")
-        val barSizeLabels = arrayOf("Small (36dp)", "Medium (44dp)", "Large (52dp)", "Extra Large (60dp)")
-        val barSizeValues = arrayOf(36, 44, 52, 60)
+        val barSizeLabels = arrayOf("Small (36dp)", "Medium (40dp)", "Large (44dp)", "Extra Large (52dp)")
+        val barSizeValues = arrayOf(36, 40, 44, 52)
         var selBarSize = prefs.getInt("bar_icon_size", 44)
         val barSizeLbl = TextView(this).apply { textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(8),0,dp(8)) }
         fun refBarSize() { barSizeLbl.text = "Icon size: ${barSizeLabels[barSizeValues.indexOf(selBarSize).coerceAtLeast(0)]}  (tap)" }
@@ -3253,15 +3513,7 @@ class MainActivity : AppCompatActivity() {
                 try { drawingView.paperType = PaperType.valueOf(selPaper) } catch(e:Exception){}
                 drawingView.paperColor = selPaperColor
                 drawingView.invalidate()
-                val sz = dp(selBarSize)
-                val primaryBar = findViewById<HorizontalScrollView?>(R.id.primaryToolbarScroll)
-                (primaryBar?.getChildAt(0) as? LinearLayout)?.let { ll ->
-                    for (i in 0 until ll.childCount) {
-                        val child = ll.getChildAt(i) as? ImageButton ?: continue
-                        val lp = child.layoutParams as LinearLayout.LayoutParams
-                        lp.width = sz; lp.height = sz; child.layoutParams = lp
-                    }
-                }
+                applyBarIconSize(selBarSize)
                 rebuildContextBar()
                 repositionContextBar()
             }.show()
@@ -3464,6 +3716,7 @@ class MainActivity : AppCompatActivity() {
     private var contextBarPage = 0 // 0 = default, increments on swipe-up
 
     private var textOptionsPanel: View? = null
+    private var tablePropertiesPanel: View? = null
     private fun dismissTextOptionsPanel() {
         val p = textOptionsPanel ?: return
         textOptionsPanel = null
@@ -3634,8 +3887,12 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener { if (snapOptionsPanel != null) dismissSnapOptionsPanel() else showSnapOptionsPanel() }
             }
             val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-            lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
-            lp.bottomMargin = dp(8); lp.leftMargin = dp(12)
+            lp.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+            // Stacked top-left, directly below Group/Indiv (topMargin dp(56)) — Table sits below
+            // this one in turn (topMargin dp(152)). All three now live in the same column instead
+            // of Snap/Table being down at the bottom, which is what made this pill's earlier
+            // dp(8) position land underneath the toolbar and get hidden in the first place.
+            lp.topMargin = dp(104); lp.leftMargin = dp(8)
             canvasContainer.addView(btn, lp)
             snapOptionsButton = btn
         } else {
@@ -3679,8 +3936,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
-        lp.bottomMargin = dp(50); lp.leftMargin = dp(12)
+        lp.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+        // Was anchored to the bottom (bottomMargin dp(50)) from before the Snap pill itself moved
+        // up into the top-left stack — left a big gap between the pill and its own panel. Now
+        // opens directly below the pill (topMargin dp(104) + pill height + gap).
+        lp.topMargin = dp(152); lp.leftMargin = dp(8)
         canvasContainer.addView(panel, lp)
         snapOptionsPanel = panel
         animatePanelIn(panel)
@@ -3823,7 +4083,7 @@ class MainActivity : AppCompatActivity() {
         sectionLabel("Snap to Endpoints")
         val snapRowS = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(4)) }
         val snapDescS = TextView(this).apply { text = "Lines snap to nearby endpoints"; textSize = 12f; setTextColor(Color.parseColor("#6A6A6A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
-        val snapSwitchS = android.widget.Switch(this).apply { isChecked = drawingView.snapEnabled; setOnCheckedChangeListener { _, on -> drawingView.snapEnabled = on; updateSnapOptionsButton() } }
+        val snapSwitchS = android.widget.Switch(this).apply { isChecked = drawingView.snapEnabled; setOnCheckedChangeListener { _, on -> drawingView.snapEnabled = on; getPrefs().edit().putBoolean("snap_enabled", on).apply(); updateSnapOptionsButton() } }
         snapRowS.addView(snapDescS); snapRowS.addView(snapSwitchS); panel.addView(snapRowS)
 
         // Color row
@@ -4216,7 +4476,7 @@ class MainActivity : AppCompatActivity() {
         sectionLabel("Snap to Endpoints")
         val snapRowP = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(4)) }
         val snapDescP = TextView(this).apply { text = "Lines snap to nearby endpoints"; textSize = 12f; setTextColor(Color.parseColor("#6A6A6A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
-        val snapSwitchP = android.widget.Switch(this).apply { isChecked = drawingView.snapEnabled; setOnCheckedChangeListener { _, on -> drawingView.snapEnabled = on; updateSnapOptionsButton() } }
+        val snapSwitchP = android.widget.Switch(this).apply { isChecked = drawingView.snapEnabled; setOnCheckedChangeListener { _, on -> drawingView.snapEnabled = on; getPrefs().edit().putBoolean("snap_enabled", on).apply(); updateSnapOptionsButton() } }
         snapRowP.addView(snapDescP); snapRowP.addView(snapSwitchP); panel.addView(snapRowP)
 
         // Line type section
@@ -4720,17 +4980,110 @@ class MainActivity : AppCompatActivity() {
         dialog=AlertDialog.Builder(this).setTitle("Table Properties").setView(scroll).setPositiveButton("Done",null).show()
     }
 
-    internal fun dismissCellEditor() {
+    internal fun dismissCellEditor(keepSelection: Boolean = false) {
         val et=activeCellEditText?:return
         try{ canvasContainer.removeView(activeCellToolbar) }catch(e:Exception){}
         try{ canvasContainer.removeView(tableToolbarOverlay) }catch(e:Exception){}
         try{ canvasContainer.removeView(et) }catch(e:Exception){}
         activeCellEditText=null; activeCellToolbar=null; tableToolbarOverlay=null
+        drawingView.formulaRefMode = false
+        dismissFormulaBar()
         val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(et.windowToken,0)
-        drawingView.exitTableEditMode()
+        // exitTableEditMode() sets tableIsActive=false, which also turns off the cell-highlight
+        // overlay (see drawTableOverlay) — skip it when the caller wants the cell to still look
+        // selected after closing (e.g. pressing Enter in the formula bar).
+        if (!keepSelection) drawingView.exitTableEditMode()
         drawingView.onCanvasTransformed = null
         setBottomBarVisible(true)
+        if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
+            findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
+        }
+    }
+
+    // EditText keeps its selection state even after losing View focus (focus only affects cursor
+    // blink / IME connection, not the underlying Editable's selection spans) — so this reads
+    // reliably even though tapping the canvas to pick the cell may have already stolen focus
+    // away from whichever text field the user was typing in.
+    private fun insertCellRefIntoFormula(row: Int, col: Int) {
+        insertRefStringIntoFormula(TableItem.columnLabel(col) + (row + 1).toString())
+    }
+
+    private fun insertRangeRefIntoFormula(r1: Int, c1: Int, r2: Int, c2: Int) {
+        val a = TableItem.columnLabel(c1) + (r1 + 1).toString()
+        val b = TableItem.columnLabel(c2) + (r2 + 1).toString()
+        insertRefStringIntoFormula("$a:$b")
+    }
+
+    private fun insertRefStringIntoFormula(ref: String) {
+        val et = activeCellEditText?.takeIf { it.text.toString().startsWith("=") }
+            ?: formulaBarEditText?.takeIf { it.text.toString().startsWith("=") }
+            ?: return
+        val start = et.selectionStart.coerceAtLeast(0)
+        val end = et.selectionEnd.coerceAtLeast(start)
+        val cur = et.text.toString()
+        val newText = cur.substring(0, start.coerceAtMost(cur.length)) + ref + cur.substring(end.coerceAtMost(cur.length))
+        et.setText(newText) // fires the existing TextWatcher, which updates cell.text, recalcs, and mirrors to the other editor
+        et.setSelection((start + ref.length).coerceIn(0, newText.length))
+        et.requestFocus()
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.showSoftInput(et, InputMethodManager.SHOW_IMPLICIT)
+    }
+
+    private fun dismissFormulaBar() {
+        formulaBarView?.let { try { canvasContainer.removeView(it) } catch (e: Exception) {} }
+        formulaBarView = null; formulaBarTable = null; formulaBarEditText = null
+    }
+
+    // Thin fx row above the table showing the selected cell's raw formula source, editable
+    // there instead of only in-cell. Live-mirrors the in-place cell EditText via TextWatchers on
+    // both sides (guarded by syncingFormulaText to avoid an update loop) — the earlier version
+    // only committed this box's text on Done/focus-loss, which meant typing in the OTHER editor
+    // (the in-place one) left this one stale, and losing focus here would overwrite the cell with
+    // that stale — often empty — text, silently wiping out what you'd just typed elsewhere.
+    internal fun showFormulaBarFor(table: TableItem, row: Int, col: Int) {
+        dismissFormulaBar()
+        if (!table.showFormulaBar) return
+        formulaBarTable = table; formulaBarRow = row; formulaBarCol = col
+        val cell = table.getCellPublic(row, col)
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(Color.WHITE); elevation = dp(8).toFloat(); setPadding(dp(10), dp(6), dp(10), dp(6))
+        }
+        bar.addView(TextView(this).apply {
+            text = "fx"; textSize = 14f; setTypeface(null, Typeface.ITALIC); setTextColor(Color.parseColor("#4527A0")); setPadding(0, 0, dp(10), 0)
+        })
+        val et = EditText(this).apply {
+            setText(cell.text); textSize = 14f; setPadding(dp(6), dp(4), dp(6), dp(4)); isSingleLine = true
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            imeOptions = EditorInfo.IME_ACTION_DONE
+            setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_DONE) { dismissCellEditor(keepSelection = true); true } else false
+            }
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun afterTextChanged(s: Editable?) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    if (syncingFormulaText) return
+                    val t = formulaBarTable ?: return
+                    val c = t.getCellPublic(formulaBarRow, formulaBarCol)
+                    c.text = s?.toString() ?: ""
+                    t.recalcAllFormulas(); t.recalcCellSize(formulaBarRow, formulaBarCol)
+                    drawingView.formulaRefMode = t.showFormulaBar && c.text.startsWith("=")
+                    syncingFormulaText = true
+                    activeCellEditText?.let { if (it.text.toString() != c.text) it.setText(c.text) }
+                    syncingFormulaText = false
+                    drawingView.invalidate()
+                }
+            })
+        }
+        bar.addView(et)
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        lp.gravity = Gravity.TOP
+        lp.topMargin = findViewById<View?>(R.id.topBarContainer)?.height ?: 0
+        canvasContainer.addView(bar, lp)
+        formulaBarView = bar
+        formulaBarEditText = et
     }
 
     // True in-place cell editor: the EditText is positioned and sized to sit exactly on top of
@@ -4764,7 +5117,15 @@ class MainActivity : AppCompatActivity() {
     private fun showTableCellEditor(table:TableItem,row:Int,col:Int,screenX:Float,screenY:Float) {
         dismissCellEditor() // a previous cell's editor+toolbar must be fully torn down first, or they stack
         setBottomBarVisible(false)
+        // rebuildContextBar() renders purely off drawingView.currentTool, which stays Tool.SELECT
+        // the whole time you're editing a table cell — so without this, the bottom context row
+        // just kept showing the leftover Select/Lasso/Rect/Multi picker from before you tapped
+        // into the cell, which has nothing to do with what you're doing. The floating cell
+        // toolbar (B/I/U/+Row/-Row/etc, positioned right above the table) already covers what's
+        // needed, so simplest fix is just hiding this row entirely while editing.
+        findViewById<HorizontalScrollView?>(R.id.toolbarScroll)?.visibility = View.GONE
         val cell=table.cells[row][col]
+        if (table.showFormulaBar && !cell.formulaEnabled) { cell.formulaEnabled = true; table.recalcAllFormulas(); drawingView.invalidate() }
         val density = resources.displayMetrics.density
 
         fun cellScreenRect(): RectF {
@@ -4801,17 +5162,41 @@ class MainActivity : AppCompatActivity() {
             gravity = when (cell.alignment) { 1 -> Gravity.CENTER; 2 -> Gravity.END or Gravity.CENTER_VERTICAL; else -> Gravity.START or Gravity.CENTER_VERTICAL }
             isSingleLine = false
             imeOptions = EditorInfo.IME_FLAG_NO_ENTER_ACTION
+            setOnKeyListener { _, keyCode, event ->
+                if (keyCode == android.view.KeyEvent.KEYCODE_ENTER && event.action == android.view.KeyEvent.ACTION_DOWN) {
+                    if (event.isShiftPressed) {
+                        false // let the EditText insert a normal newline
+                    } else {
+                        // Cell's text is already saved (the TextWatcher below writes to cell.text
+                        // on every keystroke), so it's safe to just tear this editor down and open
+                        // the one below — same as tapping that cell directly would do. On the last
+                        // row there's no cell below to open — just commit and leave this one
+                        // selected instead of silently doing nothing (previously true was returned
+                        // either way, so Enter on the last row just ate the keypress and went nowhere).
+                        if (row + 1 < table.rows) showTableCellEditor(table, row + 1, col, screenX, screenY)
+                        else dismissCellEditor(keepSelection = true)
+                        true // consume — don't also insert a newline
+                    }
+                } else false
+            }
         }
         applyTypefaceToEt(et)
         et.addTextChangedListener(object:TextWatcher{
             override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
             override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){
                 cell.text=s?.toString()?:""
+                table.recalcAllFormulas()
                 // Auto-grow column width / row height live as the user types, unless the
                 // column was manually resized or this is a merged cell.
                 table.recalcCellSize(row, col)
                 drawingView.invalidate()
                 repositionToCellFn(et)
+                drawingView.formulaRefMode = table.showFormulaBar && cell.text.startsWith("=")
+                if (!syncingFormulaText && formulaBarTable === table && formulaBarRow == row && formulaBarCol == col) {
+                    syncingFormulaText = true
+                    formulaBarEditText?.let { if (it.text.toString() != cell.text) it.setText(cell.text) }
+                    syncingFormulaText = false
+                }
             }
             override fun afterTextChanged(s:Editable?){}
         })
@@ -4822,6 +5207,7 @@ class MainActivity : AppCompatActivity() {
         initParams.leftMargin = initialRect.left.toInt(); initParams.topMargin = initialRect.top.toInt()
         et.textSize = (cell.textSize * drawingView.getScaleFactor() / density).coerceAtLeast(8f)
         canvasContainer.addView(et, initParams)
+        showFormulaBarFor(table, row, col)
 
         // Floating actions strip, positioned just above the whole TABLE (not the cell)
         val actionsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(6).toFloat(); setPadding(dp(4),dp(4),dp(4),dp(4)) }
@@ -5017,6 +5403,19 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (currentAppTheme() == "GLASS") scheduleBlurUpdate()
+        // updateSnapOptionsButton() previously only ran reactively from inside the two Snap
+        // switches themselves — so the "Snap ⚙" pill's visibility could drift out of sync with
+        // drawingView.snapEnabled's real value any time the Activity got recreated (rotation,
+        // backgrounding, switching notes) without the user re-touching that exact switch. This
+        // re-syncs it every time the screen becomes visible again, regardless of how it got here.
+        updateSnapOptionsButton()
+        // Same problem, same fix, for the "⚙ Group"/"⚙ Indiv" multiselect pill — it only ever
+        // updated from drawingView.onMultiSelectionChanged firing on a live selection change.
+        // If the Activity got recreated while a multi-selection already existed (selectedItems
+        // itself lives on DrawingView and can survive), the newly-registered callback wouldn't
+        // fire again on its own — nothing had actually changed from ITS point of view — so the
+        // pill just silently stayed gone until the next selection edit. Resync directly instead.
+        updateGroupModeToggle(drawingView.selectedItems.isNotEmpty())
     }
 
     override fun onDestroy() {
