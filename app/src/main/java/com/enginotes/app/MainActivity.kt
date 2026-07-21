@@ -1396,10 +1396,6 @@ class MainActivity : AppCompatActivity() {
         // context (color/size) row grows and shrinks in step with the primary toolbar above it.
         val BAR_H = (dp(getPrefs().getInt("bar_icon_size", 44)) * 0.86f).toInt().coerceAtLeast(dp(30))
         val CHIP_H = BAR_H - dp(6)
-        // Same gap as primaryToolbarScroll had: the chips inside already scaled with BAR_H, but
-        // this shell (the ScrollView itself) kept its fixed XML height regardless — so a "Small"
-        // preference left small chips floating in an unchanged amount of surrounding bar space.
-        contextBar.layoutParams?.let { lp -> lp.height = BAR_H + dp(4); contextBar.layoutParams = lp }
 
         fun divider() { row.addView(View(this).apply {
             val lp = LinearLayout.LayoutParams(dp(1), dp(20)); lp.setMargins(dp(4),0,dp(4),0); layoutParams = lp
