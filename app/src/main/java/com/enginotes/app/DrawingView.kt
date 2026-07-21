@@ -1210,6 +1210,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         invalidate()
     }
     var snapEnabled: Boolean = false
+    // Excel-style A/B/C... column header + 1/2/3... row header along the top/left edges of the
+    // screen, toggled from Settings. Purely a screen-space overlay — doesn't affect the document.
+    var showRuler: Boolean = false
     var snapEndpoint: Boolean = true
     var snapMidpoint: Boolean = true
     var snapIntersection: Boolean = true
@@ -1353,26 +1356,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var tableSingleTapCell: Pair<Int, Int>? = null
     private var tableTapDownWx = 0f; private var tableTapDownWy = 0f
     private var tableTapCandidateCell: Pair<Int, Int>? = null
-    private var tableTapDownTime = 0L
-    private var tableLongPressSelectOnly = false
-    // While actively typing a formula (text starting with "="), MainActivity flips this on so
-    // that tapping another cell inserts that cell's reference into the formula instead of
-    // switching to editing that cell — matches how Excel/Sheets formula entry works.
-    var formulaRefMode: Boolean = false
-    var onFormulaCellRefTap: ((Int, Int) -> Unit)? = null
-    // Fired instead of onFormulaCellRefTap when a formula-mode touch was a drag across multiple
-    // cells rather than a single tap — e.g. sliding from B1 to B10 should insert "B1:B10", not
-    // just the cell you released on.
-    var onFormulaRangeRefTap: ((Int, Int, Int, Int) -> Unit)? = null
-    private var formulaRefDragStart: Pair<Int, Int>? = null
-    // Fired whenever a tap outside the table means "stop editing this cell" — MainActivity's
-    // EditText/formula bar overlays live outside DrawingView entirely, so there's no other way
-    // for them to find out a tap-outside just happened.
-    var onTableCellEditorCloseRequest: (() -> Unit)? = null
-    var onTableDeleteRequest: ((TableItem) -> Unit)? = null
-    private var lastOutsideTapTime = 0L
-    private var lastOutsideTapWx = 0f
-    private var lastOutsideTapWy = 0f
     private var tableDragConfirmed = false
     // Dedicated move/rotate handles for the whole table — separate from cell selection/border-drag
     private var tableHandleMode = 0 // 0=none, 1=moving, 2=rotating
@@ -2176,6 +2159,71 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // customHatchBitmapCache field moved near `actions` above; loadCustomHatchBitmap,
     // drawHatchPattern, and drawHatchLocal moved to HatchRenderingExtensions.kt.
 
+    // Converts a 0-based column index into Excel-style letters: 0->A, 25->Z, 26->AA, 27->AB...
+    private fun columnLabel(index: Int): String {
+        var n = index
+        val sb = StringBuilder()
+        while (true) {
+            sb.insert(0, ('A' + (n % 26)))
+            n = n / 26 - 1
+            if (n < 0) break
+        }
+        return sb.toString()
+    }
+
+    private val rulerBarSize = 24f  // screen-space thickness of both header strips, in px
+
+    private fun drawRulers(canvas: Canvas) {
+        val cell = gridSpacingPx()  // world-space spacing between ruler ticks, reuses the grid interval
+        if (cell <= 0f) return
+
+        val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#F5F5F0"); style = Paint.Style.FILL }
+        val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#D0D0C8"); strokeWidth = 1f; style = Paint.Style.STROKE }
+        val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#6B6B66"); textSize = 12f; textAlign = Paint.Align.CENTER }
+
+        // Top column header
+        canvas.drawRect(rulerBarSize, 0f, width.toFloat(), rulerBarSize, bg)
+        canvas.drawLine(0f, rulerBarSize, width.toFloat(), rulerBarSize, line)
+        val worldLeft = screenToWorldX(rulerBarSize); val worldRight = screenToWorldX(width.toFloat())
+        var colIdx = kotlin.math.floor(worldLeft / cell).toInt()
+        while (true) {
+            val wx = colIdx * cell
+            if (wx > worldRight) break
+            val sx = worldToScreenX(wx)
+            if (sx >= rulerBarSize) {
+                canvas.drawLine(sx, rulerBarSize * 0.6f, sx, rulerBarSize, line)
+                val nextSx = worldToScreenX(wx + cell)
+                canvas.drawText(columnLabel(colIdx), (sx + nextSx) / 2f, rulerBarSize * 0.72f, text)
+            }
+            colIdx++
+        }
+
+        // Left row header
+        canvas.drawRect(0f, rulerBarSize, rulerBarSize, height.toFloat(), bg)
+        canvas.drawLine(rulerBarSize, 0f, rulerBarSize, height.toFloat(), line)
+        val worldTop = screenToWorldY(rulerBarSize); val worldBottom = screenToWorldY(height.toFloat())
+        var rowIdx = kotlin.math.floor(worldTop / cell).toInt()
+        while (true) {
+            val wy = rowIdx * cell
+            if (wy > worldBottom) break
+            val sy = worldToScreenY(wy)
+            if (sy >= rulerBarSize) {
+                canvas.drawLine(rulerBarSize * 0.6f, sy, rulerBarSize, sy, line)
+                val nextSy = worldToScreenY(wy + cell)
+                canvas.save()
+                canvas.rotate(-90f, rulerBarSize / 2f, (sy + nextSy) / 2f)
+                canvas.drawText((rowIdx + 1).toString(), rulerBarSize / 2f, (sy + nextSy) / 2f + 4f, text)
+                canvas.restore()
+            }
+            rowIdx++
+        }
+
+        // Corner square where the two headers meet
+        canvas.drawRect(0f, 0f, rulerBarSize, rulerBarSize, bg)
+        canvas.drawLine(0f, rulerBarSize, rulerBarSize, rulerBarSize, line)
+        canvas.drawLine(rulerBarSize, 0f, rulerBarSize, rulerBarSize, line)
+    }
+
 
     // Cache brush strokes as world-space bitmaps at a fixed resolution (CACHE_SCALE px per world unit).
     // The bitmap is drawn via drawBitmap(bmp, srcRect, dstRect) where dstRect is the world bbox —
@@ -2631,6 +2679,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (polylineFingerDown) drawMagnifierLens(canvas, polylineCursorX, polylineCursorY)
         }
         canvas.restore()
+        if (showRuler) drawRulers(canvas)
         drawCursor(canvas)
     }
 
@@ -2846,14 +2895,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawSelection(canvas: Canvas) {
         activeTableItem?.let { drawTableHandles(canvas, it) }
-        // Adjusting an already-placed dimension's handle (point1, point2, or offset) — this had
-        // no magnifier lens at all before, for any of the three handles, unlike the initial-
-        // placement "searching for point" phases below which already handled it. dimCurWx/wy
-        // track the live finger position during this drag too (set unconditionally in
-        // ACTION_MOVE), so the same lens function works here directly.
-        if (currentTool == Tool.DIMENSION && dimDraggingItem != null && dimFingerDown) {
-            drawMagnifierLens(canvas, dimCurWx, dimCurWy)
-        }
         // Preview dimension line while drawing
         if (currentTool == Tool.DIMENSION) {
             if (dimAngular) {
@@ -3457,40 +3498,25 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Single source of truth for where the table's move/rotate handles sit, in world space,
     // already accounting for the table's current rotation — used identically by both drawing
     // and hit-testing so they can never drift apart.
-    private fun tableHandlePositions(table: TableItem): Triple<FloatArray, FloatArray, FloatArray> {
-        val bounds = getBounds(table) ?: return Triple(floatArrayOf(table.x, table.y), floatArrayOf(table.x, table.y), floatArrayOf(table.x, table.y))
+    private fun tableHandlePositions(table: TableItem): Pair<FloatArray, FloatArray> {
+        val bounds = getBounds(table) ?: return Pair(floatArrayOf(table.x, table.y), floatArrayOf(table.x, table.y))
         val cx = (bounds[0] + bounds[2]) / 2f; val cy = (bounds[1] + bounds[3]) / 2f
-        val hr = 34f / scaleFactor
+        val hr = 26f / scaleFactor
         val moveLocalX = bounds[0] - hr * 1.8f; val moveLocalY = bounds[1] - hr * 1.8f
         val rotLocalX = cx; val rotLocalY = bounds[1] - 60f / scaleFactor
-        val delLocalX = bounds[2] + hr * 1.8f; val delLocalY = bounds[1] - hr * 1.8f
         val rad = Math.toRadians(table.rotation.toDouble())
         val cosT = Math.cos(rad).toFloat(); val sinT = Math.sin(rad).toFloat()
         fun rotateAround(px: Float, py: Float): FloatArray {
             val dx = px - cx; val dy = py - cy
             return floatArrayOf(cx + dx * cosT - dy * sinT, cy + dx * sinT + dy * cosT)
         }
-        return Triple(
-            clampHandleToScreen(rotateAround(moveLocalX, moveLocalY)),
-            clampHandleToScreen(rotateAround(rotLocalX, rotLocalY)),
-            clampHandleToScreen(rotateAround(delLocalX, delLocalY))
-        )
-    }
-
-    // If a handle's natural position would land off (or right at the edge of) the visible
-    // screen — e.g. the table is bigger than the viewport, so its corner is scrolled out of
-    // view — pull it back onto screen instead, so it's always reachable regardless of zoom/pan.
-    private fun clampHandleToScreen(worldPos: FloatArray): FloatArray {
-        val margin = 40f
-        val sx = worldToScreenX(worldPos[0]).coerceIn(margin, (width - margin).coerceAtLeast(margin))
-        val sy = worldToScreenY(worldPos[1]).coerceIn(margin, (height - margin).coerceAtLeast(margin))
-        return floatArrayOf(screenToWorldX(sx), screenToWorldY(sy))
+        return Pair(rotateAround(moveLocalX, moveLocalY), rotateAround(rotLocalX, rotLocalY))
     }
 
     private fun drawTableHandles(canvas: Canvas, table: TableItem) {
         val bounds = getBounds(table) ?: return
-        val (movePos, rotPos, delPos) = tableHandlePositions(table)
-        val hr = 34f / scaleFactor
+        val (movePos, rotPos) = tableHandlePositions(table)
+        val hr = 26f / scaleFactor
         val cx = (bounds[0] + bounds[2]) / 2f; val cy = (bounds[1] + bounds[3]) / 2f
         canvas.save(); canvas.rotate(table.rotation, cx, cy)
         val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE; selP.strokeWidth = 2f / scaleFactor
@@ -3507,10 +3533,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         canvas.drawCircle(rotPos[0], rotPos[1], hr, rotFill); canvas.drawCircle(rotPos[0], rotPos[1], hr, whiteStroke)
         val rp = Paint(); rp.color = Color.WHITE; rp.textSize = hr * 1.2f; rp.textAlign = Paint.Align.CENTER; rp.isAntiAlias = true
         canvas.drawText("\u21bb", rotPos[0], rotPos[1] + hr * 0.4f, rp)
-        val delFill = Paint(); delFill.style = Paint.Style.FILL; delFill.color = Color.parseColor("#E53935"); delFill.isAntiAlias = true
-        canvas.drawCircle(delPos[0], delPos[1], hr, delFill); canvas.drawCircle(delPos[0], delPos[1], hr, whiteStroke)
-        val dp = Paint(); dp.color = Color.WHITE; dp.textSize = hr * 1.1f; dp.textAlign = Paint.Align.CENTER; dp.isAntiAlias = true
-        canvas.drawText("\u2715", delPos[0], delPos[1] + hr * 0.35f, dp)
     }
 
     private fun handleTable(event: MotionEvent) {
@@ -3519,20 +3541,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val activeForHandles = activeTableItem
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (formulaRefMode) {
-                    val ft = activeTableItem
-                    if (ft != null) {
-                        val cell = ft.hitTestCell(wx, wy)
-                        formulaRefDragStart = cell
-                        if (cell != null) { tableIsActive = true; tableSelStart = cell; tableSelEnd = null; invalidate() }
-                    }
-                    return // consume regardless of hit/miss — a stray tap shouldn't close/switch the table mid-formula
-                }
                 // Dedicated move/rotate handles take priority over everything else — checked
                 // whenever a table is active at all, whether or not you're inside cell-editing.
                 if (activeForHandles != null) {
-                    val (movePos, rotPos, delPos) = tableHandlePositions(activeForHandles)
-                    val hitR = 40f / scaleFactor
+                    val (movePos, rotPos) = tableHandlePositions(activeForHandles)
+                    val hitR = 30f / scaleFactor
                     if (distance(wx, wy, movePos[0], movePos[1]) <= hitR) {
                         tableHandleMode = 1; tableMoveStartWx = wx; tableMoveStartWy = wy
                         tableOrigX = activeForHandles.x; tableOrigY = activeForHandles.y
@@ -3547,69 +3560,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         tableRotateStartRotation = activeForHandles.rotation
                         return
                     }
-                    if (distance(wx, wy, delPos[0], delPos[1]) <= hitR) {
-                        onTableDeleteRequest?.invoke(activeForHandles)
-                        return
-                    }
                 }
                 val table = activeTableItem
                 if (table != null) {
-                    val headerCol = table.hitTestHeaderCol(wx, wy, scaleFactor)
-                    if (headerCol >= 0) {
-                        tableIsActive = true; tableSelStart = Pair(0, headerCol); tableSelEnd = Pair(table.rows - 1, headerCol)
-                        tableTapCandidateCell = null; tableDragConfirmed = false
-                        invalidate(); return
-                    }
-                    val headerRow = table.hitTestHeaderRow(wx, wy, scaleFactor)
-                    if (headerRow >= 0) {
-                        tableIsActive = true; tableSelStart = Pair(headerRow, 0); tableSelEnd = Pair(headerRow, table.cols - 1)
-                        tableTapCandidateCell = null; tableDragConfirmed = false
-                        invalidate(); return
-                    }
                     if (tableIsActive) {
                         val rb = table.hitTestRowBorder(wx, wy, tol); val cb = table.hitTestColBorder(wx, wy, tol)
-                        if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; tableDragOrigSizeAdjacent = table.rowHeights.getOrElse(rb + 1) { 60f }; return }
-                        if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; tableDragOrigSizeAdjacent = table.colWidths.getOrElse(cb + 1) { 100f }; return }
-                        val edge = table.hitTestOuterEdge(wx, wy, tol)
-                        if (edge >= 0) {
-                            tableDragOuterEdge = edge; tableDragStartX = wx; tableDragStartY = wy
-                            tableDragOrigX = table.x; tableDragOrigY = table.y
-                            tableDragOrigSize = when (edge) {
-                                0 -> table.rowHeights[0]; 1 -> table.rowHeights[table.rows - 1]
-                                2 -> table.colWidths[0]; else -> table.colWidths[table.cols - 1]
-                            }
-                            return
-                        }
+                        if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; return }
+                        if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; return }
                     }
                     val cell = table.hitTestCell(wx, wy)
                     if (cell == null) {
-                        // Clear stale tap-candidate state from any previous successful cell tap —
-                        // without this, THIS tap's own ACTION_UP would still see the old
-                        // tableTapCandidateCell and silently reopen that previous cell's editor,
-                        // which is what made "double tap outside" (and even a clean single tap
-                        // outside) behave inconsistently: the first tap's DOWN correctly closed
-                        // things, but its own UP immediately reopened the last-edited cell.
-                        tableTapCandidateCell = null; tableDragConfirmed = false
-                        val now = System.currentTimeMillis()
-                        val isDoubleTap = (now - lastOutsideTapTime) < 350L && distance(wx, wy, lastOutsideTapWx, lastOutsideTapWy) < (30f / scaleFactor)
-                        lastOutsideTapTime = now; lastOutsideTapWx = wx; lastOutsideTapWy = wy
-                        val wasEditingCell = tableIsActive
-                        tableIsActive = false; tableSelStart = null; tableSelEnd = null
-                        if (isDoubleTap) {
-                            // Double tap outside: fully exit — table deselected, back to Select tool.
-                            currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT)
-                            activeTableItem = null
-                        }
-                        // Either way, if a cell was being edited, tell MainActivity to close its
-                        // EditText/formula bar overlays — those live outside this view entirely and
-                        // have no other way to find out a tap-outside just happened.
-                        if (wasEditingCell) onTableCellEditorCloseRequest?.invoke()
+                        if (tableIsActive) { currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT) }
+                        tableIsActive = false; tableSelStart = null; tableSelEnd = null; activeTableItem = null
                         invalidate(); return
                     }
                     // Defer open-vs-range-select-drag until ACTION_MOVE/ACTION_UP decides — applies
                     // whether this is the very first tap into the table or a later one.
                     tableIsActive = true
-                    tableTapDownWx = wx; tableTapDownWy = wy; tableTapCandidateCell = cell; tableDragConfirmed = false; tableTapDownTime = System.currentTimeMillis()
+                    tableTapDownWx = wx; tableTapDownWy = wy; tableTapCandidateCell = cell; tableDragConfirmed = false
                 } else {
                     for (action in actions.reversed()) {
                         if (action is TableItem && action.hitTestCell(wx, wy) != null) {
@@ -3619,15 +3587,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
             }
             MotionEvent.ACTION_MOVE -> {
-                if (formulaRefMode) {
-                    val start = formulaRefDragStart
-                    if (start != null) {
-                        val ft = activeTableItem
-                        val cell = ft?.hitTestCellClamped(wx, wy)
-                        if (cell != null) { tableSelEnd = if (cell == start) null else cell; invalidate() }
-                    }
-                    return
-                }
                 if (tableHandleMode == 1) {
                     val table = activeTableItem ?: return
                     table.x = tableOrigX + (wx - tableMoveStartWx); table.y = tableOrigY + (wy - tableMoveStartWy)
@@ -3643,99 +3602,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     invalidate(); return
                 }
                 val table = activeTableItem ?: return; if (!tableIsActive) return
-                if (tableDragRowBorder >= 0) {
-                    // Unlike columns, rows push/extend rather than trade height with the neighbor —
-                    // a table's width is naturally page-constrained (so growing one column should
-                    // borrow from the next to keep the total width fixed), but its height isn't;
-                    // growing a row is expected to just grow the whole table and push everything
-                    // below it down, the way Word/Excel row-resize works.
-                    table.rowHeights[tableDragRowBorder] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(20f)
-                    invalidate(); return
-                }
-                if (tableDragColBorder >= 0) {
-                    val minW = 30f
-                    val lower = minW - tableDragOrigSize; val upper = tableDragOrigSizeAdjacent - minW
-                    var delta = (wx - tableDragStartX)
-                    delta = if (lower <= upper) delta.coerceIn(lower, upper) else 0f
-                    table.colWidths[tableDragColBorder] = tableDragOrigSize + delta
-                    table.colWidths[tableDragColBorder + 1] = tableDragOrigSizeAdjacent - delta
-                    // Narrowing a column makes its text wrap into more lines — without this, rows
-                    // stayed whatever height they were before the drag, so the extra wrapped lines
-                    // just spilled straight through into the row below instead of the row growing
-                    // to fit them. markColManuallyResized keeps recalcCellSize from also snapping
-                    // the column's WIDTH back to fit content, which would undo the drag entirely.
-                    table.markColManuallyResized(tableDragColBorder); table.markColManuallyResized(tableDragColBorder + 1)
-                    for (r in 0 until table.rows) { table.recalcCellSize(r, tableDragColBorder); table.recalcCellSize(r, tableDragColBorder + 1) }
-                    invalidate(); return
-                }
-                if (tableDragOuterEdge >= 0) {
-                    val minH = 20f; val minW = 30f
-                    when (tableDragOuterEdge) {
-                        0 -> { // top: grows upward, table.y shifts up to match so the internal borders below stay put
-                            val newH = (tableDragOrigSize + (tableDragStartY - wy)).coerceAtLeast(minH)
-                            table.rowHeights[0] = newH
-                            table.y = tableDragOrigY - (newH - tableDragOrigSize)
-                        }
-                        1 -> { // bottom: just grows the last row in place
-                            table.rowHeights[table.rows - 1] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(minH)
-                        }
-                        2 -> { // left: grows leftward, table.x shifts left to match
-                            val newW = (tableDragOrigSize + (tableDragStartX - wx)).coerceAtLeast(minW)
-                            table.colWidths[0] = newW
-                            table.x = tableDragOrigX - (newW - tableDragOrigSize)
-                            table.markColManuallyResized(0)
-                            for (r in 0 until table.rows) table.recalcCellSize(r, 0)
-                        }
-                        3 -> { // right: just grows the last column in place
-                            table.colWidths[table.cols - 1] = (tableDragOrigSize + (wx - tableDragStartX)).coerceAtLeast(minW)
-                            table.markColManuallyResized(table.cols - 1)
-                            for (r in 0 until table.rows) table.recalcCellSize(r, table.cols - 1)
-                        }
-                    }
-                    invalidate(); return
-                }
-                if (tableLongPressSelectOnly) return  // long press already locked a single-cell selection; ignore further movement this touch
+                if (tableDragRowBorder >= 0) { table.rowHeights[tableDragRowBorder] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(20f); invalidate(); return }
+                if (tableDragColBorder >= 0) { table.colWidths[tableDragColBorder] = (tableDragOrigSize + (wx - tableDragStartX)).coerceAtLeast(30f); invalidate(); return }
                 val candidate = tableTapCandidateCell ?: return
                 if (!tableDragConfirmed) {
-                    val dist = distance(wx, wy, tableTapDownWx, tableTapDownWy)
                     val dragThreshold = 10f / scaleFactor
-                    if (dist > dragThreshold) {
+                    if (distance(wx, wy, tableTapDownWx, tableTapDownWy) > dragThreshold) {
                         tableDragConfirmed = true
                         tableSelStart = candidate; tableSelEnd = null
-                    } else {
-                        // Manual long-press: relying on the system GestureDetector's onLongPress
-                        // was unreliable here — its own internal slop cancels the long-press the
-                        // instant the finger drifts even slightly during the hold, which is normal
-                        // human tremor, not an intentional drag. Polling elapsed time + a small
-                        // movement allowance on every MOVE event (same pattern already used for
-                        // text hold-selection above) doesn't have that failure mode.
-                        val heldMs = System.currentTimeMillis() - tableTapDownTime
-                        val smallMoveAllowance = 8f / scaleFactor
-                        if (heldMs >= 400L && dist <= smallMoveAllowance) {
-                            tableSelStart = candidate; tableSelEnd = null
-                            tableLongPressSelectOnly = true
-                            performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-                            invalidate(); return
-                        }
                     }
                 }
                 if (tableDragConfirmed) extendTableSelection(wx, wy)
             }
             MotionEvent.ACTION_UP -> {
-                if (formulaRefMode) {
-                    val start = formulaRefDragStart
-                    formulaRefDragStart = null
-                    if (start != null) {
-                        val end = tableSelEnd
-                        if (end != null && end != start) onFormulaRangeRefTap?.invoke(start.first, start.second, end.first, end.second)
-                        else onFormulaCellRefTap?.invoke(start.first, start.second)
-                        tableSelStart = null; tableSelEnd = null; invalidate()
-                    }
-                    return
-                }
                 if (tableHandleMode != 0) { tableHandleMode = 0; markSpatialDirty(); return }
-                if (tableDragRowBorder >= 0 || tableDragColBorder >= 0 || tableDragOuterEdge >= 0) { tableDragRowBorder = -1; tableDragColBorder = -1; tableDragOuterEdge = -1; return }
-                if (tableLongPressSelectOnly) { tableLongPressSelectOnly = false; tableTapCandidateCell = null; tableDragConfirmed = false; invalidate(); return }
+                if (tableDragRowBorder >= 0 || tableDragColBorder >= 0) { tableDragRowBorder = -1; tableDragColBorder = -1; return }
                 val candidate = tableTapCandidateCell
                 if (candidate != null && !tableDragConfirmed) {
                     // Plain tap, or a hold that never turned into a slide — open this cell
@@ -6981,12 +6862,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val cellW = (screenWidth / scaleFactor / 2f) / cols; val cellH = 60f
         table.rowHeights.clear(); repeat(rows) { table.rowHeights.add(cellH) }
         table.colWidths.clear(); repeat(cols) { table.colWidths.add(cellW) }
-        for (r in 0 until rows) for (c in 0 until cols) {
-            val cell = table.getCellPublic(r, c)
-            cell.textSize = defaultTextSize
-            cell.textColor = defaultCellTextColor; cell.fontFamily = defaultCellFontFamily
-            cell.bold = defaultCellBold; cell.italic = defaultCellItalic; cell.underline = defaultCellUnderline
-        }
+        for (r in 0 until rows) for (c in 0 until cols) table.getCellPublic(r, c).textSize = defaultTextSize
         actions.add(table); redoStack.clear(); activeTableItem = table; markSpatialDirty(); invalidate()
     }
 
