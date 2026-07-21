@@ -192,7 +192,14 @@ class StrokeData(
     // split it into fragments — without this, every fragment's dash phase defaulted to 0 at
     // wherever ITS OWN point list happened to start, so the visible pattern appeared to shift
     // with every incremental erase as fragments were repeatedly re-split mid-drag.
-    var dashPhase: Float = 0f
+    var dashPhase: Float = 0f,
+    // True for a dense point-sampled polyline created by erasing (or Exploding) a shape — marks
+    // it as eligible for the whole-page "Regen" cleanup pass, which simplifies the point list and
+    // hands rendering back to the normal smooth Tool.PEN curve path. Deliberately separate from
+    // isPolyline: that flag is ALSO used by the dedicated Polyline tool (precise strokes drawn on
+    // purpose, which must never be touched by Regen) and by the Offset tool (genuinely straight
+    // geometry that should stay sharp-cornered forever, never smoothed into a curve).
+    var eraseFragment: Boolean = false
 ) {
     fun buildPath(): Path {
         val path = Path()
@@ -1210,9 +1217,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         invalidate()
     }
     var snapEnabled: Boolean = false
-    // Excel-style A/B/C... column header + 1/2/3... row header along the top/left edges of the
-    // screen, toggled from Settings. Purely a screen-space overlay — doesn't affect the document.
-    var showRuler: Boolean = false
     var snapEndpoint: Boolean = true
     var snapMidpoint: Boolean = true
     var snapIntersection: Boolean = true
@@ -1356,6 +1360,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var tableSingleTapCell: Pair<Int, Int>? = null
     private var tableTapDownWx = 0f; private var tableTapDownWy = 0f
     private var tableTapCandidateCell: Pair<Int, Int>? = null
+    private var tableTapDownTime = 0L
+    private var tableLongPressSelectOnly = false
+    // While actively typing a formula (text starting with "="), MainActivity flips this on so
+    // that tapping another cell inserts that cell's reference into the formula instead of
+    // switching to editing that cell — matches how Excel/Sheets formula entry works.
+    var formulaRefMode: Boolean = false
+    var onFormulaCellRefTap: ((Int, Int) -> Unit)? = null
+    // Fired instead of onFormulaCellRefTap when a formula-mode touch was a drag across multiple
+    // cells rather than a single tap — e.g. sliding from B1 to B10 should insert "B1:B10", not
+    // just the cell you released on.
+    var onFormulaRangeRefTap: ((Int, Int, Int, Int) -> Unit)? = null
+    private var formulaRefDragStart: Pair<Int, Int>? = null
+    // Fired whenever a tap outside the table means "stop editing this cell" — MainActivity's
+    // EditText/formula bar overlays live outside DrawingView entirely, so there's no other way
+    // for them to find out a tap-outside just happened.
+    var onTableCellEditorCloseRequest: (() -> Unit)? = null
+    var onTableDeleteRequest: ((TableItem) -> Unit)? = null
+    private var lastOutsideTapTime = 0L
+    private var lastOutsideTapWx = 0f
+    private var lastOutsideTapWy = 0f
     private var tableDragConfirmed = false
     // Dedicated move/rotate handles for the whole table — separate from cell selection/border-drag
     private var tableHandleMode = 0 // 0=none, 1=moving, 2=rotating
@@ -2159,71 +2183,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // customHatchBitmapCache field moved near `actions` above; loadCustomHatchBitmap,
     // drawHatchPattern, and drawHatchLocal moved to HatchRenderingExtensions.kt.
 
-    // Converts a 0-based column index into Excel-style letters: 0->A, 25->Z, 26->AA, 27->AB...
-    private fun columnLabel(index: Int): String {
-        var n = index
-        val sb = StringBuilder()
-        while (true) {
-            sb.insert(0, ('A' + (n % 26)))
-            n = n / 26 - 1
-            if (n < 0) break
-        }
-        return sb.toString()
-    }
-
-    private val rulerBarSize = 24f  // screen-space thickness of both header strips, in px
-
-    private fun drawRulers(canvas: Canvas) {
-        val cell = gridSpacingPx()  // world-space spacing between ruler ticks, reuses the grid interval
-        if (cell <= 0f) return
-
-        val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#F5F5F0"); style = Paint.Style.FILL }
-        val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#D0D0C8"); strokeWidth = 1f; style = Paint.Style.STROKE }
-        val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#6B6B66"); textSize = 12f; textAlign = Paint.Align.CENTER }
-
-        // Top column header
-        canvas.drawRect(rulerBarSize, 0f, width.toFloat(), rulerBarSize, bg)
-        canvas.drawLine(0f, rulerBarSize, width.toFloat(), rulerBarSize, line)
-        val worldLeft = screenToWorldX(rulerBarSize); val worldRight = screenToWorldX(width.toFloat())
-        var colIdx = kotlin.math.floor(worldLeft / cell).toInt()
-        while (true) {
-            val wx = colIdx * cell
-            if (wx > worldRight) break
-            val sx = worldToScreenX(wx)
-            if (sx >= rulerBarSize) {
-                canvas.drawLine(sx, rulerBarSize * 0.6f, sx, rulerBarSize, line)
-                val nextSx = worldToScreenX(wx + cell)
-                canvas.drawText(columnLabel(colIdx), (sx + nextSx) / 2f, rulerBarSize * 0.72f, text)
-            }
-            colIdx++
-        }
-
-        // Left row header
-        canvas.drawRect(0f, rulerBarSize, rulerBarSize, height.toFloat(), bg)
-        canvas.drawLine(rulerBarSize, 0f, rulerBarSize, height.toFloat(), line)
-        val worldTop = screenToWorldY(rulerBarSize); val worldBottom = screenToWorldY(height.toFloat())
-        var rowIdx = kotlin.math.floor(worldTop / cell).toInt()
-        while (true) {
-            val wy = rowIdx * cell
-            if (wy > worldBottom) break
-            val sy = worldToScreenY(wy)
-            if (sy >= rulerBarSize) {
-                canvas.drawLine(rulerBarSize * 0.6f, sy, rulerBarSize, sy, line)
-                val nextSy = worldToScreenY(wy + cell)
-                canvas.save()
-                canvas.rotate(-90f, rulerBarSize / 2f, (sy + nextSy) / 2f)
-                canvas.drawText((rowIdx + 1).toString(), rulerBarSize / 2f, (sy + nextSy) / 2f + 4f, text)
-                canvas.restore()
-            }
-            rowIdx++
-        }
-
-        // Corner square where the two headers meet
-        canvas.drawRect(0f, 0f, rulerBarSize, rulerBarSize, bg)
-        canvas.drawLine(0f, rulerBarSize, rulerBarSize, rulerBarSize, line)
-        canvas.drawLine(rulerBarSize, 0f, rulerBarSize, rulerBarSize, line)
-    }
-
 
     // Cache brush strokes as world-space bitmaps at a fixed resolution (CACHE_SCALE px per world unit).
     // The bitmap is drawn via drawBitmap(bmp, srcRect, dstRect) where dstRect is the world bbox —
@@ -2679,7 +2638,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (polylineFingerDown) drawMagnifierLens(canvas, polylineCursorX, polylineCursorY)
         }
         canvas.restore()
-        if (showRuler) drawRulers(canvas)
         drawCursor(canvas)
     }
 
@@ -2895,6 +2853,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawSelection(canvas: Canvas) {
         activeTableItem?.let { drawTableHandles(canvas, it) }
+        // Adjusting an already-placed dimension's handle (point1, point2, or offset) — this had
+        // no magnifier lens at all before, for any of the three handles, unlike the initial-
+        // placement "searching for point" phases below which already handled it. dimCurWx/wy
+        // track the live finger position during this drag too (set unconditionally in
+        // ACTION_MOVE), so the same lens function works here directly.
+        if (currentTool == Tool.DIMENSION && dimDraggingItem != null && dimFingerDown) {
+            drawMagnifierLens(canvas, dimCurWx, dimCurWy)
+        }
         // Preview dimension line while drawing
         if (currentTool == Tool.DIMENSION) {
             if (dimAngular) {
@@ -3498,25 +3464,40 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Single source of truth for where the table's move/rotate handles sit, in world space,
     // already accounting for the table's current rotation — used identically by both drawing
     // and hit-testing so they can never drift apart.
-    private fun tableHandlePositions(table: TableItem): Pair<FloatArray, FloatArray> {
-        val bounds = getBounds(table) ?: return Pair(floatArrayOf(table.x, table.y), floatArrayOf(table.x, table.y))
+    private fun tableHandlePositions(table: TableItem): Triple<FloatArray, FloatArray, FloatArray> {
+        val bounds = getBounds(table) ?: return Triple(floatArrayOf(table.x, table.y), floatArrayOf(table.x, table.y), floatArrayOf(table.x, table.y))
         val cx = (bounds[0] + bounds[2]) / 2f; val cy = (bounds[1] + bounds[3]) / 2f
-        val hr = 26f / scaleFactor
+        val hr = 34f / scaleFactor
         val moveLocalX = bounds[0] - hr * 1.8f; val moveLocalY = bounds[1] - hr * 1.8f
         val rotLocalX = cx; val rotLocalY = bounds[1] - 60f / scaleFactor
+        val delLocalX = bounds[2] + hr * 1.8f; val delLocalY = bounds[1] - hr * 1.8f
         val rad = Math.toRadians(table.rotation.toDouble())
         val cosT = Math.cos(rad).toFloat(); val sinT = Math.sin(rad).toFloat()
         fun rotateAround(px: Float, py: Float): FloatArray {
             val dx = px - cx; val dy = py - cy
             return floatArrayOf(cx + dx * cosT - dy * sinT, cy + dx * sinT + dy * cosT)
         }
-        return Pair(rotateAround(moveLocalX, moveLocalY), rotateAround(rotLocalX, rotLocalY))
+        return Triple(
+            clampHandleToScreen(rotateAround(moveLocalX, moveLocalY)),
+            clampHandleToScreen(rotateAround(rotLocalX, rotLocalY)),
+            clampHandleToScreen(rotateAround(delLocalX, delLocalY))
+        )
+    }
+
+    // If a handle's natural position would land off (or right at the edge of) the visible
+    // screen — e.g. the table is bigger than the viewport, so its corner is scrolled out of
+    // view — pull it back onto screen instead, so it's always reachable regardless of zoom/pan.
+    private fun clampHandleToScreen(worldPos: FloatArray): FloatArray {
+        val margin = 40f
+        val sx = worldToScreenX(worldPos[0]).coerceIn(margin, (width - margin).coerceAtLeast(margin))
+        val sy = worldToScreenY(worldPos[1]).coerceIn(margin, (height - margin).coerceAtLeast(margin))
+        return floatArrayOf(screenToWorldX(sx), screenToWorldY(sy))
     }
 
     private fun drawTableHandles(canvas: Canvas, table: TableItem) {
         val bounds = getBounds(table) ?: return
-        val (movePos, rotPos) = tableHandlePositions(table)
-        val hr = 26f / scaleFactor
+        val (movePos, rotPos, delPos) = tableHandlePositions(table)
+        val hr = 34f / scaleFactor
         val cx = (bounds[0] + bounds[2]) / 2f; val cy = (bounds[1] + bounds[3]) / 2f
         canvas.save(); canvas.rotate(table.rotation, cx, cy)
         val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE; selP.strokeWidth = 2f / scaleFactor
@@ -3533,6 +3514,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         canvas.drawCircle(rotPos[0], rotPos[1], hr, rotFill); canvas.drawCircle(rotPos[0], rotPos[1], hr, whiteStroke)
         val rp = Paint(); rp.color = Color.WHITE; rp.textSize = hr * 1.2f; rp.textAlign = Paint.Align.CENTER; rp.isAntiAlias = true
         canvas.drawText("\u21bb", rotPos[0], rotPos[1] + hr * 0.4f, rp)
+        val delFill = Paint(); delFill.style = Paint.Style.FILL; delFill.color = Color.parseColor("#E53935"); delFill.isAntiAlias = true
+        canvas.drawCircle(delPos[0], delPos[1], hr, delFill); canvas.drawCircle(delPos[0], delPos[1], hr, whiteStroke)
+        val dp = Paint(); dp.color = Color.WHITE; dp.textSize = hr * 1.1f; dp.textAlign = Paint.Align.CENTER; dp.isAntiAlias = true
+        canvas.drawText("\u2715", delPos[0], delPos[1] + hr * 0.35f, dp)
     }
 
     private fun handleTable(event: MotionEvent) {
@@ -3541,11 +3526,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val activeForHandles = activeTableItem
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                if (formulaRefMode) {
+                    val ft = activeTableItem
+                    if (ft != null) {
+                        val cell = ft.hitTestCell(wx, wy)
+                        formulaRefDragStart = cell
+                        if (cell != null) { tableIsActive = true; tableSelStart = cell; tableSelEnd = null; invalidate() }
+                    }
+                    return // consume regardless of hit/miss — a stray tap shouldn't close/switch the table mid-formula
+                }
                 // Dedicated move/rotate handles take priority over everything else — checked
                 // whenever a table is active at all, whether or not you're inside cell-editing.
                 if (activeForHandles != null) {
-                    val (movePos, rotPos) = tableHandlePositions(activeForHandles)
-                    val hitR = 30f / scaleFactor
+                    val (movePos, rotPos, delPos) = tableHandlePositions(activeForHandles)
+                    val hitR = 40f / scaleFactor
                     if (distance(wx, wy, movePos[0], movePos[1]) <= hitR) {
                         tableHandleMode = 1; tableMoveStartWx = wx; tableMoveStartWy = wy
                         tableOrigX = activeForHandles.x; tableOrigY = activeForHandles.y
@@ -3560,24 +3554,69 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         tableRotateStartRotation = activeForHandles.rotation
                         return
                     }
+                    if (distance(wx, wy, delPos[0], delPos[1]) <= hitR) {
+                        onTableDeleteRequest?.invoke(activeForHandles)
+                        return
+                    }
                 }
                 val table = activeTableItem
                 if (table != null) {
+                    val headerCol = table.hitTestHeaderCol(wx, wy, scaleFactor)
+                    if (headerCol >= 0) {
+                        tableIsActive = true; tableSelStart = Pair(0, headerCol); tableSelEnd = Pair(table.rows - 1, headerCol)
+                        tableTapCandidateCell = null; tableDragConfirmed = false
+                        invalidate(); return
+                    }
+                    val headerRow = table.hitTestHeaderRow(wx, wy, scaleFactor)
+                    if (headerRow >= 0) {
+                        tableIsActive = true; tableSelStart = Pair(headerRow, 0); tableSelEnd = Pair(headerRow, table.cols - 1)
+                        tableTapCandidateCell = null; tableDragConfirmed = false
+                        invalidate(); return
+                    }
                     if (tableIsActive) {
                         val rb = table.hitTestRowBorder(wx, wy, tol); val cb = table.hitTestColBorder(wx, wy, tol)
-                        if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; return }
-                        if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; return }
+                        if (rb >= 0) { tableDragRowBorder = rb; tableDragStartY = wy; tableDragOrigSize = table.rowHeights[rb]; tableDragOrigSizeAdjacent = table.rowHeights.getOrElse(rb + 1) { 60f }; return }
+                        if (cb >= 0) { tableDragColBorder = cb; tableDragStartX = wx; tableDragOrigSize = table.colWidths[cb]; tableDragOrigSizeAdjacent = table.colWidths.getOrElse(cb + 1) { 100f }; return }
+                        val edge = table.hitTestOuterEdge(wx, wy, tol)
+                        if (edge >= 0) {
+                            tableDragOuterEdge = edge; tableDragStartX = wx; tableDragStartY = wy
+                            tableDragOrigX = table.x; tableDragOrigY = table.y
+                            tableDragOrigSize = when (edge) {
+                                0 -> table.rowHeights[0]; 1 -> table.rowHeights[table.rows - 1]
+                                2 -> table.colWidths[0]; else -> table.colWidths[table.cols - 1]
+                            }
+                            return
+                        }
                     }
                     val cell = table.hitTestCell(wx, wy)
                     if (cell == null) {
-                        if (tableIsActive) { currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT) }
-                        tableIsActive = false; tableSelStart = null; tableSelEnd = null; activeTableItem = null
+                        // Clear stale tap-candidate state from any previous successful cell tap —
+                        // without this, THIS tap's own ACTION_UP would still see the old
+                        // tableTapCandidateCell and silently reopen that previous cell's editor,
+                        // which is what made "double tap outside" (and even a clean single tap
+                        // outside) behave inconsistently: the first tap's DOWN correctly closed
+                        // things, but its own UP immediately reopened the last-edited cell.
+                        tableTapCandidateCell = null; tableDragConfirmed = false
+                        val now = System.currentTimeMillis()
+                        val isDoubleTap = (now - lastOutsideTapTime) < 350L && distance(wx, wy, lastOutsideTapWx, lastOutsideTapWy) < (30f / scaleFactor)
+                        lastOutsideTapTime = now; lastOutsideTapWx = wx; lastOutsideTapWy = wy
+                        val wasEditingCell = tableIsActive
+                        tableIsActive = false; tableSelStart = null; tableSelEnd = null
+                        if (isDoubleTap) {
+                            // Double tap outside: fully exit — table deselected, back to Select tool.
+                            currentTool = Tool.SELECT; onInternalToolChange?.invoke(Tool.SELECT)
+                            activeTableItem = null
+                        }
+                        // Either way, if a cell was being edited, tell MainActivity to close its
+                        // EditText/formula bar overlays — those live outside this view entirely and
+                        // have no other way to find out a tap-outside just happened.
+                        if (wasEditingCell) onTableCellEditorCloseRequest?.invoke()
                         invalidate(); return
                     }
                     // Defer open-vs-range-select-drag until ACTION_MOVE/ACTION_UP decides — applies
                     // whether this is the very first tap into the table or a later one.
                     tableIsActive = true
-                    tableTapDownWx = wx; tableTapDownWy = wy; tableTapCandidateCell = cell; tableDragConfirmed = false
+                    tableTapDownWx = wx; tableTapDownWy = wy; tableTapCandidateCell = cell; tableDragConfirmed = false; tableTapDownTime = System.currentTimeMillis()
                 } else {
                     for (action in actions.reversed()) {
                         if (action is TableItem && action.hitTestCell(wx, wy) != null) {
@@ -3587,6 +3626,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
             }
             MotionEvent.ACTION_MOVE -> {
+                if (formulaRefMode) {
+                    val start = formulaRefDragStart
+                    if (start != null) {
+                        val ft = activeTableItem
+                        val cell = ft?.hitTestCellClamped(wx, wy)
+                        if (cell != null) { tableSelEnd = if (cell == start) null else cell; invalidate() }
+                    }
+                    return
+                }
                 if (tableHandleMode == 1) {
                     val table = activeTableItem ?: return
                     table.x = tableOrigX + (wx - tableMoveStartWx); table.y = tableOrigY + (wy - tableMoveStartWy)
@@ -3602,21 +3650,99 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     invalidate(); return
                 }
                 val table = activeTableItem ?: return; if (!tableIsActive) return
-                if (tableDragRowBorder >= 0) { table.rowHeights[tableDragRowBorder] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(20f); invalidate(); return }
-                if (tableDragColBorder >= 0) { table.colWidths[tableDragColBorder] = (tableDragOrigSize + (wx - tableDragStartX)).coerceAtLeast(30f); invalidate(); return }
+                if (tableDragRowBorder >= 0) {
+                    // Unlike columns, rows push/extend rather than trade height with the neighbor —
+                    // a table's width is naturally page-constrained (so growing one column should
+                    // borrow from the next to keep the total width fixed), but its height isn't;
+                    // growing a row is expected to just grow the whole table and push everything
+                    // below it down, the way Word/Excel row-resize works.
+                    table.rowHeights[tableDragRowBorder] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(20f)
+                    invalidate(); return
+                }
+                if (tableDragColBorder >= 0) {
+                    val minW = 30f
+                    val lower = minW - tableDragOrigSize; val upper = tableDragOrigSizeAdjacent - minW
+                    var delta = (wx - tableDragStartX)
+                    delta = if (lower <= upper) delta.coerceIn(lower, upper) else 0f
+                    table.colWidths[tableDragColBorder] = tableDragOrigSize + delta
+                    table.colWidths[tableDragColBorder + 1] = tableDragOrigSizeAdjacent - delta
+                    // Narrowing a column makes its text wrap into more lines — without this, rows
+                    // stayed whatever height they were before the drag, so the extra wrapped lines
+                    // just spilled straight through into the row below instead of the row growing
+                    // to fit them. markColManuallyResized keeps recalcCellSize from also snapping
+                    // the column's WIDTH back to fit content, which would undo the drag entirely.
+                    table.markColManuallyResized(tableDragColBorder); table.markColManuallyResized(tableDragColBorder + 1)
+                    for (r in 0 until table.rows) { table.recalcCellSize(r, tableDragColBorder); table.recalcCellSize(r, tableDragColBorder + 1) }
+                    invalidate(); return
+                }
+                if (tableDragOuterEdge >= 0) {
+                    val minH = 20f; val minW = 30f
+                    when (tableDragOuterEdge) {
+                        0 -> { // top: grows upward, table.y shifts up to match so the internal borders below stay put
+                            val newH = (tableDragOrigSize + (tableDragStartY - wy)).coerceAtLeast(minH)
+                            table.rowHeights[0] = newH
+                            table.y = tableDragOrigY - (newH - tableDragOrigSize)
+                        }
+                        1 -> { // bottom: just grows the last row in place
+                            table.rowHeights[table.rows - 1] = (tableDragOrigSize + (wy - tableDragStartY)).coerceAtLeast(minH)
+                        }
+                        2 -> { // left: grows leftward, table.x shifts left to match
+                            val newW = (tableDragOrigSize + (tableDragStartX - wx)).coerceAtLeast(minW)
+                            table.colWidths[0] = newW
+                            table.x = tableDragOrigX - (newW - tableDragOrigSize)
+                            table.markColManuallyResized(0)
+                            for (r in 0 until table.rows) table.recalcCellSize(r, 0)
+                        }
+                        3 -> { // right: just grows the last column in place
+                            table.colWidths[table.cols - 1] = (tableDragOrigSize + (wx - tableDragStartX)).coerceAtLeast(minW)
+                            table.markColManuallyResized(table.cols - 1)
+                            for (r in 0 until table.rows) table.recalcCellSize(r, table.cols - 1)
+                        }
+                    }
+                    invalidate(); return
+                }
+                if (tableLongPressSelectOnly) return  // long press already locked a single-cell selection; ignore further movement this touch
                 val candidate = tableTapCandidateCell ?: return
                 if (!tableDragConfirmed) {
+                    val dist = distance(wx, wy, tableTapDownWx, tableTapDownWy)
                     val dragThreshold = 10f / scaleFactor
-                    if (distance(wx, wy, tableTapDownWx, tableTapDownWy) > dragThreshold) {
+                    if (dist > dragThreshold) {
                         tableDragConfirmed = true
                         tableSelStart = candidate; tableSelEnd = null
+                    } else {
+                        // Manual long-press: relying on the system GestureDetector's onLongPress
+                        // was unreliable here — its own internal slop cancels the long-press the
+                        // instant the finger drifts even slightly during the hold, which is normal
+                        // human tremor, not an intentional drag. Polling elapsed time + a small
+                        // movement allowance on every MOVE event (same pattern already used for
+                        // text hold-selection above) doesn't have that failure mode.
+                        val heldMs = System.currentTimeMillis() - tableTapDownTime
+                        val smallMoveAllowance = 8f / scaleFactor
+                        if (heldMs >= 400L && dist <= smallMoveAllowance) {
+                            tableSelStart = candidate; tableSelEnd = null
+                            tableLongPressSelectOnly = true
+                            performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                            invalidate(); return
+                        }
                     }
                 }
                 if (tableDragConfirmed) extendTableSelection(wx, wy)
             }
             MotionEvent.ACTION_UP -> {
+                if (formulaRefMode) {
+                    val start = formulaRefDragStart
+                    formulaRefDragStart = null
+                    if (start != null) {
+                        val end = tableSelEnd
+                        if (end != null && end != start) onFormulaRangeRefTap?.invoke(start.first, start.second, end.first, end.second)
+                        else onFormulaCellRefTap?.invoke(start.first, start.second)
+                        tableSelStart = null; tableSelEnd = null; invalidate()
+                    }
+                    return
+                }
                 if (tableHandleMode != 0) { tableHandleMode = 0; markSpatialDirty(); return }
-                if (tableDragRowBorder >= 0 || tableDragColBorder >= 0) { tableDragRowBorder = -1; tableDragColBorder = -1; return }
+                if (tableDragRowBorder >= 0 || tableDragColBorder >= 0 || tableDragOuterEdge >= 0) { tableDragRowBorder = -1; tableDragColBorder = -1; tableDragOuterEdge = -1; return }
+                if (tableLongPressSelectOnly) { tableLongPressSelectOnly = false; tableTapCandidateCell = null; tableDragConfirmed = false; invalidate(); return }
                 val candidate = tableTapCandidateCell
                 if (candidate != null && !tableDragConfirmed) {
                     // Plain tap, or a hold that never turned into a slide — open this cell
@@ -5689,7 +5815,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // shape is ITSELF already a fragment from an earlier erase) plus this fragment's own
             // offset — chains correctly back to the true original shape's start no matter how
             // many times it's been re-split.
-            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.FOUNTAIN, opacity = data.opacity, lineType = data.lineType, isPolyline = true, dashPhase = data.dashPhase + segDists[idx])
+            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.FOUNTAIN, opacity = data.opacity, lineType = data.lineType, isPolyline = true, dashPhase = data.dashPhase + segDists[idx], eraseFragment = true)
             StrokeItem(d, d.buildPath(), d.toPaint())
         }
     }
@@ -5889,6 +6015,67 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return bestAcc
     }
 
+    // Ramer-Douglas-Peucker line simplification: recursively keeps only the points that deviate
+    // from a straight chord by more than epsilon, discarding near-collinear points in between.
+    // Used by regenerateErasedShapes() to shrink a dense erase-fragment's point list down to just
+    // the points that actually matter for its shape, before handing it back to the normal smooth
+    // Tool.PEN curve renderer.
+    private fun simplifyRDP(points: List<Float>, epsilon: Float): MutableList<Float> {
+        val n = points.size / 2
+        if (n < 3) return points.toMutableList()
+        fun rdp(pts: List<Float>): MutableList<Float> {
+            val cnt = pts.size / 2
+            if (cnt < 3) return pts.toMutableList()
+            val ax = pts[0]; val ay = pts[1]; val bx = pts[pts.size - 2]; val by = pts[pts.size - 1]
+            var maxDist = 0f; var maxIdx = -1
+            for (i in 1 until cnt - 1) {
+                val d = distToSeg(pts[i * 2], pts[i * 2 + 1], ax, ay, bx, by)
+                if (d > maxDist) { maxDist = d; maxIdx = i }
+            }
+            return if (maxDist > epsilon && maxIdx > 0) {
+                val left = rdp(pts.subList(0, maxIdx * 2 + 2))
+                val right = rdp(pts.subList(maxIdx * 2, pts.size))
+                (left.subList(0, left.size - 2) + right).toMutableList()
+            } else {
+                mutableListOf(ax, ay, bx, by)
+            }
+        }
+        return rdp(points)
+    }
+
+    // AutoCAD-inspired "Regen": a deliberate, on-demand whole-page cleanup pass rather than
+    // something that runs automatically after every erase (simplification has a real, if small,
+    // cost, and most erases don't need it dealt with immediately). Simplifies every erase-created
+    // shape fragment's point list and hands rendering back to the normal smooth Tool.PEN curve
+    // path — cutting point count (and so RAM/file size) while fixing the faceted look that shows
+    // up at high zoom or after enlarging an erased shape.
+    //
+    // Deliberately does NOT try to detect and restore the shape's original type (circle/rect/
+    // etc.) — after erasing, the surviving boundary usually isn't expressible as one of those
+    // anymore anyway (multiple islands, irregular notches from the eraser's circular shape), so a
+    // general curve simplification handles every case uniformly instead of needing shape-specific
+    // fitting logic that would only help the narrowest cases and still need this same fallback
+    // for everything else.
+    fun regenerateErasedShapes(): Int {
+        var count = 0
+        for (action in actions) {
+            if (action !is StrokeItem) continue
+            val d = action.data
+            if (!d.eraseFragment) continue
+            if (d.points.size < 8) { d.eraseFragment = false; continue }  // too few points to be worth simplifying
+            val epsilon = maxOf(1.5f, d.strokeWidth * 0.3f)
+            val simplified = simplifyRDP(d.points, epsilon)
+            d.points.clear(); d.points.addAll(simplified)
+            d.isPolyline = false  // hands rendering back to the existing smooth Tool.PEN curve path
+            d.eraseFragment = false  // regenerated — a future erase re-splits it as a normal smooth pen stroke, not a jagged one
+            action.path = d.buildPath()
+            action.invalidateCache()
+            count++
+        }
+        if (count > 0) { markSpatialDirty(); invalidate() }
+        return count
+    }
+
     private fun splitStrokeAroundEraser(data: StrokeData, ex: Float, ey: Float, r: Float): List<StrokeItem> {
         val pts = data.points
         if (pts.size < 4) { if (pts.size >= 2 && distance(ex, ey, pts[0], pts[1]) <= r) return emptyList(); return listOf(StrokeItem(data, data.buildPath(), data.toPaint())) }
@@ -5958,11 +6145,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val newSegs = mutableListOf<MutableList<Float>>()
                     newSegs.addAll(segs.subList(1, segs.size - 1))
                     newSegs.add(merged)
-                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1])); StrokeItem(d, d.buildPath(), d.toPaint()) }
+                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1]), eraseFragment = data.eraseFragment); StrokeItem(d, d.buildPath(), d.toPaint()) }
                 }
             }
         }
-        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1])); StrokeItem(d, d.buildPath(), d.toPaint()) }
+        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1]), eraseFragment = data.eraseFragment); StrokeItem(d, d.buildPath(), d.toPaint()) }
     }
 
     // Finds ALL points (as sorted t-values in [0,1]) where a segment crosses the eraser circle
@@ -6714,7 +6901,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // That compounding was the actual cause of a circle/ellipse's shape visibly
                 // changing after being erased more than once.
                 val d = StrokeData(Tool.PEN, segPts, data.color, data.strokeWidth, false,
-                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true)
+                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true, eraseFragment = true)
                 listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
             }
             else -> {
@@ -6751,7 +6938,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             }
                             if (segPts.size >= 4) {
                                 val d = StrokeData(Tool.PEN, segPts, data.color, data.strokeWidth, false,
-                                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true)
+                                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true, eraseFragment = true)
                                 result.add(StrokeItem(d, d.buildPath(), d.toPaint()))
                             }
                         }
@@ -6770,7 +6957,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 for ((vx, vy) in verts) { plinePts.add(vx); plinePts.add(vy) }
                 if (closed && verts.isNotEmpty()) { plinePts.add(verts[0].first); plinePts.add(verts[0].second) }
                 val d = StrokeData(Tool.PEN, plinePts, data.color, data.strokeWidth, false,
-                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true)
+                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true, eraseFragment = true)
                 listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
             }
         }
@@ -6862,7 +7049,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val cellW = (screenWidth / scaleFactor / 2f) / cols; val cellH = 60f
         table.rowHeights.clear(); repeat(rows) { table.rowHeights.add(cellH) }
         table.colWidths.clear(); repeat(cols) { table.colWidths.add(cellW) }
-        for (r in 0 until rows) for (c in 0 until cols) table.getCellPublic(r, c).textSize = defaultTextSize
+        for (r in 0 until rows) for (c in 0 until cols) {
+            val cell = table.getCellPublic(r, c)
+            cell.textSize = defaultTextSize
+            cell.textColor = defaultCellTextColor; cell.fontFamily = defaultCellFontFamily
+            cell.bold = defaultCellBold; cell.italic = defaultCellItalic; cell.underline = defaultCellUnderline
+        }
         actions.add(table); redoStack.clear(); activeTableItem = table; markSpatialDirty(); invalidate()
     }
 
@@ -7074,7 +7266,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         sb.append("\n")
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
-            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}|${a.data.dashPhase}\n")
+            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}|${a.data.dashPhase}|${a.data.eraseFragment}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\u0001${a.layerId}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\u0001${a.layerId}\u0001${a.flippedH}\u0001${a.flippedV}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.customHatchPath ?: ""}\u0001${a.hatchPattern?.name ?: ""}\u0001${a.hatchColor}\u0001${a.hatchScale}\u0001${a.layerId}\n")
@@ -7202,7 +7394,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val isPoly = if (p.size >= 16) p[15] == "true" else false
                                 val lid = if (p.size >= 17) p[16].toIntOrNull() ?: 0 else 0
                                 val dPhase = if (p.size >= 18) p[17].toFloatOrNull() ?: 0f else 0f
-                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly, dashPhase = dPhase); val si = StrokeItem(d, d.buildPath(), d.toPaint()); si.layerId = lid; actions.add(si)
+                                val eFrag = if (p.size >= 19) p[18] == "true" else false
+                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly, dashPhase = dPhase, eraseFragment = eFrag); val si = StrokeItem(d, d.buildPath(), d.toPaint()); si.layerId = lid; actions.add(si)
                             } else {
                                 val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
                                 val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
