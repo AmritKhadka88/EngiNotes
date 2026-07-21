@@ -1000,28 +1000,13 @@ class MainActivity : AppCompatActivity() {
     }
     internal fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
-    // Keeps the context (color/size) bar glued to the top edge of the primary toolbar, no
-    // matter what size the primary toolbar's buttons currently are. Previously this gap was
-    // a fixed 58dp set once in the XML, which only matched the DEFAULT medium icon size —
-    // shrinking or growing icons via Settings > Toolbar > Icon size left this margin
-    // unchanged, so the two bars drifted apart (small icons) or started overlapping (large
-    // icons). Also forces the context bar's own height to wrap its (now size-aware) content
-    // instead of a fixed 46dp, so it visually shrinks/grows in step with the primary bar.
-    private fun repositionContextBar() {
-        val primary = findViewById<View?>(R.id.primaryToolbarScroll) ?: return
-        val context = findViewById<HorizontalScrollView?>(R.id.toolbarScroll) ?: return
-        (context.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
-            if (lp.height != FrameLayout.LayoutParams.WRAP_CONTENT) {
-                lp.height = FrameLayout.LayoutParams.WRAP_CONTENT; context.layoutParams = lp
-            }
-        }
-        primary.post {
-            val lp = context.layoutParams as? FrameLayout.LayoutParams ?: return@post
-            val gap = 0
-            val newMargin = (primary.height.takeIf { it > 0 } ?: dp(54)) + gap
-            if (lp.bottomMargin != newMargin) { lp.bottomMargin = newMargin; context.layoutParams = lp }
-        }
-    }
+    // No longer does anything — kept so existing call sites don't need to change. Previously
+    // this dynamically computed a bottomMargin to keep the context bar glued just above the
+    // primary toolbar, since they were two independently-positioned floating views (a fixed
+    // 58dp XML margin that only matched the default icon size, then a runtime patch on top of
+    // that). Now that both bars are children of one LinearLayout (bottomToolbarDock), normal
+    // layout stacking positions them correctly on its own — there's no gap left to compute.
+    private fun repositionContextBar() {}
 
     // iOS-style capsule toolbar with soft shadow, in one of three user-selectable themes.
     // GLASS uses a real frosted blur (RenderEffect) on Android 12+ and falls back to a more
@@ -1035,18 +1020,19 @@ class MainActivity : AppCompatActivity() {
         // settings dialog's save handler, so a correctly-saved "Small" was silently ignored
         // until the user revisited Settings and touched the option again.
         applyBarIconSize(getPrefs().getInt("bar_icon_size", 44))
-        // Each bar now gets its OWN capsule "shell" background (visible fill + edge stroke),
-        // so the row of buttons reads as one enclosed navigation bar — like an iOS Control
-        // Center grouping — instead of icons floating with nothing behind them.
+        // The two bars now share ONE shell (bottomToolbarDock) — applied once here instead of
+        // looping over both bars individually and duplicating the same background/elevation on
+        // each. The visible capsule reads as one enclosed navigation bar with the context row on
+        // top and primary tool row on the bottom, like an iOS Control Center grouping.
+        findViewById<View?>(R.id.bottomToolbarDock)?.apply {
+            background = themedBarShellDrawable(theme)
+            elevation = themedPillElevation(theme)
+            // Without this, the row's rectangular content just paints over the shell's rounded
+            // corners instead of being cropped by them — which is why buttons and color chips
+            // were poking straight past the curved ends of the bar.
+            clipToOutline = true
+        }
         for (barId in listOf(R.id.primaryToolbarScroll, R.id.toolbarScroll)) {
-            findViewById<View?>(barId)?.apply {
-                background = themedBarShellDrawable(theme)
-                elevation = themedPillElevation(theme)
-                // Without this, the row's rectangular content just paints over the shell's
-                // rounded corners instead of being cropped by them — which is why buttons and
-                // color chips were poking straight past the curved ends of the bar.
-                clipToOutline = true
-            }
             // Give the inner row enough start/end padding that a button's own corner never sits
             // inside the shell's curved zone (the 8dp set in XML was tuned for the old
             // square/borderless bars, not this rounded shell).
@@ -1119,8 +1105,7 @@ class MainActivity : AppCompatActivity() {
     // every touch/draw event would be wasteful — a real drawing surface doesn't need to look
     // freshly blurred within milliseconds of a pan/zoom, a brief lag behind is imperceptible.
     private var blurBackdropTop: ImageView? = null
-    private var blurBackdropPrimary: ImageView? = null
-    private var blurBackdropContext: ImageView? = null
+    private var blurBackdropDock: ImageView? = null
     private val blurHandler = Handler(Looper.getMainLooper())
     private var blurUpdateScheduled = false
 
@@ -1136,8 +1121,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun clearBlurBackdrops() {
         blurBackdropTop?.let { canvasContainer.removeView(it) }; blurBackdropTop = null
-        blurBackdropPrimary?.let { canvasContainer.removeView(it) }; blurBackdropPrimary = null
-        blurBackdropContext?.let { canvasContainer.removeView(it) }; blurBackdropContext = null
+        blurBackdropDock?.let { canvasContainer.removeView(it) }; blurBackdropDock = null
     }
 
     private fun updateBlurBackdrops() {
@@ -1176,8 +1160,7 @@ class MainActivity : AppCompatActivity() {
                 return iv
             }
             blurBackdropTop = applyBackdrop(findViewById(R.id.topBarContainer), blurBackdropTop)
-            blurBackdropPrimary = applyBackdrop(findViewById(R.id.primaryToolbarScroll), blurBackdropPrimary)
-            blurBackdropContext = applyBackdrop(findViewById(R.id.toolbarScroll), blurBackdropContext)
+            blurBackdropDock = applyBackdrop(findViewById(R.id.bottomToolbarDock), blurBackdropDock)
         } catch (e: Exception) {
             // Any failure here (view not laid out yet, OOM on a huge canvas, etc.) — silently
             // fall back to the existing tint-only glass look rather than crash the app over a
