@@ -979,7 +979,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (currentLayerId == layerId) currentLayerId = layers.first().id
         redoStack.clear(); markSpatialDirty(); invalidate()
     }
-    fun setLayerVisible(layerId: Int, visible: Boolean) { layers.find { it.id == layerId }?.visible = visible; markSpatialDirty(); invalidate() }
+    fun setLayerVisible(layerId: Int, visible: Boolean) {
+        layers.find { it.id == layerId }?.visible = visible
+        if (!visible) {
+            // An item already selected right before its layer gets hidden would otherwise stay
+            // fully draggable/deletable via the still-active selection reference — hiding a
+            // layer must immediately drop anything of its that's currently selected, not just
+            // block NEW selection attempts.
+            val cur = selectedItem
+            if (cur != null && itemLayerId(cur) == layerId) selectedItem = null
+            selectedItems.removeAll { itemLayerId(it) == layerId }
+            selectedGroup = selectedGroup?.filter { itemLayerId(it) != layerId }?.toMutableList()?.takeIf { it.isNotEmpty() }
+        }
+        markSpatialDirty(); invalidate()
+    }
     fun moveLayerUp(layerId: Int) { val i = layers.indexOfFirst { it.id == layerId }; if (i > 0) { val l = layers.removeAt(i); layers.add(i - 1, l) }; invalidate() }
     fun moveLayerDown(layerId: Int) { val i = layers.indexOfFirst { it.id == layerId }; if (i in 0 until layers.size - 1) { val l = layers.removeAt(i); layers.add(i + 1, l) }; invalidate() }
     // Read/written by drawHatchPattern and loadCustomHatchBitmap in HatchRenderingExtensions.kt.
@@ -1051,9 +1064,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun itemsNear(x: Float, y: Float, r: Float): List<Any> {
         if (spatialDirty) rebuildSpatialIndex()
         val wx = x - r; val wy = y - r; val wx2 = x + r; val wy2 = y + r
+        // A hidden layer's items must act like they don't exist at all — not just invisible.
+        // Filtering here (the shared spatial-query primitive behind tap-to-select and other
+        // hit-testing) means every caller gets this for free instead of needing its own check.
+        val hiddenLayerIds = layers.filter { !it.visible }.map { it.id }.toHashSet()
         val seen = HashSet<Any>(); val result = mutableListOf<Any>()
         for (key in boundsToGridCells(wx, wy, wx2, wy2)) {
-            spatialGrid[key]?.forEach { a -> if (seen.add(a)) result.add(a) }
+            spatialGrid[key]?.forEach { a -> if (seen.add(a) && !hiddenLayerIds.contains(itemLayerId(a))) result.add(a) }
         }
         return result
     }
@@ -1594,6 +1611,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // Double-tap on a DimensionItem → edit it
             if (currentTool == Tool.DIMENSION || currentTool == Tool.SELECT) {
                 val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
+                    if (layers.find { it.id == d.layerId }?.visible == false) return@firstOrNull false
                     val hr = 80f
                     kotlin.math.hypot((e.x - d.handleMidsx), (e.y - d.handleMidsy)) < hr ||
                     kotlin.math.hypot((e.x - d.handleP1sx), (e.y - d.handleP1sy)) < hr ||
@@ -3356,6 +3374,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun findTextItemAt(x: Float, y: Float): TextItem? {
         for (a in actions.reversed()) {
             if (a is TextItem) {
+                if (layers.find { it.id == a.layerId }?.visible == false) continue
                 val layout = getOrBuildLayout(a)
                 val cw = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
                 val ch = layout.height.toFloat()
@@ -4302,7 +4321,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun selectItemsInRegion(region: Region, regionBounds: FloatArray, windowMode: Boolean) {
         val group = mutableListOf<Any>()
         val rl = regionBounds[0]; val rt = regionBounds[1]; val rr = regionBounds[2]; val rb = regionBounds[3]
+        val hiddenLayerIds = layers.filter { !it.visible }.map { it.id }.toHashSet()
         for (action in actions) {
+            if (hiddenLayerIds.contains(itemLayerId(action))) continue
             val b = getBounds(action) ?: continue
             val matches = if (windowMode) {
                 // Window select (L→R): item's full bbox must be completely inside the rectangle
@@ -5104,6 +5125,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
                     val HR = 80f
                     val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
+                        if (layers.find { it.id == d.layerId }?.visible == false) return@firstOrNull false
                         kotlin.math.hypot((event.x - d.handleP1sx), (event.y - d.handleP1sy)) < HR ||
                         kotlin.math.hypot((event.x - d.handleP2sx), (event.y - d.handleP2sy)) < HR ||
                         kotlin.math.hypot((event.x - d.handleMidsx), (event.y - d.handleMidsy)) < HR
