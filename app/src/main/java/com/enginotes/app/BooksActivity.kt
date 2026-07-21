@@ -202,14 +202,15 @@ class BooksActivity : AppCompatActivity() {
         val d = File(cacheDir, "thumbnails"); if (!d.exists()) d.mkdirs(); return d
     }
 
-    // The "v4" here is a cache-format version marker, not part of the note's identity — bump it
+    // The "v5" here is a cache-format version marker, not part of the note's identity — bump it
     // any time renderThumbnail's actual output changes, so every previously-cached thumbnail is
     // treated as missing and regenerated fresh instead of silently keeping old/incorrect cached
-    // PNGs until each note is next edited. (v3 → v4: Convenient-mode notes were still showing a
-    // vertical band past the page's actual right edge — the page is only 82% as wide as the view
-    // it's measured in, but the render was filling the entire view width.)
+    // PNGs until each note is next edited. (v4 → v5: dropped anchoring to "the first object" —
+    // creation order in `actions` isn't the same as visual/spatial "first," which is why some
+    // thumbnails showed a garbled slice of content instead of the actual top of the page. Always
+    // anchors to page 1 at world origin now, matching a simpler, predictable model.)
     private fun thumbnailFileFor(note: File): File =
-        File(thumbnailCacheDir(), "${note.nameWithoutExtension}_${note.lastModified()}_v4.png")
+        File(thumbnailCacheDir(), "${note.nameWithoutExtension}_${note.lastModified()}_v5.png")
 
     // Renders a note's first page to a bitmap by loading it into an off-screen DrawingView and
     // drawing that View directly — reuses all of DrawingView's actual rendering logic (strokes,
@@ -222,20 +223,16 @@ class BooksActivity : AppCompatActivity() {
         if (convenient) {
             // Convenient-mode notes (the default canvas mode) don't have a fixed intrinsic page
             // size — DrawingView.onLayout defines their "page" as 82% of whatever View WIDTH and
-            // 110% of whatever View HEIGHT they're CURRENTLY shown in. Height isn't a problem:
-            // 110% is taller than the view, so the full view height is always legitimately
-            // inside the page (Convenient pages are meant to scroll — this just shows the top).
-            // Width IS a problem: 82% is NARROWER than the view, so filling the whole view width
-            // showed the ~18% margin area past the page's actual right edge — that's the visible
-            // vertical band. Fixed by cropping the rendered bitmap to the page's real width in
-            // post-processing (one single layout pass, then plain bitmap sub-region extraction)
-            // instead of re-measuring the view a second time — a second pass would just retrigger
-            // the same page-size recalculation with the new (narrower) dimensions and drift
-            // again, the same class of bug the earlier aspect-ratio fix ran into.
+            // 110% of whatever View HEIGHT they're CURRENTLY shown in — always taller than one
+            // screen by design (meant to scroll), so there's no achievable "full page height" to
+            // match a thumbnail boundary to at all. Width IS boundable (82% < 100% of the view):
+            // lay out once at a fixed reference size, then crop the resulting bitmap to the
+            // page's real width — its own actual right edge, Notewise-style — and take a
+            // maxHeightPx-tall slice off the top for height, representing "the visible top
+            // portion" of a page that's inherently taller than any static preview could show.
             dv.measure(View.MeasureSpec.makeMeasureSpec(maxWidthPx, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(maxHeightPx, View.MeasureSpec.EXACTLY))
             dv.layout(0, 0, maxWidthPx, maxHeightPx)
-            val anchor = dv.firstContentAnchor()
-            dv.resetViewForThumbnail(1f, anchor?.first ?: 0f, anchor?.second ?: 0f)
+            dv.resetViewForThumbnail(1f, 0f, 0f)
             val fullBmp = Bitmap.createBitmap(maxWidthPx, maxHeightPx, Bitmap.Config.ARGB_8888)
             dv.draw(android.graphics.Canvas(fullBmp))
             val cropW = dv.pageWidthPx().toInt().coerceIn(1, maxWidthPx)
@@ -244,25 +241,17 @@ class BooksActivity : AppCompatActivity() {
             return cropped
         }
         // Paper-size notes (Fixed/Paginated/Infinite canvas modes): page dimensions come from
-        // paperSize + orientation, completely independent of view size — reliable regardless of
-        // what dimensions this probe pass uses, so a second layout pass to refine toward the
-        // exact page aspect ratio is safe here (no recalculation-drift risk like Convenient mode).
-        val probeSpec = View.MeasureSpec.makeMeasureSpec(maxWidthPx, View.MeasureSpec.EXACTLY)
-        dv.measure(probeSpec, probeSpec)
-        dv.layout(0, 0, maxWidthPx, maxWidthPx)
+        // paperSize + orientation ALONE — no dependency on view size at all — so pageWidthPx()/
+        // pageHeightPx() are readable immediately after loadFromString(), before any layout pass,
+        // and there's a real, fixed page boundary to match the bitmap to directly.
         val pageAspect = dv.pageWidthPx().coerceAtLeast(1f) / dv.pageHeightPx().coerceAtLeast(1f)
         var w = maxWidthPx; var h = (w / pageAspect).toInt()
         if (h > maxHeightPx) { h = maxHeightPx; w = (h * pageAspect).toInt() }
         val finalW = w.coerceAtLeast(1); val finalH = h.coerceAtLeast(1)
         dv.measure(View.MeasureSpec.makeMeasureSpec(finalW, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(finalH, View.MeasureSpec.EXACTLY))
         dv.layout(0, 0, finalW, finalH)
-        // Anchor to wherever the note's actual content starts — an Infinite-canvas note could
-        // have its first real content drawn well away from page-1 origin. The scale still comes
-        // from the page-fit calculation either way, so this still reads as "one page's worth of
-        // content," just panned to where the content actually begins instead of always (0,0).
-        val anchor = dv.firstContentAnchor()
         val scale = minOf(finalW / dv.pageWidthPx(), finalH / dv.pageHeightPx())
-        dv.resetViewForThumbnail(if (scale.isFinite() && scale > 0f) scale else 1f, anchor?.first ?: 0f, anchor?.second ?: 0f)
+        dv.resetViewForThumbnail(if (scale.isFinite() && scale > 0f) scale else 1f, 0f, 0f)
         val bmp = Bitmap.createBitmap(finalW, finalH, Bitmap.Config.ARGB_8888)
         dv.draw(android.graphics.Canvas(bmp))
         applyEdgeFade(bmp)
