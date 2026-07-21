@@ -202,25 +202,70 @@ class BooksActivity : AppCompatActivity() {
         val d = File(cacheDir, "thumbnails"); if (!d.exists()) d.mkdirs(); return d
     }
 
+    // The "v2" here is a cache-format version marker, not part of the note's identity — bump it
+    // any time renderThumbnail's actual output changes (like the aspect-ratio fix that added
+    // this comment), so every previously-cached thumbnail is treated as missing and regenerated
+    // fresh, instead of silently keeping old/incorrect cached PNGs until each note is next edited.
     private fun thumbnailFileFor(note: File): File =
-        File(thumbnailCacheDir(), "${note.nameWithoutExtension}_${note.lastModified()}.png")
+        File(thumbnailCacheDir(), "${note.nameWithoutExtension}_${note.lastModified()}_v2.png")
 
     // Renders a note's first page to a bitmap by loading it into an off-screen DrawingView and
     // drawing that View directly — reuses all of DrawingView's actual rendering logic (strokes,
     // tables, text, hatch fills, everything) instead of a second, simplified renderer that would
     // inevitably drift out of sync with what the note actually looks like when opened for real.
-    private fun renderThumbnail(note: File, widthPx: Int, heightPx: Int): Bitmap? {
+    private fun renderThumbnail(note: File, maxWidthPx: Int, maxHeightPx: Int): Bitmap? {
         val dv = DrawingView(this)
         dv.loadFromString(note.readText())
-        val widthSpec = View.MeasureSpec.makeMeasureSpec(widthPx, View.MeasureSpec.EXACTLY)
-        val heightSpec = View.MeasureSpec.makeMeasureSpec(heightPx, View.MeasureSpec.EXACTLY)
+        // First pass: measure with a throwaway square size just so page dimensions become
+        // readable at all (Convenient-mode notes fall back to the View's own measured
+        // width/height for page size, so it needs SOME size to probe with first).
+        val probeSpec = View.MeasureSpec.makeMeasureSpec(maxWidthPx, View.MeasureSpec.EXACTLY)
+        dv.measure(probeSpec, probeSpec)
+        dv.layout(0, 0, maxWidthPx, maxWidthPx)
+        val pageW = dv.pageWidthPx().coerceAtLeast(1f)
+        val pageH = dv.pageHeightPx().coerceAtLeast(1f)
+        // Second pass: pick a bitmap size matching the page's own aspect ratio exactly, bounded
+        // within maxWidthPx/maxHeightPx. This is the actual fix — a bitmap whose aspect ratio
+        // doesn't match the page's (which is almost always true, since paper sizes rarely match
+        // an arbitrary thumbnail box) left leftover space on one axis once the page was scaled
+        // to fit inside it, and that leftover space showed whatever's drawn outside the page in
+        // world space (the canvas background) — not empty white, which is what read as
+        // "cropping outside the page" instead of just the page.
+        val pageAspect = pageW / pageH
+        var finalW = maxWidthPx
+        var finalH = (finalW / pageAspect).toInt()
+        if (finalH > maxHeightPx) { finalH = maxHeightPx; finalW = (finalH * pageAspect).toInt() }
+        finalW = finalW.coerceAtLeast(1); finalH = finalH.coerceAtLeast(1)
+        val widthSpec = View.MeasureSpec.makeMeasureSpec(finalW, View.MeasureSpec.EXACTLY)
+        val heightSpec = View.MeasureSpec.makeMeasureSpec(finalH, View.MeasureSpec.EXACTLY)
         dv.measure(widthSpec, heightSpec)
-        dv.layout(0, 0, widthPx, heightPx)
-        val scale = minOf(widthPx / dv.pageWidthPx(), heightPx / dv.pageHeightPx())
+        dv.layout(0, 0, finalW, finalH)
+        val scale = minOf(finalW / dv.pageWidthPx(), finalH / dv.pageHeightPx())
         dv.resetViewForThumbnail(if (scale.isFinite() && scale > 0f) scale else 1f)
-        val bmp = Bitmap.createBitmap(widthPx, heightPx, Bitmap.Config.ARGB_8888)
+        val bmp = Bitmap.createBitmap(finalW, finalH, Bitmap.Config.ARGB_8888)
         dv.draw(android.graphics.Canvas(bmp))
+        applyEdgeFade(bmp)
         return bmp
+    }
+
+    // Soft edge fade on all 4 sides (like Samsung Notes' thumbnails) — draws a thin
+    // white-to-transparent gradient inward from each edge directly onto the rendered bitmap,
+    // so the page appears to gently fade into the card's white background rather than having a
+    // hard cutoff at the crop boundary.
+    private fun applyEdgeFade(bmp: Bitmap) {
+        val fade = dp(14).coerceAtMost(minOf(bmp.width, bmp.height) / 4)
+        if (fade <= 0) return
+        val canvas = android.graphics.Canvas(bmp)
+        val paint = android.graphics.Paint()
+        val w = bmp.width.toFloat(); val h = bmp.height.toFloat(); val f = fade.toFloat()
+        paint.shader = android.graphics.LinearGradient(0f, 0f, 0f, f, android.graphics.Color.WHITE, android.graphics.Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
+        canvas.drawRect(0f, 0f, w, f, paint)
+        paint.shader = android.graphics.LinearGradient(0f, h, 0f, h - f, android.graphics.Color.WHITE, android.graphics.Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
+        canvas.drawRect(0f, h - f, w, h, paint)
+        paint.shader = android.graphics.LinearGradient(0f, 0f, f, 0f, android.graphics.Color.WHITE, android.graphics.Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
+        canvas.drawRect(0f, 0f, f, h, paint)
+        paint.shader = android.graphics.LinearGradient(w, 0f, w - f, 0f, android.graphics.Color.WHITE, android.graphics.Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
+        canvas.drawRect(w - f, 0f, w, h, paint)
     }
 
     // Cached thumbnails decode off the main thread (pure bitmap decoding — no View involved, so
@@ -384,7 +429,7 @@ class BooksActivity : AppCompatActivity() {
                 it.setMargins(dp(4), 0, dp(4), dp(14))
             }
         }
-        val thumbW = dp(160); val thumbH = dp(200)
+        val thumbMaxW = dp(200); val thumbMaxH = dp(260)
         val imageView = ImageView(this).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(140))
             scaleType = ImageView.ScaleType.CENTER_CROP
@@ -392,7 +437,13 @@ class BooksActivity : AppCompatActivity() {
                 setColor(android.graphics.Color.WHITE); cornerRadius = dp(10).toFloat()
                 setStroke(dp(1), android.graphics.Color.parseColor("#E0E0E0"))
             }
-            elevation = dp(1).toFloat()
+            // Without this, the rendered thumbnail bitmap — a plain rectangle — poked past the
+            // rounded corners of the white background/border underneath it instead of being
+            // cropped to match.
+            clipToOutline = true
+            // Was dp(1) — barely visible. Bumped up for a real, visible card shadow (matching
+            // the Notewise reference) rather than something you'd only notice if you looked.
+            elevation = dp(4).toFloat()
         }
         card.addView(imageView)
         val nameView = TextView(this).apply {
@@ -409,7 +460,7 @@ class BooksActivity : AppCompatActivity() {
         }
         card.addView(metaView)
 
-        getOrCreateThumbnail(file, thumbW, thumbH) { bmp -> if (bmp != null) imageView.setImageBitmap(bmp) }
+        getOrCreateThumbnail(file, thumbMaxW, thumbMaxH) { bmp -> if (bmp != null) imageView.setImageBitmap(bmp) }
 
         card.setOnClickListener {
             startActivity(Intent(this, MainActivity::class.java)
