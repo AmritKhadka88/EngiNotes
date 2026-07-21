@@ -1036,10 +1036,12 @@ class MainActivity : AppCompatActivity() {
             // Give the inner row enough start/end padding that a button's own corner never sits
             // inside the shell's curved zone (the 8dp set in XML was tuned for the old
             // square/borderless bars, not this rounded shell).
-            // toolbarScroll holds text-label pills (Select/Lasso/Rect/Multi) and needs real
-            // vertical room or the labels clip; primaryToolbarScroll is icon-only and can run
-            // much tighter — using the same value for both was wrong in both directions at once.
-            val vPad = if (barId == R.id.toolbarScroll) dp(10) else dp(2)
+            // toolbarScroll holds text-label pills (Select/Lasso/Rect/Multi) and needs a little
+            // more vertical room than primaryToolbarScroll's plain icons so labels don't clip —
+            // but dp(10) here (stacked on top of the XML's own padding) was much more than that
+            // actually needed, and was the main reason both bars felt like they had a lot of
+            // empty space around the icons/labels rather than hugging them.
+            val vPad = if (barId == R.id.toolbarScroll) dp(5) else dp(1)
             ((findViewById<View?>(barId) as? HorizontalScrollView)?.getChildAt(0) as? LinearLayout)?.let { row ->
                 row.setPadding(dp(14), vPad, dp(14), vPad)
             }
