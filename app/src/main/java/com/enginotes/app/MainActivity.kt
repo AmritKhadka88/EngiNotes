@@ -3520,11 +3520,11 @@ class MainActivity : AppCompatActivity() {
             elevation = dp(10).toFloat()
             setOnClickListener { drawingView.getActiveTable()?.let { showTablePropertiesDialog(it) } }
         }
-        // Sits in the bottom toolbar area, above the Select/Lasso/Rect/Multi pill and the tool
-        // icon row beneath it — this is the "bottom upper navigation bar" spot.
+        // Stacked top-left, below Group/Indiv (topMargin dp(56)) and Snap (topMargin dp(104)) —
+        // Group/Indiv, then Snap, then Table, each ~48dp apart.
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
-        lp.bottomMargin = dp(180); lp.leftMargin = dp(8)
+        lp.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+        lp.topMargin = dp(152); lp.leftMargin = dp(8)
         canvasContainer.addView(btn, lp)
         tableButton = btn
     }
@@ -3734,14 +3734,12 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener { if (snapOptionsPanel != null) dismissSnapOptionsPanel() else showSnapOptionsPanel() }
             }
             val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-            lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
-            // Was bottomMargin = dp(8) — nowhere near enough to clear the Select/Lasso/Rect/Multi
-            // bar and the tool icon row beneath it (same toolbar tableButton's dp(180) comment
-            // already documents), so this pill was rendering directly underneath that toolbar,
-            // completely hidden the entire time regardless of snapEnabled's actual value. Offset
-            // further up than tableButton (dp(180)) so the two don't overlap each other when a
-            // table is active AND snap is enabled at the same time.
-            lp.bottomMargin = dp(230); lp.leftMargin = dp(12)
+            lp.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+            // Stacked top-left, directly below Group/Indiv (topMargin dp(56)) — Table sits below
+            // this one in turn (topMargin dp(152)). All three now live in the same column instead
+            // of Snap/Table being down at the bottom, which is what made this pill's earlier
+            // dp(8) position land underneath the toolbar and get hidden in the first place.
+            lp.topMargin = dp(104); lp.leftMargin = dp(8)
             canvasContainer.addView(btn, lp)
             snapOptionsButton = btn
         } else {
