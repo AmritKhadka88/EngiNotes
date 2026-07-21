@@ -3735,7 +3735,13 @@ class MainActivity : AppCompatActivity() {
             }
             val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
             lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
-            lp.bottomMargin = dp(8); lp.leftMargin = dp(12)
+            // Was bottomMargin = dp(8) — nowhere near enough to clear the Select/Lasso/Rect/Multi
+            // bar and the tool icon row beneath it (same toolbar tableButton's dp(180) comment
+            // already documents), so this pill was rendering directly underneath that toolbar,
+            // completely hidden the entire time regardless of snapEnabled's actual value. Offset
+            // further up than tableButton (dp(180)) so the two don't overlap each other when a
+            // table is active AND snap is enabled at the same time.
+            lp.bottomMargin = dp(230); lp.leftMargin = dp(12)
             canvasContainer.addView(btn, lp)
             snapOptionsButton = btn
         } else {
