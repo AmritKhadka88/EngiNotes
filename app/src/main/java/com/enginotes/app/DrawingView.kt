@@ -184,7 +184,15 @@ class StrokeData(
     // (which every Tool.PEN render path below does, to remove hand tremor from natural
     // handwriting) would round off intentional sharp corners into a curve, which is wrong for
     // a tool whose entire purpose is precise straight segments.
-    var isPolyline: Boolean = false
+    var isPolyline: Boolean = false,
+    // Distance (in world/path units, same space PathMeasure works in) from the START of the
+    // ORIGINAL, never-erased stroke to this fragment's own first point. Used as the dash
+    // pattern's phase offset so a dashed/dotted line's pattern stays visually anchored to its
+    // true position along the original line, no matter how many times the area eraser has since
+    // split it into fragments — without this, every fragment's dash phase defaulted to 0 at
+    // wherever ITS OWN point list happened to start, so the visible pattern appeared to shift
+    // with every incremental erase as fragments were repeatedly re-split mid-drag.
+    var dashPhase: Float = 0f
 ) {
     fun buildPath(): Path {
         val path = Path()
@@ -708,7 +716,7 @@ class StrokeData(
         if (lineType != LineType.CONTINUOUS && penStyle != PenStyle.PENCIL && intervals != null) {
             val sw = p.strokeWidth.coerceAtLeast(1f)
             val scaled = intervals.map { it * sw / 3f }.toFloatArray()
-            p.pathEffect = android.graphics.DashPathEffect(scaled, 0f)
+            p.pathEffect = android.graphics.DashPathEffect(scaled, dashPhase)
             if (lineType.cap != android.graphics.Paint.Cap.BUTT) p.strokeCap = lineType.cap
         }
         return p
@@ -2838,6 +2846,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawSelection(canvas: Canvas) {
         activeTableItem?.let { drawTableHandles(canvas, it) }
+        // Adjusting an already-placed dimension's handle (point1, point2, or offset) — this had
+        // no magnifier lens at all before, for any of the three handles, unlike the initial-
+        // placement "searching for point" phases below which already handled it. dimCurWx/wy
+        // track the live finger position during this drag too (set unconditionally in
+        // ACTION_MOVE), so the same lens function works here directly.
+        if (currentTool == Tool.DIMENSION && dimDraggingItem != null && dimFingerDown) {
+            drawMagnifierLens(canvas, dimCurWx, dimCurWy)
+        }
         // Preview dimension line while drawing
         if (currentTool == Tool.DIMENSION) {
             if (dimAngular) {
@@ -5730,7 +5746,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val path = data.buildPath()
         val measure = android.graphics.PathMeasure(path, false)
         val allPts = mutableListOf<Float>()
+        val allDist = mutableListOf<Float>()  // parallel to allPts: along-path distance to each sampled point
         val pos = FloatArray(2)
+        var baseDist = 0f  // accumulates across multiple contours (measure.nextContour())
         do {
             val len = measure.length
             if (len <= 0f) continue
@@ -5743,16 +5761,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             while (dist <= len) {
                 measure.getPosTan(dist, pos, null)
                 allPts.add(pos[0]); allPts.add(pos[1])
+                allDist.add(baseDist + dist)
                 dist += step
             }
+            baseDist += len
         } while (measure.nextContour())
         if (allPts.size < 4) return emptyList()
 
         val segs = mutableListOf<MutableList<Float>>(); var cur = mutableListOf<Float>()
-        fun flush() { if (cur.size >= 4) segs.add(cur); cur = mutableListOf() }
+        val segDists = mutableListOf<Float>(); var curDist = mutableListOf<Float>()
+        fun flush() { if (cur.size >= 4) { segs.add(cur); segDists.add(curDist.firstOrNull() ?: 0f) }; cur = mutableListOf(); curDist = mutableListOf() }
         var i = 0
         var prevIn = distance(ex, ey, allPts[0], allPts[1]) <= r
-        if (!prevIn) { cur.add(allPts[0]); cur.add(allPts[1]) }
+        if (!prevIn) { cur.add(allPts[0]); cur.add(allPts[1]); curDist.add(allDist[0]) }
         while (i + 3 < allPts.size) {
             val x1 = allPts[i]; val y1 = allPts[i + 1]; val x2 = allPts[i + 2]; val y2 = allPts[i + 3]
             val segDist = distToSeg(ex, ey, x1, y1, x2, y2)
@@ -5760,16 +5781,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (curIn != prevIn) {
                 val cut = findCircleSegIntersection(ex, ey, r, x1, y1, x2, y2)
                 if (cut != null) {
-                    if (!prevIn) { cur.add(cut.first); cur.add(cut.second); flush() }
-                    else { cur.add(cut.first); cur.add(cut.second) }
+                    // Cut points are interpolated (not directly sampled), so their exact distance
+                    // isn't tracked — the nearest sample's distance is a fine approximation here,
+                    // since this only needs to keep the dash pattern visually stable, not be
+                    // pixel-perfect.
+                    if (!prevIn) { cur.add(cut.first); cur.add(cut.second); curDist.add(allDist[i / 2]); flush() }
+                    else { cur.add(cut.first); cur.add(cut.second); curDist.add(allDist[i / 2]) }
                 } else flush()
             }
-            if (!curIn) { cur.add(x2); cur.add(y2) }
+            if (!curIn) { cur.add(x2); cur.add(y2); curDist.add(allDist[i / 2 + 1]) }
             prevIn = curIn
             i += 2
         }
         flush()
-        return segs.map { sp ->
+        return segs.mapIndexed { idx, sp ->
             // isPolyline = true is the critical part here: without it, Tool.PEN's default
             // render path runs every stroke through quadratic-bezier smoothing to remove hand
             // tremor (see the comment on StrokeData.isPolyline above). That's correct for actual
@@ -5779,7 +5804,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // this same reconstruction on the now-already-curved path, the distortion compounds
             // worse with every erase. Marking it a polyline keeps the straight-line render path,
             // preserving the shape's actual geometry exactly as sampled.
-            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.FOUNTAIN, opacity = data.opacity, lineType = data.lineType, isPolyline = true)
+            // dashPhase = parent's own phase (0 for a never-erased shape, but non-zero if this
+            // shape is ITSELF already a fragment from an earlier erase) plus this fragment's own
+            // offset — chains correctly back to the true original shape's start no matter how
+            // many times it's been re-split.
+            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.FOUNTAIN, opacity = data.opacity, lineType = data.lineType, isPolyline = true, dashPhase = data.dashPhase + segDists[idx])
             StrokeItem(d, d.buildPath(), d.toPaint())
         }
     }
@@ -5955,6 +5984,30 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
     // sample-point distance), so erasing is accurate to what's visually under the eraser circle
     // regardless of how sparse the stroke's recorded points are.
+    // Finds how far (in world units) a point is along an original polyline, by walking its
+    // segments and finding the closest match. Used to compute an erased fragment's correct dash-
+    // phase anchor after the fact, rather than threading distance-tracking through the crossing
+    // detection above — same reasoning as splitShapeAroundEraser's dash-phase fix.
+    private fun cumulativeDistAlongPolyline(pts: List<Float>, targetX: Float, targetY: Float): Float {
+        var acc = 0f; var best = Float.MAX_VALUE; var bestAcc = 0f
+        var i = 0
+        while (i + 3 < pts.size) {
+            val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
+            val segLen = distance(x1, y1, x2, y2)
+            val d = distToSeg(targetX, targetY, x1, y1, x2, y2)
+            if (d < best) {
+                best = d
+                // Project onto the segment to get the exact point within it, not just its start.
+                val segLenSq = segLen * segLen
+                val t = if (segLenSq > 0.0001f) (((targetX - x1) * (x2 - x1) + (targetY - y1) * (y2 - y1)) / segLenSq).coerceIn(0f, 1f) else 0f
+                bestAcc = acc + t * segLen
+            }
+            acc += segLen
+            i += 2
+        }
+        return bestAcc
+    }
+
     private fun splitStrokeAroundEraser(data: StrokeData, ex: Float, ey: Float, r: Float): List<StrokeItem> {
         val pts = data.points
         if (pts.size < 4) { if (pts.size >= 2 && distance(ex, ey, pts[0], pts[1]) <= r) return emptyList(); return listOf(StrokeItem(data, data.buildPath(), data.toPaint())) }
@@ -6024,11 +6077,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val newSegs = mutableListOf<MutableList<Float>>()
                     newSegs.addAll(segs.subList(1, segs.size - 1))
                     newSegs.add(merged)
-                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline); StrokeItem(d, d.buildPath(), d.toPaint()) }
+                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1])); StrokeItem(d, d.buildPath(), d.toPaint()) }
                 }
             }
         }
-        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline); StrokeItem(d, d.buildPath(), d.toPaint()) }
+        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1])); StrokeItem(d, d.buildPath(), d.toPaint()) }
     }
 
     // Finds ALL points (as sorted t-values in [0,1]) where a segment crosses the eraser circle
@@ -7145,7 +7198,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         sb.append("\n")
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
-            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}\n")
+            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}|${a.data.dashPhase}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\u0001${a.layerId}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\u0001${a.layerId}\u0001${a.flippedH}\u0001${a.flippedV}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.customHatchPath ?: ""}\u0001${a.hatchPattern?.name ?: ""}\u0001${a.hatchColor}\u0001${a.hatchScale}\u0001${a.layerId}\n")
@@ -7272,7 +7325,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val slant = if (p.size >= 15) p[14].toFloatOrNull() ?: 0.65f else 0.65f
                                 val isPoly = if (p.size >= 16) p[15] == "true" else false
                                 val lid = if (p.size >= 17) p[16].toIntOrNull() ?: 0 else 0
-                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly); val si = StrokeItem(d, d.buildPath(), d.toPaint()); si.layerId = lid; actions.add(si)
+                                val dPhase = if (p.size >= 18) p[17].toFloatOrNull() ?: 0f else 0f
+                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly, dashPhase = dPhase); val si = StrokeItem(d, d.buildPath(), d.toPaint()); si.layerId = lid; actions.add(si)
                             } else {
                                 val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
                                 val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
