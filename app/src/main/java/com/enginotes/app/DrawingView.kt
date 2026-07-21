@@ -7197,12 +7197,23 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         invalidate()
     }
 
-    // Used by BooksActivity to render an off-screen thumbnail of this note's first page.
-    // scaleFactor/translateX/translateY are private, so this is the one narrow door in — resets
-    // pan to the page's top-left corner at whatever scale the caller computed to fit their
-    // thumbnail bitmap size (typically minOf(thumbWidth/pageWidthPx(), thumbHeight/pageHeightPx())).
-    fun resetViewForThumbnail(scale: Float) {
+    // Used by BooksActivity to render an off-screen thumbnail of this note's content.
+    // scaleFactor/translateX/translateY are private, so this is the one narrow door in — pans so
+    // that world position (worldX, worldY) lands at the top-left of the rendered bitmap, at
+    // whatever scale the caller computed. worldX/worldY default to (0,0) — page 1's origin —
+    // but see firstContentAnchor() below for notes whose real content isn't there at all.
+    fun resetViewForThumbnail(scale: Float, worldX: Float = 0f, worldY: Float = 0f) {
         scaleFactor = scale
-        translateX = 0f; translateY = 0f
+        translateX = -worldX * scale; translateY = -worldY * scale
+    }
+
+    // Returns the top-left world position of the first item drawn in this note, or null if it
+    // has no content at all. Used so a thumbnail can anchor itself to wherever the note's actual
+    // content starts — an Infinite-canvas note could easily have nothing near world (0,0), which
+    // would otherwise render as a blank thumbnail despite the note having real content elsewhere.
+    fun firstContentAnchor(): Pair<Float, Float>? {
+        val first = actions.firstOrNull() ?: return null
+        val b = getBounds(first) ?: return null
+        return Pair(b[0], b[1])
     }
 }
