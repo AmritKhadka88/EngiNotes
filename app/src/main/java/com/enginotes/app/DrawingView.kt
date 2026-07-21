@@ -199,7 +199,16 @@ class StrokeData(
     // isPolyline: that flag is ALSO used by the dedicated Polyline tool (precise strokes drawn on
     // purpose, which must never be touched by Regen) and by the Offset tool (genuinely straight
     // geometry that should stay sharp-cornered forever, never smoothed into a curve).
-    var eraseFragment: Boolean = false
+    var eraseFragment: Boolean = false,
+    // True only if the ORIGINAL shape (before erasing converted it to a point list) was
+    // genuinely round — Tool.CIRCLE or Tool.ELLIPSE. Deliberately conservative: everything else
+    // (rectangles, rounded-rects, triangles, stars, all polygon shapes) is left false, even
+    // though some of those have curved elements too (a rounded-rect's corners, a moon/ring's
+    // arc). regenerateErasedShapes() only re-smooths fragments marked true here — smoothing a
+    // shape with real straight edges and sharp corners doesn't just look a little off, it
+    // actively destroys the shape's geometry (a rounded-rectangle regenerated into something
+    // resembling a circle, in the case that surfaced this).
+    var eraseFragmentCurved: Boolean = false
 ) {
     fun buildPath(): Path {
         val path = Path()
@@ -6066,8 +6075,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val epsilon = maxOf(1.5f, d.strokeWidth * 0.3f)
             val simplified = simplifyRDP(d.points, epsilon)
             d.points.clear(); d.points.addAll(simplified)
-            d.isPolyline = false  // hands rendering back to the existing smooth Tool.PEN curve path
-            d.eraseFragment = false  // regenerated — a future erase re-splits it as a normal smooth pen stroke, not a jagged one
+            // Only genuinely round shapes (circle/ellipse) get handed to the smooth Bezier
+            // renderer — flipping this for a straight-edged shape (rectangle, triangle, star,
+            // any polygon) doesn't just look slightly off, it destroys the shape's actual
+            // geometry (a rounded-rectangle regenerated into something resembling a circle was
+            // exactly this bug). Straight-edged fragments keep isPolyline=true: RDP alone already
+            // reduces their point count down to essentially just the real corner points, which
+            // fixes the faceted look on its own without needing any smoothing at all.
+            if (d.eraseFragmentCurved) d.isPolyline = false
+            d.eraseFragment = false  // regenerated — a future erase re-splits it as whatever it now is, not a jagged dense fragment
             action.path = d.buildPath()
             action.invalidateCache()
             count++
@@ -6145,11 +6161,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val newSegs = mutableListOf<MutableList<Float>>()
                     newSegs.addAll(segs.subList(1, segs.size - 1))
                     newSegs.add(merged)
-                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1]), eraseFragment = data.eraseFragment); StrokeItem(d, d.buildPath(), d.toPaint()) }
+                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1]), eraseFragment = data.eraseFragment, eraseFragmentCurved = data.eraseFragmentCurved); StrokeItem(d, d.buildPath(), d.toPaint()) }
                 }
             }
         }
-        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1]), eraseFragment = data.eraseFragment); StrokeItem(d, d.buildPath(), d.toPaint()) }
+        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1]), eraseFragment = data.eraseFragment, eraseFragmentCurved = data.eraseFragmentCurved); StrokeItem(d, d.buildPath(), d.toPaint()) }
     }
 
     // Finds ALL points (as sorted t-values in [0,1]) where a segment crosses the eraser circle
@@ -6901,7 +6917,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // That compounding was the actual cause of a circle/ellipse's shape visibly
                 // changing after being erased more than once.
                 val d = StrokeData(Tool.PEN, segPts, data.color, data.strokeWidth, false,
-                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true, eraseFragment = true)
+                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true, eraseFragment = true,
+                    // ROUNDED_RECT shares this sampling branch with CIRCLE/ELLIPSE (all three need
+                    // dense curve sampling to erase correctly) but must NOT be marked curved here —
+                    // it has real straight sides that regenerateErasedShapes() must never smooth.
+                    eraseFragmentCurved = data.type == Tool.CIRCLE || data.type == Tool.ELLIPSE)
                 listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
             }
             else -> {
@@ -7266,7 +7286,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         sb.append("\n")
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
-            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}|${a.data.dashPhase}|${a.data.eraseFragment}\n")
+            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}|${a.data.dashPhase}|${a.data.eraseFragment}|${a.data.eraseFragmentCurved}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\u0001${a.layerId}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\u0001${a.layerId}\u0001${a.flippedH}\u0001${a.flippedV}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.customHatchPath ?: ""}\u0001${a.hatchPattern?.name ?: ""}\u0001${a.hatchColor}\u0001${a.hatchScale}\u0001${a.layerId}\n")
@@ -7395,7 +7415,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val lid = if (p.size >= 17) p[16].toIntOrNull() ?: 0 else 0
                                 val dPhase = if (p.size >= 18) p[17].toFloatOrNull() ?: 0f else 0f
                                 val eFrag = if (p.size >= 19) p[18] == "true" else false
-                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly, dashPhase = dPhase, eraseFragment = eFrag); val si = StrokeItem(d, d.buildPath(), d.toPaint()); si.layerId = lid; actions.add(si)
+                                val eFragCurved = if (p.size >= 20) p[19] == "true" else false
+                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly, dashPhase = dPhase, eraseFragment = eFrag, eraseFragmentCurved = eFragCurved); val si = StrokeItem(d, d.buildPath(), d.toPaint()); si.layerId = lid; actions.add(si)
                             } else {
                                 val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
                                 val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
