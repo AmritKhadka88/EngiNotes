@@ -1358,6 +1358,13 @@ class MainActivity : AppCompatActivity() {
     internal fun applyBarIconSize(barSizeDp: Int) {
         val sz = dp(barSizeDp)
         val primaryBar = findViewById<HorizontalScrollView?>(R.id.primaryToolbarScroll)
+        // Was only resizing the individual ImageButtons — the shell (this ScrollView) kept
+        // whatever fixed height its XML layout_height gave it, so "Small" just left tiny icons
+        // floating in the same amount of surrounding empty space instead of the bar itself
+        // shrinking. Overriding the height here to hug the icon size (plus the row's own small
+        // vertical padding, dp(2) top + dp(2) bottom — see the shell-padding setup above) makes
+        // the whole bar responsive to this setting, not just its contents.
+        primaryBar?.layoutParams?.let { lp -> lp.height = sz + dp(4); primaryBar.layoutParams = lp }
         (primaryBar?.getChildAt(0) as? LinearLayout)?.let { ll ->
             for (i in 0 until ll.childCount) {
                 val child = ll.getChildAt(i) as? ImageButton ?: continue
@@ -1389,6 +1396,10 @@ class MainActivity : AppCompatActivity() {
         // context (color/size) row grows and shrinks in step with the primary toolbar above it.
         val BAR_H = (dp(getPrefs().getInt("bar_icon_size", 44)) * 0.86f).toInt().coerceAtLeast(dp(30))
         val CHIP_H = BAR_H - dp(6)
+        // Same gap as primaryToolbarScroll had: the chips inside already scaled with BAR_H, but
+        // this shell (the ScrollView itself) kept its fixed XML height regardless — so a "Small"
+        // preference left small chips floating in an unchanged amount of surrounding bar space.
+        contextBar.layoutParams?.let { lp -> lp.height = BAR_H + dp(4); contextBar.layoutParams = lp }
 
         fun divider() { row.addView(View(this).apply {
             val lp = LinearLayout.LayoutParams(dp(1), dp(20)); lp.setMargins(dp(4),0,dp(4),0); layoutParams = lp
@@ -3783,8 +3794,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
-        lp.bottomMargin = dp(50); lp.leftMargin = dp(12)
+        lp.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+        // Was anchored to the bottom (bottomMargin dp(50)) from before the Snap pill itself moved
+        // up into the top-left stack — left a big gap between the pill and its own panel. Now
+        // opens directly below the pill (topMargin dp(104) + pill height + gap).
+        lp.topMargin = dp(152); lp.leftMargin = dp(8)
         canvasContainer.addView(panel, lp)
         snapOptionsPanel = panel
         animatePanelIn(panel)
