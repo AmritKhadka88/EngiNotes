@@ -182,8 +182,8 @@
             android:background="@android:color/transparent"
             android:scrollbars="none"
             android:visibility="visible"
-            android:paddingTop="4dp"
-            android:paddingBottom="4dp">
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp">
 
             <LinearLayout
                 android:layout_width="wrap_content"
@@ -221,8 +221,8 @@
             android:layout_height="wrap_content"
             android:background="@android:color/transparent"
             android:scrollbars="none"
-            android:paddingTop="5dp"
-            android:paddingBottom="5dp">
+            android:paddingTop="3dp"
+            android:paddingBottom="3dp">
 
             <LinearLayout
                 android:layout_width="wrap_content"
