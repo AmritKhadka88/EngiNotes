@@ -925,6 +925,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     fun createLayer(name: String): Layer {
         val l = Layer(nextLayerId++, name); layers.add(0, l); currentLayerId = l.id; invalidate(); return l
     }
+    // Dimension items always go into their own dedicated "Dimensions" layer, auto-created on
+    // first use, regardless of whichever layer is currently active for other tools. Unlike
+    // createLayer() this does NOT switch currentLayerId — drawing a dimension shouldn't silently
+    // move the user away from whatever layer they're actively working in with other tools.
+    private fun dimensionsLayerId(): Int {
+        layers.find { it.name == "Dimensions" }?.let { return it.id }
+        val l = Layer(nextLayerId++, "Dimensions")
+        layers.add(0, l)
+        invalidate()
+        return l.id
+    }
     fun renameLayer(layerId: Int, name: String) { layers.find { it.id == layerId }?.name = name }
     // Deleting a layer deletes everything in it too — matches "if a layer is deleted, objects in
     // it must be deleted as well" exactly. Always keeps at least one layer so there's never
@@ -1837,6 +1848,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
             }
             is TextItem -> { if (!action.isEditing) drawTextItem(canvas, action) }
+            is DimensionItem -> drawDimensionItem(canvas, action)
             is ImageItem -> {
                 val bmp = getOrLoadBitmap(action) ?: return
                 canvas.save()
@@ -3055,6 +3067,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is FillItem -> { item.x += dx; item.y += dy }
             is TextItem -> { item.x += dx; item.y += dy }
             is AudioItem -> { item.x += dx; item.y += dy }
+            is DimensionItem -> {
+                item.x1 += dx; item.y1 += dy; item.x2 += dx; item.y2 += dy
+                markSpatialDirty()  // bounds changed — spatial grid must update or hit-testing fails at the new position
+            }
             is StrokeItem -> {
                 var i = 0
                 while (i + 1 < item.data.points.size) { item.data.points[i] += dx; item.data.points[i + 1] += dy; i += 2 }
@@ -5158,6 +5174,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                     fontSize = defaultDimFontSize, arrowSize = defaultDimArrowSize, textColor = currentColor
                                 )
                                 newDim.unit = "${dimAngP3wx},${dimAngP3wy},false"
+                                newDim.layerId = dimensionsLayerId()
                                 actions.add(newDim); redoStack.clear(); markSpatialDirty(); invalidate()
                             }
                         }
@@ -5180,6 +5197,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             if (dimMode == DimMode.AUTO) {
                                 newDim.refLength = autoRefRealLen; newDim.unit = autoRefUnit
                             }
+                            newDim.layerId = dimensionsLayerId()
                             actions.add(newDim); redoStack.clear(); markSpatialDirty()
                             onDimensionCreated?.invoke(newDim)
                         }
