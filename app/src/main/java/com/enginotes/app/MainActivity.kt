@@ -49,7 +49,14 @@ class MainActivity : AppCompatActivity() {
     private var currentFileName: String? = null
     private var hwrAutoEnabled = false  // real-time handwriting-to-text toggle
     private var lastSavedContent: String = ""
-    internal val PT_TO_PX = 1.333f
+    // Was a flat 1.333 (96 DPI / 72), which assumed every device renders at exactly 96 DPI
+    // regardless of its actual screen density — on a real phone (density 2.0-4.0+, not the
+    // ~0.6 that 96 DPI implies in Android's terms), that flat factor under-shot the true pixel
+    // count for a given point size, which is why "11pt" here looked visibly smaller than "11pt"
+    // in a density-aware app like Word. 160 is Android's own mdpi reference DPI (density 1.0);
+    // multiplying by the device's actual density gives the device's real DPI, and dividing by 72
+    // (the definition of a point: 1/72 inch) gives pixels-per-point at that real DPI.
+    internal val PT_TO_PX: Float get() = (160f * resources.displayMetrics.density) / 72f
     private var isConvenientLayout = true
 
     private val driveManager by lazy { DriveManager(this) }
@@ -927,30 +934,27 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyConvenientLayout() {
-        val oldW = drawingView.pageWidthPx(); val oldH = drawingView.pageHeightPx()
+        // No rescale here — Convenient's page-width formula (view.width * 0.82, raw device
+        // pixels) and Fixed/Paginated's (paperSize.widthMM * 3.7795, a DPI-based conversion) are
+        // different unit systems entirely, not two sizes of the same thing. Comparing them
+        // produced a scale factor reflecting nothing but that mismatch — which is what shrank
+        // font sizes and moved content on a switch, instead of keeping everything's position and
+        // size exactly as it was.
         isConvenientLayout = true
         drawingView.canvasMode = CanvasMode.CONVENIENT
-        val newW = drawingView.pageWidthPx(); val newH = drawingView.pageHeightPx()
-        if (oldW > 0f && oldH > 0f) drawingView.rescaleAllContent(minOf(newW / oldW, newH / oldH))
         drawingView.invalidate()
     }
 
     private fun applyPrintLayout() {
-        val oldW = drawingView.pageWidthPx(); val oldH = drawingView.pageHeightPx()
         isConvenientLayout = false
         drawingView.canvasMode = CanvasMode.PAGINATED
         drawingView.paperSize = PaperSizeOption.A4
-        val newW = drawingView.pageWidthPx(); val newH = drawingView.pageHeightPx()
-        if (oldW > 0f && oldH > 0f) drawingView.rescaleAllContent(minOf(newW / oldW, newH / oldH))
         drawingView.invalidate()
     }
 
     private fun applyInfiniteLayout() {
-        val oldW = drawingView.pageWidthPx(); val oldH = drawingView.pageHeightPx()
         isConvenientLayout = false
         drawingView.canvasMode = CanvasMode.INFINITE
-        val newW = drawingView.pageWidthPx(); val newH = drawingView.pageHeightPx()
-        if (oldW > 0f && oldH > 0f) drawingView.rescaleAllContent(minOf(newW / oldW, newH / oldH))
         drawingView.invalidate()
     }
 
