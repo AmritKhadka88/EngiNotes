@@ -208,7 +208,13 @@ class StrokeData(
     // shape with real straight edges and sharp corners doesn't just look a little off, it
     // actively destroys the shape's geometry (a rounded-rectangle regenerated into something
     // resembling a circle, in the case that surfaced this).
-    var eraseFragmentCurved: Boolean = false
+    var eraseFragmentCurved: Boolean = false,
+    // Used only by regenerateErasedShapes() for non-curved fragments (rounded-rects, and
+    // anything else with a mix of straight edges and rounded corners in the same stroke).
+    // Deliberately a SEPARATE flag from isPolyline rather than reusing it — isPolyline is also
+    // the deliberate Polyline tool's flag for "render every vertex as a sharp corner, always,"
+    // and this needed its own mechanism that can never affect that.
+    var regenSmoothCorners: Boolean = false
 ) {
     fun buildPath(): Path {
         val path = Path()
@@ -233,6 +239,27 @@ class StrokeData(
                         i += 2
                     }
                     if (i + 1 < pts.size) path.lineTo(pts[i], pts[i + 1])
+                } else if (regenSmoothCorners && points.size >= 8) {
+                    val segCount = points.size / 2 - 1
+                    val segLens = FloatArray(segCount)
+                    for (k in 0 until segCount) {
+                        val dx = points[k * 2 + 2] - points[k * 2]; val dy = points[k * 2 + 3] - points[k * 2 + 1]
+                        segLens[k] = kotlin.math.sqrt(dx * dx + dy * dy)
+                    }
+                    val median = segLens.sortedArray().let { if (it.isNotEmpty()) it[it.size / 2] else 0f }
+                    val shortThreshold = maxOf(median * 0.5f, 0.01f)
+                    var i = 2
+                    while (i + 1 < points.size) {
+                        val segIdx = i / 2 - 1
+                        val isShort = segIdx in segLens.indices && segLens[segIdx] < shortThreshold
+                        if (isShort && i + 3 < points.size) {
+                            val midX = (points[i] + points[i + 2]) / 2f; val midY = (points[i + 1] + points[i + 3]) / 2f
+                            path.quadTo(points[i], points[i + 1], midX, midY)
+                        } else {
+                            path.lineTo(points[i], points[i + 1])
+                        }
+                        i += 2
+                    }
                 } else {
                     var i = 2
                     while (i + 1 < points.size) { path.lineTo(points[i], points[i + 1]); i += 2 }
@@ -6075,14 +6102,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val epsilon = maxOf(1.5f, d.strokeWidth * 0.3f)
             val simplified = simplifyRDP(d.points, epsilon)
             d.points.clear(); d.points.addAll(simplified)
-            // Only genuinely round shapes (circle/ellipse) get handed to the smooth Bezier
-            // renderer — flipping this for a straight-edged shape (rectangle, triangle, star,
-            // any polygon) doesn't just look slightly off, it destroys the shape's actual
-            // geometry (a rounded-rectangle regenerated into something resembling a circle was
-            // exactly this bug). Straight-edged fragments keep isPolyline=true: RDP alone already
-            // reduces their point count down to essentially just the real corner points, which
-            // fixes the faceted look on its own without needing any smoothing at all.
-            if (d.eraseFragmentCurved) d.isPolyline = false
+            // Genuinely round shapes (circle/ellipse) get handed to the standard smooth Bezier
+            // renderer, uniformly — there's no "straight part" to protect. Everything else uses
+            // the adaptive per-segment smoother instead: it keeps real straight edges sharp AND
+            // smooths a rounded corner within the SAME stroke, rather than the earlier all-or-
+            // nothing choice (whole shape stays straight → faceted corners; whole shape gets
+            // smoothed → destroys straight sides, which was the previous bug).
+            if (d.eraseFragmentCurved) d.isPolyline = false else d.regenSmoothCorners = true
             d.eraseFragment = false  // regenerated — a future erase re-splits it as whatever it now is, not a jagged dense fragment
             action.path = d.buildPath()
             action.invalidateCache()
@@ -6161,11 +6187,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val newSegs = mutableListOf<MutableList<Float>>()
                     newSegs.addAll(segs.subList(1, segs.size - 1))
                     newSegs.add(merged)
-                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1]), eraseFragment = data.eraseFragment, eraseFragmentCurved = data.eraseFragmentCurved); StrokeItem(d, d.buildPath(), d.toPaint()) }
+                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1]), eraseFragment = data.eraseFragment, eraseFragmentCurved = data.eraseFragmentCurved, regenSmoothCorners = data.regenSmoothCorners); StrokeItem(d, d.buildPath(), d.toPaint()) }
                 }
             }
         }
-        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1]), eraseFragment = data.eraseFragment, eraseFragmentCurved = data.eraseFragmentCurved); StrokeItem(d, d.buildPath(), d.toPaint()) }
+        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1]), eraseFragment = data.eraseFragment, eraseFragmentCurved = data.eraseFragmentCurved, regenSmoothCorners = data.regenSmoothCorners); StrokeItem(d, d.buildPath(), d.toPaint()) }
     }
 
     // Finds ALL points (as sorted t-values in [0,1]) where a segment crosses the eraser circle
@@ -7286,7 +7312,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         sb.append("\n")
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
-            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}|${a.data.dashPhase}|${a.data.eraseFragment}|${a.data.eraseFragmentCurved}\n")
+            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}|${a.data.dashPhase}|${a.data.eraseFragment}|${a.data.eraseFragmentCurved}|${a.data.regenSmoothCorners}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\u0001${a.layerId}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\u0001${a.layerId}\u0001${a.flippedH}\u0001${a.flippedV}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.customHatchPath ?: ""}\u0001${a.hatchPattern?.name ?: ""}\u0001${a.hatchColor}\u0001${a.hatchScale}\u0001${a.layerId}\n")
@@ -7416,7 +7442,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val dPhase = if (p.size >= 18) p[17].toFloatOrNull() ?: 0f else 0f
                                 val eFrag = if (p.size >= 19) p[18] == "true" else false
                                 val eFragCurved = if (p.size >= 20) p[19] == "true" else false
-                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly, dashPhase = dPhase, eraseFragment = eFrag, eraseFragmentCurved = eFragCurved); val si = StrokeItem(d, d.buildPath(), d.toPaint()); si.layerId = lid; actions.add(si)
+                                val regenSmooth = if (p.size >= 21) p[20] == "true" else false
+                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly, dashPhase = dPhase, eraseFragment = eFrag, eraseFragmentCurved = eFragCurved, regenSmoothCorners = regenSmooth); val si = StrokeItem(d, d.buildPath(), d.toPaint()); si.layerId = lid; actions.add(si)
                             } else {
                                 val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
                                 val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))
