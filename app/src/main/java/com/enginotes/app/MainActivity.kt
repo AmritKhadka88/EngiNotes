@@ -49,14 +49,7 @@ class MainActivity : AppCompatActivity() {
     private var currentFileName: String? = null
     private var hwrAutoEnabled = false  // real-time handwriting-to-text toggle
     private var lastSavedContent: String = ""
-    // Was a flat 1.333 (96 DPI / 72), which assumed every device renders at exactly 96 DPI
-    // regardless of its actual screen density — on a real phone (density 2.0-4.0+, not the
-    // ~0.6 that 96 DPI implies in Android's terms), that flat factor under-shot the true pixel
-    // count for a given point size, which is why "11pt" here looked visibly smaller than "11pt"
-    // in a density-aware app like Word. 160 is Android's own mdpi reference DPI (density 1.0);
-    // multiplying by the device's actual density gives the device's real DPI, and dividing by 72
-    // (the definition of a point: 1/72 inch) gives pixels-per-point at that real DPI.
-    internal val PT_TO_PX: Float get() = (160f * resources.displayMetrics.density) / 72f
+    internal val PT_TO_PX = 1.333f
     private var isConvenientLayout = true
 
     private val driveManager by lazy { DriveManager(this) }

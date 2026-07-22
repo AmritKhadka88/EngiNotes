@@ -7372,7 +7372,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         flushDirtyFillItems()  // safety net: never save with fill edits still only in memory
         flushEraseSessionBitmaps()  // safety net: never save with a bitmap-erased stroke still unfinalized
         val sb = StringBuilder()
-        sb.append("META\u0001${paperType.name}\u0001${canvasMode.name}\u0001${paperSize.name}\u0001${pageOrientation.name}\u0001$paperColor\u0001$densityTextFixApplied\n")
+        sb.append("META\u0001${paperType.name}\u0001${canvasMode.name}\u0001${paperSize.name}\u0001${pageOrientation.name}\u0001$paperColor\n")
         // Layer list itself: id, visibility, and name for each — sanitized against the field/
         // entry separators since a layer name is free-typed text. Restored before any items are
         // parsed below so their layerId values land on real, already-existing layers.
@@ -7389,12 +7389,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         return sb.toString()
     }
-
-    // Tracks whether this note's TextItem sizes have already been migrated to the density-aware
-    // PT_TO_PX formula (see MainActivity's PT_TO_PX comment) — without this, saving and
-    // reopening a note would re-apply the migration every single time, making text grow larger
-    // on every save/reload cycle instead of being corrected exactly once.
-    private var densityTextFixApplied: Boolean = false
 
     fun loadFromString(content: String) {
         actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null; markSpatialDirty()
@@ -7414,7 +7408,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         try { if (p.size > 3) paperSize = PaperSizeOption.valueOf(p[3]) } catch (e: Exception) {}
                         try { if (p.size > 4) pageOrientation = Orientation.valueOf(p[4]) } catch (e: Exception) {}
                         try { if (p.size > 5) paperColor = p[5].toInt() } catch (e: Exception) {}
-                        try { densityTextFixApplied = p.size > 6 && p[6].toBoolean() } catch (e: Exception) {}
                         i++
                     }
                     line.startsWith("LAYERS\u0001") -> {
@@ -7530,21 +7523,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                 }
             } catch (e: Exception) { i++ }
-        }
-        // One-time migration for notes saved before the density-aware font-size fix (see
-        // MainActivity's PT_TO_PX comment for the full reasoning). The OLD conversion assumed a
-        // flat 96 DPI regardless of the actual device, undershooting real pixel size on most
-        // phones — this rescales existing text to match what the corrected formula says it
-        // should be, exactly once. Gated on densityTextFixApplied so re-saving and reopening
-        // this same note never re-applies it (which would make text keep growing every cycle).
-        if (!densityTextFixApplied) {
-            val oldFlatPtToPx = 1.333f
-            val correctedPtToPx = (160f * resources.displayMetrics.density) / 72f
-            val migrationRatio = correctedPtToPx / oldFlatPtToPx
-            if (migrationRatio.isFinite() && migrationRatio > 0f && kotlin.math.abs(migrationRatio - 1f) > 0.001f) {
-                for (a in actions) { if (a is TextItem) a.size *= migrationRatio }
-            }
-            densityTextFixApplied = true
         }
         invalidate()
     }
