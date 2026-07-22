@@ -927,21 +927,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyConvenientLayout() {
+        val oldW = drawingView.pageWidthPx(); val oldH = drawingView.pageHeightPx()
         isConvenientLayout = true
         drawingView.canvasMode = CanvasMode.CONVENIENT
+        val newW = drawingView.pageWidthPx(); val newH = drawingView.pageHeightPx()
+        if (oldW > 0f && oldH > 0f) drawingView.rescaleAllContent(minOf(newW / oldW, newH / oldH))
         drawingView.invalidate()
     }
 
     private fun applyPrintLayout() {
+        val oldW = drawingView.pageWidthPx(); val oldH = drawingView.pageHeightPx()
         isConvenientLayout = false
         drawingView.canvasMode = CanvasMode.PAGINATED
         drawingView.paperSize = PaperSizeOption.A4
+        val newW = drawingView.pageWidthPx(); val newH = drawingView.pageHeightPx()
+        if (oldW > 0f && oldH > 0f) drawingView.rescaleAllContent(minOf(newW / oldW, newH / oldH))
         drawingView.invalidate()
     }
 
     private fun applyInfiniteLayout() {
+        val oldW = drawingView.pageWidthPx(); val oldH = drawingView.pageHeightPx()
         isConvenientLayout = false
         drawingView.canvasMode = CanvasMode.INFINITE
+        val newW = drawingView.pageWidthPx(); val newH = drawingView.pageHeightPx()
+        if (oldW > 0f && oldH > 0f) drawingView.rescaleAllContent(minOf(newW / oldW, newH / oldH))
         drawingView.invalidate()
     }
 

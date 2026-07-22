@@ -6128,6 +6128,57 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return count
     }
 
+    // Scales every item's position AND size-related properties (stroke width, font size, image
+    // dimensions, table cell sizes, dimension line/arrow/font sizes) by a uniform factor — used
+    // when switching canvas mode or paper size, since pageWidthPx()/pageHeightPx() mean something
+    // completely different in each mode (Convenient: view.width * 0.82; Fixed/Paginated: a fixed
+    // size from paperSize alone) and nothing was adjusting existing content to match a newly
+    // selected page, which is what let content drift out of alignment with the new page boundary
+    // after switching. Uniform (same factor for x/y) rather than separately for width/height,
+    // so nothing gets visually stretched or squished — proportions are preserved, only overall
+    // size changes.
+    fun rescaleAllContent(scale: Float) {
+        if (scale == 1f || !scale.isFinite() || scale <= 0f) return
+        for (action in actions) {
+            when (action) {
+                is StrokeItem -> {
+                    val d = action.data
+                    for (i in d.points.indices) d.points[i] = d.points[i] * scale
+                    d.strokeWidth *= scale
+                    for (i in d.widths.indices) d.widths[i] = d.widths[i] * scale
+                    for (hole in d.clipHoles) { hole[0] *= scale; hole[1] *= scale; hole[2] *= scale }
+                    d.dashPhase *= scale
+                    action.path = d.buildPath()
+                    action.invalidateCache()
+                }
+                is TextItem -> {
+                    action.x *= scale; action.y *= scale; action.size *= scale
+                    if (action.maxWidth > 0f) action.maxWidth *= scale
+                }
+                is ImageItem -> { action.x *= scale; action.y *= scale; action.w *= scale; action.h *= scale }
+                is FillItem -> { action.x *= scale; action.y *= scale; action.w *= scale; action.h *= scale; action.hatchScale *= scale }
+                is DimensionItem -> {
+                    action.x1 *= scale; action.y1 *= scale; action.x2 *= scale; action.y2 *= scale
+                    action.offset *= scale; action.strokeW *= scale; action.fontSize *= scale; action.arrowSize *= scale
+                }
+                is TableItem -> {
+                    action.x *= scale; action.y *= scale
+                    for (i in action.rowHeights.indices) action.rowHeights[i] = action.rowHeights[i] * scale
+                    for (i in action.colWidths.indices) action.colWidths[i] = action.colWidths[i] * scale
+                    action.headerTextSize *= scale
+                    for (r in 0 until action.rows) for (c in 0 until action.cols) {
+                        val cell = action.getCellPublic(r, c)
+                        cell.textSize *= scale; cell.borderWidth *= scale
+                    }
+                }
+                // AudioItem isn't in this file this session — its position won't be rescaled here.
+                // Flagging this explicitly rather than silently skipping it without a note.
+                else -> {}
+            }
+        }
+        markSpatialDirty(); invalidate()
+    }
+
     private fun splitStrokeAroundEraser(data: StrokeData, ex: Float, ey: Float, r: Float): List<StrokeItem> {
         val pts = data.points
         if (pts.size < 4) { if (pts.size >= 2 && distance(ex, ey, pts[0], pts[1]) <= r) return emptyList(); return listOf(StrokeItem(data, data.buildPath(), data.toPaint())) }
