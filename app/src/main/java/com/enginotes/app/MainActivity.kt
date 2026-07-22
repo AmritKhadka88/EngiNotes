@@ -486,42 +486,36 @@ class MainActivity : AppCompatActivity() {
         tvTitle.setOnClickListener { showRenameDialog() }
         btnLayoutToggle = findViewById(R.id.btnLayoutToggle)
 
-        // Keep the static bottom toolbars (context row + primary tool dock) above the keyboard.
-        // These are separate from the floating per-edit toolbar handled elsewhere - they're
-        // pinned in activity_main.xml and were getting covered by the IME since adjustNothing
-        // doesn't resize/pan the layout for them.
-        // Uses bottomMargin (not translationY) on the last child so the LinearLayout actually
-        // reflows - canvasContainer (weight=1) shrinks to make room, avoiding a visual gap.
+        // Keep the bottom toolbar dock above the keyboard. This is separate from the floating
+        // per-edit toolbar handled elsewhere - it's pinned in activity_main.xml and was getting
+        // covered by the IME since adjustNothing doesn't resize/pan the layout for it.
+        // Uses bottomMargin (not translationY) so the FrameLayout actually reflows.
+        //
+        // Adjusts bottomToolbarDock itself, NOT the two bars nested inside it
+        // (primaryToolbarScroll/toolbarScroll) — those used to be independent top-level views
+        // each needing their own margin, but since they were merged into one shell (bottomToolbarDock),
+        // they're now LinearLayout children whose own bottomMargin only affects spacing WITHIN the
+        // dock. The dock itself is the direct FrameLayout child that actually needs to move above
+        // the keyboard; adjusting the inner bars instead left the dock never repositioned at all.
         run {
-            val primaryBar = findViewById<View?>(R.id.primaryToolbarScroll)
-            val contextBar = findViewById<View?>(R.id.toolbarScroll)
-            // Each bar's own starting bottomMargin, captured once before any keyboard adjustment.
-            // Every subsequent update sets margin = thisBar'sOwnBaseline + keyboardHeight,
-            // independently per bar. This can't double-shift or lose relative spacing no matter
-            // how they're actually nested/related in the layout — each bar only ever knows about
-            // its own original position, never inferred from the other bar's current state.
-            val baseMargins = HashMap<View, Int>()
-            for (bar in listOf(primaryBar, contextBar)) {
-                val lp0 = bar?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
-                if (bar != null && lp0 != null) baseMargins[bar] = lp0.bottomMargin
-            }
+            val dock = findViewById<View?>(R.id.bottomToolbarDock)
+            // The dock's own starting bottomMargin, captured once before any keyboard adjustment.
+            // Every subsequent update sets margin = baseline + keyboardHeight.
+            val baseMargin = (dock?.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.bottomMargin ?: 0
             androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { _, insets ->
                 val imeBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
                 val navBarBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars()).bottom
                 // imeBottom only reflects the portion of the keyboard actually overlapping the
                 // app's content — a floating/split keyboard that doesn't cover this area reports
-                // 0 here, so these bars correctly stay put in that case with no extra handling needed.
+                // 0 here, so the dock correctly stays put in that case with no extra handling needed.
                 val extraForKeyboard = (imeBottom - navBarBottom).coerceAtLeast(0)
                 // Guard: only update bottomMargin when value changes — prevents layout
                 // thrashing and the blinking/lag caused by firing on every tiny inset update.
-                for (bar in listOf(primaryBar, contextBar)) {
-                    val base = baseMargins[bar] ?: continue
-                    val lp = bar?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
-                    val target = base + extraForKeyboard
-                    if (lp != null && lp.bottomMargin != target) {
-                        lp.bottomMargin = target
-                        bar.layoutParams = lp
-                    }
+                val lp = dock?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
+                val target = baseMargin + extraForKeyboard
+                if (lp != null && lp.bottomMargin != target) {
+                    lp.bottomMargin = target
+                    dock.layoutParams = lp
                 }
                 onImeBottomChanged?.invoke(imeBottom)  // notify inline editor keyboard listener
                 insets
