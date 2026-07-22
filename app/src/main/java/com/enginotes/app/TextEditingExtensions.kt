@@ -440,7 +440,12 @@ internal fun MainActivity.showTextSelectionBox(item: TextItem, screenX: Float, s
         tbBtn(R.drawable.ic_text_check) { dismissTextSelectionBox() }
 
         val toolbarLp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; bottomMargin = dp(16)
+            // Was dp(16) — nowhere near enough clearance once the two bottom bars got merged
+            // into one taller shell (bottomToolbarDock) earlier this session. This toolbar was
+            // rendering underneath/behind that dock instead of above it, which is exactly why
+            // only the rotate handle (a separate View, positioned independently near the item
+            // itself rather than pinned to the screen bottom) remained visible.
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; bottomMargin = dp(230)
         }
         canvasContainer.addView(toolbar, toolbarLp)
         textSelectionBox = moveSurface; textSelectionItem = item
