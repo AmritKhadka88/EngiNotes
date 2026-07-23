@@ -61,7 +61,8 @@ internal fun MainActivity.dismissTextSelectionBox() {
         textSelectionHandles.forEach { canvasContainer.removeView(it) }
         textSelectionHandles = emptyList()
         if (textSelectionBox != null) drawingView.onCanvasTransformed = null
-        drawingView.draggingTextItem = null // safety: never leave an item stuck without page-splitting
+        // (page-splitting suppression removed — the live canvas no longer splits text across
+        // pages at all; that only happens at export time now, independent of live rendering)
         textSelectionBox = null; textSelectionItem = null
         drawingView.isTextSelected = false
         drawingView.selectedItem = null; drawingView.invalidate()
@@ -216,7 +217,7 @@ internal fun MainActivity.showTextSelectionBox(item: TextItem, screenX: Float, s
         // The first line/paragraph needs to start exactly where the user dropped it, with
         // everything after it wrapping to fit the space actually available from there.
         fun settleWrapWidthAfterDrag() {
-            if (drawingView.canvasMode == CanvasMode.CONVENIENT || drawingView.canvasMode == CanvasMode.PAGINATED) {
+            if (drawingView.canvasMode == CanvasMode.CONVENIENT) {
                 // item.y is the BOTTOM (see textItemHeight/drawTextItem convention), so simply
                 // changing maxWidth and leaving item.y alone would shift the visual TOP by
                 // however much the height changed — exactly the "wrap shifts the whole
@@ -291,7 +292,6 @@ internal fun MainActivity.showTextSelectionBox(item: TextItem, screenX: Float, s
                     val lp = moveSurface.layoutParams as FrameLayout.LayoutParams
                     moveStartLeft = lp.leftMargin; moveStartTop = lp.topMargin
                     dragStartWorldX2 = item.x; dragStartWorldY2 = item.y
-                    drawingView.draggingTextItem = item // suppress page-split rendering for this item until the drag ends
                     // Freeze the actual word-wrap width too — not just which page a line
                     // renders on. In Convenient/Paginated mode, an item without an explicit
                     // maxWidth wraps at (pageWidth - item.x), which is a moving target during
@@ -343,14 +343,12 @@ internal fun MainActivity.showTextSelectionBox(item: TextItem, screenX: Float, s
                     // over as the new "index 0" on the next MOVE event.
                     if (ev.getPointerId(ev.actionIndex) == activePointerId) {
                         isDraggingRotate = false; activePointerId = -1
-                        if (drawingView.draggingTextItem === item) { drawingView.draggingTextItem = null }
                         if (frozenMaxWidth != null) settleWrapWidthAfterDrag() // only after an actual move-drag, never after a rotate or plain tap
                     }
                     true
                 }
                 android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
                     isDraggingRotate = false; activePointerId = -1
-                    if (drawingView.draggingTextItem === item) { drawingView.draggingTextItem = null }
                     if (frozenMaxWidth != null) settleWrapWidthAfterDrag()
                     true
                 }

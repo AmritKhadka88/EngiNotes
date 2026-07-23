@@ -946,22 +946,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyConvenientLayout() {
-        // No rescale here — Convenient's page-width formula (view.width * 0.82, raw device
-        // pixels) and Fixed/Paginated's (paperSize.widthMM * 3.7795, a DPI-based conversion) are
-        // different unit systems entirely, not two sizes of the same thing. Comparing them
-        // produced a scale factor reflecting nothing but that mismatch — which is what shrank
-        // font sizes and moved content on a switch, instead of keeping everything's position and
-        // size exactly as it was.
         isConvenientLayout = true
         drawingView.canvasMode = CanvasMode.CONVENIENT
-        drawingView.clampTranslation()
-        drawingView.invalidate()
-    }
-
-    private fun applyPrintLayout() {
-        isConvenientLayout = false
-        drawingView.canvasMode = CanvasMode.PAGINATED
-        drawingView.paperSize = PaperSizeOption.A4
         drawingView.clampTranslation()
         drawingView.invalidate()
     }
@@ -973,22 +959,35 @@ class MainActivity : AppCompatActivity() {
         drawingView.invalidate()
     }
 
+    // Print Layout no longer exists as a separate mode — paper size is now just a property of
+    // Convenient mode, adjustable independently of it. Picking a size here switches to Convenient
+    // (if not already there, since paper size has no meaning in Infinite) and always rewraps
+    // text to fit the new width, the same way changing page size in a word processor reflows
+    // text — there's no separate "keep as is" choice anymore.
+    private fun showPaperSizeMenu(anchor: View) {
+        val popup = PopupMenu(this, anchor)
+        for (size in PaperSizeOption.values()) popup.menu.add(size.name)
+        popup.setOnMenuItemClickListener { item ->
+            val selected = try { PaperSizeOption.valueOf(item.title.toString()) } catch (e: Exception) { return@setOnMenuItemClickListener true }
+            applyConvenientLayout()
+            drawingView.paperSize = selected
+            drawingView.rewrapTextToPage()
+            drawingView.clampTranslation()
+            drawingView.invalidate()
+            true
+        }
+        popup.show()
+    }
+
     private fun showLayoutMenu(anchor: View) {
         val popup = PopupMenu(this, anchor)
         popup.menu.add("Convenient")
-        popup.menu.add("Print (A4)")
+        popup.menu.add("Paper Size...")
         popup.menu.add("Infinite Canvas")
         popup.setOnMenuItemClickListener { item ->
             when (item.title) {
                 "Convenient" -> applyConvenientLayout()
-                "Print (A4)" -> {
-                    AlertDialog.Builder(this)
-                        .setTitle("Switch to Print Layout")
-                        .setMessage("Print layout uses real A4 size. How should existing text be handled?")
-                        .setPositiveButton("Rearrange (wrap to fit)") { _, _ -> applyPrintLayout(); drawingView.rearrangeTextForPrint() }
-                        .setNegativeButton("Keep as is") { _, _ -> applyPrintLayout(); drawingView.keepTextAsIs() }
-                        .setNeutralButton("Cancel", null).show()
-                }
+                "Paper Size..." -> showPaperSizeMenu(anchor)
                 "Infinite Canvas" -> applyInfiniteLayout()
             }
             true
