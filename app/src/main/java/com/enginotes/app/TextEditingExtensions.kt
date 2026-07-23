@@ -99,7 +99,16 @@ internal fun MainActivity.measureTextBoxSize(item: TextItem, screenSizePx: Float
         val measuredW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) } ?: (item.size * 2f)
         // Scale world dimensions to screen pixels, add small padding
         val w = (measuredW * scale + dp(12)).toInt().coerceAtLeast(dp(40))
-        val h = (layout.height * scale + dp(8).toFloat()).coerceAtLeast(dp(30).toFloat()).toInt()
+        // Was layout.height directly — built from a fresh, separate StaticLayout with zero
+        // awareness of the per-page splitting drawTextItem() does (inserting a visual gap
+        // whenever an item spans multiple pages). For any item long enough to cross a page
+        // boundary, that undershot the true rendered height by however many gaps it should have
+        // included — which is why this overlay stayed too short AND visually bled across the
+        // page divider instead of stopping cleanly at each page's edge. textItemHeight() already
+        // accounts for those gaps correctly (same function DrawingView.kt itself now uses for
+        // its selection box/hit-testing), so using it here means this measurement can never
+        // drift out of sync with actual rendering the way the separate StaticLayout did.
+        val h = (drawingView.textItemHeight(item) * scale + dp(8).toFloat()).coerceAtLeast(dp(30).toFloat()).toInt()
         return Pair(w, h)
     }
 
