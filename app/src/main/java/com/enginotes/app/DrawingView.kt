@@ -1509,14 +1509,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val exportScale = dpi / 96f
         val bmpW = (pw * exportScale).toInt().coerceAtLeast(1)
         val bmpH = (ph * exportScale).toInt().coerceAtLeast(1)
-
-        val dv = DrawingView(context)
-        dv.loadFromString(serialize())
-        dv.measure(View.MeasureSpec.makeMeasureSpec(bmpW, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(bmpH, View.MeasureSpec.EXACTLY))
-        dv.layout(0, 0, bmpW, bmpH)
+        val savedState = serialize()
 
         val bitmaps = mutableListOf<Bitmap>()
         for (pageIdx in 0 until pageCount) {
+            // A fresh DrawingView per page, not one reused instance across all pages — matches
+            // the proven thumbnail-rendering pattern (one instance per render, never reused for
+            // a second render) instead of calling resetViewForThumbnail() repeatedly on the same
+            // instance, which risked some piece of internal state from an earlier page's render
+            // carrying over into the next page instead of being fully reset.
+            val dv = DrawingView(context)
+            dv.loadFromString(savedState)
+            dv.measure(View.MeasureSpec.makeMeasureSpec(bmpW, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(bmpH, View.MeasureSpec.EXACTLY))
+            dv.layout(0, 0, bmpW, bmpH)
             dv.resetViewForThumbnail(exportScale, 0f, pageIdx * ph)
             val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
             dv.draw(android.graphics.Canvas(bmp))
@@ -1793,7 +1798,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     })
 
-    private fun clampTranslation() {
+    fun clampTranslation() {
         if (canvasMode == CanvasMode.INFINITE) return
         val pw = pageWidthPx() * scaleFactor; val ph = pageHeightPx() * scaleFactor
         val margin = 16f
@@ -2726,8 +2731,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (isFirstLayout || widthChanged || stableLayoutHeight == 0) {
                 stableLayoutHeight = height
             }
-            convenientPageW = width.toFloat() * 0.82f
-            convenientPageH = stableLayoutHeight.toFloat() * 1.1f
+            // Letter size (215.9mm x 279.4mm), same mm-to-px conversion A4 already uses (3.7795
+            // px/mm) — was view.width * 0.82 / stableLayoutHeight * 1.1, an arbitrary size with
+            // no relationship to any real paper size, which is why Convenient's page looked a
+            // different size than A4's when switching between them. clampTranslation()'s
+            // existing "page must fill at least the screen width" logic already adapts the zoom
+            // level to fit a fixed page size on any screen — that's exactly how A4/Paginated
+            // mode already works with its own fixed size, so this follows the same proven
+            // pattern rather than introducing a new one.
+            convenientPageW = 215.9f * 3.7795f
+            convenientPageH = 279.4f * 3.7795f
             if (isFirstLayout) {
                 hasInitialLayout = true
                 when (canvasMode) {

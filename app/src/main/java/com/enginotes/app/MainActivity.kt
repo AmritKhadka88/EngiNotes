@@ -164,6 +164,10 @@ class MainActivity : AppCompatActivity() {
     internal var isSwitchingTextEditor = false
     private var exportWindowBitmap: Bitmap? = null
     private var pendingExportBitmap: Bitmap? = null
+    // Set instead of pendingExportBitmap specifically for "Export as PDF" on the whole note —
+    // one bitmap per app-page, so savePdfLauncher can give each one its own real PDF page
+    // instead of merging everything into a single tall page.
+    private var pendingExportBitmaps: List<Bitmap>? = null
     private var pendingExportFormat: String = "png"
     private var shapesPickerOverlay: LinearLayout? = null
 
@@ -404,17 +408,32 @@ class MainActivity : AppCompatActivity() {
     private val savePdfLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
         uri ?: return@registerForActivityResult
         try {
-            val bmp = pendingExportBitmap ?: return@registerForActivityResult
             val maxDim = 3000
-            val scale = if (bmp.width > maxDim || bmp.height > maxDim) minOf(maxDim.toFloat()/bmp.width, maxDim.toFloat()/bmp.height) else 1f
-            val pw = (bmp.width*scale).toInt().coerceAtLeast(1); val ph = (bmp.height*scale).toInt().coerceAtLeast(1)
-            val sb = if (scale < 1f) Bitmap.createScaledBitmap(bmp,pw,ph,true) else bmp
-            val doc = PdfDocument(); val pi = PdfDocument.PageInfo.Builder(pw,ph,1).create()
-            val page = doc.startPage(pi); page.canvas.drawBitmap(sb,0f,0f,Paint()); doc.finishPage(page)
+            val doc = PdfDocument()
+            val multiPage = pendingExportBitmaps
+            if (multiPage != null) {
+                // Whole-note export: one real PDF page per app-page, instead of the old approach
+                // of drawing everything onto a single tall page (which is what let two adjacent
+                // pages' content end up merged together with no actual page break between them).
+                for (bmp in multiPage) {
+                    val scale = if (bmp.width > maxDim || bmp.height > maxDim) minOf(maxDim.toFloat()/bmp.width, maxDim.toFloat()/bmp.height) else 1f
+                    val pw = (bmp.width*scale).toInt().coerceAtLeast(1); val ph = (bmp.height*scale).toInt().coerceAtLeast(1)
+                    val sb = if (scale < 1f) Bitmap.createScaledBitmap(bmp,pw,ph,true) else bmp
+                    val pi = PdfDocument.PageInfo.Builder(pw, ph, doc.pages.size + 1).create()
+                    val page = doc.startPage(pi); page.canvas.drawBitmap(sb,0f,0f,Paint()); doc.finishPage(page)
+                }
+            } else {
+                val bmp = pendingExportBitmap ?: return@registerForActivityResult
+                val scale = if (bmp.width > maxDim || bmp.height > maxDim) minOf(maxDim.toFloat()/bmp.width, maxDim.toFloat()/bmp.height) else 1f
+                val pw = (bmp.width*scale).toInt().coerceAtLeast(1); val ph = (bmp.height*scale).toInt().coerceAtLeast(1)
+                val sb = if (scale < 1f) Bitmap.createScaledBitmap(bmp,pw,ph,true) else bmp
+                val pi = PdfDocument.PageInfo.Builder(pw,ph,1).create()
+                val page = doc.startPage(pi); page.canvas.drawBitmap(sb,0f,0f,Paint()); doc.finishPage(page)
+            }
             contentResolver.openOutputStream(uri)?.use { doc.writeTo(it) }; doc.close()
             Toast.makeText(this,"PDF saved!",Toast.LENGTH_SHORT).show()
         } catch(e:Exception){ Toast.makeText(this,"PDF failed: ${e.message}",Toast.LENGTH_LONG).show() }
-        finally { pendingExportBitmap = null }
+        finally { pendingExportBitmap = null; pendingExportBitmaps = null }
     }
 
     private val saveImageLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("image/*")) { uri ->
@@ -935,6 +954,7 @@ class MainActivity : AppCompatActivity() {
         // size exactly as it was.
         isConvenientLayout = true
         drawingView.canvasMode = CanvasMode.CONVENIENT
+        drawingView.clampTranslation()
         drawingView.invalidate()
     }
 
@@ -942,12 +962,14 @@ class MainActivity : AppCompatActivity() {
         isConvenientLayout = false
         drawingView.canvasMode = CanvasMode.PAGINATED
         drawingView.paperSize = PaperSizeOption.A4
+        drawingView.clampTranslation()
         drawingView.invalidate()
     }
 
     private fun applyInfiniteLayout() {
         isConvenientLayout = false
         drawingView.canvasMode = CanvasMode.INFINITE
+        drawingView.clampTranslation()
         drawingView.invalidate()
     }
 
@@ -3611,7 +3633,13 @@ class MainActivity : AppCompatActivity() {
         val name = (currentFileName ?: "EngiNote_${System.currentTimeMillis()}").replace(" ","_")
         AlertDialog.Builder(this).setTitle("Export as...")
             .setItems(arrayOf("PDF","JPG","PNG","BMP","TXT","DOCX")) { _,i ->
-                pendingExportBitmap = drawingView.exportBitmap()
+                if (i == 0) {
+                    // PDF specifically gets one real page per app-page (see exportAllPagesAsBitmaps),
+                    // not the single on-screen-viewport screenshot the other formats use.
+                    pendingExportBitmaps = drawingView.exportAllPagesAsBitmaps()
+                } else {
+                    pendingExportBitmap = drawingView.exportBitmap()
+                }
                 when(i){ 0->savePdfLauncher.launch("$name.pdf"); 1->{ pendingExportFormat="jpg"; saveImageLauncher.launch("$name.jpg") }; 2->{ pendingExportFormat="png"; saveImageLauncher.launch("$name.png") }; 3->{ pendingExportFormat="bmp"; saveImageLauncher.launch("$name.bmp") }; 4->saveTxtLauncher.launch("$name.txt"); 5->saveDocxLauncher.launch("$name.docx") }
             }.show()
     }
