@@ -1548,8 +1548,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var drawingPointerId = -1
 
     // Convenient layout page dimensions (screen-sized)
-    private var convenientPageW = 0f
-    private var convenientPageH = 0f
 
     fun isDrawingTool() = currentTool == Tool.PEN || currentTool == Tool.ERASER || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH ||
         currentTool in SHAPE_TOOLS || currentTool == Tool.ARC || currentTool == Tool.FILL
@@ -1798,7 +1796,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     })
 
-    private fun clampTranslation() {
+    fun clampTranslation() {
         if (canvasMode == CanvasMode.INFINITE) return
         val pw = pageWidthPx() * scaleFactor; val ph = pageHeightPx() * scaleFactor
         val margin = 16f
@@ -2731,8 +2729,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (isFirstLayout || widthChanged || stableLayoutHeight == 0) {
                 stableLayoutHeight = height
             }
-            convenientPageW = width.toFloat() * 0.82f
-            convenientPageH = stableLayoutHeight.toFloat() * 1.1f
             if (isFirstLayout) {
                 hasInitialLayout = true
                 when (canvasMode) {
@@ -2779,12 +2775,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         invalidate()
     }
 
-    // Keeps text exactly as typed (no rewrapping) - single logical line per paragraph, may extend past visual edge
-    fun keepTextAsIs() {
-        for (a in actions) { if (a is TextItem) a.maxWidth = 4000f }
-        invalidate()
-    }
-
     private fun drawArcHandles(canvas: Canvas) {
         if (currentTool != Tool.ARC) return
         val arc = activeArcItem ?: return
@@ -2818,7 +2808,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // recompute item.y = desiredTopY + currentHeight every time the content changes, rather
     // than setting item.y once and leaving it. Otherwise the rendered top silently climbs
     // upward as the content grows, since the same fixed "bottom" now has more height above it.
-    fun textItemHeight(item: TextItem): Float = getOrBuildLayout(item).height.toFloat().coerceAtLeast(item.size * 1.2f)
+    // Was plain getOrBuildLayout(item).height — didn't account for the gaps drawTextItem()
+    // inserts when an item spans multiple pages. Same under-counting bug as getBounds()/
+    // drawSelection(), just a different consumer (MainActivity's drag-surface sizing).
+    fun textItemHeight(item: TextItem): Float { val l = getOrBuildLayout(item); return textItemVisualHeight(item, l).coerceAtLeast(item.size * 1.2f) }
     fun repositionTextItemTop(item: TextItem, desiredTopY: Float) {
         item.y = desiredTopY + textItemHeight(item)
         markSpatialDirty()
@@ -2860,16 +2853,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return layout
     }
 
-    // Set by MainActivity's drag handler for exactly the duration of a drag on a committed text
-    // item. While set, drawTextItem below skips the per-page splitting logic for THIS item and
-    // draws it as one continuous block instead. That splitting logic decides which page band
-    // each line belongs to based on the item's current position — so as the item crosses a page
-    // boundary mid-drag, a whole chunk of its lines can reassign to a different page band and
-    // jump by a full page-height discontinuously, even though the underlying drag position moved
-    // smoothly. That's what caused dragging to look erratic/backwards. Freezing to a simple
-    // continuous render during the drag removes the discontinuity entirely; the real per-page
-    // split re-applies cleanly the moment the drag ends and this is cleared.
-    var draggingTextItem: TextItem? = null
+    // Was a mirror of drawTextItem's per-page gap-insertion logic below — that mechanism no
+    // longer exists (the live canvas is one continuous scrollable surface now; discrete pages
+    // only exist at export time, via exportAllPagesAsBitmaps rendering separate page snapshots
+    // independently of live rendering). This is now just the plain layout height. Kept as a
+    // named function rather than inlined at every call site, so getBounds()/drawSelection()/
+    // textItemHeight()/findTextItemAt() don't need to change at all.
+    private fun textItemVisualHeight(item: TextItem, layout: StaticLayout): Float = layout.height.toFloat()
 
     private fun drawTextItem(canvas: Canvas, item: TextItem) {
         val layout = getOrBuildLayout(item)
@@ -2877,48 +2867,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val contentW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
         val contentH = layout.height.toFloat()
         val topY = item.y - contentH
-
-        // Word-style pagination: if this item is taller than one page (and there ARE discrete
-        // pages to split across — not Infinite canvas, and not rotated, since a rotated item
-        // spanning a page break is an edge case not worth the extra complexity), draw it as
-        // separate per-page runs of lines instead of one continuous block that would otherwise
-        // render straight through the visual gap between pages. Each run is clipped to its own
-        // page's band and the next run picks up at the top of the following page — the same
-        // way a paragraph that doesn't fit on one page continues on the next in a word processor.
-        // Suppressed entirely while this exact item is being dragged (see draggingTextItem above).
-        val ph = pageHeightPx()
-        if (item !== draggingTextItem && canvasMode != CanvasMode.INFINITE && item.rotation == 0f && contentH > ph) {
-            val gap = if (canvasMode == CanvasMode.CONVENIENT) 24f else 40f
-            val period = ph + gap
-            var lineIdx = 0
-            var extraSkip = 0f
-            var guard = 0  // safety cap on iterations, in case of a pathological line-height edge case
-            while (lineIdx < layout.lineCount && guard < 10000) {
-                guard++
-                val lineTopAbs = topY + layout.getLineTop(lineIdx) + extraSkip
-                val pageIdx = kotlin.math.floor(lineTopAbs / period)
-                val pageBottomAbs = pageIdx * period + ph
-                var endLineIdx = lineIdx
-                while (endLineIdx < layout.lineCount && topY + layout.getLineBottom(endLineIdx) + extraSkip <= pageBottomAbs) endLineIdx++
-                if (endLineIdx == lineIdx) {
-                    // A single line taller than the remaining page space (rare) - push the
-                    // whole thing to the top of the next page rather than clipping mid-line.
-                    extraSkip += (pageIdx + 1) * period - lineTopAbs
-                    continue
-                }
-                val runTop = topY + layout.getLineTop(lineIdx) + extraSkip
-                val runBottom = topY + layout.getLineBottom(endLineIdx - 1) + extraSkip
-                canvas.save()
-                canvas.clipRect(item.x - 4f, runTop, item.x + contentW + 4f, runBottom)
-                canvas.translate(item.x, topY + extraSkip)
-                layout.draw(canvas)
-                canvas.restore()
-                lineIdx = endLineIdx
-                if (lineIdx < layout.lineCount) extraSkip += gap  // jump over the visual gap to the next page's top
-            }
-            return
-        }
-
         canvas.save(); canvas.translate(item.x, topY)
         canvas.rotate(item.rotation, contentW / 2f, contentH / 2f); layout.draw(canvas); canvas.restore()
     }
@@ -3490,7 +3438,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (layers.find { it.id == a.layerId }?.visible == false) continue
                 val layout = getOrBuildLayout(a)
                 val cw = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
-                val ch = layout.height.toFloat()
+                // Was plain layout.height — same missing-gaps bug as getBounds()/drawSelection().
+                // Without this, tapping the upper portion of a text item spanning multiple pages
+                // would silently miss it, since the tappable region was undersized to match.
+                val ch = textItemVisualHeight(a, layout)
                 val pad = 24f / scaleFactor
                 val pivX = a.x + cw / 2f; val pivY = a.y - ch / 2f
                 val lx: Float; val ly: Float
@@ -4975,14 +4926,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     fun pageWidthPx(): Float {
-        if (canvasMode == CanvasMode.CONVENIENT) return if (convenientPageW > 0) convenientPageW else width.toFloat()
+        // Convenient mode used to compute its own page size (first view-relative, then a
+        // hardcoded Letter constant) instead of using the adjustable paperSize like every other
+        // mode — that's what made it look a fixed, different size than A4/Print regardless of
+        // what paper size was actually selected. Now unified: every non-Infinite-specific-wrap
+        // mode uses the same paperSize-driven formula, so Convenient's page size is genuinely
+        // whatever paper size is currently selected, and changing it actually changes this.
         val m = 3.7795f
         return if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
     }
 
     fun pageHeightPx(): Float {
-        // Convenient = one screen-height page (tall, comfortable reading/writing)
-        if (canvasMode == CanvasMode.CONVENIENT) return if (convenientPageH > 0) convenientPageH else height.toFloat()
         val m = 3.7795f
         return if (pageOrientation == Orientation.PORTRAIT) paperSize.heightMM * m else paperSize.widthMM * m
     }
@@ -7455,6 +7409,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val p = line.split("\u0001")
                         try { if (p.size > 1) paperType = PaperType.valueOf(p[1]) } catch (e: Exception) {}
                         try { if (p.size > 2) canvasMode = CanvasMode.valueOf(p[2]) } catch (e: Exception) {}
+                        // Print Layout (Paginated) no longer exists as a distinct mode — its
+                        // page-size and text-splitting behavior has been fully unified into
+                        // Convenient. Treat any note saved before this change as Convenient
+                        // going forward, rather than leaving it in a mode the UI no longer offers.
+                        if (canvasMode == CanvasMode.PAGINATED) canvasMode = CanvasMode.CONVENIENT
                         try { if (p.size > 3) paperSize = PaperSizeOption.valueOf(p[3]) } catch (e: Exception) {}
                         try { if (p.size > 4) pageOrientation = Orientation.valueOf(p[4]) } catch (e: Exception) {}
                         try { if (p.size > 5) paperColor = p[5].toInt() } catch (e: Exception) {}
