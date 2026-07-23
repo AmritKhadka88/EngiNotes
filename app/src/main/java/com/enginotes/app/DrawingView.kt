@@ -3079,8 +3079,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // width-dependent line width, so this box can't end up narrower than the text
             // actually is regardless of any timing mismatch in when the layout was last built.
             if (layout.lineCount == 1) {
-                val style = when { item.bold && item.italic -> Typeface.BOLD_ITALIC; item.bold -> Typeface.BOLD; item.italic -> Typeface.ITALIC; else -> Typeface.NORMAL }
-                val mp = TextPaint(); mp.textSize = item.size; mp.typeface = android.graphics.Typeface.create(typefaceFromFamily(item.fontFamily ?: "sans-serif"), style)
+                // TextItem has no bold/italic fields directly — style is per-range spans
+                // ('S' type, value = Typeface style constant: 0 normal, 1 bold, 2 italic,
+                // 3 bold-italic). Takes the widest (most conservative) style found across all
+                // spans, since this is a safety net that must never under-estimate the width.
+                val worstStyle = item.spans.filter { it.type == 'S' }.maxOfOrNull { it.value } ?: Typeface.NORMAL
+                val mp = TextPaint(); mp.textSize = item.size; mp.typeface = android.graphics.Typeface.create(typefaceFromFamily(item.fontFamily ?: "sans-serif"), worstStyle)
                 val measured = mp.measureText(item.text)
                 if (measured > contentW) contentW = measured
             }
@@ -3183,8 +3187,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // requiring the two to always agree perfectly, the box simply can't be narrower
                 // than the text truly is.
                 if (layout.lineCount == 1) {
-                    val style = when { item.bold && item.italic -> Typeface.BOLD_ITALIC; item.bold -> Typeface.BOLD; item.italic -> Typeface.ITALIC; else -> Typeface.NORMAL }
-                    val mp = TextPaint(); mp.textSize = item.size; mp.typeface = typefaceFromFamily(item.fontFamily ?: "sans-serif").let { android.graphics.Typeface.create(it, style) }
+                    // TextItem has no bold/italic fields directly — style is per-range spans
+                    // ('S' type, value = Typeface style constant). Takes the widest (most
+                    // conservative) style found across all spans, since this is a safety net
+                    // that must never under-estimate the width.
+                    val worstStyle = item.spans.filter { it.type == 'S' }.maxOfOrNull { it.value } ?: Typeface.NORMAL
+                    val mp = TextPaint(); mp.textSize = item.size; mp.typeface = android.graphics.Typeface.create(typefaceFromFamily(item.fontFamily ?: "sans-serif"), worstStyle)
                     val measured = mp.measureText(item.text)
                     if (measured > w) w = measured
                 }
