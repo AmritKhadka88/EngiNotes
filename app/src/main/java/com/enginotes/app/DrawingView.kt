@@ -1487,6 +1487,44 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return kotlin.math.ceil(maxY / pageH).toInt().coerceAtLeast(1)
     }
 
+    // Renders each page of the note as its own separate bitmap, at a fixed export resolution —
+    // used by "Export as PDF" so each app-page becomes its own PDF page, instead of the old
+    // exportBitmap()'s single on-screen-viewport screenshot (which only ever captured whatever
+    // was currently scrolled into view, not the whole note, with no concept of page boundaries
+    // at all — that's what let two adjacent pages' content end up merged into one PDF page).
+    //
+    // Renders from a fresh, separate off-screen DrawingView (same technique as BooksActivity's
+    // thumbnail rendering) rather than this live instance directly — reusing this instance's own
+    // width/height would risk viewport-culling incorrectly hiding content that's within the
+    // export bitmap's area but outside whatever the screen's own current on-screen size happens
+    // to be.
+    fun exportAllPagesAsBitmaps(dpi: Int = 150): List<Bitmap> {
+        val pageCount = estimatePageCount()
+        val pw = pageWidthPx(); val ph = pageHeightPx()
+        if (pw <= 0f || ph <= 0f) return emptyList()
+        // Scale from world units (already a ~96 DPI equivalent, per pageWidthPx()'s own
+        // mm*3.7795 conversion) up to the requested export DPI, so the exported PDF is
+        // reasonably high-resolution rather than capped at whatever the live on-screen render
+        // happened to be.
+        val exportScale = dpi / 96f
+        val bmpW = (pw * exportScale).toInt().coerceAtLeast(1)
+        val bmpH = (ph * exportScale).toInt().coerceAtLeast(1)
+
+        val dv = DrawingView(context)
+        dv.loadFromString(serialize())
+        dv.measure(View.MeasureSpec.makeMeasureSpec(bmpW, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(bmpH, View.MeasureSpec.EXACTLY))
+        dv.layout(0, 0, bmpW, bmpH)
+
+        val bitmaps = mutableListOf<Bitmap>()
+        for (pageIdx in 0 until pageCount) {
+            dv.resetViewForThumbnail(exportScale, 0f, pageIdx * ph)
+            val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+            dv.draw(android.graphics.Canvas(bmp))
+            bitmaps.add(bmp)
+        }
+        return bitmaps
+    }
+
     internal var exportWindowStart: Pair<Float, Float>? = null
     internal var exportWindowEnd: Pair<Float, Float>? = null
     var onExportWindowSelected: ((Float, Float, Float, Float) -> Unit)? = null
@@ -2717,13 +2755,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Called when canvasMode changes — forces position reset on next layout
     fun resetLayoutPosition() { hasInitialLayout = false }
 
-    // Rearranges text items to wrap and fit within the current page width (used when switching to print)
+    // Rearranges text items to start within the current page width (used when switching to print)
     fun rearrangeTextForPrint() {
         val pw = pageWidthPx()
         for (a in actions) {
             if (a is TextItem) {
                 a.x = a.x.coerceIn(16f, pw - 60f)
-                a.maxWidth = (pw - a.x - 16f).coerceAtLeast(80f)
+                // Deliberately NOT setting a.maxWidth here anymore. It used to freeze a one-time
+                // snapshot of (pw - a.x - 16f) permanently onto the item — textWrapWidth() then
+                // always used that frozen number from then on instead of ever recalculating, so
+                // if the item's position or font size changed afterward, the wrap width silently
+                // went stale relative to the item's actual current state. Leaving maxWidth unset
+                // (0) means textWrapWidth() keeps recalculating this exact same formula fresh
+                // every time instead — the same dynamic behavior Convenient mode already relies
+                // on, which is why Convenient never had this staleness problem in the first place.
             }
         }
         invalidate()
@@ -3014,35 +3059,35 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         val item = selectedItem ?: return
         if (item is TextItem) {
-            // Was rebuilding its own plain StaticLayout here (no spans, separate TextPaint)
-            // instead of reusing getOrBuildLayout() — the exact layout drawTextItem() actually
-            // renders with. Two independently-built layouts can silently differ in width/height
-            // (e.g. any bold/italic/color span here got dropped, since this passed item.text
-            // directly instead of the spannable), so the box rotated around a different pivot
-            // than the glyphs did — the box and text visibly drifted apart when rotated. Reusing
-            // the same cached layout guarantees the box and the glyphs always agree.
             val layout = getOrBuildLayout(item)
             val contentW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
             val contentH = layout.height.toFloat()
+            // Same padding as getBounds()'s TextItem case — without it, cursive/italic overhang
+            // (a trailing "f" flourish, for example) pokes past the box, and it's also why the
+            // box didn't fully enclose all wrapped lines consistently at every zoom/page state.
+            val pad = item.size * 0.12f
+            val boxW = contentW + pad * 2f; val boxH = contentH + pad * 2f
             canvas.save()
-            canvas.translate(item.x, item.y - contentH)
-            canvas.rotate(item.rotation, contentW / 2f, contentH / 2f)
+            canvas.translate(item.x - pad, item.y - contentH - pad)
+            canvas.rotate(item.rotation, boxW / 2f, boxH / 2f)
             // Selection border
             val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE
             selP.strokeWidth = 2f / scaleFactor; selP.isAntiAlias = true
-            canvas.drawRect(0f, 0f, contentW, contentH, selP)
-            // Rotate handle — large green circle, 32px screen size, easy to tap
-            val hr = 32f / scaleFactor
-            val hx = contentW / 2f; val hy = -56f / scaleFactor
-            canvas.drawLine(contentW / 2f, 0f, hx, hy + hr, selP)
-            val hFill = Paint(); hFill.color = Color.parseColor("#34C759"); hFill.style = Paint.Style.FILL; hFill.isAntiAlias = true
-            val hStroke = Paint(); hStroke.color = Color.WHITE; hStroke.style = Paint.Style.STROKE; hStroke.strokeWidth = 4f / scaleFactor; hStroke.isAntiAlias = true
-            // Draw rotation symbol inside the handle
-            canvas.drawCircle(hx, hy, hr, hFill)
-            canvas.drawCircle(hx, hy, hr, hStroke)
-            // Draw ↻ arrow inside
+            canvas.drawRect(0f, 0f, boxW, boxH, selP)
+            // Rotate handle — large green circle, 32px screen size, easy to tap. This is purely
+            // visual: text's actual interactive controls (move, rotate, resize-via-font-size,
+            // delete) live in a separate overlay system (TextEditingExtensions.showTextSelectionBox
+            // — a real rotateHandle View plus a bottom toolbar with format/delete buttons), not
+            // as canvas-drawn handles the way images/shapes work.
+            val hr2 = 32f / scaleFactor
+            val hx = boxW / 2f; val hy = -56f / scaleFactor
+            canvas.drawLine(boxW / 2f, 0f, hx, hy + hr2, selP)
+            val hFill2 = Paint(); hFill2.color = Color.parseColor("#34C759"); hFill2.style = Paint.Style.FILL; hFill2.isAntiAlias = true
+            val hStroke2 = Paint(); hStroke2.color = Color.WHITE; hStroke2.style = Paint.Style.STROKE; hStroke2.strokeWidth = 4f / scaleFactor; hStroke2.isAntiAlias = true
+            canvas.drawCircle(hx, hy, hr2, hFill2)
+            canvas.drawCircle(hx, hy, hr2, hStroke2)
             val ap = Paint(); ap.color = Color.WHITE; ap.style = Paint.Style.STROKE; ap.strokeWidth = 3f / scaleFactor; ap.isAntiAlias = true; ap.strokeCap = Paint.Cap.ROUND
-            val ar = hr * 0.5f
+            val ar = hr2 * 0.5f
             canvas.drawArc(android.graphics.RectF(hx - ar, hy - ar, hx + ar, hy + ar), -150f, 270f, false, ap)
             val arrowPath = android.graphics.Path(); arrowPath.moveTo(hx + ar * 0.3f, hy - ar * 0.95f); arrowPath.lineTo(hx + ar, hy - ar * 0.3f); arrowPath.lineTo(hx + ar * 0.3f, hy + ar * 0.3f)
             canvas.drawPath(arrowPath, ap)
