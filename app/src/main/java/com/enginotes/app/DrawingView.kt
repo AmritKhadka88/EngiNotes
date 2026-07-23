@@ -2826,7 +2826,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // recompute item.y = desiredTopY + currentHeight every time the content changes, rather
     // than setting item.y once and leaving it. Otherwise the rendered top silently climbs
     // upward as the content grows, since the same fixed "bottom" now has more height above it.
-    fun textItemHeight(item: TextItem): Float = getOrBuildLayout(item).height.toFloat().coerceAtLeast(item.size * 1.2f)
+    // Was plain getOrBuildLayout(item).height — didn't account for the gaps drawTextItem()
+    // inserts when an item spans multiple pages. Same under-counting bug as getBounds()/
+    // drawSelection(), just a different consumer (MainActivity's drag-surface sizing).
+    fun textItemHeight(item: TextItem): Float { val l = getOrBuildLayout(item); return textItemVisualHeight(item, l).coerceAtLeast(item.size * 1.2f) }
     fun repositionTextItemTop(item: TextItem, desiredTopY: Float) {
         item.y = desiredTopY + textItemHeight(item)
         markSpatialDirty()
@@ -2878,6 +2881,38 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // continuous render during the drag removes the discontinuity entirely; the real per-page
     // split re-applies cleanly the moment the drag ends and this is cleared.
     var draggingTextItem: TextItem? = null
+
+    // The true visual height of a text item, including any gaps inserted by the per-page
+    // splitting in drawTextItem below (when an item is taller than one page, it's drawn as
+    // separate runs with a visual gap between each page's portion — plain layout.height knows
+    // nothing about those gaps). Mirrors that exact same loop's gap accumulation rather than
+    // reimplementing the logic separately, so the two can never quietly diverge again. Used by
+    // getBounds()/drawSelection() so the selection box (and the rotation pivot computed from it)
+    // actually match what's drawn, instead of being undersized by however many page breaks the
+    // item happens to cross.
+    private fun textItemVisualHeight(item: TextItem, layout: StaticLayout): Float {
+        val contentH = layout.height.toFloat()
+        val ph = pageHeightPx()
+        if (item === draggingTextItem || canvasMode == CanvasMode.INFINITE || item.rotation != 0f || contentH <= ph) return contentH
+        val gap = if (canvasMode == CanvasMode.CONVENIENT) 24f else 40f
+        val period = ph + gap
+        val topY = item.y - contentH
+        var lineIdx = 0
+        var extraSkip = 0f
+        var guard = 0
+        while (lineIdx < layout.lineCount && guard < 10000) {
+            guard++
+            val lineTopAbs = topY + layout.getLineTop(lineIdx) + extraSkip
+            val pageIdx = kotlin.math.floor(lineTopAbs / period)
+            val pageBottomAbs = pageIdx * period + ph
+            var endLineIdx = lineIdx
+            while (endLineIdx < layout.lineCount && topY + layout.getLineBottom(endLineIdx) + extraSkip <= pageBottomAbs) endLineIdx++
+            if (endLineIdx == lineIdx) { extraSkip += (pageIdx + 1) * period - lineTopAbs; continue }
+            lineIdx = endLineIdx
+            if (lineIdx < layout.lineCount) extraSkip += gap
+        }
+        return contentH + extraSkip
+    }
 
     private fun drawTextItem(canvas: Canvas, item: TextItem) {
         val layout = getOrBuildLayout(item)
@@ -3088,10 +3123,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val measured = mp.measureText(item.text)
                 if (measured > contentW) contentW = measured
             }
-            val contentH = layout.height.toFloat()
-            // Same padding as getBounds()'s TextItem case — without it, cursive/italic overhang
-            // (a trailing "f" flourish, for example) pokes past the box, and it's also why the
-            // box didn't fully enclose all wrapped lines consistently at every zoom/page state.
+            // Was plain layout.height — didn't account for the gaps drawTextItem() inserts when
+            // an item spans multiple pages, which is why the box was drastically undersized for
+            // any text long enough to cross a page boundary (the build-log-paste case).
+            val contentH = textItemVisualHeight(item, layout)
             val pad = item.size * 0.12f
             val boxW = contentW + pad * 2f; val boxH = contentH + pad * 2f
             canvas.save()
@@ -3196,7 +3231,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val measured = mp.measureText(item.text)
                     if (measured > w) w = measured
                 }
-                val h = layout.height.toFloat().coerceAtLeast(item.size * 1.2f)
+                // Was plain layout.height — didn't account for the gaps drawTextItem() inserts
+                // when an item spans multiple pages, which is why the box (and hit-testing,
+                // which also uses getBounds()) was drastically undersized for any text long
+                // enough to cross a page boundary (the build-log-paste case).
+                val h = textItemVisualHeight(item, layout).coerceAtLeast(item.size * 1.2f)
                 // Equal padding on all 4 sides, proportional to font size — without this, a
                 // cursive/italic font's trailing glyph can visually overhang past the logical
                 // advance width the layout reports (the flourish on an ending "f" is a good
@@ -3529,7 +3568,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (layers.find { it.id == a.layerId }?.visible == false) continue
                 val layout = getOrBuildLayout(a)
                 val cw = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
-                val ch = layout.height.toFloat()
+                // Was plain layout.height — same missing-gaps bug as getBounds()/drawSelection().
+                // Without this, tapping the upper portion of a text item spanning multiple pages
+                // would silently miss it, since the tappable region was undersized to match.
+                val ch = textItemVisualHeight(a, layout)
                 val pad = 24f / scaleFactor
                 val pivX = a.x + cw / 2f; val pivY = a.y - ch / 2f
                 val lx: Float; val ly: Float
