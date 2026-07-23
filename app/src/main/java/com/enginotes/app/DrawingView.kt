@@ -3073,7 +3073,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val item = selectedItem ?: return
         if (item is TextItem) {
             val layout = getOrBuildLayout(item)
-            val contentW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
+            var contentW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
+            // Same direct-measure safety net as getBounds() below — for single-line text,
+            // measures the raw text directly rather than trusting the cached layout's wrap-
+            // width-dependent line width, so this box can't end up narrower than the text
+            // actually is regardless of any timing mismatch in when the layout was last built.
+            if (layout.lineCount == 1) {
+                val style = when { item.bold && item.italic -> Typeface.BOLD_ITALIC; item.bold -> Typeface.BOLD; item.italic -> Typeface.ITALIC; else -> Typeface.NORMAL }
+                val mp = TextPaint(); mp.textSize = item.size; mp.typeface = android.graphics.Typeface.create(typefaceFromFamily(item.fontFamily ?: "sans-serif"), style)
+                val measured = mp.measureText(item.text)
+                if (measured > contentW) contentW = measured
+            }
             val contentH = layout.height.toFloat()
             // Same padding as getBounds()'s TextItem case — without it, cursive/italic overhang
             // (a trailing "f" flourish, for example) pokes past the box, and it's also why the
@@ -3164,7 +3174,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is AudioItem -> { val r = item.radius; floatArrayOf(item.x - r, item.y - r, item.x + r, item.y + r + 40f) }
             is TextItem -> {
                 val layout = getOrBuildLayout(item)
-                val w = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(10f) ?: 10f
+                var w = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(10f) ?: 10f
+                // For single-line text, also measure the raw text directly — independent of
+                // whatever wrap width the cached layout happened to be built with. Whichever is
+                // larger wins. This is what makes the box immune to a timing mismatch between
+                // when the layout was cached and what's currently actually rendering (e.g. right
+                // after a layout-mode switch, where pageWidthPx() genuinely changes) — instead of
+                // requiring the two to always agree perfectly, the box simply can't be narrower
+                // than the text truly is.
+                if (layout.lineCount == 1) {
+                    val style = when { item.bold && item.italic -> Typeface.BOLD_ITALIC; item.bold -> Typeface.BOLD; item.italic -> Typeface.ITALIC; else -> Typeface.NORMAL }
+                    val mp = TextPaint(); mp.textSize = item.size; mp.typeface = typefaceFromFamily(item.fontFamily ?: "sans-serif").let { android.graphics.Typeface.create(it, style) }
+                    val measured = mp.measureText(item.text)
+                    if (measured > w) w = measured
+                }
                 val h = layout.height.toFloat().coerceAtLeast(item.size * 1.2f)
                 // Equal padding on all 4 sides, proportional to font size — without this, a
                 // cursive/italic font's trailing glyph can visually overhang past the logical
