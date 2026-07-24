@@ -478,8 +478,50 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Crash reporter — installed first, before anything else has a chance to crash. Catches
+        // BOTH Exception and Error subtypes (StackOverflowError, OutOfMemoryError, etc. are Error,
+        // not Exception — a "catch (e: Exception)" elsewhere in the app structurally cannot catch
+        // these, since Error and Exception are siblings under Throwable, not one a subtype of the
+        // other). Writes the full stack trace to a file, then hands off to Android's own default
+        // handler so the crash still proceeds normally. Checked and shown below, right after this
+        // block, on the next launch.
+        try {
+            val crashFile = java.io.File(filesDir, "last_crash.txt")
+            val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+            Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+                try {
+                    val sw = java.io.StringWriter()
+                    throwable.printStackTrace(java.io.PrintWriter(sw))
+                    crashFile.writeText("Crash at ${java.util.Date()}\nThread: ${thread.name}\nType: ${throwable.javaClass.name}\n\n$sw")
+                } catch (e: Exception) { /* must never throw from inside a crash handler */ }
+                defaultHandler?.uncaughtException(thread, throwable)
+            }
+        } catch (e: Exception) { }
+
         setContentView(R.layout.activity_main)
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+
+        // Show any crash captured on a previous run, so it can be copied/screenshotted without
+        // needing Android Studio or adb — the file only exists if a crash actually happened.
+        try {
+            val crashFile = java.io.File(filesDir, "last_crash.txt")
+            if (crashFile.exists()) {
+                val content = crashFile.readText()
+                if (content.isNotBlank()) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Previous crash log")
+                        .setMessage(content)
+                        .setPositiveButton("Copy") { _, _ ->
+                            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("crash log", content))
+                            Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
+                            crashFile.delete()
+                        }
+                        .setNegativeButton("Dismiss") { _, _ -> crashFile.delete() }
+                        .show()
+                }
+            }
+        } catch (e: Exception) { }
 
         drawingView     = findViewById(R.id.drawingView)
         drawingView.inputMode = try { InputMode.valueOf(getPrefs().getString("input_mode", "AUTO") ?: "AUTO") } catch (e: Exception) { InputMode.AUTO }
@@ -505,36 +547,42 @@ class MainActivity : AppCompatActivity() {
         tvTitle.setOnClickListener { showRenameDialog() }
         btnLayoutToggle = findViewById(R.id.btnLayoutToggle)
 
-        // Keep the bottom toolbar dock above the keyboard. This is separate from the floating
-        // per-edit toolbar handled elsewhere - it's pinned in activity_main.xml and was getting
-        // covered by the IME since adjustNothing doesn't resize/pan the layout for it.
-        // Uses bottomMargin (not translationY) so the FrameLayout actually reflows.
-        //
-        // Adjusts bottomToolbarDock itself, NOT the two bars nested inside it
-        // (primaryToolbarScroll/toolbarScroll) — those used to be independent top-level views
-        // each needing their own margin, but since they were merged into one shell (bottomToolbarDock),
-        // they're now LinearLayout children whose own bottomMargin only affects spacing WITHIN the
-        // dock. The dock itself is the direct FrameLayout child that actually needs to move above
-        // the keyboard; adjusting the inner bars instead left the dock never repositioned at all.
+        // Keep the static bottom toolbars (context row + primary tool dock) above the keyboard.
+        // These are separate from the floating per-edit toolbar handled elsewhere - they're
+        // pinned in activity_main.xml and were getting covered by the IME since adjustNothing
+        // doesn't resize/pan the layout for them.
+        // Uses bottomMargin (not translationY) on the last child so the LinearLayout actually
+        // reflows - canvasContainer (weight=1) shrinks to make room, avoiding a visual gap.
         run {
-            val dock = findViewById<View?>(R.id.bottomToolbarDock)
-            // The dock's own starting bottomMargin, captured once before any keyboard adjustment.
-            // Every subsequent update sets margin = baseline + keyboardHeight.
-            val baseMargin = (dock?.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.bottomMargin ?: 0
+            val primaryBar = findViewById<View?>(R.id.primaryToolbarScroll)
+            val contextBar = findViewById<View?>(R.id.toolbarScroll)
+            // Each bar's own starting bottomMargin, captured once before any keyboard adjustment.
+            // Every subsequent update sets margin = thisBar'sOwnBaseline + keyboardHeight,
+            // independently per bar. This can't double-shift or lose relative spacing no matter
+            // how they're actually nested/related in the layout — each bar only ever knows about
+            // its own original position, never inferred from the other bar's current state.
+            val baseMargins = HashMap<View, Int>()
+            for (bar in listOf(primaryBar, contextBar)) {
+                val lp0 = bar?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
+                if (bar != null && lp0 != null) baseMargins[bar] = lp0.bottomMargin
+            }
             androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { _, insets ->
                 val imeBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
                 val navBarBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars()).bottom
                 // imeBottom only reflects the portion of the keyboard actually overlapping the
                 // app's content — a floating/split keyboard that doesn't cover this area reports
-                // 0 here, so the dock correctly stays put in that case with no extra handling needed.
+                // 0 here, so these bars correctly stay put in that case with no extra handling needed.
                 val extraForKeyboard = (imeBottom - navBarBottom).coerceAtLeast(0)
                 // Guard: only update bottomMargin when value changes — prevents layout
                 // thrashing and the blinking/lag caused by firing on every tiny inset update.
-                val lp = dock?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
-                val target = baseMargin + extraForKeyboard
-                if (lp != null && lp.bottomMargin != target) {
-                    lp.bottomMargin = target
-                    dock.layoutParams = lp
+                for (bar in listOf(primaryBar, contextBar)) {
+                    val base = baseMargins[bar] ?: continue
+                    val lp = bar?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
+                    val target = base + extraForKeyboard
+                    if (lp != null && lp.bottomMargin != target) {
+                        lp.bottomMargin = target
+                        bar.layoutParams = lp
+                    }
                 }
                 onImeBottomChanged?.invoke(imeBottom)  // notify inline editor keyboard listener
                 insets
@@ -946,15 +994,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyConvenientLayout() {
-        // No rescale here — Convenient's page-width formula (view.width * 0.82, raw device
-        // pixels) and Fixed/Paginated's (paperSize.widthMM * 3.7795, a DPI-based conversion) are
-        // different unit systems entirely, not two sizes of the same thing. Comparing them
-        // produced a scale factor reflecting nothing but that mismatch — which is what shrank
-        // font sizes and moved content on a switch, instead of keeping everything's position and
-        // size exactly as it was.
         isConvenientLayout = true
         drawingView.canvasMode = CanvasMode.CONVENIENT
-        drawingView.clampTranslation()
         drawingView.invalidate()
     }
 
@@ -962,14 +1003,12 @@ class MainActivity : AppCompatActivity() {
         isConvenientLayout = false
         drawingView.canvasMode = CanvasMode.PAGINATED
         drawingView.paperSize = PaperSizeOption.A4
-        drawingView.clampTranslation()
         drawingView.invalidate()
     }
 
     private fun applyInfiniteLayout() {
         isConvenientLayout = false
         drawingView.canvasMode = CanvasMode.INFINITE
-        drawingView.clampTranslation()
         drawingView.invalidate()
     }
 
@@ -2407,7 +2446,7 @@ class MainActivity : AppCompatActivity() {
         closeInlineEditor(true)
         val popup = PopupMenu(this, v)
         popup.menu.add("Note: ${currentFileName ?: "Untitled"}")
-        listOf("Save","Save As","Export","Export Window","Regen","Clear Canvas").forEach { popup.menu.add(it) }
+        listOf("Save","Save As","Export","Export Window","Clear Canvas").forEach { popup.menu.add(it) }
         if (currentFileName != null) popup.menu.add("Delete This Note")
         popup.menu.add("Add to Book")
         popup.menu.add("Layers")
@@ -2426,10 +2465,6 @@ class MainActivity : AppCompatActivity() {
                     } else Toast.makeText(this,"Switch to Infinite/Convenient canvas for window export",Toast.LENGTH_SHORT).show()
                 }
                 item.title == "Clear Canvas" -> confirmThenClear()
-                item.title == "Regen" -> {
-                    val n = drawingView.regenerateErasedShapes()
-                    Toast.makeText(this, if (n > 0) "Regenerated $n shape${if (n == 1) "" else "s"}" else "Nothing to regenerate — no erased shapes need cleanup", Toast.LENGTH_SHORT).show()
-                }
                 item.title == "Delete This Note" -> deleteCurrentNote()
                 item.title == "Add to Book" -> showAddToBookDialog()
                 item.title == "Layers" -> showLayersPanel()

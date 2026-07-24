@@ -184,41 +184,7 @@ class StrokeData(
     // (which every Tool.PEN render path below does, to remove hand tremor from natural
     // handwriting) would round off intentional sharp corners into a curve, which is wrong for
     // a tool whose entire purpose is precise straight segments.
-    var isPolyline: Boolean = false,
-    // Distance (in world/path units, same space PathMeasure works in) from the START of the
-    // ORIGINAL, never-erased stroke to this fragment's own first point. Used as the dash
-    // pattern's phase offset so a dashed/dotted line's pattern stays visually anchored to its
-    // true position along the original line, no matter how many times the area eraser has since
-    // split it into fragments — without this, every fragment's dash phase defaulted to 0 at
-    // wherever ITS OWN point list happened to start, so the visible pattern appeared to shift
-    // with every incremental erase as fragments were repeatedly re-split mid-drag.
-    var dashPhase: Float = 0f,
-    // True for a dense point-sampled polyline created by erasing (or Exploding) a shape — marks
-    // it as eligible for the whole-page "Regen" cleanup pass, which simplifies the point list and
-    // hands rendering back to the normal smooth Tool.PEN curve path. Deliberately separate from
-    // isPolyline: that flag is ALSO used by the dedicated Polyline tool (precise strokes drawn on
-    // purpose, which must never be touched by Regen) and by the Offset tool (genuinely straight
-    // geometry that should stay sharp-cornered forever, never smoothed into a curve).
-    var eraseFragment: Boolean = false,
-    // True only if the ORIGINAL shape (before erasing converted it to a point list) was
-    // genuinely round — Tool.CIRCLE or Tool.ELLIPSE. Deliberately conservative: everything else
-    // (rectangles, rounded-rects, triangles, stars, all polygon shapes) is left false, even
-    // though some of those have curved elements too (a rounded-rect's corners, a moon/ring's
-    // arc). regenerateErasedShapes() only re-smooths fragments marked true here — smoothing a
-    // shape with real straight edges and sharp corners doesn't just look a little off, it
-    // actively destroys the shape's geometry (a rounded-rectangle regenerated into something
-    // resembling a circle, in the case that surfaced this).
-    var eraseFragmentCurved: Boolean = false,
-    // Used only by regenerateErasedShapes() for non-curved fragments (rounded-rects, and
-    // anything else with a mix of straight edges and rounded corners in the same stroke).
-    // Deliberately a SEPARATE flag from isPolyline rather than reusing it — isPolyline is also
-    // the deliberate Polyline tool's flag for "render every vertex as a sharp corner, always,"
-    // and this needed its own mechanism that can never affect that.
-    var regenSmoothCorners: Boolean = false,
-    // Parallel to `points` — true at index i means points[i*2],points[i*2+1] was identified by
-    // simplifyRDP as a true curve point (kept because it deviates from a straight chord), false
-    // means it's a straight-run endpoint. Only meaningful when regenSmoothCorners is true.
-    var curvePointFlags: MutableList<Boolean> = mutableListOf()
+    var isPolyline: Boolean = false
 ) {
     fun buildPath(): Path {
         val path = Path()
@@ -243,19 +209,6 @@ class StrokeData(
                         i += 2
                     }
                     if (i + 1 < pts.size) path.lineTo(pts[i], pts[i + 1])
-                } else if (regenSmoothCorners && points.size >= 8 && curvePointFlags.size == points.size / 2) {
-                    var i = 2
-                    var idx = 1
-                    while (i + 1 < points.size) {
-                        val isCurve = idx < curvePointFlags.size && curvePointFlags[idx]
-                        if (isCurve && i + 3 < points.size) {
-                            val midX = (points[i] + points[i + 2]) / 2f; val midY = (points[i + 1] + points[i + 3]) / 2f
-                            path.quadTo(points[i], points[i + 1], midX, midY)
-                        } else {
-                            path.lineTo(points[i], points[i + 1])
-                        }
-                        i += 2; idx++
-                    }
                 } else {
                     var i = 2
                     while (i + 1 < points.size) { path.lineTo(points[i], points[i + 1]); i += 2 }
@@ -755,7 +708,7 @@ class StrokeData(
         if (lineType != LineType.CONTINUOUS && penStyle != PenStyle.PENCIL && intervals != null) {
             val sw = p.strokeWidth.coerceAtLeast(1f)
             val scaled = intervals.map { it * sw / 3f }.toFloatArray()
-            p.pathEffect = android.graphics.DashPathEffect(scaled, dashPhase)
+            p.pathEffect = android.graphics.DashPathEffect(scaled, 0f)
             if (lineType.cap != android.graphics.Paint.Cap.BUTT) p.strokeCap = lineType.cap
         }
         return p
@@ -1026,20 +979,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (currentLayerId == layerId) currentLayerId = layers.first().id
         redoStack.clear(); markSpatialDirty(); invalidate()
     }
-    fun setLayerVisible(layerId: Int, visible: Boolean) {
-        layers.find { it.id == layerId }?.visible = visible
-        if (!visible) {
-            // An item already selected right before its layer gets hidden would otherwise stay
-            // fully draggable/deletable via the still-active selection reference — hiding a
-            // layer must immediately drop anything of its that's currently selected, not just
-            // block NEW selection attempts.
-            val cur = selectedItem
-            if (cur != null && itemLayerId(cur) == layerId) selectedItem = null
-            selectedItems.removeAll { itemLayerId(it) == layerId }
-            selectedGroup = selectedGroup?.filter { itemLayerId(it) != layerId }?.toMutableList()?.takeIf { it.isNotEmpty() }
-        }
-        markSpatialDirty(); invalidate()
-    }
+    fun setLayerVisible(layerId: Int, visible: Boolean) { layers.find { it.id == layerId }?.visible = visible; markSpatialDirty(); invalidate() }
     fun moveLayerUp(layerId: Int) { val i = layers.indexOfFirst { it.id == layerId }; if (i > 0) { val l = layers.removeAt(i); layers.add(i - 1, l) }; invalidate() }
     fun moveLayerDown(layerId: Int) { val i = layers.indexOfFirst { it.id == layerId }; if (i in 0 until layers.size - 1) { val l = layers.removeAt(i); layers.add(i + 1, l) }; invalidate() }
     // Read/written by drawHatchPattern and loadCustomHatchBitmap in HatchRenderingExtensions.kt.
@@ -1111,13 +1051,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun itemsNear(x: Float, y: Float, r: Float): List<Any> {
         if (spatialDirty) rebuildSpatialIndex()
         val wx = x - r; val wy = y - r; val wx2 = x + r; val wy2 = y + r
-        // A hidden layer's items must act like they don't exist at all — not just invisible.
-        // Filtering here (the shared spatial-query primitive behind tap-to-select and other
-        // hit-testing) means every caller gets this for free instead of needing its own check.
-        val hiddenLayerIds = layers.filter { !it.visible }.map { it.id }.toHashSet()
         val seen = HashSet<Any>(); val result = mutableListOf<Any>()
         for (key in boundsToGridCells(wx, wy, wx2, wy2)) {
-            spatialGrid[key]?.forEach { a -> if (seen.add(a) && !hiddenLayerIds.contains(itemLayerId(a))) result.add(a) }
+            spatialGrid[key]?.forEach { a -> if (seen.add(a)) result.add(a) }
         }
         return result
     }
@@ -1488,24 +1424,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     // Renders each page of the note as its own separate bitmap, at a fixed export resolution —
-    // used by "Export as PDF" so each app-page becomes its own PDF page, instead of the old
-    // exportBitmap()'s single on-screen-viewport screenshot (which only ever captured whatever
-    // was currently scrolled into view, not the whole note, with no concept of page boundaries
-    // at all — that's what let two adjacent pages' content end up merged into one PDF page).
+    // used by "Export as PDF" so each app-page becomes its own PDF page, instead of a single
+    // on-screen-viewport screenshot (which only ever captured whatever was currently scrolled
+    // into view, not the whole note, with no concept of page boundaries at all — that's what let
+    // two adjacent pages' content end up merged into one PDF page).
     //
     // Renders from a fresh, separate off-screen DrawingView (same technique as BooksActivity's
     // thumbnail rendering) rather than this live instance directly — reusing this instance's own
     // width/height would risk viewport-culling incorrectly hiding content that's within the
     // export bitmap's area but outside whatever the screen's own current on-screen size happens
-    // to be.
+    // to be. A fresh instance per page (not one instance reused across all pages) eliminates any
+    // risk of internal state from one page's render carrying over into the next.
     fun exportAllPagesAsBitmaps(dpi: Int = 150): List<Bitmap> {
         val pageCount = estimatePageCount()
         val pw = pageWidthPx(); val ph = pageHeightPx()
         if (pw <= 0f || ph <= 0f) return emptyList()
-        // Scale from world units (already a ~96 DPI equivalent, per pageWidthPx()'s own
-        // mm*3.7795 conversion) up to the requested export DPI, so the exported PDF is
-        // reasonably high-resolution rather than capped at whatever the live on-screen render
-        // happened to be.
         val exportScale = dpi / 96f
         val bmpW = (pw * exportScale).toInt().coerceAtLeast(1)
         val bmpH = (ph * exportScale).toInt().coerceAtLeast(1)
@@ -1513,11 +1446,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         val bitmaps = mutableListOf<Bitmap>()
         for (pageIdx in 0 until pageCount) {
-            // A fresh DrawingView per page, not one reused instance across all pages — matches
-            // the proven thumbnail-rendering pattern (one instance per render, never reused for
-            // a second render) instead of calling resetViewForThumbnail() repeatedly on the same
-            // instance, which risked some piece of internal state from an earlier page's render
-            // carrying over into the next page instead of being fully reset.
             val dv = DrawingView(context)
             dv.loadFromString(savedState)
             dv.measure(View.MeasureSpec.makeMeasureSpec(bmpW, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(bmpH, View.MeasureSpec.EXACTLY))
@@ -1701,7 +1629,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // Double-tap on a DimensionItem → edit it
             if (currentTool == Tool.DIMENSION || currentTool == Tool.SELECT) {
                 val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
-                    if (layers.find { it.id == d.layerId }?.visible == false) return@firstOrNull false
                     val hr = 80f
                     kotlin.math.hypot((e.x - d.handleMidsx), (e.y - d.handleMidsy)) < hr ||
                     kotlin.math.hypot((e.x - d.handleP1sx), (e.y - d.handleP1sy)) < hr ||
@@ -1798,7 +1725,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     })
 
-    fun clampTranslation() {
+    private fun clampTranslation() {
         if (canvasMode == CanvasMode.INFINITE) return
         val pw = pageWidthPx() * scaleFactor; val ph = pageHeightPx() * scaleFactor
         val margin = 16f
@@ -2731,16 +2658,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (isFirstLayout || widthChanged || stableLayoutHeight == 0) {
                 stableLayoutHeight = height
             }
-            // Letter size (215.9mm x 279.4mm), same mm-to-px conversion A4 already uses (3.7795
-            // px/mm) — was view.width * 0.82 / stableLayoutHeight * 1.1, an arbitrary size with
-            // no relationship to any real paper size, which is why Convenient's page looked a
-            // different size than A4's when switching between them. clampTranslation()'s
-            // existing "page must fill at least the screen width" logic already adapts the zoom
-            // level to fit a fixed page size on any screen — that's exactly how A4/Paginated
-            // mode already works with its own fixed size, so this follows the same proven
-            // pattern rather than introducing a new one.
-            convenientPageW = 215.9f * 3.7795f
-            convenientPageH = 279.4f * 3.7795f
+            convenientPageW = width.toFloat() * 0.82f
+            convenientPageH = stableLayoutHeight.toFloat() * 1.1f
             if (isFirstLayout) {
                 hasInitialLayout = true
                 when (canvasMode) {
@@ -2768,20 +2687,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Called when canvasMode changes — forces position reset on next layout
     fun resetLayoutPosition() { hasInitialLayout = false }
 
-    // Rearranges text items to start within the current page width (used when switching to print)
+    // Rearranges text items to wrap and fit within the current page width (used when switching to print)
     fun rearrangeTextForPrint() {
         val pw = pageWidthPx()
         for (a in actions) {
             if (a is TextItem) {
                 a.x = a.x.coerceIn(16f, pw - 60f)
-                // Deliberately NOT setting a.maxWidth here anymore. It used to freeze a one-time
-                // snapshot of (pw - a.x - 16f) permanently onto the item — textWrapWidth() then
-                // always used that frozen number from then on instead of ever recalculating, so
-                // if the item's position or font size changed afterward, the wrap width silently
-                // went stale relative to the item's actual current state. Leaving maxWidth unset
-                // (0) means textWrapWidth() keeps recalculating this exact same formula fresh
-                // every time instead — the same dynamic behavior Convenient mode already relies
-                // on, which is why Convenient never had this staleness problem in the first place.
+                a.maxWidth = (pw - a.x - 16f).coerceAtLeast(80f)
             }
         }
         invalidate()
@@ -2826,9 +2738,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // recompute item.y = desiredTopY + currentHeight every time the content changes, rather
     // than setting item.y once and leaving it. Otherwise the rendered top silently climbs
     // upward as the content grows, since the same fixed "bottom" now has more height above it.
-    // Was plain getOrBuildLayout(item).height — didn't account for the gaps drawTextItem()
-    // inserts when an item spans multiple pages. Same under-counting bug as getBounds()/
-    // drawSelection(), just a different consumer (MainActivity's drag-surface sizing).
     fun textItemHeight(item: TextItem): Float { val l = getOrBuildLayout(item); return textItemVisualHeight(item, l).coerceAtLeast(item.size * 1.2f) }
     fun repositionTextItemTop(item: TextItem, desiredTopY: Float) {
         item.y = desiredTopY + textItemHeight(item)
@@ -2887,9 +2796,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // separate runs with a visual gap between each page's portion — plain layout.height knows
     // nothing about those gaps). Mirrors that exact same loop's gap accumulation rather than
     // reimplementing the logic separately, so the two can never quietly diverge again. Used by
-    // getBounds()/drawSelection() so the selection box (and the rotation pivot computed from it)
-    // actually match what's drawn, instead of being undersized by however many page breaks the
-    // item happens to cross.
+    // getBounds()/drawSelection()/textItemHeight()/findTextItemAt() so the selection box (and the
+    // rotation pivot computed from it), hit-testing, and drag-surface sizing all actually match
+    // what's drawn, instead of being undersized by however many page breaks the item crosses.
     private fun textItemVisualHeight(item: TextItem, layout: StaticLayout): Float {
         val contentH = layout.height.toFloat()
         val ph = pageHeightPx()
@@ -2978,14 +2887,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawSelection(canvas: Canvas) {
         activeTableItem?.let { drawTableHandles(canvas, it) }
-        // Adjusting an already-placed dimension's handle (point1, point2, or offset) — this had
-        // no magnifier lens at all before, for any of the three handles, unlike the initial-
-        // placement "searching for point" phases below which already handled it. dimCurWx/wy
-        // track the live finger position during this drag too (set unconditionally in
-        // ACTION_MOVE), so the same lens function works here directly.
-        if (currentTool == Tool.DIMENSION && dimDraggingItem != null && dimFingerDown) {
-            drawMagnifierLens(canvas, dimCurWx, dimCurWy)
-        }
         // Preview dimension line while drawing
         if (currentTool == Tool.DIMENSION) {
             if (dimAngular) {
@@ -3109,24 +3010,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (item is TextItem) {
             val layout = getOrBuildLayout(item)
             var contentW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
-            // Same direct-measure safety net as getBounds() below — for single-line text,
-            // measures the raw text directly rather than trusting the cached layout's wrap-
-            // width-dependent line width, so this box can't end up narrower than the text
-            // actually is regardless of any timing mismatch in when the layout was last built.
+            // Same direct-measure safety net as getBounds() — for single-line text, measures the
+            // raw text directly rather than trusting the cached layout's wrap-width-dependent
+            // line width, so this box can't end up narrower than the text actually is.
             if (layout.lineCount == 1) {
-                // TextItem has no bold/italic fields directly — style is per-range spans
-                // ('S' type, value = Typeface style constant: 0 normal, 1 bold, 2 italic,
-                // 3 bold-italic). Takes the widest (most conservative) style found across all
-                // spans, since this is a safety net that must never under-estimate the width.
                 val worstStyle = item.spans.filter { it.type == 'S' }.maxOfOrNull { it.value } ?: Typeface.NORMAL
                 val mp = TextPaint(); mp.textSize = item.size; mp.typeface = android.graphics.Typeface.create(typefaceFromFamily(item.fontFamily ?: "sans-serif"), worstStyle)
                 val measured = mp.measureText(item.text)
                 if (measured > contentW) contentW = measured
             }
             // Was plain layout.height — didn't account for the gaps drawTextItem() inserts when
-            // an item spans multiple pages, which is why the box was drastically undersized for
-            // any text long enough to cross a page boundary (the build-log-paste case).
+            // an item spans multiple pages, which is why the box was undersized for any text
+            // long enough to cross a page boundary.
             val contentH = textItemVisualHeight(item, layout)
+            // Equal padding on all 4 sides, proportional to font size.
             val pad = item.size * 0.12f
             val boxW = contentW + pad * 2f; val boxH = contentH + pad * 2f
             canvas.save()
@@ -3136,11 +3033,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE
             selP.strokeWidth = 2f / scaleFactor; selP.isAntiAlias = true
             canvas.drawRect(0f, 0f, boxW, boxH, selP)
-            // Rotate handle — large green circle, 32px screen size, easy to tap. This is purely
-            // visual: text's actual interactive controls (move, rotate, resize-via-font-size,
-            // delete) live in a separate overlay system (TextEditingExtensions.showTextSelectionBox
-            // — a real rotateHandle View plus a bottom toolbar with format/delete buttons), not
-            // as canvas-drawn handles the way images/shapes work.
+            // Rotate handle — large green circle, 32px screen size, easy to tap
             val hr2 = 32f / scaleFactor
             val hx = boxW / 2f; val hy = -56f / scaleFactor
             canvas.drawLine(boxW / 2f, 0f, hx, hy + hr2, selP)
@@ -3217,32 +3110,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // For single-line text, also measure the raw text directly — independent of
                 // whatever wrap width the cached layout happened to be built with. Whichever is
                 // larger wins. This is what makes the box immune to a timing mismatch between
-                // when the layout was cached and what's currently actually rendering (e.g. right
-                // after a layout-mode switch, where pageWidthPx() genuinely changes) — instead of
-                // requiring the two to always agree perfectly, the box simply can't be narrower
-                // than the text truly is.
+                // when the layout was cached and what's currently actually rendering, instead of
+                // requiring the two to always agree perfectly.
                 if (layout.lineCount == 1) {
-                    // TextItem has no bold/italic fields directly — style is per-range spans
-                    // ('S' type, value = Typeface style constant). Takes the widest (most
-                    // conservative) style found across all spans, since this is a safety net
-                    // that must never under-estimate the width.
                     val worstStyle = item.spans.filter { it.type == 'S' }.maxOfOrNull { it.value } ?: Typeface.NORMAL
                     val mp = TextPaint(); mp.textSize = item.size; mp.typeface = android.graphics.Typeface.create(typefaceFromFamily(item.fontFamily ?: "sans-serif"), worstStyle)
                     val measured = mp.measureText(item.text)
                     if (measured > w) w = measured
                 }
                 // Was plain layout.height — didn't account for the gaps drawTextItem() inserts
-                // when an item spans multiple pages, which is why the box (and hit-testing,
-                // which also uses getBounds()) was drastically undersized for any text long
-                // enough to cross a page boundary (the build-log-paste case).
+                // when an item spans multiple pages, which is why the box (and hit-testing, which
+                // also uses getBounds()) was undersized for any text long enough to cross a page.
                 val h = textItemVisualHeight(item, layout).coerceAtLeast(item.size * 1.2f)
                 // Equal padding on all 4 sides, proportional to font size — without this, a
                 // cursive/italic font's trailing glyph can visually overhang past the logical
-                // advance width the layout reports (the flourish on an ending "f" is a good
-                // example), poking out of a box sized to exactly match that advance width. Equal
-                // padding everywhere (not just the side that happened to overhang) also means the
-                // box is symmetric around its own center, so rotating it doesn't expose a gap
-                // that's tight on one side and loose on another.
+                // advance width the layout reports, poking out of a box sized to exactly match
+                // that advance width. Equal padding everywhere also means the box is symmetric
+                // around its own center, so rotating it doesn't expose a gap that's tight on one
+                // side and loose on another.
                 val pad = item.size * 0.12f
                 floatArrayOf(item.x - pad, item.y - h - pad, item.x + w + pad, item.y + pad)
             }
@@ -3565,10 +3450,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun findTextItemAt(x: Float, y: Float): TextItem? {
         for (a in actions.reversed()) {
             if (a is TextItem) {
-                if (layers.find { it.id == a.layerId }?.visible == false) continue
                 val layout = getOrBuildLayout(a)
                 val cw = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
-                // Was plain layout.height — same missing-gaps bug as getBounds()/drawSelection().
+                // Was plain layout.height — same missing-gaps issue as getBounds()/drawSelection().
                 // Without this, tapping the upper portion of a text item spanning multiple pages
                 // would silently miss it, since the tappable region was undersized to match.
                 val ch = textItemVisualHeight(a, layout)
@@ -4515,9 +4399,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun selectItemsInRegion(region: Region, regionBounds: FloatArray, windowMode: Boolean) {
         val group = mutableListOf<Any>()
         val rl = regionBounds[0]; val rt = regionBounds[1]; val rr = regionBounds[2]; val rb = regionBounds[3]
-        val hiddenLayerIds = layers.filter { !it.visible }.map { it.id }.toHashSet()
         for (action in actions) {
-            if (hiddenLayerIds.contains(itemLayerId(action))) continue
             val b = getBounds(action) ?: continue
             val matches = if (windowMode) {
                 // Window select (L→R): item's full bbox must be completely inside the rectangle
@@ -5319,7 +5201,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
                     val HR = 80f
                     val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
-                        if (layers.find { it.id == d.layerId }?.visible == false) return@firstOrNull false
                         kotlin.math.hypot((event.x - d.handleP1sx), (event.y - d.handleP1sy)) < HR ||
                         kotlin.math.hypot((event.x - d.handleP2sx), (event.y - d.handleP2sy)) < HR ||
                         kotlin.math.hypot((event.x - d.handleMidsx), (event.y - d.handleMidsy)) < HR
@@ -5924,9 +5805,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val path = data.buildPath()
         val measure = android.graphics.PathMeasure(path, false)
         val allPts = mutableListOf<Float>()
-        val allDist = mutableListOf<Float>()  // parallel to allPts: along-path distance to each sampled point
         val pos = FloatArray(2)
-        var baseDist = 0f  // accumulates across multiple contours (measure.nextContour())
         do {
             val len = measure.length
             if (len <= 0f) continue
@@ -5939,19 +5818,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             while (dist <= len) {
                 measure.getPosTan(dist, pos, null)
                 allPts.add(pos[0]); allPts.add(pos[1])
-                allDist.add(baseDist + dist)
                 dist += step
             }
-            baseDist += len
         } while (measure.nextContour())
         if (allPts.size < 4) return emptyList()
 
         val segs = mutableListOf<MutableList<Float>>(); var cur = mutableListOf<Float>()
-        val segDists = mutableListOf<Float>(); var curDist = mutableListOf<Float>()
-        fun flush() { if (cur.size >= 4) { segs.add(cur); segDists.add(curDist.firstOrNull() ?: 0f) }; cur = mutableListOf(); curDist = mutableListOf() }
+        fun flush() { if (cur.size >= 4) segs.add(cur); cur = mutableListOf() }
         var i = 0
         var prevIn = distance(ex, ey, allPts[0], allPts[1]) <= r
-        if (!prevIn) { cur.add(allPts[0]); cur.add(allPts[1]); curDist.add(allDist[0]) }
+        if (!prevIn) { cur.add(allPts[0]); cur.add(allPts[1]) }
         while (i + 3 < allPts.size) {
             val x1 = allPts[i]; val y1 = allPts[i + 1]; val x2 = allPts[i + 2]; val y2 = allPts[i + 3]
             val segDist = distToSeg(ex, ey, x1, y1, x2, y2)
@@ -5959,20 +5835,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (curIn != prevIn) {
                 val cut = findCircleSegIntersection(ex, ey, r, x1, y1, x2, y2)
                 if (cut != null) {
-                    // Cut points are interpolated (not directly sampled), so their exact distance
-                    // isn't tracked — the nearest sample's distance is a fine approximation here,
-                    // since this only needs to keep the dash pattern visually stable, not be
-                    // pixel-perfect.
-                    if (!prevIn) { cur.add(cut.first); cur.add(cut.second); curDist.add(allDist[i / 2]); flush() }
-                    else { cur.add(cut.first); cur.add(cut.second); curDist.add(allDist[i / 2]) }
+                    if (!prevIn) { cur.add(cut.first); cur.add(cut.second); flush() }
+                    else { cur.add(cut.first); cur.add(cut.second) }
                 } else flush()
             }
-            if (!curIn) { cur.add(x2); cur.add(y2); curDist.add(allDist[i / 2 + 1]) }
+            if (!curIn) { cur.add(x2); cur.add(y2) }
             prevIn = curIn
             i += 2
         }
         flush()
-        return segs.mapIndexed { idx, sp ->
+        return segs.map { sp ->
             // isPolyline = true is the critical part here: without it, Tool.PEN's default
             // render path runs every stroke through quadratic-bezier smoothing to remove hand
             // tremor (see the comment on StrokeData.isPolyline above). That's correct for actual
@@ -5982,11 +5854,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // this same reconstruction on the now-already-curved path, the distortion compounds
             // worse with every erase. Marking it a polyline keeps the straight-line render path,
             // preserving the shape's actual geometry exactly as sampled.
-            // dashPhase = parent's own phase (0 for a never-erased shape, but non-zero if this
-            // shape is ITSELF already a fragment from an earlier erase) plus this fragment's own
-            // offset — chains correctly back to the true original shape's start no matter how
-            // many times it's been re-split.
-            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.FOUNTAIN, opacity = data.opacity, lineType = data.lineType, isPolyline = true, dashPhase = data.dashPhase + segDists[idx], eraseFragment = true)
+            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.FOUNTAIN, opacity = data.opacity, lineType = data.lineType, isPolyline = true)
             StrokeItem(d, d.buildPath(), d.toPaint())
         }
     }
@@ -6162,162 +6030,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
     // sample-point distance), so erasing is accurate to what's visually under the eraser circle
     // regardless of how sparse the stroke's recorded points are.
-    // Finds how far (in world units) a point is along an original polyline, by walking its
-    // segments and finding the closest match. Used to compute an erased fragment's correct dash-
-    // phase anchor after the fact, rather than threading distance-tracking through the crossing
-    // detection above — same reasoning as splitShapeAroundEraser's dash-phase fix.
-    private fun cumulativeDistAlongPolyline(pts: List<Float>, targetX: Float, targetY: Float): Float {
-        var acc = 0f; var best = Float.MAX_VALUE; var bestAcc = 0f
-        var i = 0
-        while (i + 3 < pts.size) {
-            val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
-            val segLen = distance(x1, y1, x2, y2)
-            val d = distToSeg(targetX, targetY, x1, y1, x2, y2)
-            if (d < best) {
-                best = d
-                // Project onto the segment to get the exact point within it, not just its start.
-                val segLenSq = segLen * segLen
-                val t = if (segLenSq > 0.0001f) (((targetX - x1) * (x2 - x1) + (targetY - y1) * (y2 - y1)) / segLenSq).coerceIn(0f, 1f) else 0f
-                bestAcc = acc + t * segLen
-            }
-            acc += segLen
-            i += 2
-        }
-        return bestAcc
-    }
-
-    // Ramer-Douglas-Peucker line simplification: recursively keeps only the points that deviate
-    // from a straight chord by more than epsilon, discarding near-collinear points in between.
-    // Used by regenerateErasedShapes() to shrink a dense erase-fragment's point list down to just
-    // the points that actually matter for its shape, before handing it back to the normal smooth
-    // Tool.PEN curve renderer.
-    // Returns the simplified points AND, in parallel, which of them were kept specifically
-    // because they deviate from a straight chord (true curve points, by RDP's own definition —
-    // that's exactly why RDP keeps a point instead of discarding it) versus points that are just
-    // the endpoints of an already-straight run. This is what regenerateErasedShapes() uses to
-    // decide where to smooth vs. stay sharp — a principled signal straight from RDP's own
-    // decision-making, rather than an indirect segment-length heuristic (which broke on shapes
-    // where the curved region ends up being the MAJORITY of retained points, dragging the
-    // "typical" segment length down to roughly the curve's own spacing — comparing curve
-    // segments against a threshold based mostly on themselves never classified them as short).
-    private fun simplifyRDP(points: List<Float>, epsilon: Float): Pair<MutableList<Float>, MutableList<Boolean>> {
-        val n = points.size / 2
-        if (n < 3) return Pair(points.toMutableList(), MutableList(n) { false })
-        val keptIsCurve = HashMap<Int, Boolean>()
-        fun rdp(startIdx: Int, endIdx: Int) {
-            if (endIdx - startIdx < 2) return
-            val ax = points[startIdx * 2]; val ay = points[startIdx * 2 + 1]
-            val bx = points[endIdx * 2]; val by = points[endIdx * 2 + 1]
-            var maxDist = 0f; var maxIdx = -1
-            for (i in startIdx + 1 until endIdx) {
-                val d = distToSeg(points[i * 2], points[i * 2 + 1], ax, ay, bx, by)
-                if (d > maxDist) { maxDist = d; maxIdx = i }
-            }
-            if (maxDist > epsilon && maxIdx > 0) {
-                keptIsCurve[maxIdx] = true
-                rdp(startIdx, maxIdx)
-                rdp(maxIdx, endIdx)
-            }
-        }
-        keptIsCurve[0] = false; keptIsCurve[n - 1] = false
-        rdp(0, n - 1)
-        val sortedIndices = keptIsCurve.keys.sorted()
-        val outPts = mutableListOf<Float>(); val outCurve = mutableListOf<Boolean>()
-        for (idx in sortedIndices) { outPts.add(points[idx * 2]); outPts.add(points[idx * 2 + 1]); outCurve.add(keptIsCurve[idx] == true) }
-        return Pair(outPts, outCurve)
-    }
-
-    // AutoCAD-inspired "Regen": a deliberate, on-demand whole-page cleanup pass rather than
-    // something that runs automatically after every erase (simplification has a real, if small,
-    // cost, and most erases don't need it dealt with immediately). Simplifies every erase-created
-    // shape fragment's point list and hands rendering back to the normal smooth Tool.PEN curve
-    // path — cutting point count (and so RAM/file size) while fixing the faceted look that shows
-    // up at high zoom or after enlarging an erased shape.
-    //
-    // Deliberately does NOT try to detect and restore the shape's original type (circle/rect/
-    // etc.) — after erasing, the surviving boundary usually isn't expressible as one of those
-    // anymore anyway (multiple islands, irregular notches from the eraser's circular shape), so a
-    // general curve simplification handles every case uniformly instead of needing shape-specific
-    // fitting logic that would only help the narrowest cases and still need this same fallback
-    // for everything else.
-    fun regenerateErasedShapes(): Int {
-        var count = 0
-        for (action in actions) {
-            if (action !is StrokeItem) continue
-            val d = action.data
-            if (!d.eraseFragment) continue
-            if (d.points.size < 8) { d.eraseFragment = false; continue }  // too few points to be worth simplifying
-            val epsilon = maxOf(1.5f, d.strokeWidth * 0.3f)
-            val (simplifiedPts, curveFlags) = simplifyRDP(d.points, epsilon)
-            d.points.clear(); d.points.addAll(simplifiedPts)
-            d.curvePointFlags.clear(); d.curvePointFlags.addAll(curveFlags)
-            // Genuinely round shapes (circle/ellipse) get handed to the standard smooth Bezier
-            // renderer, uniformly — there's no "straight part" to protect. Everything else uses
-            // the adaptive per-segment smoother instead: it keeps real straight edges sharp AND
-            // smooths a rounded corner within the SAME stroke, rather than the earlier all-or-
-            // nothing choice (whole shape stays straight → faceted corners; whole shape gets
-            // smoothed → destroys straight sides, which was the previous bug).
-            if (d.eraseFragmentCurved) d.isPolyline = false else d.regenSmoothCorners = true
-            d.eraseFragment = false  // regenerated — a future erase re-splits it as whatever it now is, not a jagged dense fragment
-            action.path = d.buildPath()
-            action.invalidateCache()
-            count++
-        }
-        if (count > 0) { markSpatialDirty(); invalidate() }
-        return count
-    }
-
-    // Scales every item's position AND size-related properties (stroke width, font size, image
-    // dimensions, table cell sizes, dimension line/arrow/font sizes) by a uniform factor — used
-    // when switching canvas mode or paper size, since pageWidthPx()/pageHeightPx() mean something
-    // completely different in each mode (Convenient: view.width * 0.82; Fixed/Paginated: a fixed
-    // size from paperSize alone) and nothing was adjusting existing content to match a newly
-    // selected page, which is what let content drift out of alignment with the new page boundary
-    // after switching. Uniform (same factor for x/y) rather than separately for width/height,
-    // so nothing gets visually stretched or squished — proportions are preserved, only overall
-    // size changes.
-    fun rescaleAllContent(scale: Float) {
-        if (scale == 1f || !scale.isFinite() || scale <= 0f) return
-        for (action in actions) {
-            when (action) {
-                is StrokeItem -> {
-                    val d = action.data
-                    for (i in d.points.indices) d.points[i] = d.points[i] * scale
-                    d.strokeWidth *= scale
-                    for (i in d.widths.indices) d.widths[i] = d.widths[i] * scale
-                    for (hole in d.clipHoles) { hole[0] *= scale; hole[1] *= scale; hole[2] *= scale }
-                    d.dashPhase *= scale
-                    action.path = d.buildPath()
-                    action.invalidateCache()
-                }
-                is TextItem -> {
-                    action.x *= scale; action.y *= scale; action.size *= scale
-                    if (action.maxWidth > 0f) action.maxWidth *= scale
-                }
-                is ImageItem -> { action.x *= scale; action.y *= scale; action.w *= scale; action.h *= scale }
-                is FillItem -> { action.x *= scale; action.y *= scale; action.w *= scale; action.h *= scale; action.hatchScale *= scale }
-                is DimensionItem -> {
-                    action.x1 *= scale; action.y1 *= scale; action.x2 *= scale; action.y2 *= scale
-                    action.offset *= scale; action.strokeW *= scale; action.fontSize *= scale; action.arrowSize *= scale
-                }
-                is TableItem -> {
-                    action.x *= scale; action.y *= scale
-                    for (i in action.rowHeights.indices) action.rowHeights[i] = action.rowHeights[i] * scale
-                    for (i in action.colWidths.indices) action.colWidths[i] = action.colWidths[i] * scale
-                    action.headerTextSize *= scale
-                    for (r in 0 until action.rows) for (c in 0 until action.cols) {
-                        val cell = action.getCellPublic(r, c)
-                        cell.textSize *= scale; cell.borderWidth *= scale
-                    }
-                }
-                // AudioItem isn't in this file this session — its position won't be rescaled here.
-                // Flagging this explicitly rather than silently skipping it without a note.
-                else -> {}
-            }
-        }
-        markSpatialDirty(); invalidate()
-    }
-
     private fun splitStrokeAroundEraser(data: StrokeData, ex: Float, ey: Float, r: Float): List<StrokeItem> {
         val pts = data.points
         if (pts.size < 4) { if (pts.size >= 2 && distance(ex, ey, pts[0], pts[1]) <= r) return emptyList(); return listOf(StrokeItem(data, data.buildPath(), data.toPaint())) }
@@ -6387,11 +6099,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val newSegs = mutableListOf<MutableList<Float>>()
                     newSegs.addAll(segs.subList(1, segs.size - 1))
                     newSegs.add(merged)
-                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1]), eraseFragment = data.eraseFragment || data.regenSmoothCorners, eraseFragmentCurved = data.eraseFragmentCurved); StrokeItem(d, d.buildPath(), d.toPaint()) }
+                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline); StrokeItem(d, d.buildPath(), d.toPaint()) }
                 }
             }
         }
-        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1]), eraseFragment = data.eraseFragment || data.regenSmoothCorners, eraseFragmentCurved = data.eraseFragmentCurved); StrokeItem(d, d.buildPath(), d.toPaint()) }
+        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline); StrokeItem(d, d.buildPath(), d.toPaint()) }
     }
 
     // Finds ALL points (as sorted t-values in [0,1]) where a segment crosses the eraser circle
@@ -7143,11 +6855,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // That compounding was the actual cause of a circle/ellipse's shape visibly
                 // changing after being erased more than once.
                 val d = StrokeData(Tool.PEN, segPts, data.color, data.strokeWidth, false,
-                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true, eraseFragment = true,
-                    // ROUNDED_RECT shares this sampling branch with CIRCLE/ELLIPSE (all three need
-                    // dense curve sampling to erase correctly) but must NOT be marked curved here —
-                    // it has real straight sides that regenerateErasedShapes() must never smooth.
-                    eraseFragmentCurved = data.type == Tool.CIRCLE || data.type == Tool.ELLIPSE)
+                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true)
                 listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
             }
             else -> {
@@ -7184,7 +6892,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             }
                             if (segPts.size >= 4) {
                                 val d = StrokeData(Tool.PEN, segPts, data.color, data.strokeWidth, false,
-                                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true, eraseFragment = true)
+                                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true)
                                 result.add(StrokeItem(d, d.buildPath(), d.toPaint()))
                             }
                         }
@@ -7203,7 +6911,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 for ((vx, vy) in verts) { plinePts.add(vx); plinePts.add(vy) }
                 if (closed && verts.isNotEmpty()) { plinePts.add(verts[0].first); plinePts.add(verts[0].second) }
                 val d = StrokeData(Tool.PEN, plinePts, data.color, data.strokeWidth, false,
-                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true, eraseFragment = true)
+                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true)
                 listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
             }
         }
@@ -7512,7 +7220,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         sb.append("\n")
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
-            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}|${a.data.dashPhase}|${a.data.eraseFragment}|${a.data.eraseFragmentCurved}|${a.data.regenSmoothCorners}|${a.data.curvePointFlags.joinToString(",")}\n")
+            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\u0001${a.layerId}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\u0001${a.layerId}\u0001${a.flippedH}\u0001${a.flippedV}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.customHatchPath ?: ""}\u0001${a.hatchPattern?.name ?: ""}\u0001${a.hatchColor}\u0001${a.hatchScale}\u0001${a.layerId}\n")
@@ -7639,12 +7347,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val slant = if (p.size >= 15) p[14].toFloatOrNull() ?: 0.65f else 0.65f
                                 val isPoly = if (p.size >= 16) p[15] == "true" else false
                                 val lid = if (p.size >= 17) p[16].toIntOrNull() ?: 0 else 0
-                                val dPhase = if (p.size >= 18) p[17].toFloatOrNull() ?: 0f else 0f
-                                val eFrag = if (p.size >= 19) p[18] == "true" else false
-                                val eFragCurved = if (p.size >= 20) p[19] == "true" else false
-                                val regenSmooth = if (p.size >= 21) p[20] == "true" else false
-                                val curveFlags = if (p.size >= 22 && p[21].isNotEmpty()) p[21].split(",").map { it == "true" }.toMutableList() else mutableListOf()
-                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly, dashPhase = dPhase, eraseFragment = eFrag, eraseFragmentCurved = eFragCurved, regenSmoothCorners = regenSmooth, curvePointFlags = curveFlags); val si = StrokeItem(d, d.buildPath(), d.toPaint()); si.layerId = lid; actions.add(si)
+                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly); val si = StrokeItem(d, d.buildPath(), d.toPaint()); si.layerId = lid; actions.add(si)
                             } else {
                                 val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
                                 val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))

@@ -105,9 +105,9 @@ internal fun MainActivity.measureTextBoxSize(item: TextItem, screenSizePx: Float
         // boundary, that undershot the true rendered height by however many gaps it should have
         // included — which is why this overlay stayed too short AND visually bled across the
         // page divider instead of stopping cleanly at each page's edge. textItemHeight() already
-        // accounts for those gaps correctly (same function DrawingView.kt itself now uses for
-        // its selection box/hit-testing), so using it here means this measurement can never
-        // drift out of sync with actual rendering the way the separate StaticLayout did.
+        // accounts for those gaps correctly (same function DrawingView.kt itself uses for its
+        // selection box/hit-testing), so using it here means this measurement can never drift
+        // out of sync with actual rendering the way the separate StaticLayout did.
         val h = (drawingView.textItemHeight(item) * scale + dp(8).toFloat()).coerceAtLeast(dp(30).toFloat()).toInt()
         return Pair(w, h)
     }
@@ -420,17 +420,15 @@ internal fun MainActivity.showTextSelectionBox(item: TextItem, screenX: Float, s
         // toggling adds or removes a full-range span, using the same TextSpanData mechanism the
         // active editor uses for partial-selection formatting.
         val toolbar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(6).toFloat()
-            setPadding(dp(4), dp(4), dp(4), dp(4)); gravity = Gravity.CENTER
+            orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(8).toFloat()
+            setPadding(dp(8), dp(8), dp(8), dp(8)); gravity = Gravity.CENTER
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         }
         val tbInactiveBg = Color.parseColor("#F0EBE0"); val tbActiveBg = Color.parseColor("#8D6E63")
         fun tbBtn(iconRes: Int, action: (ImageView) -> Unit): ImageView {
             val b = ImageView(this); b.setImageResource(iconRes); b.scaleType = ImageView.ScaleType.CENTER_INSIDE
-            // Was dp(28) with dp(5) padding — still noticeably large for a small, item-anchored
-            // floating strip rather than a full toolbar.
-            val p = LinearLayout.LayoutParams(dp(20), dp(20)); p.setMargins(dp(1), 0, dp(1), 0); b.layoutParams = p
-            b.setPadding(dp(3), dp(3), dp(3), dp(3)); b.setBackgroundColor(tbInactiveBg); b.setOnClickListener { action(b) }
+            val p = LinearLayout.LayoutParams(dp(40), dp(40)); p.setMargins(dp(4), 0, dp(4), 0); b.layoutParams = p
+            b.setPadding(dp(8), dp(8), dp(8), dp(8)); b.setBackgroundColor(tbInactiveBg); b.setOnClickListener { action(b) }
             toolbar.addView(b); return b
         }
         fun hasFullSpan(type: Char, value: Int) = item.spans.any { it.type == type && it.value == value && it.start == 0 && it.end == item.text.length }
@@ -451,11 +449,7 @@ internal fun MainActivity.showTextSelectionBox(item: TextItem, screenX: Float, s
         tbBtn(R.drawable.ic_text_check) { dismissTextSelectionBox() }
 
         val toolbarLp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-            // Was gravity BOTTOM/CENTER_HORIZONTAL with a fixed bottomMargin — a screen-pinned
-            // position with no relationship to where the actual selected text is. Now positioned
-            // dynamically in updateToolbarPos below, directly above the item, the same way
-            // rotateHandle already tracks it.
-            gravity = Gravity.TOP or Gravity.START
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; bottomMargin = dp(16)
         }
         canvasContainer.addView(toolbar, toolbarLp)
         textSelectionBox = moveSurface; textSelectionItem = item
@@ -494,8 +488,22 @@ internal fun MainActivity.showTextSelectionBox(item: TextItem, screenX: Float, s
             // exactly with how the actual text renders. Previously this was never set at all,
             // so the highlighted box stayed axis-aligned no matter how the text was rotated.
             moveSurface.rotation = item.rotation
+            // toolbar is now a fixed bottom bar (see its own LayoutParams, gravity BOTTOM) — it
+            // no longer tracks item.x/item.y at all, unlike moveSurface and rotateHandle below.
+            // Anchored to the box's actual TOP edge (not a fixed 90dp above the BOTTOM, which
+            // drifted further from "on top of the box" the taller the item was) and centered
+            // horizontally over its width (not left-aligned to item.x, which is why it always
+            // looked offset to the left rather than sitting squarely above the text). Still
+            // clamped to stay on-screen/reachable for a tall item scrolled partly off-view.
+            // rotateHandle owns its own touch bounds directly now (its own dedicated listener,
+            // not a distance check against some other view), so there's no separate "hit zone
+            // center" to keep in sync here anymore — just its visible position.
+            // The handle's natural (unrotated) position is directly above the box's center —
+            // rotate THAT offset around the box's own center by item.rotation, matching the same
+            // pivot moveSurface itself now rotates around, so the handle visually orbits the box
+            // instead of staying frozen at its pre-rotation spot.
             val pivotX = sx + boxW / 2f; val pivotY = sy - boxH / 2f
-            val localHandleX = sx + boxW / 2f; val localHandleY = (sy - boxH) - dp(28)
+            val localHandleX = sx + boxW / 2f; val localHandleY = (sy - boxH) - dp(40)
             val rad = Math.toRadians(item.rotation.toDouble())
             val cosT = Math.cos(rad).toFloat(); val sinT = Math.sin(rad).toFloat()
             val dx = localHandleX - pivotX; val dy = localHandleY - pivotY
@@ -505,15 +513,6 @@ internal fun MainActivity.showTextSelectionBox(item: TextItem, screenX: Float, s
             rlp.leftMargin = (rsx - dp(20)).toInt().coerceIn(0, canvasContainer.width - dp(40))
             rlp.topMargin = (rsy - dp(20)).toInt().coerceIn(0, maxTop)
             rotateHandle.layoutParams = rlp
-            // Toolbar sits just above the box, and above the rotate handle so neither overlaps,
-            // centered over the box's width. Replaces the old fixed-to-screen-bottom position,
-            // which had no relationship to where the actual selected text was on screen.
-            toolbar.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
-            val toolbarW = toolbar.measuredWidth; val toolbarH = toolbar.measuredHeight
-            val tlp = toolbar.layoutParams as FrameLayout.LayoutParams
-            tlp.leftMargin = (sx + boxW / 2f - toolbarW / 2f).toInt().coerceIn(0, (canvasContainer.width - toolbarW).coerceAtLeast(0))
-            tlp.topMargin = (sy - boxH - dp(32) - toolbarH).toInt().coerceIn(dp(4), maxTop)
-            toolbar.layoutParams = tlp
         }
         updateToolbarPos()
         drawingView.onCanvasTransformed = { updateToolbarPos() }
