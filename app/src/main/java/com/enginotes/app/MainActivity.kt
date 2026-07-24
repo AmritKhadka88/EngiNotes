@@ -414,11 +414,20 @@ class MainActivity : AppCompatActivity() {
             // NOT pixels — passing the bitmap's raw pixel count directly (the previous bug) made
             // every page roughly 2x too large in each dimension, since e.g. 150 pixels-per-inch
             // was silently being treated as 150 points-per-inch. exportAllPagesAsBitmaps() always
-            // renders at 150 DPI, so converting is exact: points = pixels * 72 / 150. Multiplied
-            // by an adjustable calibration factor (default 1.0) in case a specific printer or PDF
-            // viewer still renders slightly off true size — set in Settings if ever needed.
+            // renders at 150 DPI, so converting is exact: points = pixels * 72 / 150.
+            //
+            // Calibration is expressed directly as "what does your printed page actually measure,
+            // in mm" rather than an abstract percentage — much easier to reason about than
+            // guessing a percentage. Compares that stored mm value against the paper size's true
+            // mm dimensions to get a ratio, applied to width/height independently since a
+            // miscalibrated printer can scale unevenly.
             val exportDpi = 150f
-            val calibration = getPrefs().getFloat("pdf_calibration", 1f)
+            val trueWmm = if (drawingView.pageOrientation == Orientation.PORTRAIT) drawingView.paperSize.widthMM else drawingView.paperSize.heightMM
+            val trueHmm = if (drawingView.pageOrientation == Orientation.PORTRAIT) drawingView.paperSize.heightMM else drawingView.paperSize.widthMM
+            val calibWmm = getPrefs().getFloat("pdf_calib_w_mm", trueWmm)
+            val calibHmm = getPrefs().getFloat("pdf_calib_h_mm", trueHmm)
+            val calibW = if (trueWmm > 0f) calibWmm / trueWmm else 1f
+            val calibH = if (trueHmm > 0f) calibHmm / trueHmm else 1f
             val multiPage = pendingExportBitmaps
             if (multiPage != null) {
                 // Whole-note export: one real PDF page per app-page, instead of the old approach
@@ -428,8 +437,8 @@ class MainActivity : AppCompatActivity() {
                     // Points are computed from the ORIGINAL bitmap's pixel size at the known
                     // export DPI — this is the page's true physical size and must not change
                     // just because the image gets downscaled for file-size reasons below.
-                    val ptsW = (bmp.width * 72f / exportDpi * calibration).toInt().coerceAtLeast(1)
-                    val ptsH = (bmp.height * 72f / exportDpi * calibration).toInt().coerceAtLeast(1)
+                    val ptsW = (bmp.width * 72f / exportDpi * calibW).toInt().coerceAtLeast(1)
+                    val ptsH = (bmp.height * 72f / exportDpi * calibH).toInt().coerceAtLeast(1)
                     val scale = if (bmp.width > maxDim || bmp.height > maxDim) minOf(maxDim.toFloat()/bmp.width, maxDim.toFloat()/bmp.height) else 1f
                     val pw = (bmp.width*scale).toInt().coerceAtLeast(1); val ph = (bmp.height*scale).toInt().coerceAtLeast(1)
                     val sb = if (scale < 1f) Bitmap.createScaledBitmap(bmp,pw,ph,true) else bmp
@@ -3544,14 +3553,20 @@ class MainActivity : AppCompatActivity() {
 
         div(); hdr("PDF EXPORT")
         // Points-per-pixel conversion in savePdfLauncher is exact math (72/150 at the known
-        // export DPI), verified to produce true-to-life A4/Letter/etc. dimensions — this
-        // calibration multiplier is a safety net for the rare case a specific printer or PDF
-        // viewer still renders slightly off true size, not a fix for a known inaccuracy.
-        val calibRow = LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(0,dp(8),0,dp(8)) }
-        val calibLbl = TextView(this).apply{ text="Print size calibration (%)"; textSize=15f; layoutParams=LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f) }
-        val calibInput = EditText(this).apply{ inputType=android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL; setText((prefs.getFloat("pdf_calibration",1f)*100f).let{ if(it==it.toInt().toFloat()) it.toInt().toString() else it.toString() }); layoutParams=LinearLayout.LayoutParams(dp(70),LinearLayout.LayoutParams.WRAP_CONTENT); gravity=Gravity.CENTER }
-        calibRow.addView(calibLbl); calibRow.addView(calibInput); container.addView(calibRow)
-        val calibHint = TextView(this).apply { text = "If a printed page measures larger/smaller than the paper size selected above, adjust this to compensate. 100 = no adjustment."; textSize = 12f; setTextColor(Color.parseColor("#8A8580")); setPadding(0,0,0,dp(8)) }
+        // export DPI), verified to produce true-to-life A4/Letter/etc. dimensions. These fields
+        // are a safety net for the rare case a specific printer or PDF viewer still renders
+        // slightly off true size, not a fix for a known inaccuracy — asking directly "what does
+        // your printed page actually measure" is far more intuitive than an abstract percentage.
+        val trueWmmSettings = if (drawingView.pageOrientation == Orientation.PORTRAIT) drawingView.paperSize.widthMM else drawingView.paperSize.heightMM
+        val trueHmmSettings = if (drawingView.pageOrientation == Orientation.PORTRAIT) drawingView.paperSize.heightMM else drawingView.paperSize.widthMM
+        fun fmtMm(v: Float) = if (v == v.toInt().toFloat()) v.toInt().toString() else v.toString()
+        val calibRow = LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(0,dp(8),0,dp(4)) }
+        val calibLbl = TextView(this).apply{ text="Printed page measures (mm)"; textSize=15f; layoutParams=LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f) }
+        val calibWInput = EditText(this).apply{ inputType=android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(fmtMm(prefs.getFloat("pdf_calib_w_mm", trueWmmSettings))); layoutParams=LinearLayout.LayoutParams(dp(65),LinearLayout.LayoutParams.WRAP_CONTENT); gravity=Gravity.CENTER }
+        val calibX = TextView(this).apply { text = " × "; textSize = 15f; setPadding(dp(4),0,dp(4),0) }
+        val calibHInput = EditText(this).apply{ inputType=android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(fmtMm(prefs.getFloat("pdf_calib_h_mm", trueHmmSettings))); layoutParams=LinearLayout.LayoutParams(dp(65),LinearLayout.LayoutParams.WRAP_CONTENT); gravity=Gravity.CENTER }
+        calibRow.addView(calibLbl); calibRow.addView(calibWInput); calibRow.addView(calibX); calibRow.addView(calibHInput); container.addView(calibRow)
+        val calibHint = TextView(this).apply { text = "Should be ${fmtMm(trueWmmSettings)} × ${fmtMm(trueHmmSettings)} for the currently selected paper size. If your printed output measures differently, enter what it actually measures here to compensate."; textSize = 12f; setTextColor(Color.parseColor("#8A8580")); setPadding(0,0,0,dp(8)) }
         container.addView(calibHint)
 
         div(); hdr("HATCHING")
@@ -3672,7 +3687,8 @@ class MainActivity : AppCompatActivity() {
                     .putFloat("hatch_scale", selHatchScale)
                     .putString("gemini_model", modelInput.text.toString().trim().ifBlank { "gemini-flash-latest" })
                     .putInt("arc_divisions",(arcInput.text.toString().toIntOrNull()?:3).coerceIn(2,12))
-                    .putFloat("pdf_calibration", ((calibInput.text.toString().toFloatOrNull()?:100f).coerceIn(50f,200f))/100f)
+                    .putFloat("pdf_calib_w_mm", calibWInput.text.toString().toFloatOrNull()?.coerceIn(10f, 2000f) ?: trueWmmSettings)
+                    .putFloat("pdf_calib_h_mm", calibHInput.text.toString().toFloatOrNull()?.coerceIn(10f, 2000f) ?: trueHmmSettings)
                     .putFloat("paper_line_spacing", lineSpacing)
                     .putFloat("paper_grid_spacing", gridSpacing)
                     .putFloat("paper_dot_spacing", dotSpacing)
