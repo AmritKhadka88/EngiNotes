@@ -2769,52 +2769,72 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // No-op in Infinite mode, which has no page-height concept to split against.
     fun splitTextItemAcrossPages(item: TextItem) {
         if (canvasMode == CanvasMode.INFINITE) return
-        val gap = 24f
-        val ph = pageHeightPx()
-        val period = ph + gap
-        var current = item
-        var guard = 0
-        while (guard < 50) {
-            guard++
-            val layout = getOrBuildLayout(current)
-            val contentH = layout.height.toFloat()
-            val topY = current.y - contentH
-            val pageIdx = kotlin.math.floor(topY / period)
-            val pageBottomAbs = pageIdx * period + ph
-            if (topY + contentH <= pageBottomAbs) break  // fits entirely on this page — done
-            // Find the last line that still fits within this page's remaining space.
-            var splitLine = -1
-            for (i in 0 until layout.lineCount) {
-                if (topY + layout.getLineBottom(i) <= pageBottomAbs) splitLine = i else break
-            }
-            if (splitLine < 0) break  // not even the first line fits — bail rather than loop forever
-            val splitCharIdx = layout.getLineEnd(splitLine)
-            if (splitCharIdx <= 0 || splitCharIdx >= current.text.length) break
-            val keptText = current.text.substring(0, splitCharIdx)
-            val remainingText = current.text.substring(splitCharIdx)
-            if (remainingText.isBlank()) break
-            // Split spans at the same character boundary — spans entirely before it stay with
-            // the kept piece unchanged; spans entirely after it move to the new piece with
-            // indices shifted back to be relative to ITS OWN start; spans straddling the split
-            // point get clipped into both halves so formatting doesn't just vanish at the cut.
-            val keptSpans = mutableListOf<TextSpanData>()
-            val remainingSpans = mutableListOf<TextSpanData>()
-            for (s in current.spans) {
-                when {
-                    s.end <= splitCharIdx -> keptSpans.add(s)
-                    s.start >= splitCharIdx -> remainingSpans.add(TextSpanData(s.start - splitCharIdx, s.end - splitCharIdx, s.type, s.value))
-                    else -> {
-                        keptSpans.add(TextSpanData(s.start, splitCharIdx, s.type, s.value))
-                        remainingSpans.add(TextSpanData(0, s.end - splitCharIdx, s.type, s.value))
+        // Wrapped entirely in try-catch: this is new, more involved logic (line-boundary maths,
+        // span splitting) than anything else that runs at text-commit time, and a failure here
+        // must never be able to crash the app. Worst case on any exception: the text stays as
+        // one unsplit item (possibly overflowing visually past a page), which is a far better
+        // failure mode than a crash that can lose the user's work.
+        try {
+            val gap = 24f
+            val ph = pageHeightPx()
+            val period = ph + gap
+            var current = item
+            var guard = 0
+            while (guard < 50) {
+                guard++
+                val layout = getOrBuildLayout(current)
+                val contentH = layout.height.toFloat()
+                val topY = current.y - contentH
+                val pageIdx = kotlin.math.floor(topY / period)
+                val pageBottomAbs = pageIdx * period + ph
+                if (topY + contentH <= pageBottomAbs) break  // fits entirely on this page — done
+                // Find the last line that still fits within this page's remaining space.
+                var splitLine = -1
+                for (i in 0 until layout.lineCount) {
+                    if (topY + layout.getLineBottom(i) <= pageBottomAbs) splitLine = i else break
+                }
+                if (splitLine < 0) break  // not even the first line fits — bail rather than loop forever
+                val splitCharIdx = layout.getLineEnd(splitLine)
+                if (splitCharIdx <= 0 || splitCharIdx >= current.text.length) break
+                val keptText = current.text.substring(0, splitCharIdx)
+                val remainingText = current.text.substring(splitCharIdx)
+                if (remainingText.isBlank()) break
+                // Split spans at the same character boundary — spans entirely before it stay with
+                // the kept piece unchanged; spans entirely after it move to the new piece with
+                // indices shifted back to be relative to ITS OWN start; spans straddling the split
+                // point get clipped into both halves so formatting doesn't just vanish at the cut.
+                val keptSpans = mutableListOf<TextSpanData>()
+                val remainingSpans = mutableListOf<TextSpanData>()
+                for (s in current.spans) {
+                    when {
+                        s.end <= splitCharIdx -> keptSpans.add(s)
+                        s.start >= splitCharIdx -> remainingSpans.add(TextSpanData(s.start - splitCharIdx, s.end - splitCharIdx, s.type, s.value))
+                        else -> {
+                            keptSpans.add(TextSpanData(s.start, splitCharIdx, s.type, s.value))
+                            remainingSpans.add(TextSpanData(0, s.end - splitCharIdx, s.type, s.value))
+                        }
                     }
                 }
+                val previousBottom = current.y
+                current.text = keptText
+                current.spans = keptSpans
+                val newTopY = (pageIdx + 1) * period
+                // Explicit invariant: the next piece's top must land strictly below where this
+                // piece's bottom now is. If that's ever not true, abort rather than risk the new
+                // piece landing on top of (overlapping) the piece just created — this is the
+                // exact symptom that was reported, so it's guarded against directly rather than
+                // just trusted to fall out of the surrounding math correctly.
+                if (newTopY <= previousBottom) break
+                val newItem = addText(remainingText, current.x, newTopY, current.size, 0f, current.color, remainingSpans, current.fontFamily, current.opacity) ?: break
+                newItem.y = newTopY + textItemHeight(newItem)
+                if (newItem.y <= newTopY) break  // sanity check: height computed as zero/negative is not usable, stop here
+                current = newItem
             }
-            current.text = keptText
-            current.spans = keptSpans
-            val newTopY = (pageIdx + 1) * period
-            val newItem = addText(remainingText, current.x, newTopY, current.size, 0f, current.color, remainingSpans, current.fontFamily, current.opacity) ?: break
-            newItem.y = newTopY + textItemHeight(newItem)
-            current = newItem
+        } catch (e: Exception) {
+            // Leave whatever got split so far as-is rather than trying to roll back partial
+            // state — each piece created up to this point is still a normal, valid TextItem on
+            // its own, just possibly not the full original text. Silently swallowing is
+            // deliberate here: this must never surface as a crash.
         }
     }
 
