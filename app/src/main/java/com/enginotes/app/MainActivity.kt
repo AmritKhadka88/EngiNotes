@@ -478,8 +478,51 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Crash reporter — installed first, before anything else has a chance to crash. Catches
+        // BOTH Exception and Error subtypes (StackOverflowError, OutOfMemoryError, etc. are Error,
+        // not Exception — a "catch (e: Exception)" elsewhere in the app structurally cannot catch
+        // these, since Error and Exception are siblings under Throwable, not one a subtype of the
+        // other). Writes the full stack trace to a file, then hands off to Android's own default
+        // handler so the crash still proceeds normally (this never tries to keep the app alive
+        // after a crash, just records what happened on the way out). Checked and shown below,
+        // right after this block, on the next launch.
+        try {
+            val crashFile = java.io.File(filesDir, "last_crash.txt")
+            val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+            Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+                try {
+                    val sw = java.io.StringWriter()
+                    throwable.printStackTrace(java.io.PrintWriter(sw))
+                    crashFile.writeText("Crash at ${java.util.Date()}\nThread: ${thread.name}\nType: ${throwable.javaClass.name}\n\n$sw")
+                } catch (e: Exception) { /* must never throw from inside a crash handler */ }
+                defaultHandler?.uncaughtException(thread, throwable)
+            }
+        } catch (e: Exception) { }
+
         setContentView(R.layout.activity_main)
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+
+        // Show any crash captured on a previous run, so it can be copied/screenshotted without
+        // needing Android Studio or adb — the file only exists if a crash actually happened.
+        try {
+            val crashFile = java.io.File(filesDir, "last_crash.txt")
+            if (crashFile.exists()) {
+                val content = crashFile.readText()
+                if (content.isNotBlank()) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Previous crash log")
+                        .setMessage(content)
+                        .setPositiveButton("Copy") { _, _ ->
+                            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("crash log", content))
+                            Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
+                            crashFile.delete()
+                        }
+                        .setNegativeButton("Dismiss") { _, _ -> crashFile.delete() }
+                        .show()
+                }
+            }
+        } catch (e: Exception) { }
 
         drawingView     = findViewById(R.id.drawingView)
         drawingView.inputMode = try { InputMode.valueOf(getPrefs().getString("input_mode", "AUTO") ?: "AUTO") } catch (e: Exception) { InputMode.AUTO }

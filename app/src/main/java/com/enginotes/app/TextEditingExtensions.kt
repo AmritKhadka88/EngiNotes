@@ -1042,15 +1042,13 @@ internal fun MainActivity.closeInlineEditor(commit:Boolean, delete:Boolean=false
                 item.text=text;item.color=editColor;item.size=editSize;item.rotation=editRotation;item.spans=spans;item.isEditing=false;item.fontFamily=pendingFontFamily;item.opacity=editOpacity; item.x=editWorldX
                 item.y = editTopAnchorY + drawingView.textItemHeight(item)
                 drawingView.clampTextItemToPage(item)
-                // splitTextItemAcrossPages() disabled here — caused a repeated crash that a
-                // try-catch wrapper around the function itself did not stop, meaning the actual
-                // failure is either happening outside that function's scope or is a non-Exception
-                // Error (e.g. StackOverflowError), neither of which "catch (e: Exception)" around
-                // it would have caught. Pulled out entirely until this can be diagnosed with an
-                // actual crash log rather than guessed at further.
+                // Re-enabled now that a crash reporter is in place (see MainActivity.onCreate) —
+                // if this crashes again, the actual exception/error type and stack trace get
+                // captured and shown on next launch, instead of guessing blind again.
+                drawingView.splitTextItemAcrossPages(item)
             } else {
                 val newItem = drawingView.addText(text,editWorldX,editTopAnchorY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
-                if (newItem != null) { newItem.y = editTopAnchorY + drawingView.textItemHeight(newItem) }
+                if (newItem != null) { newItem.y = editTopAnchorY + drawingView.textItemHeight(newItem); drawingView.splitTextItemAcrossPages(newItem) }
             }
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()
