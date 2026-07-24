@@ -2756,20 +2756,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Called when canvasMode changes — forces position reset on next layout
     fun resetLayoutPosition() { hasInitialLayout = false }
 
-    // Rearranges text items to start within the current page width (used when switching to print)
-    fun rearrangeTextForPrint() {
+    // Rewraps text items to start within the current page width — called whenever paper size
+    // changes (there's no separate "keep as is" choice anymore; changing paper size always
+    // rewraps, the same way changing a page size in a word processor always reflows text).
+    fun rewrapTextToPage() {
         val pw = pageWidthPx()
         for (a in actions) {
             if (a is TextItem) {
                 a.x = a.x.coerceIn(16f, pw - 60f)
-                // Deliberately NOT setting a.maxWidth here anymore. It used to freeze a one-time
-                // snapshot of (pw - a.x - 16f) permanently onto the item — textWrapWidth() then
-                // always used that frozen number from then on instead of ever recalculating, so
-                // if the item's position or font size changed afterward, the wrap width silently
-                // went stale relative to the item's actual current state. Leaving maxWidth unset
-                // (0) means textWrapWidth() keeps recalculating this exact same formula fresh
-                // every time instead — the same dynamic behavior Convenient mode already relies
-                // on, which is why Convenient never had this staleness problem in the first place.
+                // Deliberately NOT setting a.maxWidth here. textWrapWidth() already recalculates
+                // (pw - a.x - 16f) dynamically every time when maxWidth is unset (0) — freezing
+                // a one-time snapshot here previously caused the wrap width to go stale relative
+                // to the item's actual current position/size after any later change.
             }
         }
         invalidate()
@@ -3013,11 +3011,25 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val item = selectedItem ?: return
         if (item is TextItem) {
             val layout = getOrBuildLayout(item)
-            val contentW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
-            val contentH = layout.height.toFloat()
-            // Same padding as getBounds()'s TextItem case — without it, cursive/italic overhang
-            // (a trailing "f" flourish, for example) pokes past the box, and it's also why the
-            // box didn't fully enclose all wrapped lines consistently at every zoom/page state.
+            var contentW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
+            // Same direct-measure safety net as getBounds() below — for single-line text,
+            // measures the raw text directly rather than trusting the cached layout's wrap-
+            // width-dependent line width, so this box can't end up narrower than the text
+            // actually is regardless of any timing mismatch in when the layout was last built.
+            if (layout.lineCount == 1) {
+                // TextItem has no bold/italic fields directly — style is per-range spans
+                // ('S' type, value = Typeface style constant: 0 normal, 1 bold, 2 italic,
+                // 3 bold-italic). Takes the widest (most conservative) style found across all
+                // spans, since this is a safety net that must never under-estimate the width.
+                val worstStyle = item.spans.filter { it.type == 'S' }.maxOfOrNull { it.value } ?: Typeface.NORMAL
+                val mp = TextPaint(); mp.textSize = item.size; mp.typeface = android.graphics.Typeface.create(typefaceFromFamily(item.fontFamily ?: "sans-serif"), worstStyle)
+                val measured = mp.measureText(item.text)
+                if (measured > contentW) contentW = measured
+            }
+            // Was plain layout.height — didn't account for the gaps drawTextItem() inserts when
+            // an item spans multiple pages, which is why the box was drastically undersized for
+            // any text long enough to cross a page boundary (the build-log-paste case).
+            val contentH = textItemVisualHeight(item, layout)
             val pad = item.size * 0.12f
             val boxW = contentW + pad * 2f; val boxH = contentH + pad * 2f
             canvas.save()
@@ -3104,8 +3116,29 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is AudioItem -> { val r = item.radius; floatArrayOf(item.x - r, item.y - r, item.x + r, item.y + r + 40f) }
             is TextItem -> {
                 val layout = getOrBuildLayout(item)
-                val w = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(10f) ?: 10f
-                val h = layout.height.toFloat().coerceAtLeast(item.size * 1.2f)
+                var w = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(10f) ?: 10f
+                // For single-line text, also measure the raw text directly — independent of
+                // whatever wrap width the cached layout happened to be built with. Whichever is
+                // larger wins. This is what makes the box immune to a timing mismatch between
+                // when the layout was cached and what's currently actually rendering (e.g. right
+                // after a layout-mode switch, where pageWidthPx() genuinely changes) — instead of
+                // requiring the two to always agree perfectly, the box simply can't be narrower
+                // than the text truly is.
+                if (layout.lineCount == 1) {
+                    // TextItem has no bold/italic fields directly — style is per-range spans
+                    // ('S' type, value = Typeface style constant). Takes the widest (most
+                    // conservative) style found across all spans, since this is a safety net
+                    // that must never under-estimate the width.
+                    val worstStyle = item.spans.filter { it.type == 'S' }.maxOfOrNull { it.value } ?: Typeface.NORMAL
+                    val mp = TextPaint(); mp.textSize = item.size; mp.typeface = android.graphics.Typeface.create(typefaceFromFamily(item.fontFamily ?: "sans-serif"), worstStyle)
+                    val measured = mp.measureText(item.text)
+                    if (measured > w) w = measured
+                }
+                // Was plain layout.height — didn't account for the gaps drawTextItem() inserts
+                // when an item spans multiple pages, which is why the box (and hit-testing,
+                // which also uses getBounds()) was drastically undersized for any text long
+                // enough to cross a page boundary (the build-log-paste case).
+                val h = textItemVisualHeight(item, layout).coerceAtLeast(item.size * 1.2f)
                 // Equal padding on all 4 sides, proportional to font size — without this, a
                 // cursive/italic font's trailing glyph can visually overhang past the logical
                 // advance width the layout reports (the flourish on an ending "f" is a good
