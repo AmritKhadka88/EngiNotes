@@ -1725,7 +1725,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     })
 
-    private fun clampTranslation() {
+    fun clampTranslation() {
         if (canvasMode == CanvasMode.INFINITE) return
         val pw = pageWidthPx() * scaleFactor; val ph = pageHeightPx() * scaleFactor
         val margin = 16f
@@ -2658,8 +2658,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (isFirstLayout || widthChanged || stableLayoutHeight == 0) {
                 stableLayoutHeight = height
             }
-            convenientPageW = width.toFloat() * 0.82f
-            convenientPageH = stableLayoutHeight.toFloat() * 1.1f
+            // Was view.width * 0.82 / stableLayoutHeight * 1.1 — a fixed, view-relative size with
+            // no relationship to any real paper size. Now driven by the same selectable paperSize
+            // every other mode uses (same mm-to-px conversion), so Convenient mode's page size
+            // actually changes when the user picks a different paper size.
+            val m = 3.7795f
+            convenientPageW = if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
+            convenientPageH = if (pageOrientation == Orientation.PORTRAIT) paperSize.heightMM * m else paperSize.widthMM * m
             if (isFirstLayout) {
                 hasInitialLayout = true
                 when (canvasMode) {
@@ -2688,20 +2693,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     fun resetLayoutPosition() { hasInitialLayout = false }
 
     // Rearranges text items to wrap and fit within the current page width (used when switching to print)
-    fun rearrangeTextForPrint() {
+    // Rewraps text items to start within the current page width — called whenever paper size
+    // changes. Always rewraps; there's no separate "keep as is" choice anymore, the same way
+    // changing page size in a word processor always reflows text.
+    fun rewrapTextToPage() {
         val pw = pageWidthPx()
         for (a in actions) {
             if (a is TextItem) {
                 a.x = a.x.coerceIn(16f, pw - 60f)
-                a.maxWidth = (pw - a.x - 16f).coerceAtLeast(80f)
+                // Deliberately NOT setting a.maxWidth here. textWrapWidth() already recalculates
+                // (pw - a.x - 16f) dynamically every time when maxWidth is unset (0) — freezing
+                // a one-time snapshot here previously caused the wrap width to go stale relative
+                // to the item's actual current position/size after any later change.
             }
         }
-        invalidate()
-    }
-
-    // Keeps text exactly as typed (no rewrapping) - single logical line per paragraph, may extend past visual edge
-    fun keepTextAsIs() {
-        for (a in actions) { if (a is TextItem) a.maxWidth = 4000f }
         invalidate()
     }
 
@@ -7244,6 +7249,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val p = line.split("\u0001")
                         try { if (p.size > 1) paperType = PaperType.valueOf(p[1]) } catch (e: Exception) {}
                         try { if (p.size > 2) canvasMode = CanvasMode.valueOf(p[2]) } catch (e: Exception) {}
+                        // Print Layout (Paginated) no longer exists as a distinct mode — its
+                        // page-size behavior has been folded into Convenient's adjustable paper
+                        // size. Treat any note saved before this change as Convenient going
+                        // forward, rather than leaving it in a mode the UI no longer offers.
+                        if (canvasMode == CanvasMode.PAGINATED) canvasMode = CanvasMode.CONVENIENT
                         try { if (p.size > 3) paperSize = PaperSizeOption.valueOf(p[3]) } catch (e: Exception) {}
                         try { if (p.size > 4) pageOrientation = Orientation.valueOf(p[4]) } catch (e: Exception) {}
                         try { if (p.size > 5) paperColor = p[5].toInt() } catch (e: Exception) {}

@@ -552,37 +552,41 @@ class MainActivity : AppCompatActivity() {
         // pinned in activity_main.xml and were getting covered by the IME since adjustNothing
         // doesn't resize/pan the layout for them.
         // Uses bottomMargin (not translationY) on the last child so the LinearLayout actually
-        // reflows - canvasContainer (weight=1) shrinks to make room, avoiding a visual gap.
+        // Keep the bottom toolbar dock and any open floating panel above the keyboard. This is
+        // separate from the inline per-edit toolbar handled elsewhere - both are pinned via
+        // Gravity.BOTTOM and get covered by the IME since adjustNothing doesn't resize/pan the
+        // layout for them.
         run {
-            val primaryBar = findViewById<View?>(R.id.primaryToolbarScroll)
-            val contextBar = findViewById<View?>(R.id.toolbarScroll)
-            // Each bar's own starting bottomMargin, captured once before any keyboard adjustment.
-            // Every subsequent update sets margin = thisBar'sOwnBaseline + keyboardHeight,
-            // independently per bar. This can't double-shift or lose relative spacing no matter
-            // how they're actually nested/related in the layout — each bar only ever knows about
-            // its own original position, never inferred from the other bar's current state.
-            val baseMargins = HashMap<View, Int>()
-            for (bar in listOf(primaryBar, contextBar)) {
-                val lp0 = bar?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
-                if (bar != null && lp0 != null) baseMargins[bar] = lp0.bottomMargin
-            }
+            val dock = findViewById<View?>(R.id.bottomToolbarDock)
+            // The dock's own starting bottomMargin, captured once before any keyboard adjustment.
+            // Every subsequent update sets margin = baseline + keyboardHeight.
+            val baseMargin = (dock?.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.bottomMargin ?: 0
             androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { _, insets ->
                 val imeBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
                 val navBarBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars()).bottom
                 // imeBottom only reflects the portion of the keyboard actually overlapping the
                 // app's content — a floating/split keyboard that doesn't cover this area reports
-                // 0 here, so these bars correctly stay put in that case with no extra handling needed.
+                // 0 here, so the dock correctly stays put in that case with no extra handling needed.
                 val extraForKeyboard = (imeBottom - navBarBottom).coerceAtLeast(0)
                 // Guard: only update bottomMargin when value changes — prevents layout
                 // thrashing and the blinking/lag caused by firing on every tiny inset update.
-                for (bar in listOf(primaryBar, contextBar)) {
-                    val base = baseMargins[bar] ?: continue
-                    val lp = bar?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
-                    val target = base + extraForKeyboard
-                    if (lp != null && lp.bottomMargin != target) {
-                        lp.bottomMargin = target
-                        bar.layoutParams = lp
-                    }
+                val lp = dock?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
+                val target = baseMargin + extraForKeyboard
+                if (lp != null && lp.bottomMargin != target) {
+                    lp.bottomMargin = target
+                    dock.layoutParams = lp
+                }
+                // textOptionsPanel (the font-family/size/color panel) is a separate view, added
+                // independently with plain Gravity.BOTTOM and no keyboard awareness of its own —
+                // without this, it anchors to the bottom of the full screen height (behind the
+                // keyboard, since adjustNothing means nothing resizes automatically), and being
+                // a tall, multi-row panel, its top portion ends up pinned high on screen with the
+                // rest hidden behind the keyboard, which is what "hiding whole screen" looked like.
+                val panel = textOptionsPanel
+                val panelLp = panel?.layoutParams as? FrameLayout.LayoutParams
+                if (panel != null && panelLp != null && panelLp.bottomMargin != extraForKeyboard) {
+                    panelLp.bottomMargin = extraForKeyboard
+                    panel.layoutParams = panelLp
                 }
                 onImeBottomChanged?.invoke(imeBottom)  // notify inline editor keyboard listener
                 insets
@@ -996,38 +1000,45 @@ class MainActivity : AppCompatActivity() {
     private fun applyConvenientLayout() {
         isConvenientLayout = true
         drawingView.canvasMode = CanvasMode.CONVENIENT
-        drawingView.invalidate()
-    }
-
-    private fun applyPrintLayout() {
-        isConvenientLayout = false
-        drawingView.canvasMode = CanvasMode.PAGINATED
-        drawingView.paperSize = PaperSizeOption.A4
+        drawingView.clampTranslation()
         drawingView.invalidate()
     }
 
     private fun applyInfiniteLayout() {
         isConvenientLayout = false
         drawingView.canvasMode = CanvasMode.INFINITE
+        drawingView.clampTranslation()
         drawingView.invalidate()
+    }
+
+    // Print Layout no longer exists as a separate mode — paper size is now just a property of
+    // Convenient mode, adjustable independently of it. Picking a size here switches to Convenient
+    // (if not already there, since paper size has no meaning in Infinite) and always rewraps text
+    // to fit the new width — there's no separate "keep as is" choice anymore.
+    private fun showPaperSizeMenu(anchor: View) {
+        val popup = PopupMenu(this, anchor)
+        for (size in PaperSizeOption.values()) popup.menu.add(size.name)
+        popup.setOnMenuItemClickListener { item ->
+            val selected = try { PaperSizeOption.valueOf(item.title.toString()) } catch (e: Exception) { return@setOnMenuItemClickListener true }
+            applyConvenientLayout()
+            drawingView.paperSize = selected
+            drawingView.rewrapTextToPage()
+            drawingView.clampTranslation()
+            drawingView.invalidate()
+            true
+        }
+        popup.show()
     }
 
     private fun showLayoutMenu(anchor: View) {
         val popup = PopupMenu(this, anchor)
         popup.menu.add("Convenient")
-        popup.menu.add("Print (A4)")
+        popup.menu.add("Paper Size...")
         popup.menu.add("Infinite Canvas")
         popup.setOnMenuItemClickListener { item ->
             when (item.title) {
                 "Convenient" -> applyConvenientLayout()
-                "Print (A4)" -> {
-                    AlertDialog.Builder(this)
-                        .setTitle("Switch to Print Layout")
-                        .setMessage("Print layout uses real A4 size. How should existing text be handled?")
-                        .setPositiveButton("Rearrange (wrap to fit)") { _, _ -> applyPrintLayout(); drawingView.rearrangeTextForPrint() }
-                        .setNegativeButton("Keep as is") { _, _ -> applyPrintLayout(); drawingView.keepTextAsIs() }
-                        .setNeutralButton("Cancel", null).show()
-                }
+                "Paper Size..." -> showPaperSizeMenu(anchor)
                 "Infinite Canvas" -> applyInfiniteLayout()
             }
             true
