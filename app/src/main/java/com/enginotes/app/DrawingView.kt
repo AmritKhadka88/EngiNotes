@@ -2809,6 +2809,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val ph = pageHeightPx()
         if (item === draggingTextItem || canvasMode == CanvasMode.INFINITE || item.rotation != 0f || contentH <= ph) return contentH
         val gap = if (canvasMode == CanvasMode.CONVENIENT) 24f else 40f
+        // Breathing room at a page split specifically — text stops this far short of the true
+        // page bottom, and resumes this far below the next page's true top, instead of running
+        // edge-to-edge. Doesn't affect the very first page's starting position at all (that's
+        // wherever the item was actually placed) — only where a split itself happens.
+        val pageBottomMargin = 24f
+        val pageTopMargin = 24f
         val period = ph + gap
         val topY = item.y - contentH
         var lineIdx = 0
@@ -2818,12 +2824,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             guard++
             val lineTopAbs = topY + layout.getLineTop(lineIdx) + extraSkip
             val pageIdx = kotlin.math.floor(lineTopAbs / period)
-            val pageBottomAbs = pageIdx * period + ph
+            val pageBottomAbs = pageIdx * period + ph - pageBottomMargin
             var endLineIdx = lineIdx
             while (endLineIdx < layout.lineCount && topY + layout.getLineBottom(endLineIdx) + extraSkip <= pageBottomAbs) endLineIdx++
-            if (endLineIdx == lineIdx) { extraSkip += (pageIdx + 1) * period - lineTopAbs; continue }
+            if (endLineIdx == lineIdx) { extraSkip += (pageIdx + 1) * period - lineTopAbs + pageTopMargin; continue }
             lineIdx = endLineIdx
-            if (lineIdx < layout.lineCount) extraSkip += gap
+            if (lineIdx < layout.lineCount) extraSkip += gap + pageTopMargin
         }
         return contentH + extraSkip
     }
@@ -2846,6 +2852,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val ph = pageHeightPx()
         if (item !== draggingTextItem && canvasMode != CanvasMode.INFINITE && item.rotation == 0f && contentH > ph) {
             val gap = if (canvasMode == CanvasMode.CONVENIENT) 24f else 40f
+            // Same margin as textItemVisualHeight — must match exactly or the box/hit-testing
+            // and the actual render would disagree on where each page's text starts and stops.
+            val pageBottomMargin = 24f
+            val pageTopMargin = 24f
             val period = ph + gap
             var lineIdx = 0
             var extraSkip = 0f
@@ -2854,13 +2864,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 guard++
                 val lineTopAbs = topY + layout.getLineTop(lineIdx) + extraSkip
                 val pageIdx = kotlin.math.floor(lineTopAbs / period)
-                val pageBottomAbs = pageIdx * period + ph
+                val pageBottomAbs = pageIdx * period + ph - pageBottomMargin
                 var endLineIdx = lineIdx
                 while (endLineIdx < layout.lineCount && topY + layout.getLineBottom(endLineIdx) + extraSkip <= pageBottomAbs) endLineIdx++
                 if (endLineIdx == lineIdx) {
                     // A single line taller than the remaining page space (rare) - push the
-                    // whole thing to the top of the next page rather than clipping mid-line.
-                    extraSkip += (pageIdx + 1) * period - lineTopAbs
+                    // whole thing to the top of the next page (plus top margin) rather than
+                    // clipping mid-line.
+                    extraSkip += (pageIdx + 1) * period - lineTopAbs + pageTopMargin
                     continue
                 }
                 val runTop = topY + layout.getLineTop(lineIdx) + extraSkip
@@ -2871,7 +2882,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 layout.draw(canvas)
                 canvas.restore()
                 lineIdx = endLineIdx
-                if (lineIdx < layout.lineCount) extraSkip += gap  // jump over the visual gap to the next page's top
+                if (lineIdx < layout.lineCount) extraSkip += gap + pageTopMargin  // jump over the visual gap plus top margin to the next page's text-start
             }
             return
         }
@@ -4957,9 +4968,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     // Convenient line spacing = 80px (large, comfortable)
     // Print line spacing = 40px (A4 realistic)
-    private fun lineSpacingPx(): Float = if (canvasMode == CanvasMode.CONVENIENT) 80f else 40f
-    private fun gridSpacingPx(): Float = if (canvasMode == CanvasMode.CONVENIENT) 80f else 40f
-    private fun dotSpacingPx(): Float = if (canvasMode == CanvasMode.CONVENIENT) 80f else 40f
+    // User-configurable paper pattern settings — were fixed per-mode constants (80f Convenient /
+    // 40f otherwise) with no way to adjust. Set from SharedPreferences by MainActivity, same
+    // pattern as arcDivisions.
+    var lineSpacingPref = 40f
+    var gridSpacingPref = 40f
+    var dotSpacingPref = 40f
+    var gridMajorDivision = 5  // bold major line every N minor grid lines, 0 = no major lines
+    var linedDoubleMargin = false  // school-notebook-style double vertical margin line on the left
+    var engineeringSpacingPref = 20f
+    var engineeringMajorDivision = 5
+    private fun lineSpacingPx(): Float = lineSpacingPref
+    private fun gridSpacingPx(): Float = gridSpacingPref
+    private fun dotSpacingPx(): Float = dotSpacingPref
 
     private fun drawBackground(canvas: Canvas) {
         val vl = -translateX / scaleFactor; val vt = -translateY / scaleFactor
@@ -5014,22 +5035,32 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             PaperType.LINED -> {
                 val p = Paint(); p.color = Color.parseColor("#C8D6F0"); p.strokeWidth = 1f
                 var y = (top / ls).toInt() * ls; while (y < bottom) { canvas.drawLine(left, y, right, y, p); y += ls }
+                // School-notebook-style double vertical margin line near the left edge.
+                if (linedDoubleMargin) {
+                    val mp = Paint(); mp.color = Color.parseColor("#F0A8A8"); mp.strokeWidth = 1.5f
+                    val marginX = left + 60f
+                    canvas.drawLine(marginX, top, marginX, bottom, mp)
+                    canvas.drawLine(marginX + 6f, top, marginX + 6f, bottom, mp)
+                }
             }
             PaperType.GRID -> {
                 val p = Paint(); p.color = Color.parseColor("#D0D0D0"); p.strokeWidth = 1f
-                var x = (left / gs).toInt() * gs; while (x < right) { canvas.drawLine(x, top, x, bottom, p); x += gs }
-                var y = (top / gs).toInt() * gs; while (y < bottom) { canvas.drawLine(left, y, right, y, p); y += gs }
+                val mp = Paint(); mp.color = Color.parseColor("#A0A0A0"); mp.strokeWidth = 1.5f
+                var i = (left / gs).toInt(); var x = i * gs
+                while (x < right) { canvas.drawLine(x, top, x, bottom, if (gridMajorDivision > 0 && i % gridMajorDivision == 0) mp else p); i++; x = i * gs }
+                var j = (top / gs).toInt(); var y = j * gs
+                while (y < bottom) { canvas.drawLine(left, y, right, y, if (gridMajorDivision > 0 && j % gridMajorDivision == 0) mp else p); j++; y = j * gs }
             }
             PaperType.DOTS -> {
                 val p = Paint(); p.color = Color.parseColor("#B0B0B0"); p.style = Paint.Style.FILL
                 var x = (left / ds).toInt() * ds; while (x < right) { var y = (top / ds).toInt() * ds; while (y < bottom) { canvas.drawCircle(x, y, 2.5f, p); y += ds }; x += ds }
             }
             PaperType.ENGINEERING -> {
-                val ms = if (canvasMode == CanvasMode.CONVENIENT) 40f else 20f; val me = 5
+                val ms = engineeringSpacingPref; val me = engineeringMajorDivision
                 val mp = Paint(); mp.color = Color.parseColor("#E0E8F5"); mp.strokeWidth = 1f
                 val Mp = Paint(); Mp.color = Color.parseColor("#A8C0E8"); Mp.strokeWidth = 1.5f
-                var i = (left / ms).toInt(); var x = i * ms; while (x < right) { canvas.drawLine(x, top, x, bottom, if (i % me == 0) Mp else mp); i++; x = i * ms }
-                var j = (top / ms).toInt(); var y = j * ms; while (y < bottom) { canvas.drawLine(left, y, right, y, if (j % me == 0) Mp else mp); j++; y = j * ms }
+                var i = (left / ms).toInt(); var x = i * ms; while (x < right) { canvas.drawLine(x, top, x, bottom, if (me > 0 && i % me == 0) Mp else mp); i++; x = i * ms }
+                var j = (top / ms).toInt(); var y = j * ms; while (y < bottom) { canvas.drawLine(left, y, right, y, if (me > 0 && j % me == 0) Mp else mp); j++; y = j * ms }
             }
             else -> {}
         }

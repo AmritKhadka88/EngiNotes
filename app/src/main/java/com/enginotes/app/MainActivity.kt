@@ -410,17 +410,38 @@ class MainActivity : AppCompatActivity() {
         try {
             val maxDim = 3000
             val doc = PdfDocument()
+            // PdfDocument.PageInfo.Builder's width/height are in PostScript points (1/72 inch),
+            // NOT pixels — passing the bitmap's raw pixel count directly (the previous bug) made
+            // every page roughly 2x too large in each dimension, since e.g. 150 pixels-per-inch
+            // was silently being treated as 150 points-per-inch. exportAllPagesAsBitmaps() always
+            // renders at 150 DPI, so converting is exact: points = pixels * 72 / 150. Multiplied
+            // by an adjustable calibration factor (default 1.0) in case a specific printer or PDF
+            // viewer still renders slightly off true size — set in Settings if ever needed.
+            val exportDpi = 150f
+            val calibration = getPrefs().getFloat("pdf_calibration", 1f)
             val multiPage = pendingExportBitmaps
             if (multiPage != null) {
                 // Whole-note export: one real PDF page per app-page, instead of the old approach
                 // of drawing everything onto a single tall page (which is what let two adjacent
                 // pages' content end up merged together with no actual page break between them).
                 for (bmp in multiPage) {
+                    // Points are computed from the ORIGINAL bitmap's pixel size at the known
+                    // export DPI — this is the page's true physical size and must not change
+                    // just because the image gets downscaled for file-size reasons below.
+                    val ptsW = (bmp.width * 72f / exportDpi * calibration).toInt().coerceAtLeast(1)
+                    val ptsH = (bmp.height * 72f / exportDpi * calibration).toInt().coerceAtLeast(1)
                     val scale = if (bmp.width > maxDim || bmp.height > maxDim) minOf(maxDim.toFloat()/bmp.width, maxDim.toFloat()/bmp.height) else 1f
                     val pw = (bmp.width*scale).toInt().coerceAtLeast(1); val ph = (bmp.height*scale).toInt().coerceAtLeast(1)
                     val sb = if (scale < 1f) Bitmap.createScaledBitmap(bmp,pw,ph,true) else bmp
-                    val pi = PdfDocument.PageInfo.Builder(pw, ph, doc.pages.size + 1).create()
-                    val page = doc.startPage(pi); page.canvas.drawBitmap(sb,0f,0f,Paint()); doc.finishPage(page)
+                    val pi = PdfDocument.PageInfo.Builder(ptsW, ptsH, doc.pages.size + 1).create()
+                    val page = doc.startPage(pi)
+                    // RectF-based overload scales the source bitmap to exactly fill the
+                    // destination rect — needed because the bitmap's own pixel dimensions (even
+                    // after maxDim downscaling) no longer match the page's point dimensions;
+                    // drawing at 1:1 pixel scale would draw it far too large (or clipped) against
+                    // a canvas whose coordinate space is now in points, not pixels.
+                    page.canvas.drawBitmap(sb, null, android.graphics.RectF(0f, 0f, ptsW.toFloat(), ptsH.toFloat()), Paint())
+                    doc.finishPage(page)
                 }
             } else {
                 val bmp = pendingExportBitmap ?: return@registerForActivityResult
@@ -643,6 +664,13 @@ class MainActivity : AppCompatActivity() {
         lastSavedContent = drawingView.serialize()
         driveManager.trySilentSignIn { }
         drawingView.arcDivisions = prefs.getInt("arc_divisions",3)
+        drawingView.lineSpacingPref = prefs.getFloat("paper_line_spacing", 40f)
+        drawingView.gridSpacingPref = prefs.getFloat("paper_grid_spacing", 40f)
+        drawingView.dotSpacingPref = prefs.getFloat("paper_dot_spacing", 40f)
+        drawingView.gridMajorDivision = prefs.getInt("paper_grid_major", 5)
+        drawingView.linedDoubleMargin = prefs.getBoolean("paper_lined_double_margin", false)
+        drawingView.engineeringSpacingPref = prefs.getFloat("paper_engineering_spacing", 20f)
+        drawingView.engineeringMajorDivision = prefs.getInt("paper_engineering_major", 5)
         drawingView.defaultDimFontSize = prefs.getFloat("dim_font_size", 11f)
         drawingView.defaultDimArrowSize = prefs.getFloat("dim_arrow_size", 9f)
         // Apply bottom toolbar visibility preference
@@ -3430,9 +3458,61 @@ class MainActivity : AppCompatActivity() {
         refPaperColorRow()
         container.addView(paperColorRow)
 
+        // Per-paper-type customization — was fixed per-mode constants with no way to adjust at
+        // all. Each row only shows for the paper type it applies to, same visibility pattern as
+        // paperColorRow above.
+        var lineSpacing = prefs.getFloat("paper_line_spacing", 40f)
+        var gridSpacing = prefs.getFloat("paper_grid_spacing", 40f)
+        var dotSpacing = prefs.getFloat("paper_dot_spacing", 40f)
+        var gridMajor = prefs.getInt("paper_grid_major", 5)
+        var linedDoubleMargin = prefs.getBoolean("paper_lined_double_margin", false)
+        var engSpacing = prefs.getFloat("paper_engineering_spacing", 20f)
+        var engMajor = prefs.getInt("paper_engineering_major", 5)
+
+        fun numberRow(label: String, initial: String, onChange: (String) -> Unit): Pair<LinearLayout, EditText> {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(4)) }
+            val lbl = TextView(this).apply { text = label; textSize = 14f; setTextColor(Color.parseColor("#4A4A4A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
+            val input = EditText(this).apply {
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+                setText(initial); layoutParams = LinearLayout.LayoutParams(dp(60), LinearLayout.LayoutParams.WRAP_CONTENT); gravity = Gravity.CENTER
+                addTextChangedListener(object : android.text.TextWatcher {
+                    override fun afterTextChanged(s: android.text.Editable?) { onChange(s.toString()) }
+                    override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                    override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                })
+            }
+            row.addView(lbl); row.addView(input); container.addView(row)
+            return Pair(row, input)
+        }
+
+        val (lineSpacingRow, _) = numberRow("Line spacing (px)", lineSpacing.toInt().toString()) { lineSpacing = it.toFloatOrNull() ?: lineSpacing }
+        val (marginRow, _) = Pair(LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(8)) }, null)
+        val marginLbl = TextView(this).apply { text = "Double margin line (left)"; textSize = 14f; setTextColor(Color.parseColor("#4A4A4A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
+        val marginCb = android.widget.CheckBox(this).apply { isChecked = linedDoubleMargin; setOnCheckedChangeListener { _, v -> linedDoubleMargin = v } }
+        marginRow.addView(marginLbl); marginRow.addView(marginCb); container.addView(marginRow)
+
+        val (gridSpacingRow, _) = numberRow("Grid spacing (px)", gridSpacing.toInt().toString()) { gridSpacing = it.toFloatOrNull() ?: gridSpacing }
+        val (gridMajorRow, _) = numberRow("Bold line every N squares", gridMajor.toString()) { gridMajor = it.toIntOrNull() ?: gridMajor }
+
+        val (dotSpacingRow, _) = numberRow("Dot spacing (px)", dotSpacing.toInt().toString()) { dotSpacing = it.toFloatOrNull() ?: dotSpacing }
+
+        val (engSpacingRow, _) = numberRow("Engineering spacing (px)", engSpacing.toInt().toString()) { engSpacing = it.toFloatOrNull() ?: engSpacing }
+        val (engMajorRow, _) = numberRow("Bold line every N squares", engMajor.toString()) { engMajor = it.toIntOrNull() ?: engMajor }
+
+        fun refPaperStyleRows() {
+            lineSpacingRow.visibility = if (selPaper == "LINED") View.VISIBLE else View.GONE
+            marginRow.visibility = lineSpacingRow.visibility
+            gridSpacingRow.visibility = if (selPaper == "GRID") View.VISIBLE else View.GONE
+            gridMajorRow.visibility = gridSpacingRow.visibility
+            dotSpacingRow.visibility = if (selPaper == "DOTS") View.VISIBLE else View.GONE
+            engSpacingRow.visibility = if (selPaper == "ENGINEERING") View.VISIBLE else View.GONE
+            engMajorRow.visibility = engSpacingRow.visibility
+        }
+        refPaperStyleRows()
+
         paperLbl.setOnClickListener{
             AlertDialog.Builder(this).setTitle("Default Paper").setItems(paperLabels){ _,i->
-                selPaper=paperValues[i]; refP(); refPaperColorRow()
+                selPaper=paperValues[i]; refP(); refPaperColorRow(); refPaperStyleRows()
                 // Picking "Coloured" with nothing chosen yet should immediately prompt for a
                 // colour rather than silently falling back to whatever the old fixed default was.
                 if (selPaper == "BLANK_COLORED") showColorGridDialog { c -> selPaperColor = c; refPaperColorRow() }
@@ -3452,13 +3532,27 @@ class MainActivity : AppCompatActivity() {
             modeLbl.text = if(isConvenientLayout) "Layout: Convenient  (use icon in top bar)" else "Layout: ${drawingView.canvasMode}  (use icon in top bar)"
             sizeLbl.text = "Size: ${drawingView.paperSize.name}  (tap)"
             orientLbl.text = "Orientation: ${if(drawingView.pageOrientation==Orientation.PORTRAIT)"Portrait" else "Landscape"}  (tap)"
-            sizeLbl.visibility = if(!isConvenientLayout) View.VISIBLE else View.GONE
+            // Was "!isConvenientLayout" — stale since Convenient mode gained its own adjustable
+            // paper size; only Infinite has no paper-size concept at all now.
+            sizeLbl.visibility = if(drawingView.canvasMode != CanvasMode.INFINITE) View.VISIBLE else View.GONE
             orientLbl.visibility = sizeLbl.visibility
         }
         refPage()
         for(lbl in listOf(modeLbl,sizeLbl,orientLbl)){ lbl.textSize=15f; lbl.setTextColor(Color.parseColor("#1565C0")); lbl.setPadding(0,dp(8),0,dp(8)); container.addView(lbl) }
-        sizeLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Paper Size").setItems(PaperSizeOption.values().map{it.name}.toTypedArray()){ _,i-> drawingView.paperSize=PaperSizeOption.values()[i]; drawingView.invalidate(); refPage() }.show() }
-        orientLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Orientation").setItems(arrayOf("Portrait","Landscape")){ _,i-> drawingView.pageOrientation=if(i==0)Orientation.PORTRAIT else Orientation.LANDSCAPE; drawingView.invalidate(); refPage() }.show() }
+        sizeLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Paper Size").setItems(PaperSizeOption.values().map{it.name}.toTypedArray()){ _,i-> drawingView.paperSize=PaperSizeOption.values()[i]; drawingView.rewrapTextToPage(); drawingView.clampTranslation(); drawingView.invalidate(); refPage() }.show() }
+        orientLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Orientation").setItems(arrayOf("Portrait","Landscape")){ _,i-> drawingView.pageOrientation=if(i==0)Orientation.PORTRAIT else Orientation.LANDSCAPE; drawingView.rewrapTextToPage(); drawingView.clampTranslation(); drawingView.invalidate(); refPage() }.show() }
+
+        div(); hdr("PDF EXPORT")
+        // Points-per-pixel conversion in savePdfLauncher is exact math (72/150 at the known
+        // export DPI), verified to produce true-to-life A4/Letter/etc. dimensions — this
+        // calibration multiplier is a safety net for the rare case a specific printer or PDF
+        // viewer still renders slightly off true size, not a fix for a known inaccuracy.
+        val calibRow = LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(0,dp(8),0,dp(8)) }
+        val calibLbl = TextView(this).apply{ text="Print size calibration (%)"; textSize=15f; layoutParams=LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f) }
+        val calibInput = EditText(this).apply{ inputType=android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL; setText((prefs.getFloat("pdf_calibration",1f)*100f).let{ if(it==it.toInt().toFloat()) it.toInt().toString() else it.toString() }); layoutParams=LinearLayout.LayoutParams(dp(70),LinearLayout.LayoutParams.WRAP_CONTENT); gravity=Gravity.CENTER }
+        calibRow.addView(calibLbl); calibRow.addView(calibInput); container.addView(calibRow)
+        val calibHint = TextView(this).apply { text = "If a printed page measures larger/smaller than the paper size selected above, adjust this to compensate. 100 = no adjustment."; textSize = 12f; setTextColor(Color.parseColor("#8A8580")); setPadding(0,0,0,dp(8)) }
+        container.addView(calibHint)
 
         div(); hdr("HATCHING")
         // hatchScale is a spacing MULTIPLIER (see `s = 8f * hatchScale` in drawHatchPattern),
@@ -3578,11 +3672,26 @@ class MainActivity : AppCompatActivity() {
                     .putFloat("hatch_scale", selHatchScale)
                     .putString("gemini_model", modelInput.text.toString().trim().ifBlank { "gemini-flash-latest" })
                     .putInt("arc_divisions",(arcInput.text.toString().toIntOrNull()?:3).coerceIn(2,12))
+                    .putFloat("pdf_calibration", ((calibInput.text.toString().toFloatOrNull()?:100f).coerceIn(50f,200f))/100f)
+                    .putFloat("paper_line_spacing", lineSpacing)
+                    .putFloat("paper_grid_spacing", gridSpacing)
+                    .putFloat("paper_dot_spacing", dotSpacing)
+                    .putInt("paper_grid_major", gridMajor)
+                    .putBoolean("paper_lined_double_margin", linedDoubleMargin)
+                    .putFloat("paper_engineering_spacing", engSpacing)
+                    .putInt("paper_engineering_major", engMajor)
                     .putInt("bar_icon_size", selBarSize)
                     .putFloat("dim_font_size", dimFontSz)
                     .putFloat("dim_arrow_size", dimArrowSz)
                     .apply()
                 drawingView.arcDivisions = prefs.getInt("arc_divisions",3)
+                drawingView.lineSpacingPref = lineSpacing
+                drawingView.gridSpacingPref = gridSpacing
+                drawingView.dotSpacingPref = dotSpacing
+                drawingView.gridMajorDivision = gridMajor
+                drawingView.linedDoubleMargin = linedDoubleMargin
+                drawingView.engineeringSpacingPref = engSpacing
+                drawingView.engineeringMajorDivision = engMajor
                 drawingView.defaultDimFontSize = dimFontSz
                 drawingView.defaultDimArrowSize = dimArrowSz
                 drawingView.pendingHatchScale = selHatchScale
