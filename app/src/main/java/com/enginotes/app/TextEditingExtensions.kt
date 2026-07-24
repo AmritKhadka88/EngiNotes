@@ -1042,9 +1042,10 @@ internal fun MainActivity.closeInlineEditor(commit:Boolean, delete:Boolean=false
                 item.text=text;item.color=editColor;item.size=editSize;item.rotation=editRotation;item.spans=spans;item.isEditing=false;item.fontFamily=pendingFontFamily;item.opacity=editOpacity; item.x=editWorldX
                 item.y = editTopAnchorY + drawingView.textItemHeight(item)
                 drawingView.clampTextItemToPage(item)
+                drawingView.splitTextItemAcrossPages(item)
             } else {
                 val newItem = drawingView.addText(text,editWorldX,editTopAnchorY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
-                if (newItem != null) newItem.y = editTopAnchorY + drawingView.textItemHeight(newItem)
+                if (newItem != null) { newItem.y = editTopAnchorY + drawingView.textItemHeight(newItem); drawingView.splitTextItemAcrossPages(newItem) }
             }
         } else { if(item!=null) drawingView.removeTextItem(item) }
         if(!isSwitchingTextEditor) drawingView.invalidate()

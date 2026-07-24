@@ -2759,6 +2759,65 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Rewraps text items to start within the current page width — called whenever paper size
     // changes (there's no separate "keep as is" choice anymore; changing paper size always
     // rewraps, the same way changing a page size in a word processor always reflows text).
+    // Splits a text item at page boundaries so no single TextItem ever spans multiple pages —
+    // each split piece becomes its own independent, ordinary item, positioned at the top of its
+    // own page. This is what keeps every other consumer (selection box, hit-testing, drag-surface
+    // sizing, rotation pivot) simple: none of them need to know about page boundaries at all,
+    // because no TextItem is ever tall enough to cross one in the first place. Called right after
+    // a text edit commits (paste or manual typing both go through the same commit point, so both
+    // get this protection without needing to specifically detect "this came from a paste").
+    // No-op in Infinite mode, which has no page-height concept to split against.
+    fun splitTextItemAcrossPages(item: TextItem) {
+        if (canvasMode == CanvasMode.INFINITE) return
+        val gap = 24f
+        val ph = pageHeightPx()
+        val period = ph + gap
+        var current = item
+        var guard = 0
+        while (guard < 50) {
+            guard++
+            val layout = getOrBuildLayout(current)
+            val contentH = layout.height.toFloat()
+            val topY = current.y - contentH
+            val pageIdx = kotlin.math.floor(topY / period)
+            val pageBottomAbs = pageIdx * period + ph
+            if (topY + contentH <= pageBottomAbs) break  // fits entirely on this page — done
+            // Find the last line that still fits within this page's remaining space.
+            var splitLine = -1
+            for (i in 0 until layout.lineCount) {
+                if (topY + layout.getLineBottom(i) <= pageBottomAbs) splitLine = i else break
+            }
+            if (splitLine < 0) break  // not even the first line fits — bail rather than loop forever
+            val splitCharIdx = layout.getLineEnd(splitLine)
+            if (splitCharIdx <= 0 || splitCharIdx >= current.text.length) break
+            val keptText = current.text.substring(0, splitCharIdx)
+            val remainingText = current.text.substring(splitCharIdx)
+            if (remainingText.isBlank()) break
+            // Split spans at the same character boundary — spans entirely before it stay with
+            // the kept piece unchanged; spans entirely after it move to the new piece with
+            // indices shifted back to be relative to ITS OWN start; spans straddling the split
+            // point get clipped into both halves so formatting doesn't just vanish at the cut.
+            val keptSpans = mutableListOf<TextSpanData>()
+            val remainingSpans = mutableListOf<TextSpanData>()
+            for (s in current.spans) {
+                when {
+                    s.end <= splitCharIdx -> keptSpans.add(s)
+                    s.start >= splitCharIdx -> remainingSpans.add(TextSpanData(s.start - splitCharIdx, s.end - splitCharIdx, s.type, s.value))
+                    else -> {
+                        keptSpans.add(TextSpanData(s.start, splitCharIdx, s.type, s.value))
+                        remainingSpans.add(TextSpanData(0, s.end - splitCharIdx, s.type, s.value))
+                    }
+                }
+            }
+            current.text = keptText
+            current.spans = keptSpans
+            val newTopY = (pageIdx + 1) * period
+            val newItem = addText(remainingText, current.x, newTopY, current.size, 0f, current.color, remainingSpans, current.fontFamily, current.opacity) ?: break
+            newItem.y = newTopY + textItemHeight(newItem)
+            current = newItem
+        }
+    }
+
     fun rewrapTextToPage() {
         val pw = pageWidthPx()
         for (a in actions) {
