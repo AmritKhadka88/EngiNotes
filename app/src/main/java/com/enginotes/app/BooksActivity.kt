@@ -22,6 +22,15 @@ class BooksActivity : AppCompatActivity() {
     private val dateFormat = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
     private val driveManager by lazy { DriveManager(this) }
 
+    // Multi-select state for the Recent Notes list — selectedNotes holds the actual note files;
+    // each file's own parentFile gives its book name directly, so no separate book-tracking map
+    // is needed for move/delete/etc.
+    private var selectionMode = false
+    private val selectedNotes = mutableSetOf<File>()
+    private lateinit var topBar: LinearLayout
+    private lateinit var selectionBar: LinearLayout
+    private lateinit var selectionCountLbl: TextView
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -29,7 +38,7 @@ class BooksActivity : AppCompatActivity() {
         root.setBackgroundColor(android.graphics.Color.parseColor("#FAF6EF"))
 
         // Top bar
-        val topBar = LinearLayout(this)
+        topBar = LinearLayout(this)
         topBar.orientation = LinearLayout.HORIZONTAL
         topBar.setBackgroundColor(android.graphics.Color.parseColor("#8D6E63"))
         topBar.setPadding(dp(16), dp(12), dp(16), dp(12))
@@ -40,6 +49,42 @@ class BooksActivity : AppCompatActivity() {
         )
         topLp.gravity = Gravity.TOP
         root.addView(topBar, topLp)
+
+        // Selection-mode action bar — swapped in for topBar while selectionMode is active.
+        // Icons only (no text), matching the request: Move / Copy / Delete / Share, plus a
+        // cancel (X) button and a "N selected" count.
+        selectionBar = LinearLayout(this)
+        selectionBar.orientation = LinearLayout.HORIZONTAL
+        selectionBar.setBackgroundColor(android.graphics.Color.parseColor("#5D4037"))
+        selectionBar.setPadding(dp(16), dp(12), dp(16), dp(12))
+        selectionBar.gravity = Gravity.CENTER_VERTICAL
+        selectionBar.visibility = View.GONE
+        root.addView(selectionBar, topLp)
+
+        val cancelSelBtn = Button(this).apply {
+            text = "\u2715"; textSize = 18f; setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            setTextColor(android.graphics.Color.WHITE); minWidth = 0; minimumWidth = 0; setPadding(dp(8), 0, dp(8), 0)
+            setOnClickListener { exitSelectionMode() }
+        }
+        selectionBar.addView(cancelSelBtn)
+        selectionCountLbl = TextView(this).apply {
+            textSize = 16f; setTextColor(android.graphics.Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        selectionBar.addView(selectionCountLbl)
+        fun selBtn(emoji: String, action: () -> Unit) {
+            val b = Button(this); b.text = emoji; b.textSize = 18f
+            b.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            b.setTextColor(android.graphics.Color.WHITE)
+            b.minWidth = 0; b.minimumWidth = 0
+            b.setPadding(dp(10), 0, dp(10), 0)
+            b.setOnClickListener { action() }
+            selectionBar.addView(b)
+        }
+        selBtn("\uD83D\uDCE6") { moveSelectedNotes() }   // Move (box)
+        selBtn("\uD83D\uDCCB") { copySelectedNotes() }   // Copy (clipboard)
+        selBtn("\uD83D\uDDD1") { deleteSelectedNotes() } // Delete (trash)
+        selBtn("\uD83D\uDCE4") { shareSelectedNotes() }  // Share (outbox tray)
 
         val appTitle = TextView(this)
         appTitle.text = "\uD83D\uDCDA EngiNotes  \u25BE"
@@ -395,9 +440,12 @@ class BooksActivity : AppCompatActivity() {
         card.elevation = dp(2).toFloat()
         val cardLp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         cardLp.setMargins(0, 0, 0, dp(8)); card.layoutParams = cardLp
+        val isSelected = selectionMode && selectedNotes.contains(file)
         card.background = android.graphics.drawable.GradientDrawable().apply {
             shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-            setColor(android.graphics.Color.WHITE); cornerRadius = dp(10).toFloat()
+            setColor(if (isSelected) android.graphics.Color.parseColor("#EFE4DC") else android.graphics.Color.WHITE)
+            cornerRadius = dp(10).toFloat()
+            if (isSelected) setStroke(dp(2), android.graphics.Color.parseColor("#8D6E63"))
         }
 
         val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL; row.gravity = Gravity.CENTER_VERTICAL
@@ -417,17 +465,25 @@ class BooksActivity : AppCompatActivity() {
         metaView.textSize = 12f; metaView.setTextColor(android.graphics.Color.parseColor("#9E9E9E")); info.addView(metaView)
         row.addView(info)
 
-        val openBtn = TextView(this); openBtn.text = "\u203a"; openBtn.textSize = 24f
-        openBtn.setTextColor(android.graphics.Color.parseColor("#BDBDBD")); row.addView(openBtn)
+        // Checkmark in selection mode (replacing the ">" open-indicator), plain chevron otherwise.
+        val openBtn = TextView(this)
+        if (selectionMode) {
+            openBtn.text = if (isSelected) "\u2705" else "\u2B55"; openBtn.textSize = 18f
+        } else {
+            openBtn.text = "\u203a"; openBtn.textSize = 24f; openBtn.setTextColor(android.graphics.Color.parseColor("#BDBDBD"))
+        }
+        row.addView(openBtn)
 
         card.addView(row)
         card.setOnClickListener {
+            if (selectionMode) { toggleNoteSelection(file); return@setOnClickListener }
             startActivity(Intent(this, MainActivity::class.java)
                 .putExtra("book_name", bookName)
                 .putExtra("filename", file.nameWithoutExtension))
         }
         card.setOnLongClickListener {
-            showPageOptions(file, bookName); true
+            if (selectionMode) toggleNoteSelection(file) else enterSelectionMode(file)
+            true
         }
         return card
     }
@@ -439,13 +495,16 @@ class BooksActivity : AppCompatActivity() {
                 it.setMargins(dp(4), 0, dp(4), dp(14))
             }
         }
+        val isSelected = selectionMode && selectedNotes.contains(file)
         val thumbMaxW = dp(200); val thumbMaxH = dp(260)
+        // Wrapped in a FrameLayout so a checkmark badge can overlay the thumbnail in selection mode.
+        val thumbFrame = android.widget.FrameLayout(this)
         val imageView = ImageView(this).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(140))
             scaleType = ImageView.ScaleType.CENTER_CROP
             background = android.graphics.drawable.GradientDrawable().apply {
                 setColor(android.graphics.Color.WHITE); cornerRadius = dp(10).toFloat()
-                setStroke(dp(1), android.graphics.Color.parseColor("#E0E0E0"))
+                setStroke(if (isSelected) dp(3) else dp(1), if (isSelected) android.graphics.Color.parseColor("#8D6E63") else android.graphics.Color.parseColor("#E0E0E0"))
             }
             // Without this, the rendered thumbnail bitmap — a plain rectangle — poked past the
             // rounded corners of the white background/border underneath it instead of being
@@ -455,7 +514,17 @@ class BooksActivity : AppCompatActivity() {
             // the Notewise reference) rather than something you'd only notice if you looked.
             elevation = dp(4).toFloat()
         }
-        card.addView(imageView)
+        thumbFrame.addView(imageView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(140)))
+        if (selectionMode) {
+            val badge = TextView(this).apply {
+                text = if (isSelected) "\u2705" else "\u2B55"; textSize = 16f
+                setPadding(dp(4), dp(4), dp(4), dp(4))
+            }
+            val badgeLp = android.widget.FrameLayout.LayoutParams(android.widget.FrameLayout.LayoutParams.WRAP_CONTENT, android.widget.FrameLayout.LayoutParams.WRAP_CONTENT)
+            badgeLp.gravity = Gravity.TOP or Gravity.END
+            thumbFrame.addView(badge, badgeLp)
+        }
+        card.addView(thumbFrame)
         val nameView = TextView(this).apply {
             text = file.nameWithoutExtension; textSize = 12f
             maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
@@ -473,11 +542,15 @@ class BooksActivity : AppCompatActivity() {
         getOrCreateThumbnail(file, thumbMaxW, thumbMaxH) { bmp -> if (bmp != null) imageView.setImageBitmap(bmp) }
 
         card.setOnClickListener {
+            if (selectionMode) { toggleNoteSelection(file); return@setOnClickListener }
             startActivity(Intent(this, MainActivity::class.java)
                 .putExtra("book_name", bookName)
                 .putExtra("filename", file.nameWithoutExtension))
         }
-        card.setOnLongClickListener { showPageOptions(file, bookName); true }
+        card.setOnLongClickListener {
+            if (selectionMode) toggleNoteSelection(file) else enterSelectionMode(file)
+            true
+        }
         return card
     }
 
@@ -553,12 +626,110 @@ class BooksActivity : AppCompatActivity() {
             }.show()
     }
 
+    private fun enterSelectionMode(initial: File) {
+        selectionMode = true
+        selectedNotes.clear(); selectedNotes.add(initial)
+        topBar.visibility = View.GONE
+        selectionBar.visibility = View.VISIBLE
+        updateSelectionCount()
+        refresh()
+    }
+
+    private fun exitSelectionMode() {
+        selectionMode = false
+        selectedNotes.clear()
+        topBar.visibility = View.VISIBLE
+        selectionBar.visibility = View.GONE
+        refresh()
+    }
+
+    private fun updateSelectionCount() {
+        selectionCountLbl.text = "${selectedNotes.size} selected"
+    }
+
+    private fun toggleNoteSelection(file: File) {
+        if (!selectedNotes.remove(file)) selectedNotes.add(file)
+        if (selectedNotes.isEmpty()) { exitSelectionMode(); return }
+        updateSelectionCount()
+        refresh()
+    }
+
+    private fun moveSelectedNotes() {
+        if (selectedNotes.isEmpty()) return
+        val currentBooks = selectedNotes.mapNotNull { it.parentFile?.name }.toSet()
+        val books = getBooksRoot().listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
+        if (books.isEmpty()) { Toast.makeText(this, "No books available", Toast.LENGTH_SHORT).show(); return }
+        AlertDialog.Builder(this).setTitle("Move ${selectedNotes.size} note(s) to Book").setItems(books.toTypedArray()) { _, bi ->
+            val destBook = books[bi]
+            var moved = 0
+            for (file in selectedNotes.toList()) {
+                if (file.parentFile?.name == destBook) continue
+                val dest = File(File(getBooksRoot(), destBook), file.name)
+                try { file.copyTo(dest, overwrite = true); file.delete(); moved++ } catch (e: Exception) {}
+            }
+            Toast.makeText(this, "Moved $moved note(s) to $destBook", Toast.LENGTH_SHORT).show()
+            exitSelectionMode()
+        }.show()
+    }
+
+    private fun copySelectedNotes() {
+        if (selectedNotes.isEmpty()) return
+        val books = getBooksRoot().listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
+        if (books.isEmpty()) { Toast.makeText(this, "No books available", Toast.LENGTH_SHORT).show(); return }
+        AlertDialog.Builder(this).setTitle("Copy ${selectedNotes.size} note(s) to Book").setItems(books.toTypedArray()) { _, bi ->
+            val destBook = books[bi]
+            var copied = 0
+            for (file in selectedNotes.toList()) {
+                val destDir = File(getBooksRoot(), destBook)
+                var dest = File(destDir, file.name)
+                // Avoid silently overwriting an existing note of the same name in the
+                // destination book — append a numeric suffix instead, same way most file
+                // managers handle a copy-into-same-name conflict.
+                var n = 1
+                while (dest.exists()) { dest = File(destDir, "${file.nameWithoutExtension} (${n})${if (file.extension.isNotEmpty()) "." + file.extension else ""}"); n++ }
+                try { file.copyTo(dest); copied++ } catch (e: Exception) {}
+            }
+            Toast.makeText(this, "Copied $copied note(s) to $destBook", Toast.LENGTH_SHORT).show()
+            exitSelectionMode()
+        }.show()
+    }
+
+    private fun deleteSelectedNotes() {
+        if (selectedNotes.isEmpty()) return
+        AlertDialog.Builder(this).setTitle("Delete ${selectedNotes.size} note(s)?")
+            .setMessage("This can't be undone.")
+            .setPositiveButton("Delete") { _, _ ->
+                for (file in selectedNotes.toList()) { try { file.delete() } catch (e: Exception) {} }
+                Toast.makeText(this, "Deleted ${selectedNotes.size} note(s)", Toast.LENGTH_SHORT).show()
+                exitSelectionMode()
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun shareSelectedNotes() {
+        if (selectedNotes.isEmpty()) return
+        try {
+            val uris = ArrayList<android.net.Uri>()
+            for (file in selectedNotes) {
+                uris.add(androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", file))
+            }
+            val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = "application/octet-stream"
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "Share ${selectedNotes.size} note(s)"))
+        } catch (e: Exception) {
+            Toast.makeText(this, "Share failed: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun showPageOptions(file: File, bookName: String) {
         AlertDialog.Builder(this).setTitle(file.nameWithoutExtension)
-            .setItems(arrayOf("Open", "Rename", "Move to Book", "Delete")) { _, i ->
+            .setItems(arrayOf("Open", "Select", "Rename", "Move to Book", "Delete")) { _, i ->
                 when (i) {
                     0 -> startActivity(Intent(this, MainActivity::class.java).putExtra("book_name", bookName).putExtra("filename", file.nameWithoutExtension))
-                    1 -> {
+                    1 -> enterSelectionMode(file)
+                    2 -> {
                         val input = EditText(this).apply { setText(file.nameWithoutExtension) }
                         AlertDialog.Builder(this).setTitle("Rename Note").setView(input)
                             .setPositiveButton("Rename") { _, _ ->
@@ -566,7 +737,7 @@ class BooksActivity : AppCompatActivity() {
                                 if (n.isNotEmpty()) { file.renameTo(File(file.parentFile, "$n.eng")); refresh() }
                             }.setNegativeButton("Cancel", null).show()
                     }
-                    2 -> {
+                    3 -> {
                         val books = getBooksRoot().listFiles()?.filter { it.isDirectory && it.name != bookName }?.map { it.name } ?: emptyList()
                         if (books.isEmpty()) { Toast.makeText(this, "No other books", Toast.LENGTH_SHORT).show(); return@setItems }
                         AlertDialog.Builder(this).setTitle("Move to Book").setItems(books.toTypedArray()) { _, bi ->
@@ -575,7 +746,7 @@ class BooksActivity : AppCompatActivity() {
                             Toast.makeText(this, "Moved to ${books[bi]}", Toast.LENGTH_SHORT).show()
                         }.show()
                     }
-                    3 -> AlertDialog.Builder(this).setTitle("Delete '${file.nameWithoutExtension}'?")
+                    4 -> AlertDialog.Builder(this).setTitle("Delete '${file.nameWithoutExtension}'?")
                         .setPositiveButton("Delete") { _, _ -> file.delete(); refresh() }
                         .setNegativeButton("Cancel", null).show()
                 }
