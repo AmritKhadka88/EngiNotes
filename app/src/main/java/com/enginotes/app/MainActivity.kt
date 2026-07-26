@@ -2092,6 +2092,15 @@ class MainActivity : AppCompatActivity() {
 
     internal fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
 
+    // Reads the same "app_theme" preference BooksActivity's theme picker writes to, reusing its
+    // THEMES table directly rather than duplicating the color list here — one theme choice stays
+    // consistent across both activities instead of each maintaining its own copy.
+    internal fun currentThemeBackgroundColor(): Int {
+        val name = getPrefs().getString("app_theme", "Classic") ?: "Classic"
+        val bgHex = (BooksActivity.THEMES[name] ?: BooksActivity.THEMES["Classic"]!!).second
+        return Color.parseColor(bgHex)
+    }
+
     private fun showOffsetDialog(item: StrokeItem) {
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(12), dp(20), dp(4))
@@ -2659,26 +2668,33 @@ class MainActivity : AppCompatActivity() {
         // This is genuinely OCR (ML Kit Text Recognition, built for printed/typed text in
         // photos of documents) — not true handwriting recognition, which would require a
         // completely different API (ML Kit Digital Ink Recognition) operating on the actual
-        // pen-stroke coordinates as they're drawn, not a rendered image. Works well on clear
-        // block/printed letters; cursive or stylized handwriting can and will get misread,
-        // since that's fundamentally outside what this API is built to do.
-        val result = drawingView.renderVisibleStrokesOnly()
-        if (result == null) { Toast.makeText(this, "No strokes to convert", Toast.LENGTH_SHORT).show(); return }
-        val (bmp, strokesUsed) = result
+        // pen-stroke coordinates as they're drawn, not a rendered image.
+        //
+        // Image-only: works exclusively on a selected image (a photo/screenshot pasted into the
+        // note) — that's the case this API is actually built for and reliable at. No longer
+        // falls back to rendering pen strokes at all, since that's a much less reliable use of a
+        // printed-text OCR engine (works on clear block letters, not cursive) and was producing
+        // confusing results when nothing was actually selected.
+        drawingView.getSelectedImageBitmap { imgBmp ->
+            if (imgBmp == null) { Toast.makeText(this, "Select an image first, then try again", Toast.LENGTH_LONG).show(); return@getSelectedImageBitmap }
+            runTextRecognition(imgBmp) { text ->
+                // Deliberately does NOT delete the image afterward — a photo/screenshot is
+                // something the user almost certainly wants to keep.
+                val wx = drawingView.screenCenterWorldX(); val wy = drawingView.screenCenterWorldY()
+                drawingView.addText(text, wx, wy, drawingView.defaultTextSize, 0f, Color.BLACK)
+                Toast.makeText(this, "Converted!", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun runTextRecognition(bmp: Bitmap, onText: (String) -> Unit) {
         val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bmp, 0)
         val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
         recognizer.process(image)
             .addOnSuccessListener { result ->
                 val text = result.text.trim()
                 if (text.isEmpty()) { Toast.makeText(this, "No text recognised — works best on clear printed letters, not cursive", Toast.LENGTH_LONG).show(); return@addOnSuccessListener }
-                // Place text at centre of screen in world coords
-                val wx = drawingView.screenCenterWorldX(); val wy = drawingView.screenCenterWorldY()
-                drawingView.addText(text, wx, wy, drawingView.defaultTextSize, 0f, Color.BLACK)
-                // Removes exactly the strokes that were actually rendered/recognized — not every
-                // pen stroke on the page, which is what this used to do (converting one word
-                // could previously delete unrelated handwriting elsewhere on the same page).
-                drawingView.removeStrokes(strokesUsed)
-                Toast.makeText(this, "Converted!", Toast.LENGTH_SHORT).show()
+                onText(text)
             }
             .addOnFailureListener { Toast.makeText(this, "Recognition failed: ${it.message}", Toast.LENGTH_SHORT).show() }
     }
@@ -3364,7 +3380,7 @@ class MainActivity : AppCompatActivity() {
         val accent = Color.parseColor("#7B61FF")
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(14), dp(22), dp(14))
-            background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(20).toFloat() }
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(20).toFloat() }
         }
         // Section header: was 11f with no visual weight — genuinely easy to miss scrolling past.
         // Bumped up, bolder, small colored accent bar on the left for a bit of "premium" polish
@@ -3947,7 +3963,9 @@ class MainActivity : AppCompatActivity() {
 
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            // Reads the same "app_theme" preference BooksActivity's theme picker writes to, so
+            // both activities reflect one consistent theme choice.
+            setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(10).toFloat()
             setPadding(dp(16), dp(12), dp(16), dp(16))
         }

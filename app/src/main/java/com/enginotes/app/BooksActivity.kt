@@ -817,7 +817,18 @@ class BooksActivity : AppCompatActivity() {
 
     private fun showSettingsDialog() {
         val prefs = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
-        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(8)) }
+        val (_, themeBgSettings) = currentThemeColors()
+        val bgColorInt = android.graphics.Color.parseColor(themeBgSettings)
+        // Simple luminance check so text stays readable on a dark theme's background — not a
+        // full per-element recolor (this dialog has many child views with their own hardcoded
+        // colors), just making sure default/unstyled text isn't invisible against a dark
+        // background specifically.
+        val isDark = android.graphics.Color.red(bgColorInt) * 0.299 + android.graphics.Color.green(bgColorInt) * 0.587 + android.graphics.Color.blue(bgColorInt) * 0.114 < 140
+        val defaultTextColor = if (isDark) android.graphics.Color.parseColor("#E8E8E8") else android.graphics.Color.parseColor("#2A2A2A")
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(8))
+            setBackgroundColor(bgColorInt)
+        }
 
         val paperLabels = arrayOf("Blank", "Lined", "Graph Grid", "Dot Grid", "Engineering", "Coloured")
         val paperValues = arrayOf("BLANK", "LINED", "GRID", "DOTS", "ENGINEERING", "BLANK_COLORED")
@@ -833,9 +844,9 @@ class BooksActivity : AppCompatActivity() {
         }
         container.addView(paperBtn)
 
-        val autosaveCb = CheckBox(this).apply { text = "Autosave every 10 seconds"; isChecked = prefs.getBoolean("autosave", true) }
+        val autosaveCb = CheckBox(this).apply { text = "Autosave every 10 seconds"; isChecked = prefs.getBoolean("autosave", true); setTextColor(defaultTextColor) }
         container.addView(autosaveCb)
-        val confirmCb = CheckBox(this).apply { text = "Confirm before exit or clear"; isChecked = prefs.getBoolean("confirm_exit_clear", true) }
+        val confirmCb = CheckBox(this).apply { text = "Confirm before exit or clear"; isChecked = prefs.getBoolean("confirm_exit_clear", true); setTextColor(defaultTextColor) }
         container.addView(confirmCb)
 
         val themeHdr = TextView(this).apply { text = "APP THEME"; textSize = 13f; setTextColor(android.graphics.Color.parseColor("#8A8580")); setPadding(0, dp(16), 0, dp(4)) }
