@@ -2675,13 +2675,22 @@ class MainActivity : AppCompatActivity() {
         // falls back to rendering pen strokes at all, since that's a much less reliable use of a
         // printed-text OCR engine (works on clear block letters, not cursive) and was producing
         // confusing results when nothing was actually selected.
-        drawingView.getSelectedImageBitmap { imgBmp ->
-            if (imgBmp == null) { Toast.makeText(this, "Select an image first, then try again", Toast.LENGTH_LONG).show(); return@getSelectedImageBitmap }
+        drawingView.getSelectedImageBitmap { imgBmp, imgItem ->
+            if (imgBmp == null || imgItem == null) { Toast.makeText(this, "Select an image first, then try again", Toast.LENGTH_LONG).show(); return@getSelectedImageBitmap }
             runTextRecognition(imgBmp) { text ->
                 // Deliberately does NOT delete the image afterward — a photo/screenshot is
                 // something the user almost certainly wants to keep.
-                val wx = drawingView.screenCenterWorldX(); val wy = drawingView.screenCenterWorldY()
-                drawingView.addText(text, wx, wy, drawingView.defaultTextSize, 0f, Color.BLACK)
+                //
+                // Positioned just below the image it was actually read from, left-aligned to the
+                // image's own left edge — not an unrelated screen-center position. TextItem.y is
+                // the BOTTOM of the text (established convention elsewhere in this codebase), so
+                // this creates the item with a provisional y first, then corrects it using the
+                // item's own measured height once it exists — the text's height isn't known
+                // until after it's actually created.
+                val gap = 12f
+                val topY = imgItem.y + imgItem.h + gap
+                val newItem = drawingView.addText(text, imgItem.x, topY, 14f, 0f, Color.BLACK)
+                if (newItem != null) newItem.y = topY + drawingView.textItemHeight(newItem)
                 Toast.makeText(this, "Converted!", Toast.LENGTH_SHORT).show()
             }
         }
