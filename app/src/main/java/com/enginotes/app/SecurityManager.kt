@@ -55,6 +55,7 @@ class SecurityManager(private val context: Context) {
         private const val AES_KEY_BYTES = 32 // 256-bit DEK
         const val MAX_BIOMETRIC_ATTEMPTS = 5
         const val MAX_PIN_ATTEMPTS = 5
+        const val MAX_RECOVERY_ATTEMPTS = 50
         const val LOCKOUT_MS = 60_000L
 
         // Shared across every SecurityManager instance in this process — each Activity creates
@@ -90,7 +91,9 @@ class SecurityManager(private val context: Context) {
      *  that failure is caught separately and just leaves biometric off, rather than failing
      *  the whole setup. Returns (success, biometricEnabled) so the caller can tell the user
      *  specifically why biometric wasn't offered, rather than silently going PIN-only. */
-    fun setupSecurity(pin: String): Pair<Boolean, Boolean> {
+    data class SetupResult(val success: Boolean, val biometricEnabled: Boolean, val recoveryCode: String?)
+
+    fun setupSecurity(pin: String): SetupResult {
         return try {
             val dek = ByteArray(AES_KEY_BYTES).also { SecureRandom().nextBytes(it) }
             val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
@@ -109,18 +112,31 @@ class SecurityManager(private val context: Context) {
                 // means biometric starts off.
             }
 
+            // A third independent unlock path to the SAME underlying DEK — same shape as PIN
+            // and biometric (see the class-level doc comment). Generated once, here, and never
+            // stored anywhere in plaintext afterward — only this function's return value ever
+            // carries the actual digits, which is what makes "shown once, save it now" a real
+            // guarantee rather than something the app could accidentally redisplay later.
+            val recoveryCode = (1..16).map { SecureRandom().nextInt(10) }.joinToString("")
+            val recoverySalt = ByteArray(16).also { SecureRandom().nextBytes(it) }
+            prefs.edit().putString("recovery_salt", Base64.encodeToString(recoverySalt, Base64.NO_WRAP)).apply()
+            val recoveryKey = deriveKeyFromPin(recoveryCode, recoverySalt)
+            encryptAndStore(dek, recoveryKey, "dek_wrapped_recovery")
+
             prefs.edit()
                 .putBoolean("enabled", true)
                 .putBoolean("biometric_disabled", !biometricAvailable)
                 .putBoolean("permanently_locked", false)
                 .putBoolean("has_timed_out_once", false)
+                .putBoolean("recovery_mode", false)
                 .putInt("biometric_fail_count", 0)
                 .putInt("pin_fail_count", 0)
+                .putInt("recovery_fail_count", 0)
                 .putLong("lockout_until", 0L)
                 .apply()
             inMemoryDek = dek
-            Pair(true, biometricAvailable)
-        } catch (e: Exception) { Pair(false, false) }
+            SetupResult(true, biometricAvailable, recoveryCode)
+        } catch (e: Exception) { SetupResult(false, false, null) }
     }
 
     /** Turning security off entirely (user's own choice, while already unlocked) — decrypts
@@ -205,7 +221,9 @@ class SecurityManager(private val context: Context) {
         val editor = prefs.edit().putInt("pin_fail_count", n)
         if (n >= MAX_PIN_ATTEMPTS) {
             if (prefs.getBoolean("has_timed_out_once", false)) {
-                editor.putBoolean("permanently_locked", true)
+                // Second round of failures exhausted — offer the recovery code/QR as a real
+                // path back in, before the nuclear "delete everything" option.
+                editor.putBoolean("recovery_mode", true)
             } else {
                 editor.putBoolean("has_timed_out_once", true)
                 editor.putLong("lockout_until", System.currentTimeMillis() + LOCKOUT_MS)
@@ -249,6 +267,73 @@ class SecurityManager(private val context: Context) {
             if (enc != null) { file.writeBytes(byteArrayOf(0x45, 0x4E, 0x47, 0x01) + enc); return }
         }
         file.writeText(content)
+    }
+
+    // ─────────────────────────────── Recovery code / QR unlock path ───────────────────────────────
+
+    fun isInRecoveryMode(): Boolean = prefs.getBoolean("recovery_mode", false) && !isPermanentlyLocked()
+    fun recoveryAttemptsRemaining(): Int = (MAX_RECOVERY_ATTEMPTS - prefs.getInt("recovery_fail_count", 0)).coerceAtLeast(0)
+    fun isRecoveryExhausted(): Boolean = recoveryAttemptsRemaining() <= 0
+
+    /** Same verification approach as the PIN: GCM's own authentication tag is what actually
+     *  confirms correctness — a wrong code derives a wrong key, which fails to authenticate the
+     *  ciphertext and throws, rather than needing a separate stored hash to compare against. */
+    fun attemptRecoveryUnlock(code: String): Boolean {
+        if (isPermanentlyLocked() || isRecoveryExhausted()) return false
+        return try {
+            val saltB64 = prefs.getString("recovery_salt", null) ?: return false
+            val salt = Base64.decode(saltB64, Base64.NO_WRAP)
+            val recoveryKey = deriveKeyFromPin(code, salt)
+            val ivB64 = prefs.getString("dek_wrapped_recovery_iv", null) ?: return false
+            val iv = Base64.decode(ivB64, Base64.NO_WRAP)
+            val blob = Base64.decode(prefs.getString("dek_wrapped_recovery", null) ?: return false, Base64.NO_WRAP)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, recoveryKey, GCMParameterSpec(GCM_TAG_BITS, iv))
+            val dek = cipher.doFinal(blob)
+            inMemoryDek = dek
+            // A successful recovery unlock resets the whole PIN failure history, not just the
+            // recovery counter — the user is back in, and shouldn't be left one PIN mistake away
+            // from landing straight back on the recovery screen. Deliberately does NOT touch
+            // biometric_disabled either way — if it was already earned-off by 5 biometric
+            // failures, that's a separate, unrelated failure history and stays as-is.
+            prefs.edit()
+                .putInt("pin_fail_count", 0)
+                .putBoolean("has_timed_out_once", false)
+                .putBoolean("recovery_mode", false)
+                .putLong("lockout_until", 0L)
+                .putInt("recovery_fail_count", 0)
+                .apply()
+            true
+        } catch (e: Exception) {
+            val n = prefs.getInt("recovery_fail_count", 0) + 1
+            val editor = prefs.edit().putInt("recovery_fail_count", n)
+            if (n >= MAX_RECOVERY_ATTEMPTS) editor.putBoolean("permanently_locked", true)
+            editor.apply()
+            false
+        }
+    }
+
+    /** Renders the recovery code as a scannable QR bitmap — same value as the 16-digit text,
+     *  just a second, faster way to enter it back in later. */
+    fun generateQrBitmap(text: String, size: Int = 512): android.graphics.Bitmap {
+        val writer = com.google.zxing.qrcode.QRCodeWriter()
+        val matrix = writer.encode(text, com.google.zxing.BarcodeFormat.QR_CODE, size, size)
+        val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.RGB_565)
+        for (x in 0 until size) for (y in 0 until size) {
+            bmp.setPixel(x, y, if (matrix[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
+        }
+        return bmp
+    }
+
+    /** Decodes a QR code from a bitmap — used for both "scan via camera" (a captured photo) and
+     *  "import photo" (a gallery image), which are both just bitmaps by the time they reach
+     *  here; the source doesn't matter to the decoder. */
+    fun decodeQrFromBitmap(bmp: android.graphics.Bitmap, onResult: (String?) -> Unit) {
+        val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bmp, 0)
+        val scanner = com.google.mlkit.vision.barcode.BarcodeScanning.getClient()
+        scanner.process(image)
+            .addOnSuccessListener { barcodes -> onResult(barcodes.firstOrNull()?.rawValue) }
+            .addOnFailureListener { onResult(null) }
     }
 
     // ─────────────────────────────── Note file encryption (uses the in-memory DEK) ───────────────────────────────

@@ -1,15 +1,20 @@
 package com.enginotes.app
 
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
 import android.os.CountDownTimer
+import android.provider.MediaStore
 import android.view.Gravity
 import android.view.View
 import android.widget.*
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.fragment.app.FragmentActivity
 import java.io.File
 import java.util.concurrent.Executor
@@ -31,6 +36,45 @@ class LockScreenActivity : FragmentActivity() {
     // initializer it ran during the Activity's constructor, before Android attaches the Activity
     // to its Context/system services at all — which crashed on every single launch.
     private val bgExecutor: Executor by lazy { ContextCompat.getMainExecutor(this) }
+
+    // registerForActivityResult IS safe as a class-level property initializer, unlike the
+    // bgExecutor bug above — it only registers a callback with the Activity's result registry,
+    // it doesn't need a fully-attached Context the way getMainExecutor() does. This is the
+    // standard, documented way to use this API.
+    private var pendingCameraUri: Uri? = null
+    private val cameraLauncher = registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        if (!success) return@registerForActivityResult
+        val uri = pendingCameraUri ?: return@registerForActivityResult
+        try {
+            @Suppress("DEPRECATION")
+            val bmp = MediaStore.Images.Media.getBitmap(contentResolver, uri)
+            handleScannedBitmap(bmp)
+        } catch (e: Exception) { Toast.makeText(this, "Couldn't read the captured photo", Toast.LENGTH_SHORT).show() }
+    }
+    private val galleryLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@registerForActivityResult
+        try {
+            @Suppress("DEPRECATION")
+            val bmp = MediaStore.Images.Media.getBitmap(contentResolver, uri)
+            handleScannedBitmap(bmp)
+        } catch (e: Exception) { Toast.makeText(this, "Couldn't read that image", Toast.LENGTH_SHORT).show() }
+    }
+
+    private fun handleScannedBitmap(bmp: Bitmap) {
+        security.decodeQrFromBitmap(bmp) { code ->
+            if (code == null) { Toast.makeText(this, "No QR code found in that image", Toast.LENGTH_SHORT).show(); return@decodeQrFromBitmap }
+            submitRecoveryCode(code)
+        }
+    }
+
+    private fun launchCameraForQr() {
+        try {
+            val photoFile = File.createTempFile("qr_scan_", ".jpg", cacheDir)
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", photoFile)
+            pendingCameraUri = uri
+            cameraLauncher.launch(uri)
+        } catch (e: Exception) { Toast.makeText(this, "Couldn't open camera: ${e.message}", Toast.LENGTH_SHORT).show() }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,6 +100,7 @@ class LockScreenActivity : FragmentActivity() {
         lockoutTimer?.cancel()
 
         if (security.isPermanentlyLocked()) { renderPermanentlyLocked(); return }
+        if (security.isInRecoveryMode()) { renderRecoveryMode(); return }
         if (security.isTimedOut()) { renderTimedLockout(); return }
         security.clearExpiredLockout() // no-op if not actually expired; safe to call unconditionally here
 
@@ -198,6 +243,68 @@ class LockScreenActivity : FragmentActivity() {
             override fun onTick(msLeft: Long) { countdownLbl.text = "Try again in ${(msLeft / 1000) + 1}s" }
             override fun onFinish() { renderCurrentState() }
         }.start()
+    }
+
+    private fun renderRecoveryMode() {
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(dp(28), dp(28), dp(28), dp(28)) }
+        root.addView(container, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+
+        container.addView(TextView(this).apply { text = "\uD83D\uDD11"; textSize = 44f; gravity = Gravity.CENTER; setPadding(0, 0, 0, dp(12)) })
+        container.addView(TextView(this).apply {
+            text = "Recovery Needed"; textSize = 19f; setTextColor(Color.WHITE)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER; setPadding(0, 0, 0, dp(8))
+        })
+
+        val exhausted = security.isRecoveryExhausted()
+        val remaining = security.recoveryAttemptsRemaining()
+        container.addView(TextView(this).apply {
+            text = if (exhausted)
+                "Recovery attempts are used up. There is no way to unlock this app from here anymore — the only option left is deleting all notes permanently."
+            else
+                "Too many incorrect PIN attempts. Enter your 16-digit recovery code, or scan its QR code, to get back in. $remaining attempt(s) remaining before this option is gone too."
+            textSize = 13f; setTextColor(Color.parseColor("#BBBBBB")); gravity = Gravity.CENTER; setPadding(0, 0, 0, dp(20))
+        })
+
+        if (!exhausted) {
+            val codeInput = EditText(this).apply {
+                hint = "16-digit recovery code"; setTextColor(Color.WHITE); setHintTextColor(Color.parseColor("#888888"))
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                filters = arrayOf(android.text.InputFilter.LengthFilter(16))
+                gravity = Gravity.CENTER
+            }
+            container.addView(codeInput)
+            val unlockBtn = Button(this).apply { text = "Unlock with Code"; setPadding(0, dp(8), 0, 0) }
+            container.addView(unlockBtn)
+            unlockBtn.setOnClickListener {
+                val code = codeInput.text.toString()
+                if (code.length != 16) { Toast.makeText(this, "Code must be 16 digits", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+                submitRecoveryCode(code)
+            }
+
+            val scanBtn = Button(this).apply { text = "Scan QR (Camera)"; setPadding(0, dp(16), 0, 0) }
+            container.addView(scanBtn)
+            scanBtn.setOnClickListener { launchCameraForQr() }
+
+            val importBtn = Button(this).apply { text = "Import QR (Photo)"; setPadding(0, dp(8), 0, 0) }
+            container.addView(importBtn)
+            importBtn.setOnClickListener { galleryLauncher.launch("image/*") }
+        }
+
+        val deleteBtn = Button(this).apply {
+            text = "Delete All Notes Permanently"
+            setBackgroundColor(Color.parseColor("#C62828")); setTextColor(Color.WHITE)
+            setPadding(0, dp(24), 0, 0)
+        }
+        container.addView(deleteBtn)
+        deleteBtn.setOnClickListener { confirmPermanentDelete() }
+    }
+
+    private fun submitRecoveryCode(code: String) {
+        if (security.attemptRecoveryUnlock(code)) { proceedUnlocked(); return }
+        renderCurrentState() // re-render fully — a failed attempt might have just exhausted recovery entirely
+        if (!security.isPermanentlyLocked()) {
+            Toast.makeText(this, "Incorrect code — ${security.recoveryAttemptsRemaining()} attempt(s) remaining", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun renderPermanentlyLocked() {

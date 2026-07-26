@@ -947,6 +947,59 @@ class BooksActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun showRecoveryCodeDialog(security: SecurityManager, result: SecurityManager.SetupResult, onDone: () -> Unit) {
+        val code = result.recoveryCode ?: run { onDone(); return }
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(8)) }
+
+        container.addView(TextView(this).apply {
+            text = "Save Your Recovery Code Now"
+            textSize = 17f; typeface = android.graphics.Typeface.DEFAULT_BOLD; setPadding(0, 0, 0, dp(8))
+        })
+        container.addView(TextView(this).apply {
+            text = "This is shown only once. If you ever forget your PIN and lose biometric access, this code (or its QR code below) is the only way back into your notes without deleting everything. Copy the code somewhere safe, and screenshot the QR code too."
+            textSize = 13f; setPadding(0, 0, 0, dp(16))
+        })
+
+        val codeDisplay = TextView(this).apply {
+            text = code; textSize = 20f; typeface = android.graphics.Typeface.MONOSPACE
+            gravity = Gravity.CENTER; setPadding(dp(12), dp(12), dp(12), dp(12))
+            setBackgroundColor(android.graphics.Color.parseColor("#F0F0F0"))
+        }
+        container.addView(codeDisplay)
+
+        val copyBtn = Button(this).apply { text = "Copy Code" }
+        copyBtn.setOnClickListener {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("EngiNotes Recovery Code", code))
+            Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
+        }
+        container.addView(copyBtn)
+
+        val qrView = ImageView(this).apply {
+            setImageBitmap(security.generateQrBitmap(code))
+            layoutParams = LinearLayout.LayoutParams(dp(220), dp(220)).also { it.gravity = Gravity.CENTER; it.topMargin = dp(16) }
+        }
+        val qrWrapper = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+        qrWrapper.addView(qrView)
+        container.addView(qrWrapper)
+
+        val ackCb = CheckBox(this).apply {
+            text = "I've saved this code and/or screenshotted the QR code"
+            setPadding(0, dp(16), 0, 0)
+        }
+        container.addView(ackCb)
+
+        val dlg = AlertDialog.Builder(this).setTitle("\u26A0 Recovery Code").setView(container)
+            .setPositiveButton("Done", null)
+            .setCancelable(false)
+            .show()
+        dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            if (!ackCb.isChecked) { Toast.makeText(this, "Please confirm you've saved the code first", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+            dlg.dismiss()
+            onDone()
+        }
+    }
+
     private fun showPinSetupDialog(security: SecurityManager, onDone: () -> Unit) {
         val input1 = EditText(this).apply {
             hint = "Enter 6-digit PIN"
@@ -976,15 +1029,20 @@ class BooksActivity : AppCompatActivity() {
                             dlg2.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                                 if (input2.text.toString() != pin) { Toast.makeText(this, "PINs didn't match — try again", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
                                 dlg2.dismiss()
-                                val (success, biometricEnabled) = security.setupSecurity(pin)
-                                if (success && biometricEnabled) {
-                                    Toast.makeText(this, "App Lock enabled with PIN + biometric", Toast.LENGTH_LONG).show()
-                                } else if (success) {
-                                    Toast.makeText(this, "App Lock enabled with PIN. Fingerprint/face wasn't available — set one up in your phone's own Settings app first, then it'll be offered here too.", Toast.LENGTH_LONG).show()
-                                } else {
+                                val result = security.setupSecurity(pin)
+                                if (!result.success) {
                                     Toast.makeText(this, "Something went wrong setting up App Lock. Please try again.", Toast.LENGTH_LONG).show()
+                                    onDone()
+                                    return@setOnClickListener
                                 }
-                                onDone()
+                                showRecoveryCodeDialog(security, result) {
+                                    if (result.biometricEnabled) {
+                                        Toast.makeText(this, "App Lock enabled with PIN + biometric", Toast.LENGTH_LONG).show()
+                                    } else {
+                                        Toast.makeText(this, "App Lock enabled with PIN. Fingerprint/face wasn't available — set one up in your phone's own Settings app first, then it'll be offered here too.", Toast.LENGTH_LONG).show()
+                                    }
+                                    onDone()
+                                }
                             }
                         }
                 }
