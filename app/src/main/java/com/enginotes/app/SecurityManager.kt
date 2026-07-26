@@ -83,19 +83,32 @@ class SecurityManager(private val context: Context) {
 
     // ─────────────────────────────── Setup (turning security on) ───────────────────────────────
 
-    /** Called once, when the user sets their PIN and turns security on for the first time. */
+    /** Called once, when the user sets their PIN and turns security on for the first time.
+     *  The PIN path is set up first and works entirely on its own — biometric is attempted
+     *  afterward as a bonus, and if this device has no biometric hardware or nothing enrolled,
+     *  that failure is caught separately and just leaves biometric off, rather than failing
+     *  the whole setup (the earlier version's actual bug: one failure took down both paths). */
     fun setupSecurity(pin: String): Boolean {
         return try {
             val dek = ByteArray(AES_KEY_BYTES).also { SecureRandom().nextBytes(it) }
-            val keystoreKey = getOrCreateKeystoreKey()
-            encryptAndStore(dek, keystoreKey, "dek_wrapped_biometric")
             val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
             prefs.edit().putString("pin_salt", Base64.encodeToString(salt, Base64.NO_WRAP)).apply()
             val pinKey = deriveKeyFromPin(pin, salt)
             encryptAndStore(dek, pinKey, "dek_wrapped_pin")
+
+            var biometricAvailable = false
+            try {
+                val keystoreKey = getOrCreateKeystoreKey()
+                encryptAndStore(dek, keystoreKey, "dek_wrapped_biometric")
+                biometricAvailable = true
+            } catch (e: Exception) {
+                // No biometric hardware, nothing enrolled, or some other device limitation —
+                // not a failure of security setup overall, just means biometric starts off.
+            }
+
             prefs.edit()
                 .putBoolean("enabled", true)
-                .putBoolean("biometric_disabled", false)
+                .putBoolean("biometric_disabled", !biometricAvailable)
                 .putBoolean("permanently_locked", false)
                 .putInt("biometric_fail_count", 0)
                 .putInt("pin_fail_count", 0)

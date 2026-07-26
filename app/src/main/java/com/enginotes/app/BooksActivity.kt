@@ -979,7 +979,7 @@ class BooksActivity : AppCompatActivity() {
                                 if (security.setupSecurity(pin)) {
                                     Toast.makeText(this, "App Lock enabled", Toast.LENGTH_LONG).show()
                                 } else {
-                                    Toast.makeText(this, "Couldn't enable App Lock on this device — biometric hardware may be unavailable", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(this, "Something went wrong setting up App Lock. Please try again.", Toast.LENGTH_LONG).show()
                                 }
                                 onDone()
                             }
