@@ -976,8 +976,11 @@ class BooksActivity : AppCompatActivity() {
                             dlg2.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                                 if (input2.text.toString() != pin) { Toast.makeText(this, "PINs didn't match — try again", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
                                 dlg2.dismiss()
-                                if (security.setupSecurity(pin)) {
-                                    Toast.makeText(this, "App Lock enabled", Toast.LENGTH_LONG).show()
+                                val (success, biometricEnabled) = security.setupSecurity(pin)
+                                if (success && biometricEnabled) {
+                                    Toast.makeText(this, "App Lock enabled with PIN + biometric", Toast.LENGTH_LONG).show()
+                                } else if (success) {
+                                    Toast.makeText(this, "App Lock enabled with PIN. Fingerprint/face wasn't available — set one up in your phone's own Settings app first, then it'll be offered here too.", Toast.LENGTH_LONG).show()
                                 } else {
                                     Toast.makeText(this, "Something went wrong setting up App Lock. Please try again.", Toast.LENGTH_LONG).show()
                                 }

@@ -85,10 +85,12 @@ class SecurityManager(private val context: Context) {
 
     /** Called once, when the user sets their PIN and turns security on for the first time.
      *  The PIN path is set up first and works entirely on its own — biometric is attempted
-     *  afterward as a bonus, and if this device has no biometric hardware or nothing enrolled,
+     *  afterward as a bonus, and if this device has no biometric hardware or nothing enrolled
+     *  at the PHONE's own Settings level (a prerequisite no app can set up on your behalf),
      *  that failure is caught separately and just leaves biometric off, rather than failing
-     *  the whole setup (the earlier version's actual bug: one failure took down both paths). */
-    fun setupSecurity(pin: String): Boolean {
+     *  the whole setup. Returns (success, biometricEnabled) so the caller can tell the user
+     *  specifically why biometric wasn't offered, rather than silently going PIN-only. */
+    fun setupSecurity(pin: String): Pair<Boolean, Boolean> {
         return try {
             val dek = ByteArray(AES_KEY_BYTES).also { SecureRandom().nextBytes(it) }
             val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
@@ -102,21 +104,23 @@ class SecurityManager(private val context: Context) {
                 encryptAndStore(dek, keystoreKey, "dek_wrapped_biometric")
                 biometricAvailable = true
             } catch (e: Exception) {
-                // No biometric hardware, nothing enrolled, or some other device limitation —
-                // not a failure of security setup overall, just means biometric starts off.
+                // No biometric hardware, nothing enrolled at the phone's own Settings level, or
+                // some other device limitation — not a failure of security setup overall, just
+                // means biometric starts off.
             }
 
             prefs.edit()
                 .putBoolean("enabled", true)
                 .putBoolean("biometric_disabled", !biometricAvailable)
                 .putBoolean("permanently_locked", false)
+                .putBoolean("has_timed_out_once", false)
                 .putInt("biometric_fail_count", 0)
                 .putInt("pin_fail_count", 0)
                 .putLong("lockout_until", 0L)
                 .apply()
             inMemoryDek = dek
-            true
-        } catch (e: Exception) { false }
+            Pair(true, biometricAvailable)
+        } catch (e: Exception) { Pair(false, false) }
     }
 
     /** Turning security off entirely (user's own choice, while already unlocked) — decrypts
@@ -191,19 +195,19 @@ class SecurityManager(private val context: Context) {
         }
     }
 
-    /** Second five-strike escalation happens here: the first lockout is a 1-minute timeout: the
-     *  count resets afterward for a genuine second chance. Only failing that SECOND round of
-     *  five permanently locks the app — matching "5 fails -> 1 min lock -> 5 more fails ->
-     *  permanent" exactly, not two separate independent counters that could be confused. */
+    /** First five-strike escalation happens here: the first lockout is a 1-minute timeout, with
+     *  a genuine second chance afterward. Only failing that SECOND round of five permanently
+     *  locks the app — tracked via a dedicated "already timed out once" flag, independent of the
+     *  current lockout_until value (which needs to go back to 0 once the timeout passes, or
+     *  isTimedOut() would never report "not locked out" again). */
     private fun recordPinFailure() {
-        val alreadyTimedOutOnce = prefs.getLong("lockout_until", 0L) > 0L
         val n = prefs.getInt("pin_fail_count", 0) + 1
         val editor = prefs.edit().putInt("pin_fail_count", n)
         if (n >= MAX_PIN_ATTEMPTS) {
-            if (alreadyTimedOutOnce) {
-                // This is the second five-strike round, after the timeout already happened once.
+            if (prefs.getBoolean("has_timed_out_once", false)) {
                 editor.putBoolean("permanently_locked", true)
             } else {
+                editor.putBoolean("has_timed_out_once", true)
                 editor.putLong("lockout_until", System.currentTimeMillis() + LOCKOUT_MS)
             }
         }
@@ -211,11 +215,15 @@ class SecurityManager(private val context: Context) {
     }
 
     /** Call once the lockout timer has actually elapsed, to reset the counter for the second
-     *  round of attempts (the first timeout is a real second chance, not a stall before the
-     *  same five tries continue counting). */
+     *  round of attempts. Resets lockout_until back to 0 as part of this — a one-time
+     *  transition, not something that should keep re-firing on every subsequent render (that
+     *  was the actual bug: it previously reset the fail counter on every render forever, since
+     *  lockout_until was never cleared back to 0 after the timeout passed). has_timed_out_once
+     *  deliberately does NOT get reset here — that's what makes the next five failures
+     *  permanent instead of triggering a second timeout. */
     fun clearExpiredLockout() {
         if (prefs.getLong("lockout_until", 0L) > 0L && !isTimedOut()) {
-            prefs.edit().putInt("pin_fail_count", 0).apply()
+            prefs.edit().putInt("pin_fail_count", 0).putLong("lockout_until", 0L).apply()
         }
     }
 
