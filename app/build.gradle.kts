@@ -65,6 +65,11 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
+    // BiometricPrompt (fingerprint/face unlock) for the app-lock/encryption feature —
+    // SecurityManager's getBiometricCipherForUnlock() is built around
+    // androidx.biometric.BiometricPrompt's CryptoObject flow specifically.
+    implementation("androidx.biometric:biometric:1.2.0")
+
     // Google Sign-In (lets the user authenticate with their Google account)
     implementation("com.google.android.gms:play-services-auth:21.2.0")
 
