@@ -2097,7 +2097,7 @@ class MainActivity : AppCompatActivity() {
     // Reads the same "app_theme" preference BooksActivity's theme picker writes to, reusing its
     // THEMES table directly rather than duplicating the color list here — one theme choice stays
     // consistent across both activities instead of each maintaining its own copy.
-    private fun currentThemeSpec(): BooksActivity.ThemeSpec {
+    private fun currentThemeSpec(): ThemeSpec {
         val name = getPrefs().getString("app_theme", "Classic") ?: "Classic"
         return BooksActivity.THEMES[name] ?: BooksActivity.THEMES["Classic"]!!
     }

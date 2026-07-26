@@ -14,6 +14,12 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
 
+// Top-level (not nested in a companion object) so it's referenced simply as ThemeSpec from any
+// file in this package — a nested class declared inside a companion object isn't accessible via
+// OuterClass.ClassName the same simple way properties/functions are, which is what broke the
+// build when MainActivity.kt tried to reference BooksActivity.ThemeSpec.
+data class ThemeSpec(val toolbar: String, val bg: String, val button: String, val isGradient: Boolean = false)
+
 class BooksActivity : AppCompatActivity() {
 
     // Six themes total (Classic = the original look, five new ones). Each is just a toolbar
@@ -25,7 +31,6 @@ class BooksActivity : AppCompatActivity() {
         // similar-hued background. Complementary-color pairings (Ocean's blue -> amber button,
         // Forest's green -> orange button, Sunset's orange -> teal button) are a standard color
         // theory choice for "make this stand out," not arbitrary picks.
-        data class ThemeSpec(val toolbar: String, val bg: String, val button: String, val isGradient: Boolean = false)
         val THEMES = linkedMapOf(
             "Classic" to ThemeSpec("#8D6E63", "#FAF6EF", "#6D4C41"),
             "Ocean" to ThemeSpec("#0277BD", "#E1F5FE", "#FF8F00"),
