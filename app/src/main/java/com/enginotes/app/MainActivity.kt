@@ -2499,7 +2499,7 @@ class MainActivity : AppCompatActivity() {
         popup.menu.add("Add to Book")
         popup.menu.add("Layers")
         popup.menu.add("Back Up to Drive")
-        listOf("Open PDF","Chart Builder","Handwriting to Text","Ask Gemini about Drawing","Settings","Exit").forEach { popup.menu.add(it) }
+        listOf("Open PDF","Chart Builder","Text Recognition (printed letters)","Ask Gemini about Drawing","Settings","Exit").forEach { popup.menu.add(it) }
         popup.setOnMenuItemClickListener { item ->
             when {
                 item.title.toString().startsWith("Note:") -> showRenameDialog()
@@ -2518,7 +2518,7 @@ class MainActivity : AppCompatActivity() {
                 item.title == "Layers" -> showLayersPanel()
                 item.title == "Open PDF" -> pickPdfLauncher.launch("application/pdf")
                 item.title == "Chart Builder" -> chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java))
-                item.title == "Handwriting to Text" -> convertHandwritingInPlace()
+                item.title == "Text Recognition (printed letters)" -> convertHandwritingInPlace()
                 item.title == "Ask Gemini about Drawing" -> {
                     Toast.makeText(this,"Drag a box around the area to ask about",Toast.LENGTH_SHORT).show()
                     setActiveTool(null, Tool.OCR_SNIP)
@@ -2656,23 +2656,31 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun convertHandwritingInPlace() {
-        // Render only the pen strokes visible on screen to a bitmap, run ML Kit OCR,
-        // then place the recognised text as a TextItem at the strokes' centroid and remove the strokes.
-        val bmp = drawingView.renderVisibleStrokesOnly()
-        if (bmp == null) { Toast.makeText(this, "No strokes visible", Toast.LENGTH_SHORT).show(); return }
+        // This is genuinely OCR (ML Kit Text Recognition, built for printed/typed text in
+        // photos of documents) — not true handwriting recognition, which would require a
+        // completely different API (ML Kit Digital Ink Recognition) operating on the actual
+        // pen-stroke coordinates as they're drawn, not a rendered image. Works well on clear
+        // block/printed letters; cursive or stylized handwriting can and will get misread,
+        // since that's fundamentally outside what this API is built to do.
+        val result = drawingView.renderVisibleStrokesOnly()
+        if (result == null) { Toast.makeText(this, "No strokes to convert", Toast.LENGTH_SHORT).show(); return }
+        val (bmp, strokesUsed) = result
         val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bmp, 0)
         val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
         recognizer.process(image)
             .addOnSuccessListener { result ->
                 val text = result.text.trim()
-                if (text.isEmpty()) { Toast.makeText(this, "No text recognised", Toast.LENGTH_SHORT).show(); return@addOnSuccessListener }
+                if (text.isEmpty()) { Toast.makeText(this, "No text recognised — works best on clear printed letters, not cursive", Toast.LENGTH_LONG).show(); return@addOnSuccessListener }
                 // Place text at centre of screen in world coords
                 val wx = drawingView.screenCenterWorldX(); val wy = drawingView.screenCenterWorldY()
                 drawingView.addText(text, wx, wy, drawingView.defaultTextSize, 0f, Color.BLACK)
-                drawingView.clearRecentPenStrokes()
+                // Removes exactly the strokes that were actually rendered/recognized — not every
+                // pen stroke on the page, which is what this used to do (converting one word
+                // could previously delete unrelated handwriting elsewhere on the same page).
+                drawingView.removeStrokes(strokesUsed)
                 Toast.makeText(this, "Converted!", Toast.LENGTH_SHORT).show()
             }
-            .addOnFailureListener { Toast.makeText(this, "OCR failed: ${it.message}", Toast.LENGTH_SHORT).show() }
+            .addOnFailureListener { Toast.makeText(this, "Recognition failed: ${it.message}", Toast.LENGTH_SHORT).show() }
     }
 
     // ═══════════════════════════ Ask Gemini ═══════════════════════════

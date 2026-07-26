@@ -6988,23 +6988,47 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     /** Renders only pen strokes currently visible on screen — used for inline handwriting OCR */
-    fun renderVisibleStrokesOnly(): Bitmap? {
-        if (width == 0 || height == 0) return null
-        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val cv = Canvas(bmp); cv.drawColor(Color.WHITE)
-        cv.save(); cv.translate(translateX, translateY); cv.scale(scaleFactor, scaleFactor)
-        for (a in actions) {
-            if (a is StrokeItem && a.data.type == Tool.PEN) cv.drawPath(a.path, a.paint)
+    // Returns the rendered bitmap AND the exact stroke items it contains, so the caller can
+    // remove precisely those strokes after a successful conversion — not every pen stroke on the
+    // whole page (which is what this used to do, a separate bug: converting one word could
+    // silently delete unrelated handwriting elsewhere on the same page).
+    //
+    // Renders a tight bounding box around just the actual strokes, not the entire viewport — a
+    // mostly-blank image (which the old whole-viewport render usually was) gives a document-OCR
+    // engine far less to work with and more blank space to misinterpret. Rendered at a fixed,
+    // generous scale independent of the current on-screen zoom, so strokes aren't tiny/blurry in
+    // the image just because the user happened to be zoomed out at the time.
+    fun renderVisibleStrokesOnly(): Pair<Bitmap, List<StrokeItem>>? {
+        val penStrokes = actions.filterIsInstance<StrokeItem>().filter { it.data.type == Tool.PEN }
+        if (penStrokes.isEmpty()) return null
+        var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+        for (s in penStrokes) {
+            val b = getBounds(s) ?: continue
+            if (b[0] < minX) minX = b[0]; if (b[1] < minY) minY = b[1]
+            if (b[2] > maxX) maxX = b[2]; if (b[3] > maxY) maxY = b[3]
         }
+        if (minX >= maxX || minY >= maxY) return null
+        val pad = 24f
+        minX -= pad; minY -= pad; maxX += pad; maxY += pad
+        val renderScale = 3f
+        val bmpW = ((maxX - minX) * renderScale).toInt().coerceIn(1, 4000)
+        val bmpH = ((maxY - minY) * renderScale).toInt().coerceIn(1, 4000)
+        val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+        val cv = Canvas(bmp); cv.drawColor(Color.WHITE)
+        cv.save(); cv.translate(-minX * renderScale, -minY * renderScale); cv.scale(renderScale, renderScale)
+        for (s in penStrokes) cv.drawPath(s.path, s.paint)
         cv.restore()
-        return bmp
+        return Pair(bmp, penStrokes)
     }
 
-    /** Removes all pen strokes from actions — called after handwriting OCR converts them to text */
-    fun clearRecentPenStrokes() {
-        actions.removeAll { it is StrokeItem && it.data.type == Tool.PEN }
-        redoStack.clear(); invalidate()
-    }    fun sendToBack(item: Any) {
+    // Removes exactly the given strokes — used instead of the old "remove every pen stroke on
+    // the page" behavior, so converting one word doesn't silently delete unrelated handwriting.
+    fun removeStrokes(strokes: List<StrokeItem>) {
+        actions.removeAll(strokes.toSet())
+        redoStack.clear(); markSpatialDirty(); invalidate()
+    }
+
+    fun sendToBack(item: Any) {
         if (actions.remove(item)) { actions.add(0, item); redoStack.clear(); invalidate() }
     }
     fun bringForward(item: Any) {
