@@ -56,13 +56,16 @@ class SecurityManager(private val context: Context) {
         const val MAX_BIOMETRIC_ATTEMPTS = 5
         const val MAX_PIN_ATTEMPTS = 5
         const val LOCKOUT_MS = 60_000L
+
+        // Shared across every SecurityManager instance in this process — each Activity creates
+        // its own instance (SecurityManager(this)), but "unlocked this session" needs to be one
+        // single truth for the whole app, not private per-instance state that would silently
+        // reset every time a new Activity is created. Cleared automatically on process death,
+        // which is the correct behavior — a killed app should require re-unlocking.
+        @Volatile private var inMemoryDek: ByteArray? = null
     }
 
     private val prefs: SharedPreferences get() = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-    // Held only in memory for the current unlocked session — never written to disk in raw form.
-    // Cleared on app background/kill (process death naturally clears this; nothing further to do).
-    private var inMemoryDek: ByteArray? = null
 
     // ─────────────────────────────── State queries ───────────────────────────────
 
@@ -201,6 +204,30 @@ class SecurityManager(private val context: Context) {
         if (prefs.getLong("lockout_until", 0L) > 0L && !isTimedOut()) {
             prefs.edit().putInt("pin_fail_count", 0).apply()
         }
+    }
+
+    /** Reads a note file, transparently handling both encrypted and legacy-plaintext files —
+     *  if there's no magic header, it's a plaintext file from before encryption was ever turned
+     *  on (or security is simply off), and this returns its content directly. This is what keeps
+     *  every existing note readable with no manual migration step required. */
+    fun readNoteFile(file: File): String {
+        val bytes = file.readBytes()
+        if (!hasEncryptionHeader(bytes)) return String(bytes, Charsets.UTF_8)
+        val decrypted = decryptNoteBytes(bytes.copyOfRange(4, bytes.size))
+            ?: throw IllegalStateException("This note is encrypted and the app isn't unlocked")
+        return String(decrypted, Charsets.UTF_8)
+    }
+
+    /** Writes a note file — encrypted (with the magic header) if security is currently enabled
+     *  AND unlocked this session, otherwise plain text exactly as before. This is what makes
+     *  turning security on start protecting new writes immediately, without needing to touch
+     *  every existing plaintext note first — they get encrypted the next time they're saved. */
+    fun writeNoteFile(file: File, content: String) {
+        if (isSecurityEnabled() && isUnlockedThisSession()) {
+            val enc = encryptNoteBytes(content.toByteArray(Charsets.UTF_8))
+            if (enc != null) { file.writeBytes(byteArrayOf(0x45, 0x4E, 0x47, 0x01) + enc); return }
+        }
+        file.writeText(content)
     }
 
     // ─────────────────────────────── Note file encryption (uses the in-memory DEK) ───────────────────────────────

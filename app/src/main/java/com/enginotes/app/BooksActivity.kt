@@ -43,6 +43,7 @@ class BooksActivity : AppCompatActivity() {
     private lateinit var emptyView: TextView
     private val dateFormat = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
     private val driveManager by lazy { DriveManager(this) }
+    private val security by lazy { SecurityManager(this) }
 
     // Multi-select state for the Recent Notes list — selectedNotes holds the actual note files;
     // each file's own parentFile gives its book name directly, so no separate book-tracking map
@@ -72,6 +73,17 @@ class BooksActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Lock gate — checked before anything else happens, including reading a single note
+        // file. If security is on and this process hasn't been unlocked yet (a fresh launch,
+        // or returning after the process was killed), redirect to the lock screen immediately
+        // and skip the rest of this Activity's setup entirely — there's nothing safe to show
+        // until that resolves.
+        if (security.isSecurityEnabled() && !security.isUnlockedThisSession()) {
+            startActivity(Intent(this, LockScreenActivity::class.java))
+            finish()
+            return
+        }
 
         val (themeToolbar, themeBg) = currentThemeColors()
 
@@ -305,7 +317,7 @@ class BooksActivity : AppCompatActivity() {
     // inevitably drift out of sync with what the note actually looks like when opened for real.
     private fun renderThumbnail(note: File, maxWidthPx: Int, maxHeightPx: Int): Bitmap? {
         val dv = DrawingView(this)
-        dv.loadFromString(note.readText())
+        dv.loadFromString(security.readNoteFile(note))
         val convenient = dv.canvasMode == CanvasMode.CONVENIENT
         if (convenient) {
             // Convenient-mode notes (the default canvas mode) don't have a fixed intrinsic page
@@ -881,7 +893,6 @@ class BooksActivity : AppCompatActivity() {
 
         val secHdr = TextView(this).apply { text = "APP SECURITY"; textSize = 13f; setTextColor(android.graphics.Color.parseColor("#8A8580")); setPadding(0, dp(16), 0, dp(4)) }
         container.addView(secHdr)
-        val security = SecurityManager(this)
         val secLbl = TextView(this).apply { textSize = 15f; setTextColor(android.graphics.Color.parseColor("#1565C0")); setPadding(0, dp(4), 0, dp(8)) }
         fun updateSecLbl() { secLbl.text = if (security.isSecurityEnabled()) "App Lock: ON" else "App Lock: OFF" }
         updateSecLbl(); container.addView(secLbl)
@@ -1082,7 +1093,7 @@ class BooksActivity : AppCompatActivity() {
         Toast.makeText(this, "Restoring…", Toast.LENGTH_SHORT).show()
         driveManager.downloadFile(driveFile.name, destFile) { success, error ->
             if (!success) { Toast.makeText(this, "Restore failed: $error", Toast.LENGTH_SHORT).show(); return@downloadFile }
-            val assetPaths = extractAssetPaths(destFile.readText())
+            val assetPaths = extractAssetPaths(security.readNoteFile(destFile))
             restoreAssets(assetPaths, 0) {
                 Toast.makeText(this, "Restored \"${destFile.nameWithoutExtension}\"!", Toast.LENGTH_SHORT).show()
                 refresh()

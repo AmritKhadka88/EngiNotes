@@ -53,6 +53,7 @@ class MainActivity : AppCompatActivity() {
     private var isConvenientLayout = true
 
     private val driveManager by lazy { DriveManager(this) }
+    private val security by lazy { SecurityManager(this) }
 
     private val shapeEntries: List<Pair<Int, Tool>> = listOf(
         R.drawable.ic_shape_line to Tool.LINE,
@@ -666,7 +667,7 @@ class MainActivity : AppCompatActivity() {
         if (fileName != null) {
             currentFileName = fileName; tvTitle.text = fileName
             val file = File(getDrawingsFolder(),"$fileName.eng")
-            if (file.exists()) drawingView.loadFromString(file.readText())
+            if (file.exists()) drawingView.loadFromString(security.readNoteFile(file))
         } else { tvTitle.text = "New Note" }
 
         drawingView.migrateOldNotes(filesDir)
@@ -2587,7 +2588,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         if (!silent) Toast.makeText(this, "Backing up to Drive…", Toast.LENGTH_SHORT).show()
-        val assetPaths = extractAssetPaths(engFile.readText())
+        val assetPaths = extractAssetPaths(security.readNoteFile(engFile))
         uploadAssetsThenNote(assetPaths, 0, engFile, name, silent)
     }
 
@@ -2641,7 +2642,7 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Restoring…", Toast.LENGTH_SHORT).show()
         driveManager.downloadFile(driveFile.name, localFile) { success, error ->
             if (!success) { Toast.makeText(this, "Restore failed: $error", Toast.LENGTH_SHORT).show(); return@downloadFile }
-            val content = localFile.readText()
+            val content = security.readNoteFile(localFile)
             val assetPaths = extractAssetPaths(content)
             restoreAssets(assetPaths, 0) {
                 Toast.makeText(this, "Restored! Open the note to view it.", Toast.LENGTH_SHORT).show()
@@ -3105,7 +3106,7 @@ class MainActivity : AppCompatActivity() {
                 val name = currentFileName ?: nextAutoName()
                 currentFileName = name; tvTitle.text = name
                 val targetFolder = File(File(filesDir,"books"), targetBook).also { it.mkdirs() }
-                File(targetFolder,"$name.eng").writeText(drawingView.serialize())
+                security.writeNoteFile(File(targetFolder,"$name.eng"), drawingView.serialize())
                 lastSavedContent = drawingView.serialize()
                 Toast.makeText(this,"Added to $targetBook",Toast.LENGTH_SHORT).show()
             }.setNegativeButton("Cancel",null).show()
@@ -5754,7 +5755,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun writeCurrentFile() {
         val name=currentFileName?:return
-        File(getDrawingsFolder(),"$name.eng").writeText(drawingView.serialize())
+        security.writeNoteFile(File(getDrawingsFolder(),"$name.eng"), drawingView.serialize())
         lastSavedContent=drawingView.serialize()
         if (getPrefs().getBoolean("auto_backup_drive", false) && driveManager.isSignedIn()) {
             backUpNoteToDrive(name, silent = true)
