@@ -1039,7 +1039,8 @@ class BooksActivity : AppCompatActivity() {
                                     if (result.biometricEnabled) {
                                         Toast.makeText(this, "App Lock enabled with PIN + biometric", Toast.LENGTH_LONG).show()
                                     } else {
-                                        Toast.makeText(this, "App Lock enabled with PIN. Fingerprint/face wasn't available — set one up in your phone's own Settings app first, then it'll be offered here too.", Toast.LENGTH_LONG).show()
+                                        val reason = result.biometricUnavailableReason ?: "Fingerprint/face wasn't available."
+                                        Toast.makeText(this, "App Lock enabled with PIN. $reason", Toast.LENGTH_LONG).show()
                                     }
                                     onDone()
                                 }

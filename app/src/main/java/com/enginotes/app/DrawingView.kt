@@ -1447,6 +1447,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val bitmaps = mutableListOf<Bitmap>()
         for (pageIdx in 0 until pageCount) {
             val dv = DrawingView(context)
+            dv.isExportRender = true
             dv.loadFromString(savedState)
             dv.measure(View.MeasureSpec.makeMeasureSpec(bmpW, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(bmpH, View.MeasureSpec.EXACTLY))
             dv.layout(0, 0, bmpW, bmpH)
@@ -2568,7 +2569,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (++drawCount % 60 == 0) pruneBrushCache()
-        canvas.drawColor(Color.WHITE)
+        canvas.drawColor(if (isExportRender) Color.WHITE else canvasBackgroundColor)
         canvas.save()
         canvas.translate(translateX, translateY)
         canvas.scale(scaleFactor, scaleFactor)
@@ -4986,6 +4987,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var linedDoubleMargin = false  // school-notebook-style double vertical margin line on the left
     var engineeringSpacingPref = 20f
     var engineeringMajorDivision = 5
+
+    // The area behind/around the actual page, and the gap band between page segments in
+    // multi-page modes — themed to match the app's current theme. Defaults to the original
+    // hardcoded gap color (#EDEAE3) so nothing changes for anyone who never touches themes.
+    var canvasBackgroundColor: Int = Color.parseColor("#EDEAE3")
+
+    // Set to true only on the temporary, throwaway DrawingView instances exportAllPagesAsBitmaps()
+    // creates for PDF export — export must always render on plain white regardless of the
+    // current app theme, since PDFs are meant to be printed/shared and shouldn't carry a
+    // colored background just because the app happens to be in a dark theme. The LIVE on-screen
+    // DrawingView (the one actually attached to MainActivity) never sets this.
+    var isExportRender = false
+
     private fun lineSpacingPx(): Float = lineSpacingPref
     private fun gridSpacingPx(): Float = gridSpacingPref
     private fun dotSpacingPx(): Float = dotSpacingPref
@@ -5000,14 +5014,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             CanvasMode.FIXED -> {
                 val pw = pageWidthPx(); val ph = pageHeightPx()
-                val gp = Paint(); gp.color = Color.parseColor("#EDEAE3"); canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                val gp = Paint(); gp.color = if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
                 val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else PAPER_BASE_COLOR; canvas.drawRect(0f, 0f, pw, ph, wp)
                 if (paperType != PaperType.BLANK && paperType != PaperType.BLANK_COLORED) { canvas.save(); canvas.clipRect(0f, 0f, pw, ph); drawPaperPattern(canvas, 0f, 0f, pw, ph); canvas.restore() }
                 val bp = Paint(); bp.color = Color.parseColor("#C8C0B0"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 1.5f / scaleFactor; canvas.drawRect(0f, 0f, pw, ph, bp)
             }
             CanvasMode.CONVENIENT -> {
                 val pw = pageWidthPx(); val ph = pageHeightPx(); val gap = 24f
-                val gp = Paint(); gp.color = Color.parseColor("#EDEAE3"); canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                val gp = Paint(); gp.color = if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
                 val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else PAPER_BASE_COLOR
                 val sp = Paint(); sp.color = Color.parseColor("#00000022"); sp.style = Paint.Style.FILL
                 val period = ph + gap
@@ -5022,7 +5036,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             CanvasMode.PAGINATED -> {
                 val pw = pageWidthPx(); val ph = pageHeightPx(); val gap = 40f
-                val gp = Paint(); gp.color = Color.parseColor("#EDEAE3"); canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                val gp = Paint(); gp.color = if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
                 val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else PAPER_BASE_COLOR
                 val bp = Paint(); bp.color = Color.parseColor("#C8C0B0"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 1.5f / scaleFactor
                 val period = ph + gap

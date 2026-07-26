@@ -674,6 +674,7 @@ class MainActivity : AppCompatActivity() {
         lastSavedContent = drawingView.serialize()
         driveManager.trySilentSignIn { }
         drawingView.arcDivisions = prefs.getInt("arc_divisions",3)
+        drawingView.canvasBackgroundColor = currentThemeBackgroundColor()
         drawingView.lineSpacingPref = prefs.getFloat("paper_line_spacing", 40f)
         drawingView.gridSpacingPref = prefs.getFloat("paper_grid_spacing", 40f)
         drawingView.dotSpacingPref = prefs.getFloat("paper_dot_spacing", 40f)
@@ -754,7 +755,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val scroll = HorizontalScrollView(this).apply {
                     isHorizontalScrollBarEnabled = false
-                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(18).toFloat() }
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(18).toFloat() }
                     elevation = dp(5).toFloat()
                     layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).also {
                         it.gravity = Gravity.TOP or Gravity.END; it.topMargin = dp(56); it.rightMargin = dp(8)
@@ -1642,7 +1643,7 @@ class MainActivity : AppCompatActivity() {
                 val popup = android.widget.PopupWindow(this)
                 val pLayout = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14))
-                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat() }
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
                 }
                 val sliderView = object : android.view.View(this) {
                     val trackH = dp(14).toFloat()
@@ -1697,7 +1698,7 @@ class MainActivity : AppCompatActivity() {
                 val popup = android.widget.PopupWindow(this)
                 val pLayout = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
-                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat() }
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
                 }
                 // Editable custom-value box at the top
                 val customRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(14), dp(12), dp(14), dp(8)) }
@@ -1755,7 +1756,7 @@ class MainActivity : AppCompatActivity() {
                 val popup = android.widget.PopupWindow(this)
                 val pLayout = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14))
-                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat() }
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
                 }
                 val sliderView = object : android.view.View(this) {
                     val trackH = dp(14).toFloat()
@@ -2502,51 +2503,68 @@ class MainActivity : AppCompatActivity() {
 
     fun onMenuClick(v: View) {
         closeInlineEditor(true)
-        val popup = PopupMenu(this, v)
-        popup.menu.add("Note: ${currentFileName ?: "Untitled"}")
-        listOf("Save","Save As","Export","Export Window","Clear Canvas").forEach { popup.menu.add(it) }
-        if (currentFileName != null) popup.menu.add("Delete This Note")
-        popup.menu.add("Add to Book")
-        popup.menu.add("Layers")
-        popup.menu.add("Back Up to Drive")
-        listOf("Open PDF","Chart Builder","Text Recognition (printed letters)","Handwriting Recognition (cursive)","Ask Gemini about Drawing","Settings","Exit").forEach { popup.menu.add(it) }
-        popup.setOnMenuItemClickListener { item ->
-            when {
-                item.title.toString().startsWith("Note:") -> showRenameDialog()
-                item.title == "Save" -> saveCurrent()
-                item.title == "Save As" -> saveAsNew()
-                item.title == "Export" -> showExportDialog()
-                item.title == "Export Window" -> {
-                    if(drawingView.canvasMode == CanvasMode.INFINITE || drawingView.canvasMode == CanvasMode.CONVENIENT) {
-                        Toast.makeText(this,"Draw a rectangle to select export area",Toast.LENGTH_SHORT).show()
-                        setActiveTool(null, Tool.EXPORT_WINDOW)
-                    } else Toast.makeText(this,"Switch to Infinite/Convenient canvas for window export",Toast.LENGTH_SHORT).show()
-                }
-                item.title == "Clear Canvas" -> confirmThenClear()
-                item.title == "Delete This Note" -> deleteCurrentNote()
-                item.title == "Add to Book" -> showAddToBookDialog()
-                item.title == "Layers" -> showLayersPanel()
-                item.title == "Open PDF" -> pickPdfLauncher.launch("application/pdf")
-                item.title == "Chart Builder" -> chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java))
-                item.title == "Text Recognition (printed letters)" -> convertHandwritingInPlace()
-                item.title == "Handwriting Recognition (cursive)" -> recognizeHandwriting()
-                item.title == "Ask Gemini about Drawing" -> {
-                    Toast.makeText(this,"Drag a box around the area to ask about",Toast.LENGTH_SHORT).show()
-                    setActiveTool(null, Tool.OCR_SNIP)
-                }
-                item.title == "Settings" -> showSettingsDialog()
-                item.title == "Exit" -> confirmThenExit()
-                item.title == "Back Up to Drive" -> {
-                    if (!driveManager.isSignedIn()) {
-                        Toast.makeText(this, "Sign in with Google from the home screen first", Toast.LENGTH_SHORT).show()
-                    } else {
-                        currentFileName?.let { backUpNoteToDrive(it, silent = false) }
-                    }
+        val items = mutableListOf("Note: ${currentFileName ?: "Untitled"}")
+        items.addAll(listOf("Save","Save As","Export","Export Window","Clear Canvas"))
+        if (currentFileName != null) items.add("Delete This Note")
+        items.addAll(listOf("Add to Book","Layers","Back Up to Drive","Open PDF","Chart Builder",
+            "Text Recognition (printed letters)","Handwriting Recognition (cursive)","Ask Gemini about Drawing","Settings","Exit"))
+
+        val bg = currentThemeBackgroundColor()
+        val isDark = Color.red(bg) * 0.299 + Color.green(bg) * 0.587 + Color.blue(bg) * 0.114 < 140
+        val textColor = if (isDark) Color.parseColor("#E8E8E8") else Color.parseColor("#1C1C1E")
+        val dividerColor = if (isDark) Color.parseColor("#3A3A55") else Color.parseColor("#E0E0E0")
+
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
+        var dlg: AlertDialog? = null
+        for ((i, label) in items.withIndex()) {
+            val row = TextView(this).apply {
+                text = label; textSize = 16f; setTextColor(textColor)
+                setPadding(dp(20), dp(14), dp(20), dp(14))
+                setOnClickListener { dlg?.dismiss(); handleMenuAction(label) }
+            }
+            container.addView(row)
+            if (i < items.size - 1) container.addView(View(this).apply {
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1)
+                setBackgroundColor(dividerColor)
+            })
+        }
+        dlg = AlertDialog.Builder(this).setView(ScrollView(this).apply { addView(container) }).show()
+    }
+
+    private fun handleMenuAction(title: String) {
+        when {
+            title.startsWith("Note:") -> showRenameDialog()
+            title == "Save" -> saveCurrent()
+            title == "Save As" -> saveAsNew()
+            title == "Export" -> showExportDialog()
+            title == "Export Window" -> {
+                if(drawingView.canvasMode == CanvasMode.INFINITE || drawingView.canvasMode == CanvasMode.CONVENIENT) {
+                    Toast.makeText(this,"Draw a rectangle to select export area",Toast.LENGTH_SHORT).show()
+                    setActiveTool(null, Tool.EXPORT_WINDOW)
+                } else Toast.makeText(this,"Switch to Infinite/Convenient canvas for window export",Toast.LENGTH_SHORT).show()
+            }
+            title == "Clear Canvas" -> confirmThenClear()
+            title == "Delete This Note" -> deleteCurrentNote()
+            title == "Add to Book" -> showAddToBookDialog()
+            title == "Layers" -> showLayersPanel()
+            title == "Open PDF" -> pickPdfLauncher.launch("application/pdf")
+            title == "Chart Builder" -> chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java))
+            title == "Text Recognition (printed letters)" -> convertHandwritingInPlace()
+            title == "Handwriting Recognition (cursive)" -> recognizeHandwriting()
+            title == "Ask Gemini about Drawing" -> {
+                Toast.makeText(this,"Drag a box around the area to ask about",Toast.LENGTH_SHORT).show()
+                setActiveTool(null, Tool.OCR_SNIP)
+            }
+            title == "Settings" -> showSettingsDialog()
+            title == "Exit" -> confirmThenExit()
+            title == "Back Up to Drive" -> {
+                if (!driveManager.isSignedIn()) {
+                    Toast.makeText(this, "Sign in with Google from the home screen first", Toast.LENGTH_SHORT).show()
+                } else {
+                    currentFileName?.let { backUpNoteToDrive(it, silent = false) }
                 }
             }
-            true
         }
-        popup.show()
     }
 
     // ---- Drive backup: the note's own .eng file plus every image/audio/custom-font it references ----
@@ -3363,7 +3381,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showDimensionStylePanel(dim: DimensionItem) {
         dismissAllFloatingPanels()
-        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE); elevation = dp(10).toFloat(); setPadding(dp(16),dp(12),dp(16),dp(20)) }
+        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(currentThemeBackgroundColor()); elevation = dp(10).toFloat(); setPadding(dp(16),dp(12),dp(16),dp(20)) }
 
         fun lbl(t: String) = TextView(this).apply { text=t; textSize=12f; setTextColor(Color.parseColor("#8A8580")); setPadding(0,dp(10),0,dp(4)) }
         fun seekRow(label: String, max: Int, current: Int, onChange: (Int)->Unit) {
@@ -3937,9 +3955,9 @@ class MainActivity : AppCompatActivity() {
         }
         if (polylineBar != null) return
         val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE)
+            orientation = LinearLayout.HORIZONTAL; setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(8).toFloat(); setPadding(dp(8),dp(6),dp(8),dp(6))
-            background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(20).toFloat(); setStroke(1, Color.parseColor("#E0E0E0")) }
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(20).toFloat(); setStroke(1, Color.parseColor("#E0E0E0")) }
         }
         bar.addView(TextView(this).apply {
             text = "Close"; setTextColor(Color.parseColor("#2196F3")); textSize = 14f; setPadding(dp(12),dp(6),dp(12),dp(6))
@@ -4212,11 +4230,11 @@ class MainActivity : AppCompatActivity() {
         dismissSnapOptionsPanel()
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(12).toFloat()
             setPadding(dp(14), dp(10), dp(14), dp(10))
             background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.WHITE); cornerRadius = dp(10).toFloat()
+                setColor(currentThemeBackgroundColor()); cornerRadius = dp(10).toFloat()
                 setStroke(1, Color.parseColor("#E0E0E0"))
             }
         }
@@ -4330,7 +4348,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this)
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(10).toFloat()
             setPadding(dp(16), dp(12), dp(16), dp(12))
         }
@@ -4449,7 +4467,7 @@ class MainActivity : AppCompatActivity() {
             val container = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 background = android.graphics.drawable.GradientDrawable().apply {
-                    setColor(Color.WHITE); cornerRadius = dp(6).toFloat()
+                    setColor(currentThemeBackgroundColor()); cornerRadius = dp(6).toFloat()
                     setStroke(dp(1), Color.parseColor("#E0E0E0"))
                 }
                 elevation = dp(8).toFloat()
@@ -4541,10 +4559,10 @@ class MainActivity : AppCompatActivity() {
         dimScalePanel?.let { canvasContainer.removeView(it) }
         val scroll = ScrollView(this)
         val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE)
+            orientation = LinearLayout.VERTICAL; setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(12).toFloat(); setPadding(dp(16), dp(12), dp(16), dp(16))
             background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.WHITE); cornerRadius = dp(10).toFloat()
+                setColor(currentThemeBackgroundColor()); cornerRadius = dp(10).toFloat()
                 setStroke(1, Color.parseColor("#E0E0E0"))
             }
         }
@@ -4642,11 +4660,11 @@ class MainActivity : AppCompatActivity() {
         val popup = android.widget.PopupWindow(this)
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(12).toFloat()
             setPadding(0, dp(4), 0, dp(4))
             background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.WHITE); cornerRadius = dp(8).toFloat()
+                setColor(currentThemeBackgroundColor()); cornerRadius = dp(8).toFloat()
                 setStroke(1, Color.parseColor("#E0E0E0"))
             }
         }
@@ -4711,7 +4729,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this)
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(10).toFloat()
             setPadding(dp(16), dp(12), dp(16), dp(12))
         }
@@ -4826,7 +4844,7 @@ class MainActivity : AppCompatActivity() {
 
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(10).toFloat()
             setPadding(dp(16), dp(12), dp(16), dp(12))
         }
@@ -4936,7 +4954,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this)
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(10).toFloat()
             setPadding(dp(16), dp(12), dp(16), dp(12))
         }
@@ -5020,7 +5038,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this)
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(10).toFloat()
             setPadding(dp(16), dp(12), dp(16), dp(12))
         }
@@ -5210,7 +5228,7 @@ class MainActivity : AppCompatActivity() {
         // caused the visible blink (and the extra memory churn from rebuilding a fresh dialog
         // hierarchy each time). Now "rebuild to reflect new state" just re-runs this function to
         // repopulate the same kind of panel, which fades/slides instead of flashing.
-        val container=LinearLayout(this).apply{ orientation=LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE); elevation = dp(10).toFloat(); setPadding(dp(16),dp(12),dp(16),dp(16)) }
+        val container=LinearLayout(this).apply{ orientation=LinearLayout.VERTICAL; setBackgroundColor(currentThemeBackgroundColor()); elevation = dp(10).toFloat(); setPadding(dp(16),dp(12),dp(16),dp(16)) }
         fun lbl(t:String){ container.addView(TextView(this).apply{ text=t;textSize=13f;setTextColor(Color.parseColor("#8A8580"));setPadding(0,dp(10),0,dp(4)) }) }
 
         // Title + close, matching the Text panel's header row
@@ -5418,7 +5436,7 @@ class MainActivity : AppCompatActivity() {
         val cell = table.getCellPublic(row, col)
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(Color.WHITE); elevation = dp(8).toFloat(); setPadding(dp(10), dp(6), dp(10), dp(6))
+            setBackgroundColor(currentThemeBackgroundColor()); elevation = dp(8).toFloat(); setPadding(dp(10), dp(6), dp(10), dp(6))
         }
         bar.addView(TextView(this).apply {
             text = "fx"; textSize = 14f; setTypeface(null, Typeface.ITALIC); setTextColor(Color.parseColor("#4527A0")); setPadding(0, 0, dp(10), 0)
@@ -5581,7 +5599,7 @@ class MainActivity : AppCompatActivity() {
         showFormulaBarFor(table, row, col)
 
         // Floating actions strip, positioned just above the whole TABLE (not the cell)
-        val actionsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(6).toFloat(); setPadding(dp(4),dp(4),dp(4),dp(4)) }
+        val actionsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(currentThemeBackgroundColor()); elevation = dp(6).toFloat(); setPadding(dp(4),dp(4),dp(4),dp(4)) }
         lateinit var refreshToolbar: () -> Unit
         fun actionBtn(label: String, pressed: Boolean = false, action: () -> Unit): TextView {
             val normalBg = if (pressed) Color.parseColor("#8D6E63") else Color.parseColor("#F0EBE0")
@@ -5620,7 +5638,7 @@ class MainActivity : AppCompatActivity() {
             val popup = android.widget.PopupWindow(this)
             val pLayout = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat() }
+                background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
             }
             val customRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(14), dp(12), dp(14), dp(8)) }
             val customEdit = EditText(this).apply {

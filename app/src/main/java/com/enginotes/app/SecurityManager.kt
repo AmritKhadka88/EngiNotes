@@ -91,7 +91,23 @@ class SecurityManager(private val context: Context) {
      *  that failure is caught separately and just leaves biometric off, rather than failing
      *  the whole setup. Returns (success, biometricEnabled) so the caller can tell the user
      *  specifically why biometric wasn't offered, rather than silently going PIN-only. */
-    data class SetupResult(val success: Boolean, val biometricEnabled: Boolean, val recoveryCode: String?)
+    data class SetupResult(val success: Boolean, val biometricEnabled: Boolean, val recoveryCode: String?, val biometricUnavailableReason: String? = null)
+
+    /** Uses BiometricManager's own capability check rather than inferring availability from
+     *  whether Keystore key generation happened to throw — gives a specific, actionable reason
+     *  (no biometric hardware at all vs. hardware exists but nothing is enrolled at the phone's
+     *  own Settings level vs. temporarily unavailable) instead of one generic failure message. */
+    fun biometricUnavailableReason(): String? {
+        val bm = androidx.biometric.BiometricManager.from(context)
+        return when (bm.canAuthenticate(androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG)) {
+            androidx.biometric.BiometricManager.BIOMETRIC_SUCCESS -> null
+            androidx.biometric.BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> "This device has no fingerprint/face sensor."
+            androidx.biometric.BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE -> "Fingerprint/face sensor is temporarily unavailable — try again in a moment."
+            androidx.biometric.BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> "Your device supports fingerprint/face, but nothing is set up yet — add one in your phone's own Settings app first."
+            androidx.biometric.BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED -> "A security update is needed before fingerprint/face can be used."
+            else -> "Fingerprint/face isn't available right now."
+        }
+    }
 
     fun setupSecurity(pin: String): SetupResult {
         return try {
@@ -102,14 +118,17 @@ class SecurityManager(private val context: Context) {
             encryptAndStore(dek, pinKey, "dek_wrapped_pin")
 
             var biometricAvailable = false
-            try {
-                val keystoreKey = getOrCreateKeystoreKey()
-                encryptAndStore(dek, keystoreKey, "dek_wrapped_biometric")
-                biometricAvailable = true
-            } catch (e: Exception) {
-                // No biometric hardware, nothing enrolled at the phone's own Settings level, or
-                // some other device limitation — not a failure of security setup overall, just
-                // means biometric starts off.
+            val bioReason = biometricUnavailableReason()
+            if (bioReason == null) {
+                try {
+                    val keystoreKey = getOrCreateKeystoreKey()
+                    encryptAndStore(dek, keystoreKey, "dek_wrapped_biometric")
+                    biometricAvailable = true
+                } catch (e: Exception) {
+                    // BiometricManager said it should work, but Keystore key generation still
+                    // failed for some other device-specific reason — not a failure of security
+                    // setup overall, just means biometric starts off.
+                }
             }
 
             // A third independent unlock path to the SAME underlying DEK — same shape as PIN
@@ -135,7 +154,7 @@ class SecurityManager(private val context: Context) {
                 .putLong("lockout_until", 0L)
                 .apply()
             inMemoryDek = dek
-            SetupResult(true, biometricAvailable, recoveryCode)
+            SetupResult(true, biometricAvailable, recoveryCode, if (biometricAvailable) null else bioReason)
         } catch (e: Exception) { SetupResult(false, false, null) }
     }
 
