@@ -771,9 +771,9 @@ class MainActivity : AppCompatActivity() {
                 fun iconBtn(glyph: String, action: () -> Unit): TextView {
                     val v = TextView(this).apply {
                         text = glyph; textSize = 13f; gravity = Gravity.CENTER
-                        setTextColor(Color.parseColor("#2A2A2A"))
+                        setTextColor(Color.WHITE)
                         layoutParams = LinearLayout.LayoutParams(iconSize, iconSize).also { it.setMargins(dp(1), dp(5), dp(1), dp(5)) }
-                        background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.parseColor("#F2F2F2")) }
+                        background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(currentThemeButtonColor()) }
                         setOnClickListener { action() }
                     }
                     tb.addView(v); return v
@@ -2097,11 +2097,14 @@ class MainActivity : AppCompatActivity() {
     // Reads the same "app_theme" preference BooksActivity's theme picker writes to, reusing its
     // THEMES table directly rather than duplicating the color list here — one theme choice stays
     // consistent across both activities instead of each maintaining its own copy.
-    internal fun currentThemeBackgroundColor(): Int {
+    private fun currentThemeSpec(): BooksActivity.ThemeSpec {
         val name = getPrefs().getString("app_theme", "Classic") ?: "Classic"
-        val bgHex = (BooksActivity.THEMES[name] ?: BooksActivity.THEMES["Classic"]!!).second
-        return Color.parseColor(bgHex)
+        return BooksActivity.THEMES[name] ?: BooksActivity.THEMES["Classic"]!!
     }
+    internal fun currentThemeBackgroundColor(): Int = Color.parseColor(currentThemeSpec().bg)
+    internal fun currentThemeToolbarColor(): Int = Color.parseColor(currentThemeSpec().toolbar)
+    internal fun currentThemeButtonColor(): Int = Color.parseColor(currentThemeSpec().button)
+    internal fun currentThemeIsGradient(): Boolean = currentThemeSpec().isGradient
 
     private fun showOffsetDialog(item: StrokeItem) {
         val container = LinearLayout(this).apply {

@@ -20,13 +20,22 @@ class BooksActivity : AppCompatActivity() {
     // color + a background color — kept simple and reliable rather than a deep per-element
     // theming system, so this can't introduce visual inconsistencies elsewhere in the app.
     companion object {
+        // Button color chosen per-theme for good contrast against that theme's background —
+        // not just reusing the toolbar color, which doesn't always pop visually against a
+        // similar-hued background. Complementary-color pairings (Ocean's blue -> amber button,
+        // Forest's green -> orange button, Sunset's orange -> teal button) are a standard color
+        // theory choice for "make this stand out," not arbitrary picks.
+        data class ThemeSpec(val toolbar: String, val bg: String, val button: String, val isGradient: Boolean = false)
         val THEMES = linkedMapOf(
-            "Classic" to Pair("#8D6E63", "#FAF6EF"),
-            "Midnight" to Pair("#1A1A2E", "#16161E"),
-            "Ocean" to Pair("#0277BD", "#E1F5FE"),
-            "Forest" to Pair("#2E7D32", "#F1F8E9"),
-            "Sunset" to Pair("#E64A19", "#FFF3E0"),
-            "Minimal Mono" to Pair("#212121", "#FAFAFA")
+            "Classic" to ThemeSpec("#8D6E63", "#FAF6EF", "#6D4C41"),
+            "Ocean" to ThemeSpec("#0277BD", "#E1F5FE", "#FF8F00"),
+            "Forest" to ThemeSpec("#2E7D32", "#F1F8E9", "#EF6C00"),
+            "Sunset" to ThemeSpec("#E64A19", "#FFF3E0", "#00695C"),
+            "Minimal Mono" to ThemeSpec("#212121", "#FAFAFA", "#424242"),
+            // No hard edge between the top bar and the page below it — the top bar itself is a
+            // gradient that fades from its own color down into the exact same shade as the page
+            // background, so the seam disappears instead of being a visible contrast line.
+            "Gradient" to ThemeSpec("#5C6BC0", "#ECEFF1", "#FF7043", isGradient = true)
         )
         // Only Android's own built-in system animation resources — guaranteed to exist on every
         // API level since these ship with the framework itself, unlike custom XML anim resources
@@ -54,11 +63,17 @@ class BooksActivity : AppCompatActivity() {
     private lateinit var selectionBar: LinearLayout
     private lateinit var selectionCountLbl: TextView
 
-    private fun currentThemeColors(): Pair<String, String> {
+    private fun currentThemeSpec(): ThemeSpec {
         val prefs = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
         val name = prefs.getString("app_theme", "Classic") ?: "Classic"
         return THEMES[name] ?: THEMES["Classic"]!!
     }
+    private fun currentThemeColors(): Pair<String, String> {
+        val spec = currentThemeSpec()
+        return Pair(spec.toolbar, spec.bg)
+    }
+    private fun currentThemeButtonColorHex(): String = currentThemeSpec().button
+    private fun currentThemeIsGradient(): Boolean = currentThemeSpec().isGradient
 
     // Applies the currently selected transition animation — call this immediately after any
     // startActivity() that opens MainActivity. Kept as a standalone helper (not wrapped around
@@ -93,9 +108,18 @@ class BooksActivity : AppCompatActivity() {
         // Top bar
         topBar = LinearLayout(this)
         topBar.orientation = LinearLayout.HORIZONTAL
-        topBar.setBackgroundColor(android.graphics.Color.parseColor(themeToolbar))
         topBar.setPadding(dp(16), dp(12), dp(16), dp(12))
         topBar.gravity = Gravity.CENTER_VERTICAL
+        if (currentThemeIsGradient()) {
+            // Fades from the toolbar color down to the EXACT same color as the page background
+            // below it — that's what makes the seam disappear rather than just softening it.
+            topBar.background = android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(android.graphics.Color.parseColor(themeToolbar), android.graphics.Color.parseColor(themeBg))
+            )
+        } else {
+            topBar.setBackgroundColor(android.graphics.Color.parseColor(themeToolbar))
+        }
         val topLp = android.widget.FrameLayout.LayoutParams(
             android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
             android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
@@ -246,7 +270,7 @@ class BooksActivity : AppCompatActivity() {
         fab.post {
             fab.background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(android.graphics.Color.parseColor("#8D6E63"))
+                setColor(android.graphics.Color.parseColor(currentThemeButtonColorHex()))
             }
         }
         // Direct: create new note in General book
