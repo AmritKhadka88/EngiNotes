@@ -879,6 +879,30 @@ class BooksActivity : AppCompatActivity() {
         }
         container.addView(animBtn)
 
+        val secHdr = TextView(this).apply { text = "APP SECURITY"; textSize = 13f; setTextColor(android.graphics.Color.parseColor("#8A8580")); setPadding(0, dp(16), 0, dp(4)) }
+        container.addView(secHdr)
+        val security = SecurityManager(this)
+        val secLbl = TextView(this).apply { textSize = 15f; setTextColor(android.graphics.Color.parseColor("#1565C0")); setPadding(0, dp(4), 0, dp(8)) }
+        fun updateSecLbl() { secLbl.text = if (security.isSecurityEnabled()) "App Lock: ON" else "App Lock: OFF" }
+        updateSecLbl(); container.addView(secLbl)
+        val secBtn = Button(this)
+        fun updateSecBtn() { secBtn.text = if (security.isSecurityEnabled()) "Disable App Lock" else "Enable App Lock" }
+        updateSecBtn()
+        secBtn.setOnClickListener {
+            if (security.isSecurityEnabled()) {
+                AlertDialog.Builder(this).setTitle("Disable App Lock?")
+                    .setMessage("Notes will no longer require a PIN or biometric to open.")
+                    .setPositiveButton("Disable") { _, _ ->
+                        security.disableSecurity()
+                        Toast.makeText(this, "App Lock disabled", Toast.LENGTH_SHORT).show()
+                        updateSecLbl(); updateSecBtn()
+                    }.setNegativeButton("Cancel", null).show()
+            } else {
+                showSecurityWarningDialog { showPinSetupDialog(security) { updateSecLbl(); updateSecBtn() } }
+            }
+        }
+        container.addView(secBtn)
+
         AlertDialog.Builder(this).setTitle("\u2699 Settings").setView(container)
             .setPositiveButton("Save") { _, _ ->
                 val themeChanged = selTheme != (prefs.getString("app_theme", "Classic") ?: "Classic")
@@ -894,6 +918,63 @@ class BooksActivity : AppCompatActivity() {
                 // silently only applying the next time the app happens to restart.
                 if (themeChanged) recreate()
             }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun showSecurityWarningDialog(onAcknowledged: () -> Unit) {
+        val msg = "Read this before turning on App Lock.\n\n" +
+            "• Your notes will be encrypted and protected by biometric unlock and a 6-digit PIN.\n\n" +
+            "• 5 wrong biometric attempts disables biometric — PIN only from then on.\n\n" +
+            "• 5 wrong PIN attempts locks the app for 1 minute.\n\n" +
+            "• 5 more wrong attempts after that PERMANENTLY locks the app. The only way back in is deleting every note, permanently and irreversibly — not recoverable by any tool, including professional data recovery.\n\n" +
+            "• If you forget your PIN and lose biometric access, this is also the outcome. There is no password reset, no support recovery, no backdoor. That's what makes this actually secure — but it means forgetting your PIN has the same result as an attacker trying to force their way in.\n\n" +
+            "Do not turn this on unless you're comfortable with that trade-off."
+        AlertDialog.Builder(this).setTitle("\u26A0 Before You Continue")
+            .setMessage(msg)
+            .setPositiveButton("I Understand, Continue") { _, _ -> onAcknowledged() }
+            .setNegativeButton("Cancel", null)
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun showPinSetupDialog(security: SecurityManager, onDone: () -> Unit) {
+        val input1 = EditText(this).apply {
+            hint = "Enter 6-digit PIN"
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            filters = arrayOf(android.text.InputFilter.LengthFilter(6))
+        }
+        AlertDialog.Builder(this).setTitle("Set Your PIN").setView(input1)
+            .setPositiveButton("Next", null) // overridden below so a bad PIN doesn't dismiss the dialog
+            .setNegativeButton("Cancel", null)
+            .show().also { dlg ->
+                dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                    val pin = input1.text.toString()
+                    if (pin.length != 6) { Toast.makeText(this, "PIN must be exactly 6 digits", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+                    dlg.dismiss()
+                    // Confirmation step — re-entering catches typos before they get baked into
+                    // the actual encryption key derivation, which would otherwise silently lock
+                    // the user out with a PIN that isn't the one they meant to set.
+                    val input2 = EditText(this).apply {
+                        hint = "Re-enter PIN to confirm"
+                        inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
+                        filters = arrayOf(android.text.InputFilter.LengthFilter(6))
+                    }
+                    AlertDialog.Builder(this).setTitle("Confirm Your PIN").setView(input2)
+                        .setPositiveButton("Confirm", null)
+                        .setNegativeButton("Cancel", null)
+                        .show().also { dlg2 ->
+                            dlg2.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                                if (input2.text.toString() != pin) { Toast.makeText(this, "PINs didn't match — try again", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+                                dlg2.dismiss()
+                                if (security.setupSecurity(pin)) {
+                                    Toast.makeText(this, "App Lock enabled", Toast.LENGTH_LONG).show()
+                                } else {
+                                    Toast.makeText(this, "Couldn't enable App Lock on this device — biometric hardware may be unavailable", Toast.LENGTH_LONG).show()
+                                }
+                                onDone()
+                            }
+                        }
+                }
+            }
     }
 
     private fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
