@@ -1754,6 +1754,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
+    // Public entry point for running OCR on the currently selected image, rather than only ever
+    // looking at pen strokes. Reuses the existing async bitmap loader so this works reliably even
+    // if the image's bitmap wasn't already decoded/cached at the moment this gets called.
+    fun getSelectedImageBitmap(onLoaded: (Bitmap?) -> Unit) {
+        val item = selectedItem
+        if (item is ImageItem) loadBitmapAsync(item.path, onLoaded) else onLoaded(null)
+    }
+
     private fun loadBitmapAsync(path: String, onLoaded: (Bitmap?) -> Unit) {
         val cached = synchronized(bitmapCache) { bitmapCache.getBitmap(path) }
         if (cached != null) { onLoaded(cached); return }
