@@ -26,7 +26,11 @@ class LockScreenActivity : FragmentActivity() {
     // A plain background-thread executor is fine here — BiometricPrompt's own callback always
     // marshals back to the main thread before invoking onAuthenticationSucceeded/Error, so this
     // executor's only job is receiving that initial callback, not doing any UI work itself.
-    private val bgExecutor: Executor = ContextCompat.getMainExecutor(this)
+    // by lazy defers this until first actual use (inside tryBiometric()) — calling this as a
+    // Context here works fine by then, since onCreate() has already run. As a plain property
+    // initializer it ran during the Activity's constructor, before Android attaches the Activity
+    // to its Context/system services at all — which crashed on every single launch.
+    private val bgExecutor: Executor by lazy { ContextCompat.getMainExecutor(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
