@@ -165,10 +165,6 @@ class MainActivity : AppCompatActivity() {
     internal var isSwitchingTextEditor = false
     private var exportWindowBitmap: Bitmap? = null
     private var pendingExportBitmap: Bitmap? = null
-    // Set instead of pendingExportBitmap specifically for "Export as PDF" on the whole note —
-    // one bitmap per app-page, so savePdfLauncher can give each one its own real PDF page
-    // instead of merging everything into a single tall page.
-    private var pendingExportBitmaps: List<Bitmap>? = null
     private var pendingExportFormat: String = "png"
     private var shapesPickerOverlay: LinearLayout? = null
 
@@ -409,62 +405,17 @@ class MainActivity : AppCompatActivity() {
     private val savePdfLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
         uri ?: return@registerForActivityResult
         try {
+            val bmp = pendingExportBitmap ?: return@registerForActivityResult
             val maxDim = 3000
-            val doc = PdfDocument()
-            // PdfDocument.PageInfo.Builder's width/height are in PostScript points (1/72 inch),
-            // NOT pixels — passing the bitmap's raw pixel count directly (the previous bug) made
-            // every page roughly 2x too large in each dimension, since e.g. 150 pixels-per-inch
-            // was silently being treated as 150 points-per-inch. exportAllPagesAsBitmaps() always
-            // renders at 150 DPI, so converting is exact: points = pixels * 72 / 150.
-            //
-            // Calibration is expressed directly as "what does your printed page actually measure,
-            // in mm" rather than an abstract percentage — much easier to reason about than
-            // guessing a percentage. Compares that stored mm value against the paper size's true
-            // mm dimensions to get a ratio, applied to width/height independently since a
-            // miscalibrated printer can scale unevenly.
-            val exportDpi = 150f
-            val trueWmm = if (drawingView.pageOrientation == Orientation.PORTRAIT) drawingView.paperSize.widthMM else drawingView.paperSize.heightMM
-            val trueHmm = if (drawingView.pageOrientation == Orientation.PORTRAIT) drawingView.paperSize.heightMM else drawingView.paperSize.widthMM
-            val calibWmm = getPrefs().getFloat("pdf_calib_w_mm", trueWmm)
-            val calibHmm = getPrefs().getFloat("pdf_calib_h_mm", trueHmm)
-            val calibW = if (trueWmm > 0f) calibWmm / trueWmm else 1f
-            val calibH = if (trueHmm > 0f) calibHmm / trueHmm else 1f
-            val multiPage = pendingExportBitmaps
-            if (multiPage != null) {
-                // Whole-note export: one real PDF page per app-page, instead of the old approach
-                // of drawing everything onto a single tall page (which is what let two adjacent
-                // pages' content end up merged together with no actual page break between them).
-                for (bmp in multiPage) {
-                    // Points are computed from the ORIGINAL bitmap's pixel size at the known
-                    // export DPI — this is the page's true physical size and must not change
-                    // just because the image gets downscaled for file-size reasons below.
-                    val ptsW = (bmp.width * 72f / exportDpi * calibW).toInt().coerceAtLeast(1)
-                    val ptsH = (bmp.height * 72f / exportDpi * calibH).toInt().coerceAtLeast(1)
-                    val scale = if (bmp.width > maxDim || bmp.height > maxDim) minOf(maxDim.toFloat()/bmp.width, maxDim.toFloat()/bmp.height) else 1f
-                    val pw = (bmp.width*scale).toInt().coerceAtLeast(1); val ph = (bmp.height*scale).toInt().coerceAtLeast(1)
-                    val sb = if (scale < 1f) Bitmap.createScaledBitmap(bmp,pw,ph,true) else bmp
-                    val pi = PdfDocument.PageInfo.Builder(ptsW, ptsH, doc.pages.size + 1).create()
-                    val page = doc.startPage(pi)
-                    // RectF-based overload scales the source bitmap to exactly fill the
-                    // destination rect — needed because the bitmap's own pixel dimensions (even
-                    // after maxDim downscaling) no longer match the page's point dimensions;
-                    // drawing at 1:1 pixel scale would draw it far too large (or clipped) against
-                    // a canvas whose coordinate space is now in points, not pixels.
-                    page.canvas.drawBitmap(sb, null, android.graphics.RectF(0f, 0f, ptsW.toFloat(), ptsH.toFloat()), Paint())
-                    doc.finishPage(page)
-                }
-            } else {
-                val bmp = pendingExportBitmap ?: return@registerForActivityResult
-                val scale = if (bmp.width > maxDim || bmp.height > maxDim) minOf(maxDim.toFloat()/bmp.width, maxDim.toFloat()/bmp.height) else 1f
-                val pw = (bmp.width*scale).toInt().coerceAtLeast(1); val ph = (bmp.height*scale).toInt().coerceAtLeast(1)
-                val sb = if (scale < 1f) Bitmap.createScaledBitmap(bmp,pw,ph,true) else bmp
-                val pi = PdfDocument.PageInfo.Builder(pw,ph,1).create()
-                val page = doc.startPage(pi); page.canvas.drawBitmap(sb,0f,0f,Paint()); doc.finishPage(page)
-            }
+            val scale = if (bmp.width > maxDim || bmp.height > maxDim) minOf(maxDim.toFloat()/bmp.width, maxDim.toFloat()/bmp.height) else 1f
+            val pw = (bmp.width*scale).toInt().coerceAtLeast(1); val ph = (bmp.height*scale).toInt().coerceAtLeast(1)
+            val sb = if (scale < 1f) Bitmap.createScaledBitmap(bmp,pw,ph,true) else bmp
+            val doc = PdfDocument(); val pi = PdfDocument.PageInfo.Builder(pw,ph,1).create()
+            val page = doc.startPage(pi); page.canvas.drawBitmap(sb,0f,0f,Paint()); doc.finishPage(page)
             contentResolver.openOutputStream(uri)?.use { doc.writeTo(it) }; doc.close()
             Toast.makeText(this,"PDF saved!",Toast.LENGTH_SHORT).show()
         } catch(e:Exception){ Toast.makeText(this,"PDF failed: ${e.message}",Toast.LENGTH_LONG).show() }
-        finally { pendingExportBitmap = null; pendingExportBitmaps = null }
+        finally { pendingExportBitmap = null }
     }
 
     private val saveImageLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("image/*")) { uri ->
@@ -1039,14 +990,19 @@ class MainActivity : AppCompatActivity() {
     private fun applyConvenientLayout() {
         isConvenientLayout = true
         drawingView.canvasMode = CanvasMode.CONVENIENT
-        drawingView.clampTranslation()
+        drawingView.invalidate()
+    }
+
+    private fun applyPrintLayout() {
+        isConvenientLayout = false
+        drawingView.canvasMode = CanvasMode.PAGINATED
+        drawingView.paperSize = PaperSizeOption.A4
         drawingView.invalidate()
     }
 
     private fun applyInfiniteLayout() {
         isConvenientLayout = false
         drawingView.canvasMode = CanvasMode.INFINITE
-        drawingView.clampTranslation()
         drawingView.invalidate()
     }
 
@@ -3926,13 +3882,7 @@ class MainActivity : AppCompatActivity() {
         val name = (currentFileName ?: "EngiNote_${System.currentTimeMillis()}").replace(" ","_")
         AlertDialog.Builder(this).setTitle("Export as...")
             .setItems(arrayOf("PDF","JPG","PNG","BMP","TXT","DOCX")) { _,i ->
-                if (i == 0) {
-                    // PDF specifically gets one real page per app-page (see exportAllPagesAsBitmaps),
-                    // not the single on-screen-viewport screenshot the other formats use.
-                    pendingExportBitmaps = drawingView.exportAllPagesAsBitmaps()
-                } else {
-                    pendingExportBitmap = drawingView.exportBitmap()
-                }
+                pendingExportBitmap = drawingView.exportBitmap()
                 when(i){ 0->savePdfLauncher.launch("$name.pdf"); 1->{ pendingExportFormat="jpg"; saveImageLauncher.launch("$name.jpg") }; 2->{ pendingExportFormat="png"; saveImageLauncher.launch("$name.png") }; 3->{ pendingExportFormat="bmp"; saveImageLauncher.launch("$name.bmp") }; 4->saveTxtLauncher.launch("$name.txt"); 5->saveDocxLauncher.launch("$name.docx") }
             }.show()
     }

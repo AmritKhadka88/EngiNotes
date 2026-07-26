@@ -99,16 +99,7 @@ internal fun MainActivity.measureTextBoxSize(item: TextItem, screenSizePx: Float
         val measuredW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) } ?: (item.size * 2f)
         // Scale world dimensions to screen pixels, add small padding
         val w = (measuredW * scale + dp(12)).toInt().coerceAtLeast(dp(40))
-        // Was layout.height directly — built from a fresh, separate StaticLayout with zero
-        // awareness of the per-page splitting drawTextItem() does (inserting a visual gap
-        // whenever an item spans multiple pages). For any item long enough to cross a page
-        // boundary, that undershot the true rendered height by however many gaps it should have
-        // included — which is why this overlay stayed too short AND visually bled across the
-        // page divider instead of stopping cleanly at each page's edge. textItemHeight() already
-        // accounts for those gaps correctly (same function DrawingView.kt itself uses for its
-        // selection box/hit-testing), so using it here means this measurement can never drift
-        // out of sync with actual rendering the way the separate StaticLayout did.
-        val h = (drawingView.textItemHeight(item) * scale + dp(8).toFloat()).coerceAtLeast(dp(30).toFloat()).toInt()
+        val h = (layout.height * scale + dp(8).toFloat()).coerceAtLeast(dp(30).toFloat()).toInt()
         return Pair(w, h)
     }
 
@@ -449,7 +440,12 @@ internal fun MainActivity.showTextSelectionBox(item: TextItem, screenX: Float, s
         tbBtn(R.drawable.ic_text_check) { dismissTextSelectionBox() }
 
         val toolbarLp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; bottomMargin = dp(16)
+            // Was dp(16) — nowhere near enough clearance once the two bottom bars got merged
+            // into one taller shell (bottomToolbarDock) earlier this session. This toolbar was
+            // rendering underneath/behind that dock instead of above it, which is exactly why
+            // only the rotate handle (a separate View, positioned independently near the item
+            // itself rather than pinned to the screen bottom) remained visible.
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; bottomMargin = dp(230)
         }
         canvasContainer.addView(toolbar, toolbarLp)
         textSelectionBox = moveSurface; textSelectionItem = item
