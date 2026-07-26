@@ -7029,12 +7029,70 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return Pair(bmp, penStrokes)
     }
 
+    // Builds an ML Kit Ink object from the currently selected pen strokes (via lasso/rect
+    // select) — falls back to all pen strokes on the page if nothing is explicitly selected,
+    // for convenience, but selecting first is strongly preferable: recognition accuracy depends
+    // on the ink containing only the intended word/phrase, not unrelated strokes elsewhere.
+    // Timestamps are synthesized (incrementing per point) since StrokeData only stores geometry,
+    // not real per-point timing — ML Kit's own docs note recognition still works well without
+    // real timestamps, since they're used as a velocity/ordering cue, not a hard requirement.
+    fun buildInkFromSelection(): com.google.mlkit.vision.digitalink.Ink? {
+        val chosen = if (selectedItems.isNotEmpty()) selectedItems.filterIsInstance<StrokeItem>()
+            else actions.filterIsInstance<StrokeItem>()
+        val strokes = chosen.filter { it.data.type == Tool.PEN }
+        if (strokes.isEmpty()) return null
+        val inkBuilder = com.google.mlkit.vision.digitalink.Ink.builder()
+        var t = 0L
+        for (s in strokes) {
+            val pts = s.data.points
+            if (pts.size < 4) continue
+            val strokeBuilder = com.google.mlkit.vision.digitalink.Ink.Stroke.builder()
+            var i = 0
+            while (i + 1 < pts.size) {
+                strokeBuilder.addPoint(com.google.mlkit.vision.digitalink.Ink.Point.create(pts[i], pts[i + 1], t))
+                t += 8 // ~8ms between points — a plausible fast-writing pace, not measured
+                i += 2
+            }
+            inkBuilder.addStroke(strokeBuilder.build())
+        }
+        return inkBuilder.build()
+    }
+
+    // Bounding box of whatever buildInkFromSelection() would use — for positioning the
+    // recognized text relative to the actual strokes it came from, the same way OCR positions
+    // its result relative to the image it read.
+    fun selectionBoundsForInk(): FloatArray? {
+        val chosen = if (selectedItems.isNotEmpty()) selectedItems.filterIsInstance<StrokeItem>()
+            else actions.filterIsInstance<StrokeItem>()
+        val strokes = chosen.filter { it.data.type == Tool.PEN }
+        if (strokes.isEmpty()) return null
+        var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+        for (s in strokes) {
+            val b = getBounds(s) ?: continue
+            if (b[0] < minX) minX = b[0]; if (b[1] < minY) minY = b[1]
+            if (b[2] > maxX) maxX = b[2]; if (b[3] > maxY) maxY = b[3]
+        }
+        if (minX >= maxX || minY >= maxY) return null
+        return floatArrayOf(minX, minY, maxX, maxY)
+    }
+
+    // Removes exactly the strokes buildInkFromSelection() used — called after a successful
+    // recognition, so converting one selection doesn't touch unrelated pen strokes elsewhere.
+    fun removeInkSourceStrokes() {
+        val chosen = if (selectedItems.isNotEmpty()) selectedItems.filterIsInstance<StrokeItem>()
+            else actions.filterIsInstance<StrokeItem>()
+        val strokes = chosen.filter { it.data.type == Tool.PEN }
+        removeStrokes(strokes)
+        selectedItems.clear(); selectedItem = null
+    }
+
     // Removes exactly the given strokes — used instead of the old "remove every pen stroke on
     // the page" behavior, so converting one word doesn't silently delete unrelated handwriting.
     fun removeStrokes(strokes: List<StrokeItem>) {
         actions.removeAll(strokes.toSet())
         redoStack.clear(); markSpatialDirty(); invalidate()
     }
+
 
     fun sendToBack(item: Any) {
         if (actions.remove(item)) { actions.add(0, item); redoStack.clear(); invalidate() }

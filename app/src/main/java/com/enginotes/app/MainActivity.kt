@@ -2508,7 +2508,7 @@ class MainActivity : AppCompatActivity() {
         popup.menu.add("Add to Book")
         popup.menu.add("Layers")
         popup.menu.add("Back Up to Drive")
-        listOf("Open PDF","Chart Builder","Text Recognition (printed letters)","Ask Gemini about Drawing","Settings","Exit").forEach { popup.menu.add(it) }
+        listOf("Open PDF","Chart Builder","Text Recognition (printed letters)","Handwriting Recognition (cursive)","Ask Gemini about Drawing","Settings","Exit").forEach { popup.menu.add(it) }
         popup.setOnMenuItemClickListener { item ->
             when {
                 item.title.toString().startsWith("Note:") -> showRenameDialog()
@@ -2528,6 +2528,7 @@ class MainActivity : AppCompatActivity() {
                 item.title == "Open PDF" -> pickPdfLauncher.launch("application/pdf")
                 item.title == "Chart Builder" -> chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java))
                 item.title == "Text Recognition (printed letters)" -> convertHandwritingInPlace()
+                item.title == "Handwriting Recognition (cursive)" -> recognizeHandwriting()
                 item.title == "Ask Gemini about Drawing" -> {
                     Toast.makeText(this,"Drag a box around the area to ask about",Toast.LENGTH_SHORT).show()
                     setActiveTool(null, Tool.OCR_SNIP)
@@ -2707,6 +2708,69 @@ class MainActivity : AppCompatActivity() {
             }
             .addOnFailureListener { Toast.makeText(this, "Recognition failed: ${it.message}", Toast.LENGTH_SHORT).show() }
     }
+
+    // ═══════════════════════════ Handwriting (cursive) recognition ═══════════════════════════
+    // ML Kit Digital Ink Recognition — genuinely different from the OCR path above: this reads
+    // the actual pen-stroke coordinates as drawn (via drawingView.buildInkFromSelection()), not
+    // a rendered bitmap, so it can handle cursive/joined-up handwriting that a printed-text OCR
+    // engine fundamentally can't. The one real cost: unlike Text Recognition (fully bundled in
+    // the APK), this needs a one-time model download per language before first use.
+    private var inkRecognizer: com.google.mlkit.vision.digitalink.DigitalInkRecognizer? = null
+    private var inkModel: com.google.mlkit.vision.digitalink.DigitalInkRecognitionModel? = null
+
+    private fun ensureInkModelReady(onReady: (Boolean) -> Unit) {
+        if (inkRecognizer != null) { onReady(true); return }
+        try {
+            val id = com.google.mlkit.vision.digitalink.DigitalInkRecognitionModelIdentifier.fromLanguageTag("en-US")
+            if (id == null) { onReady(false); return }
+            val model = com.google.mlkit.vision.digitalink.DigitalInkRecognitionModel.builder(id).build()
+            inkModel = model
+            val manager = com.google.mlkit.common.model.RemoteModelManager.getInstance()
+            manager.isModelDownloaded(model).addOnSuccessListener { downloaded ->
+                if (downloaded) {
+                    inkRecognizer = com.google.mlkit.vision.digitalink.DigitalInkRecognition.getClient(
+                        com.google.mlkit.vision.digitalink.DigitalInkRecognizerOptions.builder(model).build())
+                    onReady(true)
+                } else {
+                    Toast.makeText(this, "Downloading handwriting model (one-time, needs network)…", Toast.LENGTH_LONG).show()
+                    manager.download(model, com.google.mlkit.common.model.DownloadConditions.Builder().build())
+                        .addOnSuccessListener {
+                            inkRecognizer = com.google.mlkit.vision.digitalink.DigitalInkRecognition.getClient(
+                                com.google.mlkit.vision.digitalink.DigitalInkRecognizerOptions.builder(model).build())
+                            Toast.makeText(this, "Handwriting model ready", Toast.LENGTH_SHORT).show()
+                            onReady(true)
+                        }
+                        .addOnFailureListener { Toast.makeText(this, "Model download failed: ${it.message}", Toast.LENGTH_LONG).show(); onReady(false) }
+                }
+            }.addOnFailureListener { Toast.makeText(this, "Recognition setup failed: ${it.message}", Toast.LENGTH_LONG).show(); onReady(false) }
+        } catch (e: Exception) { Toast.makeText(this, "Recognition setup failed: ${e.message}", Toast.LENGTH_LONG).show(); onReady(false) }
+    }
+
+    private fun recognizeHandwriting() {
+        val ink = drawingView.buildInkFromSelection()
+        if (ink == null) { Toast.makeText(this, "Select some pen strokes first (Lasso/Rect select), then try again", Toast.LENGTH_LONG).show(); return }
+        val bounds = drawingView.selectionBoundsForInk()
+        ensureInkModelReady { ready ->
+            if (!ready) return@ensureInkModelReady
+            val recognizer = inkRecognizer ?: return@ensureInkModelReady
+            recognizer.recognize(ink)
+                .addOnSuccessListener { result ->
+                    val text = result.candidates.firstOrNull()?.text?.trim().orEmpty()
+                    if (text.isEmpty()) { Toast.makeText(this, "No text recognised", Toast.LENGTH_SHORT).show(); return@addOnSuccessListener }
+                    // Positioned just below the strokes it was actually read from, same
+                    // left-aligned-below convention as the image-OCR path.
+                    val gap = 12f
+                    val x = bounds?.get(0) ?: drawingView.screenCenterWorldX()
+                    val topY = (bounds?.get(3) ?: drawingView.screenCenterWorldY()) + gap
+                    val newItem = drawingView.addText(text, x, topY, 14f, 0f, Color.BLACK)
+                    if (newItem != null) newItem.y = topY + drawingView.textItemHeight(newItem)
+                    drawingView.removeInkSourceStrokes()
+                    Toast.makeText(this, "Converted!", Toast.LENGTH_SHORT).show()
+                }
+                .addOnFailureListener { Toast.makeText(this, "Recognition failed: ${it.message}", Toast.LENGTH_SHORT).show() }
+        }
+    }
+
 
     // ═══════════════════════════ Ask Gemini ═══════════════════════════
     // Bring-your-own-API-key: each student pastes their OWN free key from Google AI Studio
