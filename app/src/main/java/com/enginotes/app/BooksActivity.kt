@@ -16,6 +16,28 @@ import java.util.*
 
 class BooksActivity : AppCompatActivity() {
 
+    // Six themes total (Classic = the original look, five new ones). Each is just a toolbar
+    // color + a background color — kept simple and reliable rather than a deep per-element
+    // theming system, so this can't introduce visual inconsistencies elsewhere in the app.
+    companion object {
+        val THEMES = linkedMapOf(
+            "Classic" to Pair("#8D6E63", "#FAF6EF"),
+            "Midnight" to Pair("#1A1A2E", "#16161E"),
+            "Ocean" to Pair("#0277BD", "#E1F5FE"),
+            "Forest" to Pair("#2E7D32", "#F1F8E9"),
+            "Sunset" to Pair("#E64A19", "#FFF3E0"),
+            "Minimal Mono" to Pair("#212121", "#FAFAFA")
+        )
+        // Only Android's own built-in system animation resources — guaranteed to exist on every
+        // API level since these ship with the framework itself, unlike custom XML anim resources
+        // which would need to be added as separate resource files.
+        val ANIMATIONS = linkedMapOf(
+            "None" to Pair(0, 0),
+            "Fade" to Pair(android.R.anim.fade_in, android.R.anim.fade_out),
+            "Slide" to Pair(android.R.anim.slide_in_left, android.R.anim.slide_out_right)
+        )
+    }
+
     private lateinit var recentContainer: LinearLayout
     private lateinit var booksContainer: LinearLayout
     private lateinit var emptyView: TextView
@@ -31,16 +53,35 @@ class BooksActivity : AppCompatActivity() {
     private lateinit var selectionBar: LinearLayout
     private lateinit var selectionCountLbl: TextView
 
+    private fun currentThemeColors(): Pair<String, String> {
+        val prefs = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
+        val name = prefs.getString("app_theme", "Classic") ?: "Classic"
+        return THEMES[name] ?: THEMES["Classic"]!!
+    }
+
+    // Applies the currently selected transition animation — call this immediately after any
+    // startActivity() that opens MainActivity. Kept as a standalone helper (not wrapped around
+    // intent-building) since call sites build their intents differently (opening an existing
+    // note vs. creating a new one), so this can be appended after any of them unchanged.
+    private fun applyNoteTransition() {
+        val prefs = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
+        val animName = prefs.getString("app_animation", "None") ?: "None"
+        val (enter, exit) = ANIMATIONS[animName] ?: ANIMATIONS["None"]!!
+        if (enter != 0 || exit != 0) @Suppress("DEPRECATION") overridePendingTransition(enter, exit)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        val (themeToolbar, themeBg) = currentThemeColors()
+
         val root = android.widget.FrameLayout(this)
-        root.setBackgroundColor(android.graphics.Color.parseColor("#FAF6EF"))
+        root.setBackgroundColor(android.graphics.Color.parseColor(themeBg))
 
         // Top bar
         topBar = LinearLayout(this)
         topBar.orientation = LinearLayout.HORIZONTAL
-        topBar.setBackgroundColor(android.graphics.Color.parseColor("#8D6E63"))
+        topBar.setBackgroundColor(android.graphics.Color.parseColor(themeToolbar))
         topBar.setPadding(dp(16), dp(12), dp(16), dp(12))
         topBar.gravity = Gravity.CENTER_VERTICAL
         val topLp = android.widget.FrameLayout.LayoutParams(
@@ -55,7 +96,7 @@ class BooksActivity : AppCompatActivity() {
         // cancel (X) button and a "N selected" count.
         selectionBar = LinearLayout(this)
         selectionBar.orientation = LinearLayout.HORIZONTAL
-        selectionBar.setBackgroundColor(android.graphics.Color.parseColor("#5D4037"))
+        selectionBar.setBackgroundColor(androidx.core.graphics.ColorUtils.blendARGB(android.graphics.Color.parseColor(themeToolbar), android.graphics.Color.BLACK, 0.25f))
         selectionBar.setPadding(dp(16), dp(12), dp(16), dp(12))
         selectionBar.gravity = Gravity.CENTER_VERTICAL
         selectionBar.visibility = View.GONE
@@ -211,6 +252,7 @@ class BooksActivity : AppCompatActivity() {
         intent.putExtra("book_name", "General")
         // No filename = new note
         startActivity(intent)
+        applyNoteTransition()
     }
 
     private fun ensureDefaultBook() {
@@ -480,6 +522,7 @@ class BooksActivity : AppCompatActivity() {
             startActivity(Intent(this, MainActivity::class.java)
                 .putExtra("book_name", bookName)
                 .putExtra("filename", file.nameWithoutExtension))
+            applyNoteTransition()
         }
         card.setOnLongClickListener {
             if (selectionMode) toggleNoteSelection(file) else enterSelectionMode(file)
@@ -546,6 +589,7 @@ class BooksActivity : AppCompatActivity() {
             startActivity(Intent(this, MainActivity::class.java)
                 .putExtra("book_name", bookName)
                 .putExtra("filename", file.nameWithoutExtension))
+            applyNoteTransition()
         }
         card.setOnLongClickListener {
             if (selectionMode) toggleNoteSelection(file) else enterSelectionMode(file)
@@ -611,7 +655,7 @@ class BooksActivity : AppCompatActivity() {
             .setItems(items.toTypedArray()) { _, i ->
                 when (items[i]) {
                     "Open" -> startActivity(Intent(this, HomeActivity::class.java).putExtra("book_name", book.name))
-                    "New Note in this Book" -> startActivity(Intent(this, MainActivity::class.java).putExtra("book_name", book.name))
+                    "New Note in this Book" -> { startActivity(Intent(this, MainActivity::class.java).putExtra("book_name", book.name)); applyNoteTransition() }
                     "Rename" -> {
                         val input = EditText(this).apply { setText(book.name) }
                         AlertDialog.Builder(this).setTitle("Rename").setView(input)
@@ -727,7 +771,7 @@ class BooksActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle(file.nameWithoutExtension)
             .setItems(arrayOf("Open", "Select", "Rename", "Move to Book", "Delete")) { _, i ->
                 when (i) {
-                    0 -> startActivity(Intent(this, MainActivity::class.java).putExtra("book_name", bookName).putExtra("filename", file.nameWithoutExtension))
+                    0 -> { startActivity(Intent(this, MainActivity::class.java).putExtra("book_name", bookName).putExtra("filename", file.nameWithoutExtension)); applyNoteTransition() }
                     1 -> enterSelectionMode(file)
                     2 -> {
                         val input = EditText(this).apply { setText(file.nameWithoutExtension) }
@@ -766,6 +810,7 @@ class BooksActivity : AppCompatActivity() {
                     startActivity(Intent(this, MainActivity::class.java)
                         .putExtra("book_name", results[i].second)
                         .putExtra("filename", results[i].first.nameWithoutExtension))
+                    applyNoteTransition()
                 }.show()
             }.setNegativeButton("Cancel", null).show()
     }
@@ -793,13 +838,50 @@ class BooksActivity : AppCompatActivity() {
         val confirmCb = CheckBox(this).apply { text = "Confirm before exit or clear"; isChecked = prefs.getBoolean("confirm_exit_clear", true) }
         container.addView(confirmCb)
 
+        val themeHdr = TextView(this).apply { text = "APP THEME"; textSize = 13f; setTextColor(android.graphics.Color.parseColor("#8A8580")); setPadding(0, dp(16), 0, dp(4)) }
+        container.addView(themeHdr)
+        var selTheme = prefs.getString("app_theme", "Classic") ?: "Classic"
+        val themeLbl = TextView(this).apply { textSize = 15f; setTextColor(android.graphics.Color.parseColor("#1565C0")); setPadding(0, dp(4), 0, dp(8)) }
+        fun updateThemeLbl() { themeLbl.text = "Theme: $selTheme" }
+        updateThemeLbl(); container.addView(themeLbl)
+        val themeBtn = Button(this).apply { text = "Change Theme" }
+        themeBtn.setOnClickListener {
+            val names = THEMES.keys.toTypedArray()
+            AlertDialog.Builder(this).setTitle("App Theme").setItems(names) { _, i ->
+                selTheme = names[i]; updateThemeLbl()
+            }.show()
+        }
+        container.addView(themeBtn)
+
+        val animHdr = TextView(this).apply { text = "NOTE-OPEN ANIMATION"; textSize = 13f; setTextColor(android.graphics.Color.parseColor("#8A8580")); setPadding(0, dp(16), 0, dp(4)) }
+        container.addView(animHdr)
+        var selAnim = prefs.getString("app_animation", "None") ?: "None"
+        val animLbl = TextView(this).apply { textSize = 15f; setTextColor(android.graphics.Color.parseColor("#1565C0")); setPadding(0, dp(4), 0, dp(8)) }
+        fun updateAnimLbl() { animLbl.text = "Animation: $selAnim" }
+        updateAnimLbl(); container.addView(animLbl)
+        val animBtn = Button(this).apply { text = "Change Animation" }
+        animBtn.setOnClickListener {
+            val names = ANIMATIONS.keys.toTypedArray()
+            AlertDialog.Builder(this).setTitle("Note-Open Animation").setItems(names) { _, i ->
+                selAnim = names[i]; updateAnimLbl()
+            }.show()
+        }
+        container.addView(animBtn)
+
         AlertDialog.Builder(this).setTitle("\u2699 Settings").setView(container)
             .setPositiveButton("Save") { _, _ ->
+                val themeChanged = selTheme != (prefs.getString("app_theme", "Classic") ?: "Classic")
                 prefs.edit().putString("default_paper", selPaper)
                     .putBoolean("autosave", autosaveCb.isChecked)
                     .putBoolean("confirm_exit_clear", confirmCb.isChecked)
+                    .putString("app_theme", selTheme)
+                    .putString("app_animation", selAnim)
                     .apply()
                 Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show()
+                // Theme colors are only ever applied once, in onCreate() — recreate() is what
+                // makes a newly picked theme actually take effect immediately, rather than
+                // silently only applying the next time the app happens to restart.
+                if (themeChanged) recreate()
             }.setNegativeButton("Cancel", null).show()
     }
 
