@@ -773,7 +773,7 @@ class MainActivity : AppCompatActivity() {
                         text = glyph; textSize = 13f; gravity = Gravity.CENTER
                         setTextColor(Color.WHITE)
                         layoutParams = LinearLayout.LayoutParams(iconSize, iconSize).also { it.setMargins(dp(1), dp(5), dp(1), dp(5)) }
-                        background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(currentThemeButtonColor()) }
+                        background = themedButtonDrawable(this@MainActivity, currentAppTheme(), currentThemeSpec().button, oval = true)
                         setOnClickListener { action() }
                     }
                     tb.addView(v); return v
@@ -2094,11 +2094,14 @@ class MainActivity : AppCompatActivity() {
 
     internal fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
 
-    // Reads the same "app_theme" preference BooksActivity's theme picker writes to, reusing its
-    // THEMES table directly rather than duplicating the color list here — one theme choice stays
-    // consistent across both activities instead of each maintaining its own copy.
+    // Reads the same "app_color_theme" preference BooksActivity's theme picker writes to,
+    // reusing its THEMES table directly rather than duplicating the color list here — one theme
+    // choice stays consistent across both activities instead of each maintaining its own copy.
+    // Deliberately a DIFFERENT key from "app_theme" (used elsewhere in this file for the
+    // separate Original/Transparent/Glass Appearance setting) — they used to collide on the same
+    // key, silently overwriting each other every time either setting changed.
     private fun currentThemeSpec(): ThemeSpec {
-        val name = getPrefs().getString("app_theme", "Classic") ?: "Classic"
+        val name = getPrefs().getString("app_color_theme", "Classic") ?: "Classic"
         return BooksActivity.THEMES[name] ?: BooksActivity.THEMES["Classic"]!!
     }
     internal fun currentThemeBackgroundColor(): Int = Color.parseColor(currentThemeSpec().bg)
@@ -4058,8 +4061,8 @@ class MainActivity : AppCompatActivity() {
 
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            // Reads the same "app_theme" preference BooksActivity's theme picker writes to, so
-            // both activities reflect one consistent theme choice.
+            // Reads the same "app_color_theme" preference BooksActivity's theme picker writes
+            // to, so both activities reflect one consistent theme choice.
             setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(10).toFloat()
             setPadding(dp(16), dp(12), dp(16), dp(16))

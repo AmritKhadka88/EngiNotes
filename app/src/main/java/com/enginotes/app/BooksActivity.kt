@@ -20,6 +20,45 @@ import java.util.*
 // build when MainActivity.kt tried to reference BooksActivity.ThemeSpec.
 data class ThemeSpec(val toolbar: String, val bg: String, val button: String, val isGradient: Boolean = false)
 
+// Combines the current color theme's button color with the existing Original/Transparent/Glass
+// Appearance setting — e.g. Forest theme + Glass appearance = a green-tinted glass button,
+// instead of buttons always looking flat-solid regardless of which Appearance mode is active.
+// Mirrors MainActivity's themedPillDrawable's per-mode visual treatment (opaque/translucent/
+// glass sheen), just parameterized by the theme's own color instead of a fixed hardcoded one.
+// Does NOT attempt the bottom toolbar's real behind-content blur for Glass mode — that relies on
+// capturing the canvas's own rendered bitmap (updateBlurBackdrops), which doesn't extend cleanly
+// to a FAB sitting over a scrolling list or other arbitrary content; this uses the same gradient
+// sheen + stroke look instead, which is what actually reads as "glass" visually.
+fun themedButtonDrawable(context: Context, appearanceMode: String, baseColorHex: String, oval: Boolean = false): android.graphics.drawable.Drawable {
+    fun dp(v: Int) = (v * context.resources.displayMetrics.density).toInt()
+    val base = android.graphics.Color.parseColor(baseColorHex)
+    val radius = dp(20).toFloat()
+    fun android.graphics.drawable.GradientDrawable.applyShape() { if (oval) shape = android.graphics.drawable.GradientDrawable.OVAL else cornerRadius = radius }
+    return when (appearanceMode) {
+        "TRANSLUCENT" -> android.graphics.drawable.GradientDrawable().apply {
+            setColor(androidx.core.graphics.ColorUtils.setAlphaComponent(base, 140))
+            applyShape()
+            setStroke(dp(2), androidx.core.graphics.ColorUtils.setAlphaComponent(base, 210))
+        }
+        "GLASS" -> {
+            val lighter = androidx.core.graphics.ColorUtils.blendARGB(base, android.graphics.Color.WHITE, 0.55f)
+            val top = androidx.core.graphics.ColorUtils.setAlphaComponent(lighter, 150)
+            val bottom = androidx.core.graphics.ColorUtils.setAlphaComponent(base, 70)
+            android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TL_BR, intArrayOf(top, bottom)
+            ).apply {
+                applyShape()
+                setStroke(dp(2), androidx.core.graphics.ColorUtils.setAlphaComponent(android.graphics.Color.WHITE, 220))
+            }
+        }
+        else -> android.graphics.drawable.GradientDrawable().apply {
+            setColor(base)
+            applyShape()
+            setStroke(dp(1), androidx.core.graphics.ColorUtils.blendARGB(base, android.graphics.Color.BLACK, 0.2f))
+        }
+    }
+}
+
 class BooksActivity : AppCompatActivity() {
 
     // Six themes total (Classic = the original look, five new ones). Each is just a toolbar
@@ -70,7 +109,7 @@ class BooksActivity : AppCompatActivity() {
 
     private fun currentThemeSpec(): ThemeSpec {
         val prefs = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
-        val name = prefs.getString("app_theme", "Classic") ?: "Classic"
+        val name = prefs.getString("app_color_theme", "Classic") ?: "Classic"
         return THEMES[name] ?: THEMES["Classic"]!!
     }
     private fun currentThemeColors(): Pair<String, String> {
@@ -273,10 +312,8 @@ class BooksActivity : AppCompatActivity() {
         fab.setPadding(0, 0, 0, 0)
         fab.elevation = dp(6).toFloat()
         fab.post {
-            fab.background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(android.graphics.Color.parseColor(currentThemeButtonColorHex()))
-            }
+            val appearanceMode = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE).getString("app_theme", "ORIGINAL") ?: "ORIGINAL"
+            fab.background = themedButtonDrawable(this, appearanceMode, currentThemeButtonColorHex(), oval = true)
         }
         // Direct: create new note in General book
         fab.setOnClickListener { openNewNoteInGeneral() }
@@ -892,7 +929,7 @@ class BooksActivity : AppCompatActivity() {
 
         val themeHdr = TextView(this).apply { text = "APP THEME"; textSize = 13f; setTextColor(android.graphics.Color.parseColor("#8A8580")); setPadding(0, dp(16), 0, dp(4)) }
         container.addView(themeHdr)
-        var selTheme = prefs.getString("app_theme", "Classic") ?: "Classic"
+        var selTheme = prefs.getString("app_color_theme", "Classic") ?: "Classic"
         val themeLbl = TextView(this).apply { textSize = 15f; setTextColor(android.graphics.Color.parseColor("#1565C0")); setPadding(0, dp(4), 0, dp(8)) }
         fun updateThemeLbl() { themeLbl.text = "Theme: $selTheme" }
         updateThemeLbl(); container.addView(themeLbl)
@@ -945,11 +982,11 @@ class BooksActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this).setTitle("\u2699 Settings").setView(container)
             .setPositiveButton("Save") { _, _ ->
-                val themeChanged = selTheme != (prefs.getString("app_theme", "Classic") ?: "Classic")
+                val themeChanged = selTheme != (prefs.getString("app_color_theme", "Classic") ?: "Classic")
                 prefs.edit().putString("default_paper", selPaper)
                     .putBoolean("autosave", autosaveCb.isChecked)
                     .putBoolean("confirm_exit_clear", confirmCb.isChecked)
-                    .putString("app_theme", selTheme)
+                    .putString("app_color_theme", selTheme)
                     .putString("app_animation", selAnim)
                     .apply()
                 Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show()
