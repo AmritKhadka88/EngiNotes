@@ -70,6 +70,12 @@ dependencies {
     // androidx.biometric.BiometricPrompt's CryptoObject flow specifically.
     implementation("androidx.biometric:biometric:1.1.0")
 
+    // Recovery-code QR: zxing generates the QR image shown at setup time; ML Kit's barcode
+    // scanner decodes it back (from either a captured camera photo or an imported gallery
+    // image) during the recovery flow.
+    implementation("com.google.zxing:core:3.5.4")
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+
     // Google Sign-In (lets the user authenticate with their Google account)
     implementation("com.google.android.gms:play-services-auth:21.2.0")
 
