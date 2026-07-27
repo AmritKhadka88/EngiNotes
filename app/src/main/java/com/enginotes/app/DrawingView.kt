@@ -1109,6 +1109,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Velocity tracking for the Fountain pen's speed-sensitive width (fast = thin, slow = thick)
     private var lastMoveX = 0f; private var lastMoveY = 0f; private var lastMoveTime = 0L
 
+    // Full buildPath() for PEN/HIGHLIGHTER/BRUSH re-smooths and rebuilds the ENTIRE stroke's
+    // path from scratch (PEN additionally runs 5 full smoothing passes over every point). Calling
+    // that on every single ACTION_MOVE made a stroke get progressively slower to draw the longer
+    // it got, and a slow, careful stroke racks up far more sampled points than a fast one covering
+    // the same distance — same behavior, much worse cost, which read as "moving slowly makes the
+    // pen lag". These two throttle how often that expensive rebuild actually runs during a live
+    // stroke; in between, the already-built Path is just cheaply extended with the raw new point
+    // for immediate visual feedback, and a full rebuild always runs once more on ACTION_UP so the
+    // committed stroke ends up exactly as smoothed as before.
+    private var livePathRebuildPointCount = 0
+    private var livePathRebuildTime = 0L
+    private val LIVE_PATH_REBUILD_POINT_INTERVAL = 12
+    private val LIVE_PATH_REBUILD_TIME_INTERVAL_MS = 90L
+
     var currentTool: Tool = Tool.PEN
         set(value) {
             if (field != value && value != Tool.SELECT && activeTableItem != null) {
@@ -1423,6 +1437,42 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return kotlin.math.ceil(maxY / pageH).toInt().coerceAtLeast(1)
     }
 
+    // Renders each page of the note as its own separate bitmap, at a fixed export resolution —
+    // used by "Export as PDF" so each app-page becomes its own PDF page, instead of a single
+    // on-screen-viewport screenshot (which only ever captured whatever was currently scrolled
+    // into view, not the whole note, with no concept of page boundaries at all — that's what let
+    // two adjacent pages' content end up merged into one PDF page).
+    //
+    // Renders from a fresh, separate off-screen DrawingView (same technique as BooksActivity's
+    // thumbnail rendering) rather than this live instance directly — reusing this instance's own
+    // width/height would risk viewport-culling incorrectly hiding content that's within the
+    // export bitmap's area but outside whatever the screen's own current on-screen size happens
+    // to be. A fresh instance per page (not one instance reused across all pages) eliminates any
+    // risk of internal state from one page's render carrying over into the next.
+    fun exportAllPagesAsBitmaps(dpi: Int = 150): List<Bitmap> {
+        val pageCount = estimatePageCount()
+        val pw = pageWidthPx(); val ph = pageHeightPx()
+        if (pw <= 0f || ph <= 0f) return emptyList()
+        val exportScale = dpi / 96f
+        val bmpW = (pw * exportScale).toInt().coerceAtLeast(1)
+        val bmpH = (ph * exportScale).toInt().coerceAtLeast(1)
+        val savedState = serialize()
+
+        val bitmaps = mutableListOf<Bitmap>()
+        for (pageIdx in 0 until pageCount) {
+            val dv = DrawingView(context)
+            dv.isExportRender = true
+            dv.loadFromString(savedState)
+            dv.measure(View.MeasureSpec.makeMeasureSpec(bmpW, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(bmpH, View.MeasureSpec.EXACTLY))
+            dv.layout(0, 0, bmpW, bmpH)
+            dv.resetViewForThumbnail(exportScale, 0f, pageIdx * ph)
+            val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+            dv.draw(android.graphics.Canvas(bmp))
+            bitmaps.add(bmp)
+        }
+        return bitmaps
+    }
+
     internal var exportWindowStart: Pair<Float, Float>? = null
     internal var exportWindowEnd: Pair<Float, Float>? = null
     var onExportWindowSelected: ((Float, Float, Float, Float) -> Unit)? = null
@@ -1690,7 +1740,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     })
 
-    private fun clampTranslation() {
+    fun clampTranslation() {
         if (canvasMode == CanvasMode.INFINITE) return
         val pw = pageWidthPx() * scaleFactor; val ph = pageHeightPx() * scaleFactor
         val margin = 16f
@@ -2631,8 +2681,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (isFirstLayout || widthChanged || stableLayoutHeight == 0) {
                 stableLayoutHeight = height
             }
-            convenientPageW = width.toFloat() * 0.82f
-            convenientPageH = stableLayoutHeight.toFloat() * 1.1f
+            // Was view.width * 0.82 / stableLayoutHeight * 1.1 — a fixed, view-relative size with
+            // no relationship to any real paper size. Now driven by the same selectable paperSize
+            // every other mode uses (same mm-to-px conversion), so Convenient mode's page size
+            // actually changes when the user picks a different paper size.
+            val m = 3.7795f
+            convenientPageW = if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
+            convenientPageH = if (pageOrientation == Orientation.PORTRAIT) paperSize.heightMM * m else paperSize.widthMM * m
             if (isFirstLayout) {
                 hasInitialLayout = true
                 when (canvasMode) {
@@ -2661,12 +2716,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     fun resetLayoutPosition() { hasInitialLayout = false }
 
     // Rearranges text items to wrap and fit within the current page width (used when switching to print)
-    fun rearrangeTextForPrint() {
+    // Rewraps text items to start within the current page width — called whenever paper size
+    // changes. Always rewraps; there's no separate "keep as is" choice anymore, the same way
+    // changing page size in a word processor always reflows text.
+    fun rewrapTextToPage() {
         val pw = pageWidthPx()
         for (a in actions) {
             if (a is TextItem) {
                 a.x = a.x.coerceIn(16f, pw - 60f)
-                a.maxWidth = (pw - a.x - 16f).coerceAtLeast(80f)
+                // Deliberately NOT setting a.maxWidth here. textWrapWidth() already recalculates
+                // (pw - a.x - 16f) dynamically every time when maxWidth is unset (0) — freezing
+                // a one-time snapshot here previously caused the wrap width to go stale relative
+                // to the item's actual current position/size after any later change.
             }
         }
         invalidate()
@@ -2705,7 +2766,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // recompute item.y = desiredTopY + currentHeight every time the content changes, rather
     // than setting item.y once and leaving it. Otherwise the rendered top silently climbs
     // upward as the content grows, since the same fixed "bottom" now has more height above it.
-    fun textItemHeight(item: TextItem): Float = getOrBuildLayout(item).height.toFloat().coerceAtLeast(item.size * 1.2f)
+    fun textItemHeight(item: TextItem): Float { val l = getOrBuildLayout(item); return textItemVisualHeight(item, l).coerceAtLeast(item.size * 1.2f) }
     fun repositionTextItemTop(item: TextItem, desiredTopY: Float) {
         item.y = desiredTopY + textItemHeight(item)
         markSpatialDirty()
@@ -2757,6 +2818,44 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // continuous render during the drag removes the discontinuity entirely; the real per-page
     // split re-applies cleanly the moment the drag ends and this is cleared.
     var draggingTextItem: TextItem? = null
+
+    // The true visual height of a text item, including any gaps inserted by the per-page
+    // splitting in drawTextItem below (when an item is taller than one page, it's drawn as
+    // separate runs with a visual gap between each page's portion — plain layout.height knows
+    // nothing about those gaps). Mirrors that exact same loop's gap accumulation rather than
+    // reimplementing the logic separately, so the two can never quietly diverge again. Used by
+    // getBounds()/drawSelection()/textItemHeight()/findTextItemAt() so the selection box (and the
+    // rotation pivot computed from it), hit-testing, and drag-surface sizing all actually match
+    // what's drawn, instead of being undersized by however many page breaks the item crosses.
+    private fun textItemVisualHeight(item: TextItem, layout: StaticLayout): Float {
+        val contentH = layout.height.toFloat()
+        val ph = pageHeightPx()
+        if (item === draggingTextItem || canvasMode == CanvasMode.INFINITE || item.rotation != 0f || contentH <= ph) return contentH
+        val gap = if (canvasMode == CanvasMode.CONVENIENT) 24f else 40f
+        // Breathing room at a page split specifically — text stops this far short of the true
+        // page bottom, and resumes this far below the next page's true top, instead of running
+        // edge-to-edge. Doesn't affect the very first page's starting position at all (that's
+        // wherever the item was actually placed) — only where a split itself happens.
+        val pageBottomMargin = 24f
+        val pageTopMargin = 24f
+        val period = ph + gap
+        val topY = item.y - contentH
+        var lineIdx = 0
+        var extraSkip = 0f
+        var guard = 0
+        while (lineIdx < layout.lineCount && guard < 10000) {
+            guard++
+            val lineTopAbs = topY + layout.getLineTop(lineIdx) + extraSkip
+            val pageIdx = kotlin.math.floor(lineTopAbs / period)
+            val pageBottomAbs = pageIdx * period + ph - pageBottomMargin
+            var endLineIdx = lineIdx
+            while (endLineIdx < layout.lineCount && topY + layout.getLineBottom(endLineIdx) + extraSkip <= pageBottomAbs) endLineIdx++
+            if (endLineIdx == lineIdx) { extraSkip += (pageIdx + 1) * period - lineTopAbs + pageTopMargin; continue }
+            lineIdx = endLineIdx
+            if (lineIdx < layout.lineCount) extraSkip += gap + pageTopMargin
+        }
+        return contentH + extraSkip
+    }
 
     private fun drawTextItem(canvas: Canvas, item: TextItem) {
         val layout = getOrBuildLayout(item)
@@ -2948,35 +3047,41 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         val item = selectedItem ?: return
         if (item is TextItem) {
-            // Was rebuilding its own plain StaticLayout here (no spans, separate TextPaint)
-            // instead of reusing getOrBuildLayout() — the exact layout drawTextItem() actually
-            // renders with. Two independently-built layouts can silently differ in width/height
-            // (e.g. any bold/italic/color span here got dropped, since this passed item.text
-            // directly instead of the spannable), so the box rotated around a different pivot
-            // than the glyphs did — the box and text visibly drifted apart when rotated. Reusing
-            // the same cached layout guarantees the box and the glyphs always agree.
             val layout = getOrBuildLayout(item)
-            val contentW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
-            val contentH = layout.height.toFloat()
+            var contentW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
+            // Same direct-measure safety net as getBounds() — for single-line text, measures the
+            // raw text directly rather than trusting the cached layout's wrap-width-dependent
+            // line width, so this box can't end up narrower than the text actually is.
+            if (layout.lineCount == 1) {
+                val worstStyle = item.spans.filter { it.type == 'S' }.maxOfOrNull { it.value } ?: Typeface.NORMAL
+                val mp = TextPaint(); mp.textSize = item.size; mp.typeface = android.graphics.Typeface.create(typefaceFromFamily(item.fontFamily ?: "sans-serif"), worstStyle)
+                val measured = mp.measureText(item.text)
+                if (measured > contentW) contentW = measured
+            }
+            // Was plain layout.height — didn't account for the gaps drawTextItem() inserts when
+            // an item spans multiple pages, which is why the box was undersized for any text
+            // long enough to cross a page boundary.
+            val contentH = textItemVisualHeight(item, layout)
+            // Equal padding on all 4 sides, proportional to font size.
+            val pad = item.size * 0.12f
+            val boxW = contentW + pad * 2f; val boxH = contentH + pad * 2f
             canvas.save()
-            canvas.translate(item.x, item.y - contentH)
-            canvas.rotate(item.rotation, contentW / 2f, contentH / 2f)
+            canvas.translate(item.x - pad, item.y - contentH - pad)
+            canvas.rotate(item.rotation, boxW / 2f, boxH / 2f)
             // Selection border
             val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE
             selP.strokeWidth = 2f / scaleFactor; selP.isAntiAlias = true
-            canvas.drawRect(0f, 0f, contentW, contentH, selP)
+            canvas.drawRect(0f, 0f, boxW, boxH, selP)
             // Rotate handle — large green circle, 32px screen size, easy to tap
-            val hr = 32f / scaleFactor
-            val hx = contentW / 2f; val hy = -56f / scaleFactor
-            canvas.drawLine(contentW / 2f, 0f, hx, hy + hr, selP)
-            val hFill = Paint(); hFill.color = Color.parseColor("#34C759"); hFill.style = Paint.Style.FILL; hFill.isAntiAlias = true
-            val hStroke = Paint(); hStroke.color = Color.WHITE; hStroke.style = Paint.Style.STROKE; hStroke.strokeWidth = 4f / scaleFactor; hStroke.isAntiAlias = true
-            // Draw rotation symbol inside the handle
-            canvas.drawCircle(hx, hy, hr, hFill)
-            canvas.drawCircle(hx, hy, hr, hStroke)
-            // Draw ↻ arrow inside
+            val hr2 = 32f / scaleFactor
+            val hx = boxW / 2f; val hy = -56f / scaleFactor
+            canvas.drawLine(boxW / 2f, 0f, hx, hy + hr2, selP)
+            val hFill2 = Paint(); hFill2.color = Color.parseColor("#34C759"); hFill2.style = Paint.Style.FILL; hFill2.isAntiAlias = true
+            val hStroke2 = Paint(); hStroke2.color = Color.WHITE; hStroke2.style = Paint.Style.STROKE; hStroke2.strokeWidth = 4f / scaleFactor; hStroke2.isAntiAlias = true
+            canvas.drawCircle(hx, hy, hr2, hFill2)
+            canvas.drawCircle(hx, hy, hr2, hStroke2)
             val ap = Paint(); ap.color = Color.WHITE; ap.style = Paint.Style.STROKE; ap.strokeWidth = 3f / scaleFactor; ap.isAntiAlias = true; ap.strokeCap = Paint.Cap.ROUND
-            val ar = hr * 0.5f
+            val ar = hr2 * 0.5f
             canvas.drawArc(android.graphics.RectF(hx - ar, hy - ar, hx + ar, hy + ar), -150f, 270f, false, ap)
             val arrowPath = android.graphics.Path(); arrowPath.moveTo(hx + ar * 0.3f, hy - ar * 0.95f); arrowPath.lineTo(hx + ar, hy - ar * 0.3f); arrowPath.lineTo(hx + ar * 0.3f, hy + ar * 0.3f)
             canvas.drawPath(arrowPath, ap)
@@ -3040,8 +3145,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is AudioItem -> { val r = item.radius; floatArrayOf(item.x - r, item.y - r, item.x + r, item.y + r + 40f) }
             is TextItem -> {
                 val layout = getOrBuildLayout(item)
-                val w = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(10f) ?: 10f
-                val h = layout.height.toFloat().coerceAtLeast(item.size * 1.2f)
+                var w = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(10f) ?: 10f
+                // For single-line text, also measure the raw text directly — independent of
+                // whatever wrap width the cached layout happened to be built with. Whichever is
+                // larger wins. This is what makes the box immune to a timing mismatch between
+                // when the layout was cached and what's currently actually rendering, instead of
+                // requiring the two to always agree perfectly.
+                if (layout.lineCount == 1) {
+                    val worstStyle = item.spans.filter { it.type == 'S' }.maxOfOrNull { it.value } ?: Typeface.NORMAL
+                    val mp = TextPaint(); mp.textSize = item.size; mp.typeface = android.graphics.Typeface.create(typefaceFromFamily(item.fontFamily ?: "sans-serif"), worstStyle)
+                    val measured = mp.measureText(item.text)
+                    if (measured > w) w = measured
+                }
+                // Was plain layout.height — didn't account for the gaps drawTextItem() inserts
+                // when an item spans multiple pages, which is why the box (and hit-testing, which
+                // also uses getBounds()) was undersized for any text long enough to cross a page.
+                val h = textItemVisualHeight(item, layout).coerceAtLeast(item.size * 1.2f)
                 // Equal padding on all 4 sides, proportional to font size — without this, a
                 // cursive/italic font's trailing glyph can visually overhang past the logical
                 // advance width the layout reports, poking out of a box sized to exactly match
@@ -3372,7 +3491,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (a is TextItem) {
                 val layout = getOrBuildLayout(a)
                 val cw = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
-                val ch = layout.height.toFloat()
+                // Was plain layout.height — same missing-gaps issue as getBounds()/drawSelection().
+                // Without this, tapping the upper portion of a text item spanning multiple pages
+                // would silently miss it, since the tappable region was undersized to match.
+                val ch = textItemVisualHeight(a, layout)
                 val pad = 24f / scaleFactor
                 val pivX = a.x + cw / 2f; val pivY = a.y - ch / 2f
                 val lx: Float; val ly: Float
@@ -5506,6 +5628,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (currentTool == Tool.BRUSH && (currentBrushStyle == BrushStyle.INK || currentBrushStyle == BrushStyle.ROUND)) data.widths.add(brushThickness * pressure)
                 lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
                 currentItem = StrokeItem(data, data.buildPath(), data.toPaint()); invalidate()
+                livePathRebuildPointCount = 1; livePathRebuildTime = event.eventTime
                 onDrawingStarted?.invoke()
             }
             MotionEvent.ACTION_MOVE -> {
@@ -5686,7 +5809,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                 }
                 else if (SHAPE_TOOLS.contains(currentTool)) { item.data.points[2] = wx; item.data.points[3] = wy }
-                item.path = item.data.buildPath(); invalidate()
+                if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH) {
+                    val pointCount = item.data.points.size / 2
+                    val now = event.eventTime
+                    val dueForFullRebuild = (pointCount - livePathRebuildPointCount) >= LIVE_PATH_REBUILD_POINT_INTERVAL ||
+                        (now - livePathRebuildTime) >= LIVE_PATH_REBUILD_TIME_INTERVAL_MS
+                    if (dueForFullRebuild) {
+                        item.path = item.data.buildPath()
+                        livePathRebuildPointCount = pointCount; livePathRebuildTime = now
+                    } else {
+                        // Cheap live extension: draw straight to the newest raw point so the
+                        // stroke keeps following the stylus with no lag. buildPath() always ends
+                        // on the exact last raw point (see buildPath()'s final lineTo), so this
+                        // connects up cleanly. Never the final result — the next throttled
+                        // rebuild, or the guaranteed one on ACTION_UP, re-smooths this tail.
+                        item.path.lineTo(wx, wy)
+                    }
+                } else {
+                    item.path = item.data.buildPath()
+                }
+                invalidate()
             }
             MotionEvent.ACTION_UP -> {
                 if (currentTool == Tool.ERASER) { flushDirtyFillItems(); flushEraseSessionBitmaps(); eraserLastX = Float.NaN; eraserLastY = Float.NaN }
@@ -5722,6 +5864,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val tooShort = isShapeTool && item.data.points.size >= 4 &&
                         distance(item.data.points[0], item.data.points[1], item.data.points[2], item.data.points[3]) < (8f / scaleFactor)
                     if (!tooShort) {
+                    // The live-draw throttle above may have left item.path as just a cheap raw
+                    // extension on the very last move sample — always do one final proper rebuild
+                    // at commit time so the saved stroke is fully smoothed, same as before.
+                    if (item.data.type == Tool.PEN || item.data.type == Tool.HIGHLIGHTER || item.data.type == Tool.BRUSH) {
+                        item.path = item.data.buildPath()
+                    }
                     // Downsample overly dense PEN strokes (>6000 pts) to keep serialization and
                     // PathMeasure sampling fast. Visual difference is imperceptible.
                     if (item.data.type == Tool.PEN && item.data.points.size > 6000) {
@@ -5858,7 +6006,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                     eraseFromSessionBitmap(a, x, y, r)
                                     newActions.add(a)
                                 } else {
-                                    newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r)); changed = true
+                                    // Same effectiveR strokeHitTest used to decide this was a hit —
+                                    // without it, the split geometry below only clips the bare
+                                    // centerline within radius r, so a thick stroke keeps a visible
+                                    // strip of ink on both sides even though the eraser circle
+                                    // visually covers it (only a tiny sliver of centerline gets cut).
+                                    val effR = r + (a.data.strokeWidth / 2f).coerceAtMost(r * 2f)
+                                    newActions.addAll(splitStrokeAroundEraser(a.data, x, y, effR)); changed = true
                                 }
                             } else {
                                 newActions.add(a)
@@ -5872,7 +6026,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val components = convertShapeToComponents(a.data)
                                 for (comp in components) {
                                     if (strokeHitTest(comp.data, x, y, r)) {
-                                        newActions.addAll(splitStrokeAroundEraser(comp.data, x, y, r))
+                                        val effR = r + (comp.data.strokeWidth / 2f).coerceAtMost(r * 2f)
+                                        newActions.addAll(splitStrokeAroundEraser(comp.data, x, y, effR))
                                     } else {
                                         newActions.add(comp)
                                     }
@@ -5883,7 +6038,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             }
                         } else {
                             // Open shapes (LINE, ARROW): split into fragments
-                            if (strokeHitTest(a.data, x, y, r)) { newActions.addAll(splitShapeAroundEraser(a.data, x, y, r)); changed = true }
+                            if (strokeHitTest(a.data, x, y, r)) {
+                                val effR = r + (a.data.strokeWidth / 2f)
+                                newActions.addAll(splitShapeAroundEraser(a.data, x, y, effR)); changed = true
+                            }
                             else newActions.add(a)
                         }
                     }
