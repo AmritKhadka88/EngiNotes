@@ -577,6 +577,38 @@ class StrokeData(
         return ribbon
     }
 
+    // Draws a Fountain stroke segment-by-segment as native stroked lines with a per-segment
+    // width pulled straight from the recorded `widths` samples, using ROUND caps/joins — the
+    // same technique that already fixed the identical bug for Calligraphy (see
+    // drawCalligraphyStroke below). buildFountainRibbonPath() offsets left/right by the segment's
+    // own local direction to build ONE polygon for the whole stroke; at a sharp turn or a
+    // momentary pause (direction reverses or a near-zero-length segment appears — very normal
+    // in real handwriting, e.g. at the corner of a letter), that per-segment offset direction
+    // swings wildly or goes numerically unstable, and the resulting polygon self-intersects,
+    // rendering as a visible notch/gap right at the turn. Native Paint.Style.STROKE with ROUND
+    // caps has no such polygon to get wrong — Android itself guarantees a gap-free join between
+    // any two segments regardless of the angle between them.
+    fun drawFountainStroke(canvas: Canvas, basePaint: Paint) {
+        if (points.size < 4 || widths.size < 2) { canvas.drawPath(buildFountainRibbonPath(), Paint(basePaint).apply { style = Paint.Style.FILL; pathEffect = null }); return }
+        val pts = smoothedPoints()
+        val segPaint = Paint(basePaint).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND; pathEffect = null }
+        val totalSegments = ((pts.size - 2) / 2).coerceAtLeast(1)
+        val taperCount = 4
+        fun endTaper(segIndex: Int): Float {
+            val fadeIn = ((segIndex + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
+            val fadeOut = ((totalSegments - segIndex).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
+            return minOf(fadeIn, fadeOut).coerceIn(0.12f, 1f)
+        }
+        var i = 0; var wi = 0
+        while (i + 3 < pts.size) {
+            val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
+            val w = (if (wi < widths.size) widths[wi] else strokeWidth) * endTaper(wi)
+            segPaint.strokeWidth = w.coerceAtLeast(0.5f)
+            canvas.drawLine(x1, y1, x2, y2, segPaint)
+            i += 2; wi++
+        }
+    }
+
     // Draws a Pencil stroke segment-by-segment with per-segment opacity derived from drawing
     // speed (stored in `widths` as a 0..1 intensity factor) - faster strokes fade lighter, slower
     // strokes stay darker, mimicking how graphite deposits less material when moved quickly.
@@ -1882,9 +1914,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // further below, so only the common case — no rotation, nothing erased out of
                 // it — takes the fast cached path here.
                 if (isFountainPen && action.data.rotation == 0f && action.data.clipHoles.isEmpty()) {
-                    drawWithBitmapCache(canvas, action, action.data.strokeWidth * 2f) { c, item ->
-                        c.drawPath(item.data.buildFountainRibbonPath(), Paint(item.paint).apply { style = Paint.Style.FILL; pathEffect = null })
-                    }
+                    drawWithBitmapCache(canvas, action, action.data.strokeWidth * 2f) { c, item -> item.data.drawFountainStroke(c, item.paint) }
                     return
                 }
                 val renderPath = when { isCalligraphyPen -> action.data.buildCalligraphyRibbonPath(); isFountainPen -> action.data.buildFountainRibbonPath(); else -> action.path }
@@ -2631,7 +2661,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // Same native-stroke renderer used for the finalized stroke, so live preview
                 // and final look match exactly with no separate code path to drift out of sync.
                 isCalligraphyPen -> it.data.drawCalligraphyStroke(canvas, it.paint)
-                isFountainPen -> canvas.drawPath(it.data.buildFountainRibbonPath(), Paint(it.paint).apply { style = Paint.Style.FILL; pathEffect = null })
+                isFountainPen -> it.data.drawFountainStroke(canvas, it.paint)
                 isPencilPen -> it.data.drawPencilStroke(canvas, it.paint)
                 // Was falling through to the flat-width `else` below, so Brush strokes only
                 // showed their real per-point width variation once finalized (via
@@ -5724,11 +5754,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     snapResult = null; snapAwarenessResults = emptyList()
                 }
                 val item = currentItem ?: return
+                var pointAdded = false
                 if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH) {
+                    // A held-still (or barely-jittering) stylus still delivers a steady stream of
+                    // ACTION_MOVE samples at virtually the same spot. Without this floor, every one
+                    // of those samples was recorded as a brand-new point AND a brand-new (near-max,
+                    // since speed≈0) width sample — so ink kept visibly "firing"/growing for as long
+                    // as the pen sat still, and the resulting near-zero-length segments fed garbage
+                    // direction vectors into the ribbon offset math right at pauses and sharp turns
+                    // (a real hand naturally decelerates at a corner), which is what caused the
+                    // visible notches/gaps there. A real pen just leaves a small pooled dot and stops.
+                    val minPointDist = (1.1f / scaleFactor).coerceAtLeast(0.12f)
                     // Process all historically batched points first for smooth, unbroken strokes
                     for (h in 0 until event.historySize) {
                         val hx = screenToWorldX(event.getHistoricalX(h)); val hy = screenToWorldY(event.getHistoricalY(h))
+                        val lpx = item.data.points[item.data.points.size - 2]; val lpy = item.data.points[item.data.points.size - 1]
+                        if (distance(hx, hy, lpx, lpy) < minPointDist) continue
                         item.data.points.add(hx); item.data.points.add(hy)
+                        pointAdded = true
                         if (currentTool == Tool.PEN && (currentPenStyle == PenStyle.FOUNTAIN || currentPenStyle == PenStyle.PENCIL)) {
                             val dt = (event.getHistoricalEventTime(h) - lastMoveTime).coerceAtLeast(1L)
                             val dist = distance(hx, hy, lastMoveX, lastMoveY)
@@ -5771,7 +5814,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             lastMoveTime = event.getHistoricalEventTime(h); lastMoveX = hx; lastMoveY = hy
                         }
                     }
+                    val lpx2 = item.data.points[item.data.points.size - 2]; val lpy2 = item.data.points[item.data.points.size - 1]
+                    if (distance(wx, wy, lpx2, lpy2) >= minPointDist) {
                     item.data.points.add(wx); item.data.points.add(wy)
+                    pointAdded = true
                     if (currentTool == Tool.PEN && (currentPenStyle == PenStyle.FOUNTAIN || currentPenStyle == PenStyle.PENCIL)) {
                         val dt = (event.eventTime - lastMoveTime).coerceAtLeast(1L)
                         val dist = distance(wx, wy, lastMoveX, lastMoveY)
@@ -5807,9 +5853,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         item.data.widths.add((item.data.widths.lastOrNull() ?: brushThickness) * 0.8f + targetWidth * 0.2f)
                         lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
                     }
+                    }
                 }
                 else if (SHAPE_TOOLS.contains(currentTool)) { item.data.points[2] = wx; item.data.points[3] = wy }
                 if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH) {
+                    if (!pointAdded) return
                     val pointCount = item.data.points.size / 2
                     val now = event.eventTime
                     val dueForFullRebuild = (pointCount - livePathRebuildPointCount) >= LIVE_PATH_REBUILD_POINT_INTERVAL ||
