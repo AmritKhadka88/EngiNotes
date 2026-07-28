@@ -2057,6 +2057,18 @@ class MainActivity : AppCompatActivity() {
         val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
         insetsController.hide(androidx.core.view.WindowInsetsCompat.Type.statusBars())
         insetsController.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        // On a notched/punch-hole phone, hiding the status bar isn't enough by itself — the
+        // system still reserves that strip as solid black unless the window explicitly says
+        // it's safe to draw content under the cutout. Without this, "fullscreen" still shows a
+        // plain black bar where the status bar used to be, just with its clock/icons gone.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R)
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                else
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         if (fullscreenRestoreBtn != null) return
         val btn = TextView(this).apply {
             text = "⛶"; textSize = 16f; gravity = Gravity.CENTER
@@ -2082,6 +2094,11 @@ class MainActivity : AppCompatActivity() {
         }
         androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, true)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+            }
+        }
         fullscreenRestoreBtn?.let { canvasContainer.removeView(it) }
         fullscreenRestoreBtn = null
     }
