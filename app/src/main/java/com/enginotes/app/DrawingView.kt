@@ -520,37 +520,53 @@ class StrokeData(
         val ribbon = Path()
         if (points.size < 4) return buildPath()
         val pts = smoothedPoints()
+        val n = pts.size / 2
+        if (n < 2) return buildPath()
         val left = mutableListOf<Pair<Float, Float>>(); val right = mutableListOf<Pair<Float, Float>>()
         // Segment count, used below to taper width at both ends of the stroke — without this,
         // the very first/last sample already carries near-full width, so the ribbon starts and
         // ends as an abrupt blunt blob instead of tapering to a point like a real nib lifting
         // on/off the page.
-        val totalSegments = ((pts.size - 2) / 2).coerceAtLeast(1)
+        val totalSegments = (n - 1).coerceAtLeast(1)
         val taperCount = 4
         fun endTaper(segIndex: Int): Float {
             val fadeIn = ((segIndex + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
             val fadeOut = ((totalSegments - segIndex).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
             return minOf(fadeIn, fadeOut).coerceIn(0.12f, 1f)
         }
-        var i = 0; var wi = 0
-        while (i + 3 < pts.size) {
-            val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
-            val dx = x2 - x1; val dy = y2 - y1
-            val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(0.01f)
-            val nx = -dy / len; val ny = dx / len
-            val w = (if (wi < widths.size) widths[wi] else strokeWidth) * endTaper(wi) / 2f
-            left.add(Pair(x1 + nx * w, y1 + ny * w)); right.add(Pair(x1 - nx * w, y1 - ny * w))
-            i += 2; wi++
-        }
-        // Cap the final point with the last known width, also tapered
-        val lastIdx = pts.size - 2
-        val lastW = (if (widths.isNotEmpty()) widths.last() else strokeWidth) * endTaper(totalSegments) / 2f
-        if (i >= 2) {
-            val px = pts[lastIdx]; val py = pts[lastIdx + 1]
-            val pdx = px - pts[i - 2]; val pdy = py - pts[i - 1]
-            val plen = kotlin.math.hypot(pdx.toDouble(), pdy.toDouble()).toFloat().coerceAtLeast(0.01f)
-            val nx = -pdy / plen; val ny = pdx / plen
-            left.add(Pair(px + nx * lastW, py + ny * lastW)); right.add(Pair(px - nx * lastW, py - ny * lastW))
+        // Offset each VERTEX by the bisector of its incoming and outgoing segment directions,
+        // not by either segment's direction alone — that's what keeps the ribbon edge turning
+        // smoothly through a corner instead of kinking exactly at it. At the two endpoints only
+        // one direction exists, so that one is used directly (matches a real nib entering/
+        // leaving at the stroke's actual heading).
+        for (k in 0 until n) {
+            val px = pts[k * 2]; val py = pts[k * 2 + 1]
+            var dxIn = 0f; var dyIn = 0f
+            if (k > 0) {
+                val ddx = px - pts[(k - 1) * 2]; val ddy = py - pts[(k - 1) * 2 + 1]
+                val dl = kotlin.math.hypot(ddx.toDouble(), ddy.toDouble()).toFloat().coerceAtLeast(0.01f)
+                dxIn = ddx / dl; dyIn = ddy / dl
+            }
+            var dxOut = 0f; var dyOut = 0f
+            if (k < n - 1) {
+                val ddx = pts[(k + 1) * 2] - px; val ddy = pts[(k + 1) * 2 + 1] - py
+                val dl = kotlin.math.hypot(ddx.toDouble(), ddy.toDouble()).toFloat().coerceAtLeast(0.01f)
+                dxOut = ddx / dl; dyOut = ddy / dl
+            }
+            var tx = dxIn + dxOut; var ty = dyIn + dyOut
+            val tl = kotlin.math.hypot(tx.toDouble(), ty.toDouble()).toFloat()
+            if (tl < 0.01f) {
+                // The two directions cancel out almost exactly — a near-180-degree reversal right
+                // at this vertex (the tip of a tight cusp/hairpin). Fall back to whichever single
+                // direction is actually available instead of an unusable zero vector.
+                tx = if (dxIn != 0f || dyIn != 0f) dxIn else dxOut
+                ty = if (dxIn != 0f || dyIn != 0f) dyIn else dyOut
+                val tl2 = kotlin.math.hypot(tx.toDouble(), ty.toDouble()).toFloat().coerceAtLeast(0.01f)
+                tx /= tl2; ty /= tl2
+            } else { tx /= tl; ty /= tl }
+            val nx = -ty; val ny = tx
+            val w = (if (k < widths.size) widths[k] else strokeWidth) * endTaper(k) / 2f
+            left.add(Pair(px + nx * w, py + ny * w)); right.add(Pair(px - nx * w, py - ny * w))
         }
         if (left.isEmpty() || right.isEmpty()) return buildPath()
         // Curve through the offset points instead of connecting them with straight lineTo
@@ -575,38 +591,6 @@ class StrokeData(
         addSmoothed(ribbon, right.reversed(), false)
         ribbon.close()
         return ribbon
-    }
-
-    // Draws a Fountain stroke segment-by-segment as native stroked lines with a per-segment
-    // width pulled straight from the recorded `widths` samples, using ROUND caps/joins — the
-    // same technique that already fixed the identical bug for Calligraphy (see
-    // drawCalligraphyStroke below). buildFountainRibbonPath() offsets left/right by the segment's
-    // own local direction to build ONE polygon for the whole stroke; at a sharp turn or a
-    // momentary pause (direction reverses or a near-zero-length segment appears — very normal
-    // in real handwriting, e.g. at the corner of a letter), that per-segment offset direction
-    // swings wildly or goes numerically unstable, and the resulting polygon self-intersects,
-    // rendering as a visible notch/gap right at the turn. Native Paint.Style.STROKE with ROUND
-    // caps has no such polygon to get wrong — Android itself guarantees a gap-free join between
-    // any two segments regardless of the angle between them.
-    fun drawFountainStroke(canvas: Canvas, basePaint: Paint) {
-        if (points.size < 4 || widths.size < 2) { canvas.drawPath(buildFountainRibbonPath(), Paint(basePaint).apply { style = Paint.Style.FILL; pathEffect = null }); return }
-        val pts = smoothedPoints()
-        val segPaint = Paint(basePaint).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND; pathEffect = null }
-        val totalSegments = ((pts.size - 2) / 2).coerceAtLeast(1)
-        val taperCount = 4
-        fun endTaper(segIndex: Int): Float {
-            val fadeIn = ((segIndex + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
-            val fadeOut = ((totalSegments - segIndex).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
-            return minOf(fadeIn, fadeOut).coerceIn(0.12f, 1f)
-        }
-        var i = 0; var wi = 0
-        while (i + 3 < pts.size) {
-            val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
-            val w = (if (wi < widths.size) widths[wi] else strokeWidth) * endTaper(wi)
-            segPaint.strokeWidth = w.coerceAtLeast(0.5f)
-            canvas.drawLine(x1, y1, x2, y2, segPaint)
-            i += 2; wi++
-        }
     }
 
     // Draws a Pencil stroke segment-by-segment with per-segment opacity derived from drawing
@@ -1914,7 +1898,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // further below, so only the common case — no rotation, nothing erased out of
                 // it — takes the fast cached path here.
                 if (isFountainPen && action.data.rotation == 0f && action.data.clipHoles.isEmpty()) {
-                    drawWithBitmapCache(canvas, action, action.data.strokeWidth * 2f) { c, item -> item.data.drawFountainStroke(c, item.paint) }
+                    drawWithBitmapCache(canvas, action, action.data.strokeWidth * 2f) { c, item ->
+                        c.drawPath(item.data.buildFountainRibbonPath(), Paint(item.paint).apply { style = Paint.Style.FILL; pathEffect = null })
+                    }
                     return
                 }
                 val renderPath = when { isCalligraphyPen -> action.data.buildCalligraphyRibbonPath(); isFountainPen -> action.data.buildFountainRibbonPath(); else -> action.path }
@@ -2661,7 +2647,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // Same native-stroke renderer used for the finalized stroke, so live preview
                 // and final look match exactly with no separate code path to drift out of sync.
                 isCalligraphyPen -> it.data.drawCalligraphyStroke(canvas, it.paint)
-                isFountainPen -> it.data.drawFountainStroke(canvas, it.paint)
+                isFountainPen -> canvas.drawPath(it.data.buildFountainRibbonPath(), Paint(it.paint).apply { style = Paint.Style.FILL; pathEffect = null })
                 isPencilPen -> it.data.drawPencilStroke(canvas, it.paint)
                 // Was falling through to the flat-width `else` below, so Brush strokes only
                 // showed their real per-point width variation once finalized (via
@@ -6190,6 +6176,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val pts = data.points
         if (pts.size < 4) { if (pts.size >= 2 && distance(ex, ey, pts[0], pts[1]) <= r) return emptyList(); return listOf(StrokeItem(data, data.buildPath(), data.toPaint())) }
 
+        // Fountain/Pencil strokes carry a per-point `widths` sample alongside `points` (thickness/
+        // intensity that varies along the stroke). Without tracking it through the split below,
+        // every surviving fragment came out with an empty widths list — which silently fails the
+        // `widths.size >= 2` check used to decide whether to render as a Fountain/Pencil stroke at
+        // all, so an erased Fountain stroke suddenly rendered as a flat, thin, uniform line instead
+        // of keeping its actual nib thickness. curW/segsW mirror cur/segs exactly, one width value
+        // per point, interpolated at circle-crossing points the same way position is.
+        val hasWidths = data.widths.size >= 2
+        fun widthAt(idx: Int): Float { val w = data.widths; return if (idx >= 0 && idx < w.size) w[idx] else data.strokeWidth }
+        fun widthAtT(segStart: Int, t: Float): Float {
+            val w1 = widthAt(segStart); val w2 = widthAt(segStart + 1)
+            return w1 + (w2 - w1) * t
+        }
+
         // Walk each segment and find EXACT circle-crossing parameters along it (0, 1, or 2
         // crossings), rather than classifying the whole segment as one in/out unit based on its
         // nearest point. The old whole-segment approach broke badly for long straight segments
@@ -6197,44 +6197,53 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // the nearest-point distance small for the ENTIRE segment, deleting all of it instead of
         // only the portion actually under the eraser.
         val segs = mutableListOf<MutableList<Float>>(); var cur = mutableListOf<Float>()
-        fun flush() { if (cur.size >= 4) segs.add(cur); cur = mutableListOf() }
+        val segsW = mutableListOf<MutableList<Float>>(); var curW = mutableListOf<Float>()
+        fun flush() { if (cur.size >= 4) { segs.add(cur); segsW.add(curW) }; cur = mutableListOf(); curW = mutableListOf() }
         fun ptIn(x: Float, y: Float) = distance(ex, ey, x, y) <= r
 
         var prevIn = ptIn(pts[0], pts[1])
-        if (!prevIn) { cur.add(pts[0]); cur.add(pts[1]) }
+        if (!prevIn) { cur.add(pts[0]); cur.add(pts[1]); curW.add(widthAt(0)) }
 
         var i = 0
         while (i + 3 < pts.size) {
             val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
+            val vIdx = i / 2
             val endIn = ptIn(x2, y2)
             val crossings = findAllCircleSegIntersections(ex, ey, r, x1, y1, x2, y2)
 
             if (crossings.isEmpty()) {
                 // No boundary crossing on this segment — it shares prevIn's state throughout.
-                if (!prevIn) { cur.add(x2); cur.add(y2) }
+                if (!prevIn) { cur.add(x2); cur.add(y2); curW.add(widthAt(vIdx + 1)) }
             } else {
                 var state = prevIn
                 for (t in crossings) {
                     val cx2 = x1 + t * (x2 - x1); val cy2 = y1 + t * (y2 - y1)
                     if (!state) {
                         // Was outside, entering the erased zone: this crossing ends the surviving fragment.
-                        if (cur.isEmpty()) { cur.add(x1); cur.add(y1) }
-                        cur.add(cx2); cur.add(cy2); flush()
+                        if (cur.isEmpty()) { cur.add(x1); cur.add(y1); curW.add(widthAt(vIdx)) }
+                        cur.add(cx2); cur.add(cy2); curW.add(widthAtT(vIdx, t)); flush()
                     } else {
                         // Was inside the erased zone, exiting: this crossing starts a new fragment.
-                        cur.add(cx2); cur.add(cy2)
+                        cur.add(cx2); cur.add(cy2); curW.add(widthAtT(vIdx, t))
                     }
                     state = !state
                 }
                 if (!endIn) {
-                    if (cur.isEmpty()) { val lastT = crossings.last(); cur.add(x1 + lastT * (x2 - x1)); cur.add(y1 + lastT * (y2 - y1)) }
-                    cur.add(x2); cur.add(y2)
+                    if (cur.isEmpty()) { val lastT = crossings.last(); cur.add(x1 + lastT * (x2 - x1)); cur.add(y1 + lastT * (y2 - y1)); curW.add(widthAtT(vIdx, lastT)) }
+                    cur.add(x2); cur.add(y2); curW.add(widthAt(vIdx + 1))
                 }
             }
             prevIn = endIn
             i += 2
         }
         flush()
+
+        fun buildFragment(sp: MutableList<Float>, spw: MutableList<Float>): StrokeItem {
+            val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline)
+            if (hasWidths) { d.widths.clear(); d.widths.addAll(spw) }
+            val path = if (hasWidths && data.type == Tool.PEN && data.penStyle == PenStyle.FOUNTAIN) d.buildFountainRibbonPath() else d.buildPath()
+            return StrokeItem(d, path, d.toPaint())
+        }
 
         // If the original stroke was a CLOSED loop (first point == last point, as produced by
         // convertShapeToComponents for closed shapes), the "first" and "last" surviving
@@ -6252,14 +6261,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val merged = mutableListOf<Float>()
                     merged.addAll(lastFrag)
                     merged.addAll(firstFrag.subList(2, firstFrag.size)) // skip duplicate seam point
+                    val firstFragW = segsW[segs.indexOf(firstFrag)]; val lastFragW = segsW[segs.indexOf(lastFrag)]
+                    val mergedW = mutableListOf<Float>()
+                    mergedW.addAll(lastFragW)
+                    mergedW.addAll(firstFragW.subList(1, firstFragW.size))
                     val newSegs = mutableListOf<MutableList<Float>>()
                     newSegs.addAll(segs.subList(1, segs.size - 1))
                     newSegs.add(merged)
-                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline); StrokeItem(d, d.buildPath(), d.toPaint()) }
+                    val newSegsW = mutableListOf<MutableList<Float>>()
+                    newSegsW.addAll(segsW.subList(1, segsW.size - 1))
+                    newSegsW.add(mergedW)
+                    return newSegs.indices.map { idx -> buildFragment(newSegs[idx], newSegsW[idx]) }
                 }
             }
         }
-        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline); StrokeItem(d, d.buildPath(), d.toPaint()) }
+        return segs.indices.map { idx -> buildFragment(segs[idx], segsW[idx]) }
     }
 
     // Finds ALL points (as sorted t-values in [0,1]) where a segment crosses the eraser circle
