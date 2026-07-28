@@ -599,7 +599,6 @@ class StrokeData(
         val pts = smoothedPoints()
         val n = pts.size / 2
         if (n < 2) { canvas.drawPath(buildFountainRibbonPath(), Paint(basePaint).apply { style = Paint.Style.FILL; pathEffect = null }); return }
-        val fillPaint = Paint(basePaint).apply { style = Paint.Style.FILL; pathEffect = null; isAntiAlias = true }
         val totalSegments = (n - 1).coerceAtLeast(1)
         val taperCount = 4
         fun endTaper(idx: Int): Float {
@@ -614,6 +613,20 @@ class StrokeData(
         val overlapPad = 0.6f
         fun widthAt(idx: Int) = ((if (idx < widths.size) widths[idx] else strokeWidth) * endTaper(idx)).coerceAtLeast(1f)
 
+        var minX = pts[0]; var maxX = pts[0]; var minY = pts[1]; var maxY = pts[1]
+        for (k in 1 until n) {
+            val px = pts[k * 2]; val py = pts[k * 2 + 1]
+            if (px < minX) minX = px; if (px > maxX) maxX = px
+            if (py < minY) minY = py; if (py > maxY) maxY = py
+        }
+        val maxR = (widths.maxOrNull() ?: strokeWidth) / 2f + overlapPad + 2f
+        val strokeAlpha = basePaint.alpha
+        val layerCount = canvas.saveLayerAlpha(minX - maxR, minY - maxR, maxX + maxR, maxY + maxR, strokeAlpha)
+        // Full opacity WITHIN the layer — every circle/quad below is opaque here regardless of
+        // the stroke's real opacity, so their overlaps just replace each other with no double
+        // blending. The layer itself gets composited onto the real canvas at strokeAlpha above,
+        // exactly once, which is what keeps the whole stroke's opacity uniform end to end.
+        val fillPaint = Paint(basePaint).apply { style = Paint.Style.FILL; pathEffect = null; isAntiAlias = true; alpha = 255 }
         var i = 0
         while (i < n - 1) {
             val x1 = pts[i * 2]; val y1 = pts[i * 2 + 1]; val x2 = pts[(i + 1) * 2]; val y2 = pts[(i + 1) * 2 + 1]
@@ -633,6 +646,7 @@ class StrokeData(
         for (k in 0 until n) {
             canvas.drawCircle(pts[k * 2], pts[k * 2 + 1], widthAt(k) / 2f + overlapPad, fillPaint)
         }
+        canvas.restoreToCount(layerCount)
     }
 
     // Draws a Calligraphy stroke segment-by-segment as native stroked lines with a per-segment
@@ -735,6 +749,13 @@ class StrokeData(
                 p.strokeWidth = (strokeWidth * 0.55f).coerceAtLeast(1f); p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND
                 p.alpha = (opacity * 0.8f).toInt()
                 p.pathEffect = android.graphics.DashPathEffect(floatArrayOf(2.2f, 0.6f), 0f)
+                // A real pencil only ever lays down graphite gray, never the vivid hue of a
+                // colored pen. Desaturate whatever color was picked down to its own luminance
+                // (so picking black still comes out darker than picking a light color) rather
+                // than hard-coding one fixed gray — coerced so it never goes invisibly light or
+                // starkly pure-black, both unlike actual graphite.
+                val lum = (0.299f * android.graphics.Color.red(color) + 0.587f * android.graphics.Color.green(color) + 0.114f * android.graphics.Color.blue(color)).toInt().coerceIn(45, 150)
+                p.color = android.graphics.Color.rgb(lum, lum, lum)
             }
             // Calligraphy: handled separately via the ribbon path (see buildCalligraphyRibbonPath);
             // this stroke paint is only a fallback for hit-test rendering contexts.
