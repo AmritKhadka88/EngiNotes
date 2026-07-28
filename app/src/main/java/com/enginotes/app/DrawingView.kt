@@ -2271,6 +2271,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // so the already-transformed canvas scales it correctly at any zoom level WITHOUT re-rendering.
     // Cache is NEVER invalidated by zoom/pan — only when stroke data actually changes.
     private val CACHE_SCALE = 2f
+    // Cached bitmaps are rendered at a fixed world-space resolution and then scaled by
+    // drawBitmap into the current dst rect — at any zoom above native resolution that's an
+    // upscale. drawBitmap(..., paint=null) upscales with nearest-neighbor, which is exactly what
+    // reads as "smooth while actively drawing (rendered live, no cache), blocky/pixelated the
+    // instant the pen lifts and the stroke gets cached" — same root cause for every cached
+    // stroke type (Fountain, Calligraphy, cached Brush styles), not a per-style geometry bug.
+    private val _bitmapFilterPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private val MAX_CACHE_BYTES = 64L * 1024 * 1024  // 64 MB max total brush cache
     private fun pruneBrushCache() {
         var totalBytes = 0L
@@ -2342,14 +2349,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         val bmp = item.cachedBitmap ?: return
         val dst = android.graphics.RectF(item.cacheLeft, item.cacheTop, item.cacheRight, item.cacheBottom)
-        canvas.drawBitmap(bmp, null, dst, null)
+        canvas.drawBitmap(bmp, null, dst, _bitmapFilterPaint)
     }
 
     private fun drawBrushStrokeWithCache(canvas: Canvas, item: StrokeItem) {
         val sessionBmp = item.eraseSessionBitmap
         if (sessionBmp != null) {
             val dst = android.graphics.RectF(item.eraseSessionLeft, item.eraseSessionTop, item.eraseSessionRight, item.eraseSessionBottom)
-            canvas.drawBitmap(sessionBmp, null, dst, null)
+            canvas.drawBitmap(sessionBmp, null, dst, _bitmapFilterPaint)
             return
         }
         if (!CACHED_BRUSH_STYLES.contains(item.data.brushStyle)) {
@@ -2380,7 +2387,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val bmp = item.cachedBitmap ?: return
         // dstRect is in world coords — the canvas transform (translate+scale) maps to screen correctly
         val dst = android.graphics.RectF(item.cacheLeft, item.cacheTop, item.cacheRight, item.cacheBottom)
-        canvas.drawBitmap(bmp, null, dst, null)
+        canvas.drawBitmap(bmp, null, dst, _bitmapFilterPaint)
     }
 
     // Renders the stroke's current appearance into item.eraseSessionBitmap exactly once (if not
