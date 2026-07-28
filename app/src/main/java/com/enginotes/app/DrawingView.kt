@@ -184,7 +184,13 @@ class StrokeData(
     // (which every Tool.PEN render path below does, to remove hand tremor from natural
     // handwriting) would round off intentional sharp corners into a curve, which is wrong for
     // a tool whose entire purpose is precise straight segments.
-    var isPolyline: Boolean = false
+    var isPolyline: Boolean = false,
+    // True only at the stroke's actual pen-down/pen-up ends, where a nib tapering to a point is
+    // correct. An area-eraser split creates brand-new fragment boundaries at the cut — those are
+    // NOT the original ends, and re-tapering them made an erased edge visibly reshape itself
+    // (fading to a point) instead of just showing the width the ink already had there.
+    var taperStart: Boolean = true,
+    var taperEnd: Boolean = true
 ) {
     fun buildPath(): Path {
         val path = Path()
@@ -515,7 +521,11 @@ class StrokeData(
     // Velocity-sensitive Fountain pen ribbon: width is inversely proportional to drawing speed
     // (fast = thin, slow = pools thicker, like real ink flow), built from the per-point `widths`
     // samples recorded while drawing. Falls back to a uniform-width ribbon if no samples exist
-    // (e.g. for strokes loaded from older saved files).
+    // (e.g. for strokes loaded from older saved files). Kept only as the renderer for the rare
+    // rotated/pixel-erased case — see drawFountainStroke below for the normal path, which fixes
+    // this flat-ribbon offset's real weakness: it models the nib as a flat plate perpendicular to
+    // the direction of travel, so on a sharp turn or reversal that plate's orientation swings
+    // with it and can momentarily point the wrong way, leaving a wedge-shaped gap at the turn.
     fun buildFountainRibbonPath(): Path {
         val ribbon = Path()
         if (points.size < 4) return buildPath()
@@ -523,22 +533,13 @@ class StrokeData(
         val n = pts.size / 2
         if (n < 2) return buildPath()
         val left = mutableListOf<Pair<Float, Float>>(); val right = mutableListOf<Pair<Float, Float>>()
-        // Segment count, used below to taper width at both ends of the stroke — without this,
-        // the very first/last sample already carries near-full width, so the ribbon starts and
-        // ends as an abrupt blunt blob instead of tapering to a point like a real nib lifting
-        // on/off the page.
         val totalSegments = (n - 1).coerceAtLeast(1)
         val taperCount = 4
         fun endTaper(segIndex: Int): Float {
-            val fadeIn = ((segIndex + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
-            val fadeOut = ((totalSegments - segIndex).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
+            val fadeIn = if (taperStart) ((segIndex + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
+            val fadeOut = if (taperEnd) ((totalSegments - segIndex).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
             return minOf(fadeIn, fadeOut).coerceIn(0.12f, 1f)
         }
-        // Offset each VERTEX by the bisector of its incoming and outgoing segment directions,
-        // not by either segment's direction alone — that's what keeps the ribbon edge turning
-        // smoothly through a corner instead of kinking exactly at it. At the two endpoints only
-        // one direction exists, so that one is used directly (matches a real nib entering/
-        // leaving at the stroke's actual heading).
         for (k in 0 until n) {
             val px = pts[k * 2]; val py = pts[k * 2 + 1]
             var dxIn = 0f; var dyIn = 0f
@@ -556,9 +557,6 @@ class StrokeData(
             var tx = dxIn + dxOut; var ty = dyIn + dyOut
             val tl = kotlin.math.hypot(tx.toDouble(), ty.toDouble()).toFloat()
             if (tl < 0.01f) {
-                // The two directions cancel out almost exactly — a near-180-degree reversal right
-                // at this vertex (the tip of a tight cusp/hairpin). Fall back to whichever single
-                // direction is actually available instead of an unusable zero vector.
                 tx = if (dxIn != 0f || dyIn != 0f) dxIn else dxOut
                 ty = if (dxIn != 0f || dyIn != 0f) dyIn else dyOut
                 val tl2 = kotlin.math.hypot(tx.toDouble(), ty.toDouble()).toFloat().coerceAtLeast(0.01f)
@@ -569,11 +567,6 @@ class StrokeData(
             left.add(Pair(px + nx * w, py + ny * w)); right.add(Pair(px - nx * w, py - ny * w))
         }
         if (left.isEmpty() || right.isEmpty()) return buildPath()
-        // Curve through the offset points instead of connecting them with straight lineTo
-        // segments (the polygon-edge look was part of why the ribbon read as faceted rather
-        // than a fluently tapering nib stroke) — same midpoint-quadTo technique already used
-        // to smooth plain pen strokes in buildPath(). Skipped for polylines, same reason as
-        // there: quadTo would round off intentional sharp vertices into a curve.
         fun addSmoothed(path: Path, pts: List<Pair<Float, Float>>, moveToFirst: Boolean) {
             if (pts.isEmpty()) return
             if (moveToFirst) path.moveTo(pts[0].first, pts[0].second)
@@ -592,6 +585,56 @@ class StrokeData(
         ribbon.close()
         return ribbon
     }
+
+    // Renders the Fountain nib as a chain of solid disks (one centered on every vertex, radius =
+    // that point's width/2) connected by simple tangent-offset quads between consecutive disks.
+    // This is the "ink generated in a circular manner" model — the disk's footprint at any given
+    // point never depends on which way the pen is heading, so unlike a perpendicular-plate offset
+    // it cannot leave a gap at a sharp turn or a full reversal: whatever wedge the connecting
+    // quads don't perfectly cover right at a joint is already filled by that joint's own full
+    // disk. All primitives are drawn with the same opaque fill color, so their overlaps and
+    // shared edges are invisible — no polygon boolean-union math needed, just plain overdraw.
+    fun drawFountainStroke(canvas: Canvas, basePaint: Paint) {
+        if (points.size < 4 || widths.size < 2) { canvas.drawPath(buildFountainRibbonPath(), Paint(basePaint).apply { style = Paint.Style.FILL; pathEffect = null }); return }
+        val pts = smoothedPoints()
+        val n = pts.size / 2
+        if (n < 2) { canvas.drawPath(buildFountainRibbonPath(), Paint(basePaint).apply { style = Paint.Style.FILL; pathEffect = null }); return }
+        val fillPaint = Paint(basePaint).apply { style = Paint.Style.FILL; pathEffect = null; isAntiAlias = true }
+        val totalSegments = (n - 1).coerceAtLeast(1)
+        val taperCount = 4
+        fun endTaper(idx: Int): Float {
+            val fadeIn = if (taperStart) ((idx + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
+            val fadeOut = if (taperEnd) ((totalSegments - idx).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
+            return minOf(fadeIn, fadeOut).coerceIn(0.12f, 1f)
+        }
+        // Tiny radius pad on the disks only (not the quads) so a same-color disk and its
+        // neighboring quad share a sliver of overlap rather than meeting at an exact boundary —
+        // without it, two anti-aliased opaque edges just touching (no true overlap area) can
+        // leave a hairline seam where each edge's own partial-alpha rim shows through.
+        val overlapPad = 0.6f
+        fun widthAt(idx: Int) = ((if (idx < widths.size) widths[idx] else strokeWidth) * endTaper(idx)).coerceAtLeast(1f)
+
+        var i = 0
+        while (i < n - 1) {
+            val x1 = pts[i * 2]; val y1 = pts[i * 2 + 1]; val x2 = pts[(i + 1) * 2]; val y2 = pts[(i + 1) * 2 + 1]
+            val dx = x2 - x1; val dy = y2 - y1
+            val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(0.01f)
+            val nx = -dy / len; val ny = dx / len
+            val r1 = widthAt(i) / 2f; val r2 = widthAt(i + 1) / 2f
+            val quad = Path()
+            quad.moveTo(x1 + nx * r1, y1 + ny * r1)
+            quad.lineTo(x2 + nx * r2, y2 + ny * r2)
+            quad.lineTo(x2 - nx * r2, y2 - ny * r2)
+            quad.lineTo(x1 - nx * r1, y1 - ny * r1)
+            quad.close()
+            canvas.drawPath(quad, fillPaint)
+            i++
+        }
+        for (k in 0 until n) {
+            canvas.drawCircle(pts[k * 2], pts[k * 2 + 1], widthAt(k) / 2f + overlapPad, fillPaint)
+        }
+    }
+
 
     // Draws a Pencil stroke segment-by-segment with per-segment opacity derived from drawing
     // speed (stored in `widths` as a 0..1 intensity factor) - faster strokes fade lighter, slower
@@ -630,8 +673,8 @@ class StrokeData(
         val totalSegments = ((pts.size - 2) / 2).coerceAtLeast(1)
         val taperCount = 4
         fun endTaper(segIndex: Int): Float {
-            val fadeIn = ((segIndex + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
-            val fadeOut = ((totalSegments - segIndex).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
+            val fadeIn = if (taperStart) ((segIndex + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
+            val fadeOut = if (taperEnd) ((totalSegments - segIndex).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
             return minOf(fadeIn, fadeOut).coerceIn(0.12f, 1f)
         }
         var i = 0
@@ -1898,9 +1941,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // further below, so only the common case — no rotation, nothing erased out of
                 // it — takes the fast cached path here.
                 if (isFountainPen && action.data.rotation == 0f && action.data.clipHoles.isEmpty()) {
-                    drawWithBitmapCache(canvas, action, action.data.strokeWidth * 2f) { c, item ->
-                        c.drawPath(item.data.buildFountainRibbonPath(), Paint(item.paint).apply { style = Paint.Style.FILL; pathEffect = null })
-                    }
+                    drawWithBitmapCache(canvas, action, action.data.strokeWidth * 2f) { c, item -> item.data.drawFountainStroke(c, item.paint) }
                     return
                 }
                 val renderPath = when { isCalligraphyPen -> action.data.buildCalligraphyRibbonPath(); isFountainPen -> action.data.buildFountainRibbonPath(); else -> action.path }
@@ -2647,7 +2688,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // Same native-stroke renderer used for the finalized stroke, so live preview
                 // and final look match exactly with no separate code path to drift out of sync.
                 isCalligraphyPen -> it.data.drawCalligraphyStroke(canvas, it.paint)
-                isFountainPen -> canvas.drawPath(it.data.buildFountainRibbonPath(), Paint(it.paint).apply { style = Paint.Style.FILL; pathEffect = null })
+                isFountainPen -> it.data.drawFountainStroke(canvas, it.paint)
                 isPencilPen -> it.data.drawPencilStroke(canvas, it.paint)
                 // Was falling through to the flat-width `else` below, so Brush strokes only
                 // showed their real per-point width variation once finalized (via
@@ -6241,6 +6282,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         fun buildFragment(sp: MutableList<Float>, spw: MutableList<Float>): StrokeItem {
             val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline)
             if (hasWidths) { d.widths.clear(); d.widths.addAll(spw) }
+            d.taperStart = data.taperStart && distance(sp[0], sp[1], pts[0], pts[1]) < 0.01f
+            d.taperEnd = data.taperEnd && distance(sp[sp.size - 2], sp[sp.size - 1], pts[pts.size - 2], pts[pts.size - 1]) < 0.01f
             val path = if (hasWidths && data.type == Tool.PEN && data.penStyle == PenStyle.FOUNTAIN) d.buildFountainRibbonPath() else d.buildPath()
             return StrokeItem(d, path, d.toPaint())
         }
