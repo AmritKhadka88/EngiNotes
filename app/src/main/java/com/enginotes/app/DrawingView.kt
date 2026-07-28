@@ -635,22 +635,6 @@ class StrokeData(
         }
     }
 
-
-    // Draws a Pencil stroke segment-by-segment with per-segment opacity derived from drawing
-    // speed (stored in `widths` as a 0..1 intensity factor) - faster strokes fade lighter, slower
-    // strokes stay darker, mimicking how graphite deposits less material when moved quickly.
-    fun drawPencilStroke(canvas: Canvas, basePaint: Paint) {
-        if (points.size < 4 || widths.size < 2) { canvas.drawPath(buildPath(), basePaint); return }
-        var i = 0; var wi = 0
-        val segPaint = Paint(basePaint)
-        while (i + 3 < points.size) {
-            val intensity = (if (wi < widths.size) widths[wi] else 1f).coerceIn(0.25f, 1f)
-            segPaint.alpha = (basePaint.alpha * intensity).toInt()
-            canvas.drawLine(points[i], points[i + 1], points[i + 2], points[i + 3], segPaint)
-            i += 2; wi++
-        }
-    }
-
     // Draws a Calligraphy stroke segment-by-segment as native stroked lines with a per-segment
     // chisel-nib width, using ROUND caps/joins — the same proven technique already used above
     // for Pencil. This replaces an earlier per-segment-quad + joint-circle approach that turned
@@ -1931,8 +1915,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 val isCalligraphyPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.CALLIGRAPHY
                 val isFountainPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.FOUNTAIN && action.data.widths.size >= 2
-                val isPencilPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.PENCIL && action.data.widths.size >= 2
-                if (isPencilPen && action.data.rotation == 0f) { action.data.drawPencilStroke(canvas, action.paint); return }
                 if (isCalligraphyPen && action.data.rotation == 0f) {
                     drawWithBitmapCache(canvas, action, action.data.strokeWidth * 2f) { c, item -> item.data.drawCalligraphyStroke(c, item.paint) }
                     return
@@ -2690,13 +2672,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         currentItem?.let {
             val isCalligraphyPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.CALLIGRAPHY
             val isFountainPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.FOUNTAIN && it.data.widths.size >= 2
-            val isPencilPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.PENCIL && it.data.widths.size >= 2
             when {
                 // Same native-stroke renderer used for the finalized stroke, so live preview
                 // and final look match exactly with no separate code path to drift out of sync.
                 isCalligraphyPen -> it.data.drawCalligraphyStroke(canvas, it.paint)
                 isFountainPen -> it.data.drawFountainStroke(canvas, it.paint)
-                isPencilPen -> it.data.drawPencilStroke(canvas, it.paint)
                 // Was falling through to the flat-width `else` below, so Brush strokes only
                 // showed their real per-point width variation once finalized (via
                 // drawBrushStrokeWithCache) — the live stroke looked uniform-width the whole
@@ -5688,7 +5668,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), effectiveColor(), effectiveStrokeWidth() * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = brushOpacity, lineType = effectiveLineType(), calligraphySlantThickness = currentCalligraphySlant)
                 }
                 if (currentTool == Tool.PEN && currentPenStyle == PenStyle.FOUNTAIN) data.widths.add(currentStrokeWidth)
-                if (currentTool == Tool.PEN && currentPenStyle == PenStyle.PENCIL) data.widths.add(1f)
                 if (currentTool == Tool.BRUSH && (currentBrushStyle == BrushStyle.INK || currentBrushStyle == BrushStyle.ROUND)) data.widths.add(brushThickness * pressure)
                 lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
                 currentItem = StrokeItem(data, data.buildPath(), data.toPaint()); invalidate()
@@ -5806,37 +5785,32 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         if (distance(hx, hy, lpx, lpy) < minPointDist) continue
                         item.data.points.add(hx); item.data.points.add(hy)
                         pointAdded = true
-                        if (currentTool == Tool.PEN && (currentPenStyle == PenStyle.FOUNTAIN || currentPenStyle == PenStyle.PENCIL)) {
+                        if (currentTool == Tool.PEN && currentPenStyle == PenStyle.FOUNTAIN) {
                             val dt = (event.getHistoricalEventTime(h) - lastMoveTime).coerceAtLeast(1L)
                             val dist = distance(hx, hy, lastMoveX, lastMoveY)
                             val speed = dist / dt * 1000f
-                            if (currentPenStyle == PenStyle.FOUNTAIN) {
-                                // Was 0.55 + (1-speedNorm)*0.9 with speedNorm capped at 0.7 — that
-                                // formula only ever produced widths between ~0.82x-1.45x, well
-                                // short of the 0.4x-1.8x range it was supposedly clamped to. This
-                                // spans that full range directly, so slow strokes actually pool
-                                // thick and fast strokes actually go thin, not just mildly vary.
-                                val speedNorm = (speed / 2200f).coerceIn(0f, 1f)
-                                val rawTarget = (currentStrokeWidth * (0.4f + (1f - speedNorm) * 1.4f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
-                                val prevWidth = item.data.widths.lastOrNull() ?: currentStrokeWidth
-                                // Rate-limit: cap how much the target can differ from the last
-                                // width in a single sample. A sharp turn/cusp forces the pen to
-                                // momentarily decelerate to change direction — without this cap,
-                                // that single-sample deceleration blip reads as "slowed down to
-                                // pool more ink" and balloons into a visible blob right at the
-                                // turn, even though the hand never actually paused there.
-                                val maxDelta = currentStrokeWidth * 0.10f
-                                val targetWidth = rawTarget.coerceIn(prevWidth - maxDelta, prevWidth + maxDelta)
-                                // Was 0.8/0.2 — so heavily damped that a normal-speed signature
-                                // finished before the width ever caught up to how fast the pen
-                                // was actually moving, reading as flat/unfluid instead of a
-                                // nib that responds to your hand. 0.45/0.55 still smooths raw
-                                // per-sample jitter but lets the ink weight actually track speed.
-                                item.data.widths.add(prevWidth * 0.45f + targetWidth * 0.55f)
-                            } else {
-                                val targetIntensity = (1f - (speed / 1800f).coerceIn(0f, 0.75f)).coerceIn(0.25f, 1f)
-                                item.data.widths.add((item.data.widths.lastOrNull() ?: 1f) * 0.7f + targetIntensity * 0.3f)
-                            }
+                            // Was 0.55 + (1-speedNorm)*0.9 with speedNorm capped at 0.7 — that
+                            // formula only ever produced widths between ~0.82x-1.45x, well
+                            // short of the 0.4x-1.8x range it was supposedly clamped to. This
+                            // spans that full range directly, so slow strokes actually pool
+                            // thick and fast strokes actually go thin, not just mildly vary.
+                            val speedNorm = (speed / 2200f).coerceIn(0f, 1f)
+                            val rawTarget = (currentStrokeWidth * (0.4f + (1f - speedNorm) * 1.4f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
+                            val prevWidth = item.data.widths.lastOrNull() ?: currentStrokeWidth
+                            // Rate-limit: cap how much the target can differ from the last
+                            // width in a single sample. A sharp turn/cusp forces the pen to
+                            // momentarily decelerate to change direction — without this cap,
+                            // that single-sample deceleration blip reads as "slowed down to
+                            // pool more ink" and balloons into a visible blob right at the
+                            // turn, even though the hand never actually paused there.
+                            val maxDelta = currentStrokeWidth * 0.10f
+                            val targetWidth = rawTarget.coerceIn(prevWidth - maxDelta, prevWidth + maxDelta)
+                            // Was 0.8/0.2 — so heavily damped that a normal-speed signature
+                            // finished before the width ever caught up to how fast the pen
+                            // was actually moving, reading as flat/unfluid instead of a
+                            // nib that responds to your hand. 0.45/0.55 still smooths raw
+                            // per-sample jitter but lets the ink weight actually track speed.
+                            item.data.widths.add(prevWidth * 0.45f + targetWidth * 0.55f)
                             lastMoveTime = event.getHistoricalEventTime(h); lastMoveX = hx; lastMoveY = hy
                         }
                         if (currentTool == Tool.BRUSH && (currentBrushStyle == BrushStyle.INK || currentBrushStyle == BrushStyle.ROUND)) {
@@ -5852,23 +5826,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     if (distance(wx, wy, lpx2, lpy2) >= minPointDist) {
                     item.data.points.add(wx); item.data.points.add(wy)
                     pointAdded = true
-                    if (currentTool == Tool.PEN && (currentPenStyle == PenStyle.FOUNTAIN || currentPenStyle == PenStyle.PENCIL)) {
+                    if (currentTool == Tool.PEN && currentPenStyle == PenStyle.FOUNTAIN) {
                         val dt = (event.eventTime - lastMoveTime).coerceAtLeast(1L)
                         val dist = distance(wx, wy, lastMoveX, lastMoveY)
                         val speed = dist / dt * 1000f
-                        if (currentPenStyle == PenStyle.FOUNTAIN) {
-                            val speedNorm = (speed / 2200f).coerceIn(0f, 1f)
-                            val rawTarget = (currentStrokeWidth * (0.4f + (1f - speedNorm) * 1.4f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
-                            val prevWidth = item.data.widths.lastOrNull() ?: currentStrokeWidth
-                            val maxDelta = currentStrokeWidth * 0.10f
-                            val targetWidth = rawTarget.coerceIn(prevWidth - maxDelta, prevWidth + maxDelta)
-                            // 0.45/0.55: still smooths raw jitter but tracks actual pen speed
-                            // closely enough to read as fluent rather than lagging behind it.
-                            item.data.widths.add(prevWidth * 0.45f + targetWidth * 0.55f)
-                        } else {
-                            val targetIntensity = (1f - (speed / 1800f).coerceIn(0f, 0.75f)).coerceIn(0.25f, 1f)
-                            item.data.widths.add((item.data.widths.lastOrNull() ?: 1f) * 0.7f + targetIntensity * 0.3f)
-                        }
+                        val speedNorm = (speed / 2200f).coerceIn(0f, 1f)
+                        val rawTarget = (currentStrokeWidth * (0.4f + (1f - speedNorm) * 1.4f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
+                        val prevWidth = item.data.widths.lastOrNull() ?: currentStrokeWidth
+                        val maxDelta = currentStrokeWidth * 0.10f
+                        val targetWidth = rawTarget.coerceIn(prevWidth - maxDelta, prevWidth + maxDelta)
+                        // 0.45/0.55: still smooths raw jitter but tracks actual pen speed
+                        // closely enough to read as fluent rather than lagging behind it.
+                        item.data.widths.add(prevWidth * 0.45f + targetWidth * 0.55f)
                         lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
                     }
                     if (currentTool == Tool.BRUSH && currentBrushStyle == BrushStyle.INK) {
