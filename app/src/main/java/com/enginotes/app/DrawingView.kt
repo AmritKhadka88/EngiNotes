@@ -166,7 +166,7 @@ private val bitmapCache = object : LinkedHashMap<String, Bitmap>(16, 0.75f, true
 class StrokeData(
     val type: Tool, val points: MutableList<Float>,
     var color: Int, var strokeWidth: Float, var fill: Boolean, var rotation: Float = 0f,
-    var fillColorVal: Int = color, var penStyle: PenStyle = PenStyle.FOUNTAIN, var opacity: Int = 255,
+    var fillColorVal: Int = color, var penStyle: PenStyle = PenStyle.BALL, var opacity: Int = 255,
     var brushStyle: BrushStyle = BrushStyle.ROUND,
     var widths: MutableList<Float> = mutableListOf(),
     var lineType: LineType = LineType.CONTINUOUS,
@@ -586,68 +586,6 @@ class StrokeData(
         return ribbon
     }
 
-    // Renders the Fountain nib as a chain of solid disks (one centered on every vertex, radius =
-    // that point's width/2) connected by simple tangent-offset quads between consecutive disks.
-    // This is the "ink generated in a circular manner" model — the disk's footprint at any given
-    // point never depends on which way the pen is heading, so unlike a perpendicular-plate offset
-    // it cannot leave a gap at a sharp turn or a full reversal: whatever wedge the connecting
-    // quads don't perfectly cover right at a joint is already filled by that joint's own full
-    // disk. All primitives are drawn with the same opaque fill color, so their overlaps and
-    // shared edges are invisible — no polygon boolean-union math needed, just plain overdraw.
-    fun drawFountainStroke(canvas: Canvas, basePaint: Paint) {
-        if (points.size < 4 || widths.size < 2) { canvas.drawPath(buildFountainRibbonPath(), Paint(basePaint).apply { style = Paint.Style.FILL; pathEffect = null }); return }
-        val pts = smoothedPoints()
-        val n = pts.size / 2
-        if (n < 2) { canvas.drawPath(buildFountainRibbonPath(), Paint(basePaint).apply { style = Paint.Style.FILL; pathEffect = null }); return }
-        val totalSegments = (n - 1).coerceAtLeast(1)
-        val taperCount = 4
-        fun endTaper(idx: Int): Float {
-            val fadeIn = if (taperStart) ((idx + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
-            val fadeOut = if (taperEnd) ((totalSegments - idx).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
-            return minOf(fadeIn, fadeOut).coerceIn(0.12f, 1f)
-        }
-        // Tiny radius pad on the disks only (not the quads) so a same-color disk and its
-        // neighboring quad share a sliver of overlap rather than meeting at an exact boundary —
-        // without it, two anti-aliased opaque edges just touching (no true overlap area) can
-        // leave a hairline seam where each edge's own partial-alpha rim shows through.
-        val overlapPad = 0.6f
-        fun widthAt(idx: Int) = ((if (idx < widths.size) widths[idx] else strokeWidth) * endTaper(idx)).coerceAtLeast(1f)
-
-        var minX = pts[0]; var maxX = pts[0]; var minY = pts[1]; var maxY = pts[1]
-        for (k in 1 until n) {
-            val px = pts[k * 2]; val py = pts[k * 2 + 1]
-            if (px < minX) minX = px; if (px > maxX) maxX = px
-            if (py < minY) minY = py; if (py > maxY) maxY = py
-        }
-        val maxR = (widths.maxOrNull() ?: strokeWidth) / 2f + overlapPad + 2f
-        val strokeAlpha = basePaint.alpha
-        val layerCount = canvas.saveLayerAlpha(minX - maxR, minY - maxR, maxX + maxR, maxY + maxR, strokeAlpha)
-        // Full opacity WITHIN the layer — every circle/quad below is opaque here regardless of
-        // the stroke's real opacity, so their overlaps just replace each other with no double
-        // blending. The layer itself gets composited onto the real canvas at strokeAlpha above,
-        // exactly once, which is what keeps the whole stroke's opacity uniform end to end.
-        val fillPaint = Paint(basePaint).apply { style = Paint.Style.FILL; pathEffect = null; isAntiAlias = true; alpha = 255 }
-        var i = 0
-        while (i < n - 1) {
-            val x1 = pts[i * 2]; val y1 = pts[i * 2 + 1]; val x2 = pts[(i + 1) * 2]; val y2 = pts[(i + 1) * 2 + 1]
-            val dx = x2 - x1; val dy = y2 - y1
-            val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(0.01f)
-            val nx = -dy / len; val ny = dx / len
-            val r1 = widthAt(i) / 2f; val r2 = widthAt(i + 1) / 2f
-            val quad = Path()
-            quad.moveTo(x1 + nx * r1, y1 + ny * r1)
-            quad.lineTo(x2 + nx * r2, y2 + ny * r2)
-            quad.lineTo(x2 - nx * r2, y2 - ny * r2)
-            quad.lineTo(x1 - nx * r1, y1 - ny * r1)
-            quad.close()
-            canvas.drawPath(quad, fillPaint)
-            i++
-        }
-        for (k in 0 until n) {
-            canvas.drawCircle(pts[k * 2], pts[k * 2 + 1], widthAt(k) / 2f + overlapPad, fillPaint)
-        }
-        canvas.restoreToCount(layerCount)
-    }
 
     // Draws a Calligraphy stroke segment-by-segment as native stroked lines with a per-segment
     // chisel-nib width, using ROUND caps/joins — the same proven technique already used above
@@ -744,11 +682,18 @@ class StrokeData(
             PenStyle.FOUNTAIN -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
             // Ballpoint: thinner and crisper than fountain, uniform line - no flow variation
             PenStyle.BALL -> { p.strokeWidth = (strokeWidth * 0.65f).coerceAtLeast(1.5f); p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
-            // Pencil: thin, slightly grainy via a fine dash pattern that breaks up the line like graphite texture
+            // Pencil: thin, grainy graphite texture — a fine dash broken up further by small
+            // random deviations along the path (same layered dash+discrete technique already
+            // used for Charcoal/Dry Brush), so it reads as a sketched pencil line rather than a
+            // perfectly clean dashed stroke. Visible live while writing since this comes from
+            // toPaint(), not a separate finalize-only effect.
             PenStyle.PENCIL -> {
                 p.strokeWidth = (strokeWidth * 0.55f).coerceAtLeast(1f); p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND
                 p.alpha = (opacity * 0.8f).toInt()
-                p.pathEffect = android.graphics.DashPathEffect(floatArrayOf(2.2f, 0.6f), 0f)
+                p.pathEffect = android.graphics.ComposePathEffect(
+                    android.graphics.DashPathEffect(floatArrayOf(2.2f, 0.6f), 0f),
+                    android.graphics.DiscretePathEffect(3f, 0.8f)
+                )
                 // A real pencil only ever lays down graphite gray, never the vivid hue of a
                 // colored pen. Desaturate whatever color was picked down to its own luminance
                 // (so picking black still comes out darker than picking a light color) rather
@@ -1209,7 +1154,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     var currentColor: Int = Color.BLACK
     var currentStrokeWidth: Float = 6f
-    var currentPenStyle: PenStyle = PenStyle.FOUNTAIN
+    var currentPenStyle: PenStyle = PenStyle.BALL
     var currentCalligraphySlant: Float = 0.65f  // applied to new fountain-pen strokes; adjustable separately from base thickness
     var currentLineType: LineType = LineType.CONTINUOUS
     // Resolves "what should a brand-new item actually use" — the active layer's explicit
@@ -1938,13 +1883,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val isFountainPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.FOUNTAIN && action.data.widths.size >= 2
                 if (isCalligraphyPen && action.data.rotation == 0f) {
                     drawWithBitmapCache(canvas, action, action.data.strokeWidth * 2f) { c, item -> item.data.drawCalligraphyStroke(c, item.paint) }
-                    return
-                }
-                // clipHoles (pixel-eraser holes) and rotation both need the shared handling
-                // further below, so only the common case — no rotation, nothing erased out of
-                // it — takes the fast cached path here.
-                if (isFountainPen && action.data.rotation == 0f && action.data.clipHoles.isEmpty()) {
-                    drawWithBitmapCache(canvas, action, action.data.strokeWidth * 2f) { c, item -> item.data.drawFountainStroke(c, item.paint) }
                     return
                 }
                 val renderPath = when { isCalligraphyPen -> action.data.buildCalligraphyRibbonPath(); isFountainPen -> action.data.buildFountainRibbonPath(); else -> action.path }
@@ -2692,12 +2630,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         for (action in remainingItems) drawActionItem(canvas, action, true)
         currentItem?.let {
             val isCalligraphyPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.CALLIGRAPHY
-            val isFountainPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.FOUNTAIN && it.data.widths.size >= 2
             when {
                 // Same native-stroke renderer used for the finalized stroke, so live preview
                 // and final look match exactly with no separate code path to drift out of sync.
                 isCalligraphyPen -> it.data.drawCalligraphyStroke(canvas, it.paint)
-                isFountainPen -> it.data.drawFountainStroke(canvas, it.paint)
                 // Was falling through to the flat-width `else` below, so Brush strokes only
                 // showed their real per-point width variation once finalized (via
                 // drawBrushStrokeWithCache) — the live stroke looked uniform-width the whole
@@ -5688,7 +5624,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), effectiveColor(), effectiveStrokeWidth(), fillShapes, lineType = effectiveLineType())
                     else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), effectiveColor(), effectiveStrokeWidth() * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = brushOpacity, lineType = effectiveLineType(), calligraphySlantThickness = currentCalligraphySlant)
                 }
-                if (currentTool == Tool.PEN && currentPenStyle == PenStyle.FOUNTAIN) data.widths.add(currentStrokeWidth)
                 if (currentTool == Tool.BRUSH && (currentBrushStyle == BrushStyle.INK || currentBrushStyle == BrushStyle.ROUND)) data.widths.add(brushThickness * pressure)
                 lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
                 currentItem = StrokeItem(data, data.buildPath(), data.toPaint()); invalidate()
@@ -5806,34 +5741,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         if (distance(hx, hy, lpx, lpy) < minPointDist) continue
                         item.data.points.add(hx); item.data.points.add(hy)
                         pointAdded = true
-                        if (currentTool == Tool.PEN && currentPenStyle == PenStyle.FOUNTAIN) {
-                            val dt = (event.getHistoricalEventTime(h) - lastMoveTime).coerceAtLeast(1L)
-                            val dist = distance(hx, hy, lastMoveX, lastMoveY)
-                            val speed = dist / dt * 1000f
-                            // Was 0.55 + (1-speedNorm)*0.9 with speedNorm capped at 0.7 — that
-                            // formula only ever produced widths between ~0.82x-1.45x, well
-                            // short of the 0.4x-1.8x range it was supposedly clamped to. This
-                            // spans that full range directly, so slow strokes actually pool
-                            // thick and fast strokes actually go thin, not just mildly vary.
-                            val speedNorm = (speed / 2200f).coerceIn(0f, 1f)
-                            val rawTarget = (currentStrokeWidth * (0.4f + (1f - speedNorm) * 1.4f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
-                            val prevWidth = item.data.widths.lastOrNull() ?: currentStrokeWidth
-                            // Rate-limit: cap how much the target can differ from the last
-                            // width in a single sample. A sharp turn/cusp forces the pen to
-                            // momentarily decelerate to change direction — without this cap,
-                            // that single-sample deceleration blip reads as "slowed down to
-                            // pool more ink" and balloons into a visible blob right at the
-                            // turn, even though the hand never actually paused there.
-                            val maxDelta = currentStrokeWidth * 0.10f
-                            val targetWidth = rawTarget.coerceIn(prevWidth - maxDelta, prevWidth + maxDelta)
-                            // Was 0.8/0.2 — so heavily damped that a normal-speed signature
-                            // finished before the width ever caught up to how fast the pen
-                            // was actually moving, reading as flat/unfluid instead of a
-                            // nib that responds to your hand. 0.45/0.55 still smooths raw
-                            // per-sample jitter but lets the ink weight actually track speed.
-                            item.data.widths.add(prevWidth * 0.45f + targetWidth * 0.55f)
-                            lastMoveTime = event.getHistoricalEventTime(h); lastMoveX = hx; lastMoveY = hy
-                        }
                         if (currentTool == Tool.BRUSH && (currentBrushStyle == BrushStyle.INK || currentBrushStyle == BrushStyle.ROUND)) {
                             val dt = (event.getHistoricalEventTime(h) - lastMoveTime).coerceAtLeast(1L)
                             val dist = distance(hx, hy, lastMoveX, lastMoveY)
@@ -5847,20 +5754,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     if (distance(wx, wy, lpx2, lpy2) >= minPointDist) {
                     item.data.points.add(wx); item.data.points.add(wy)
                     pointAdded = true
-                    if (currentTool == Tool.PEN && currentPenStyle == PenStyle.FOUNTAIN) {
-                        val dt = (event.eventTime - lastMoveTime).coerceAtLeast(1L)
-                        val dist = distance(wx, wy, lastMoveX, lastMoveY)
-                        val speed = dist / dt * 1000f
-                        val speedNorm = (speed / 2200f).coerceIn(0f, 1f)
-                        val rawTarget = (currentStrokeWidth * (0.4f + (1f - speedNorm) * 1.4f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
-                        val prevWidth = item.data.widths.lastOrNull() ?: currentStrokeWidth
-                        val maxDelta = currentStrokeWidth * 0.10f
-                        val targetWidth = rawTarget.coerceIn(prevWidth - maxDelta, prevWidth + maxDelta)
-                        // 0.45/0.55: still smooths raw jitter but tracks actual pen speed
-                        // closely enough to read as fluent rather than lagging behind it.
-                        item.data.widths.add(prevWidth * 0.45f + targetWidth * 0.55f)
-                        lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
-                    }
                     if (currentTool == Tool.BRUSH && currentBrushStyle == BrushStyle.INK) {
                         val dt = (event.eventTime - lastMoveTime).coerceAtLeast(1L)
                         val dist = distance(wx, wy, lastMoveX, lastMoveY)
@@ -6024,7 +5917,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // this same reconstruction on the now-already-curved path, the distortion compounds
             // worse with every erase. Marking it a polyline keeps the straight-line render path,
             // preserving the shape's actual geometry exactly as sampled.
-            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.FOUNTAIN, opacity = data.opacity, lineType = data.lineType, isPolyline = true)
+            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.BALL, opacity = data.opacity, lineType = data.lineType, isPolyline = true)
             StrokeItem(d, d.buildPath(), d.toPaint())
         }
     }
@@ -7635,7 +7528,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val rot = p[4].toFloat()
                                 val pts = if (p[5].isBlank()) mutableListOf() else p[5].split(",").map { it.toFloat() }.toMutableList()
                                 val fcv = if (p.size >= 7) p[6].toIntOrNull() ?: color else color
-                                val pStyle = if (p.size >= 8) try { PenStyle.valueOf(p[7]) } catch (e: Exception) { PenStyle.FOUNTAIN } else PenStyle.FOUNTAIN
+                                val pStyle = if (p.size >= 8) try { PenStyle.valueOf(p[7]) } catch (e: Exception) { PenStyle.BALL } else PenStyle.BALL
                                 val opac = if (p.size >= 9) p[8].toIntOrNull() ?: 255 else 255
                                 val bStyle = if (p.size >= 10) try { BrushStyle.valueOf(p[9]) } catch (e: Exception) { BrushStyle.ROUND } else BrushStyle.ROUND
                                 val wArr = if (p.size >= 11 && p[10].isNotBlank()) p[10].split(",").mapNotNull { it.toFloatOrNull() }.toMutableList() else mutableListOf()

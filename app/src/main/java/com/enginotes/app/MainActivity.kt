@@ -157,7 +157,7 @@ class MainActivity : AppCompatActivity() {
                 android.graphics.Typeface.create(family, android.graphics.Typeface.NORMAL)
         } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
     }
-    private val recentPenStyles = mutableListOf(PenStyle.FOUNTAIN, PenStyle.BALL, PenStyle.PENCIL)
+    private val recentPenStyles = mutableListOf(PenStyle.BALL, PenStyle.PENCIL, PenStyle.CALLIGRAPHY)
     private val recentBrushStyles = mutableListOf(BrushStyle.ROUND, BrushStyle.SPRAY, BrushStyle.WATERCOLOR)
     private var cameraImageFile: File? = null
     private var activeToolbarButton: ImageButton? = null
@@ -165,6 +165,10 @@ class MainActivity : AppCompatActivity() {
     internal var isSwitchingTextEditor = false
     private var exportWindowBitmap: Bitmap? = null
     private var pendingExportBitmap: Bitmap? = null
+    // Set instead of pendingExportBitmap specifically for "Export as PDF" on the whole note —
+    // one bitmap per app-page, so savePdfLauncher can give each one its own real PDF page
+    // instead of merging everything into a single tall page.
+    private var pendingExportBitmaps: List<Bitmap>? = null
     private var pendingExportFormat: String = "png"
     private var shapesPickerOverlay: LinearLayout? = null
 
@@ -405,17 +409,62 @@ class MainActivity : AppCompatActivity() {
     private val savePdfLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
         uri ?: return@registerForActivityResult
         try {
-            val bmp = pendingExportBitmap ?: return@registerForActivityResult
             val maxDim = 3000
-            val scale = if (bmp.width > maxDim || bmp.height > maxDim) minOf(maxDim.toFloat()/bmp.width, maxDim.toFloat()/bmp.height) else 1f
-            val pw = (bmp.width*scale).toInt().coerceAtLeast(1); val ph = (bmp.height*scale).toInt().coerceAtLeast(1)
-            val sb = if (scale < 1f) Bitmap.createScaledBitmap(bmp,pw,ph,true) else bmp
-            val doc = PdfDocument(); val pi = PdfDocument.PageInfo.Builder(pw,ph,1).create()
-            val page = doc.startPage(pi); page.canvas.drawBitmap(sb,0f,0f,Paint()); doc.finishPage(page)
+            val doc = PdfDocument()
+            // PdfDocument.PageInfo.Builder's width/height are in PostScript points (1/72 inch),
+            // NOT pixels — passing the bitmap's raw pixel count directly (the previous bug) made
+            // every page roughly 2x too large in each dimension, since e.g. 150 pixels-per-inch
+            // was silently being treated as 150 points-per-inch. exportAllPagesAsBitmaps() always
+            // renders at 150 DPI, so converting is exact: points = pixels * 72 / 150.
+            //
+            // Calibration is expressed directly as "what does your printed page actually measure,
+            // in mm" rather than an abstract percentage — much easier to reason about than
+            // guessing a percentage. Compares that stored mm value against the paper size's true
+            // mm dimensions to get a ratio, applied to width/height independently since a
+            // miscalibrated printer can scale unevenly.
+            val exportDpi = 150f
+            val trueWmm = if (drawingView.pageOrientation == Orientation.PORTRAIT) drawingView.paperSize.widthMM else drawingView.paperSize.heightMM
+            val trueHmm = if (drawingView.pageOrientation == Orientation.PORTRAIT) drawingView.paperSize.heightMM else drawingView.paperSize.widthMM
+            val calibWmm = getPrefs().getFloat("pdf_calib_w_mm", trueWmm)
+            val calibHmm = getPrefs().getFloat("pdf_calib_h_mm", trueHmm)
+            val calibW = if (trueWmm > 0f) calibWmm / trueWmm else 1f
+            val calibH = if (trueHmm > 0f) calibHmm / trueHmm else 1f
+            val multiPage = pendingExportBitmaps
+            if (multiPage != null) {
+                // Whole-note export: one real PDF page per app-page, instead of the old approach
+                // of drawing everything onto a single tall page (which is what let two adjacent
+                // pages' content end up merged together with no actual page break between them).
+                for (bmp in multiPage) {
+                    // Points are computed from the ORIGINAL bitmap's pixel size at the known
+                    // export DPI — this is the page's true physical size and must not change
+                    // just because the image gets downscaled for file-size reasons below.
+                    val ptsW = (bmp.width * 72f / exportDpi * calibW).toInt().coerceAtLeast(1)
+                    val ptsH = (bmp.height * 72f / exportDpi * calibH).toInt().coerceAtLeast(1)
+                    val scale = if (bmp.width > maxDim || bmp.height > maxDim) minOf(maxDim.toFloat()/bmp.width, maxDim.toFloat()/bmp.height) else 1f
+                    val pw = (bmp.width*scale).toInt().coerceAtLeast(1); val ph = (bmp.height*scale).toInt().coerceAtLeast(1)
+                    val sb = if (scale < 1f) Bitmap.createScaledBitmap(bmp,pw,ph,true) else bmp
+                    val pi = PdfDocument.PageInfo.Builder(ptsW, ptsH, doc.pages.size + 1).create()
+                    val page = doc.startPage(pi)
+                    // RectF-based overload scales the source bitmap to exactly fill the
+                    // destination rect — needed because the bitmap's own pixel dimensions (even
+                    // after maxDim downscaling) no longer match the page's point dimensions;
+                    // drawing at 1:1 pixel scale would draw it far too large (or clipped) against
+                    // a canvas whose coordinate space is now in points, not pixels.
+                    page.canvas.drawBitmap(sb, null, android.graphics.RectF(0f, 0f, ptsW.toFloat(), ptsH.toFloat()), Paint())
+                    doc.finishPage(page)
+                }
+            } else {
+                val bmp = pendingExportBitmap ?: return@registerForActivityResult
+                val scale = if (bmp.width > maxDim || bmp.height > maxDim) minOf(maxDim.toFloat()/bmp.width, maxDim.toFloat()/bmp.height) else 1f
+                val pw = (bmp.width*scale).toInt().coerceAtLeast(1); val ph = (bmp.height*scale).toInt().coerceAtLeast(1)
+                val sb = if (scale < 1f) Bitmap.createScaledBitmap(bmp,pw,ph,true) else bmp
+                val pi = PdfDocument.PageInfo.Builder(pw,ph,1).create()
+                val page = doc.startPage(pi); page.canvas.drawBitmap(sb,0f,0f,Paint()); doc.finishPage(page)
+            }
             contentResolver.openOutputStream(uri)?.use { doc.writeTo(it) }; doc.close()
             Toast.makeText(this,"PDF saved!",Toast.LENGTH_SHORT).show()
         } catch(e:Exception){ Toast.makeText(this,"PDF failed: ${e.message}",Toast.LENGTH_LONG).show() }
-        finally { pendingExportBitmap = null }
+        finally { pendingExportBitmap = null; pendingExportBitmaps = null }
     }
 
     private val saveImageLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("image/*")) { uri ->
@@ -566,8 +615,11 @@ class MainActivity : AppCompatActivity() {
                 // rest hidden behind the keyboard, which is what "hiding whole screen" looked like.
                 val panel = textOptionsPanel
                 val panelLp = panel?.layoutParams as? FrameLayout.LayoutParams
-                if (panel != null && panelLp != null && panelLp.bottomMargin != extraForKeyboard) {
-                    panelLp.bottomMargin = extraForKeyboard
+                // Base margin is always at least the nav bar inset so the panel clears the system
+                // bar even when the keyboard is closed (extraForKeyboard alone would be 0 then).
+                val panelTarget = navBarBottom + extraForKeyboard
+                if (panel != null && panelLp != null && panelLp.bottomMargin != panelTarget) {
+                    panelLp.bottomMargin = panelTarget
                     panel.layoutParams = panelLp
                 }
                 onImeBottomChanged?.invoke(imeBottom)  // notify inline editor keyboard listener
@@ -990,19 +1042,14 @@ class MainActivity : AppCompatActivity() {
     private fun applyConvenientLayout() {
         isConvenientLayout = true
         drawingView.canvasMode = CanvasMode.CONVENIENT
-        drawingView.invalidate()
-    }
-
-    private fun applyPrintLayout() {
-        isConvenientLayout = false
-        drawingView.canvasMode = CanvasMode.PAGINATED
-        drawingView.paperSize = PaperSizeOption.A4
+        drawingView.clampTranslation()
         drawingView.invalidate()
     }
 
     private fun applyInfiniteLayout() {
         isConvenientLayout = false
         drawingView.canvasMode = CanvasMode.INFINITE
+        drawingView.clampTranslation()
         drawingView.invalidate()
     }
 
@@ -1011,34 +1058,25 @@ class MainActivity : AppCompatActivity() {
     // (if not already there, since paper size has no meaning in Infinite) and always rewraps text
     // to fit the new width — there's no separate "keep as is" choice anymore.
     private fun showPaperSizeMenu(anchor: View) {
-        val popup = PopupMenu(this, anchor)
-        for (size in PaperSizeOption.values()) popup.menu.add(size.name)
-        popup.setOnMenuItemClickListener { item ->
-            val selected = try { PaperSizeOption.valueOf(item.title.toString()) } catch (e: Exception) { return@setOnMenuItemClickListener true }
+        val names = PaperSizeOption.values().map { it.name }
+        showThemedDropdown(anchor, names) { label ->
+            val selected = try { PaperSizeOption.valueOf(label) } catch (e: Exception) { return@showThemedDropdown }
             applyConvenientLayout()
             drawingView.paperSize = selected
             drawingView.rewrapTextToPage()
             drawingView.clampTranslation()
             drawingView.invalidate()
-            true
         }
-        popup.show()
     }
 
     private fun showLayoutMenu(anchor: View) {
-        val popup = PopupMenu(this, anchor)
-        popup.menu.add("Convenient")
-        popup.menu.add("Paper Size...")
-        popup.menu.add("Infinite Canvas")
-        popup.setOnMenuItemClickListener { item ->
-            when (item.title) {
+        showThemedDropdown(anchor, listOf("Convenient", "Paper Size...", "Infinite Canvas")) { label ->
+            when (label) {
                 "Convenient" -> applyConvenientLayout()
                 "Paper Size..." -> showPaperSizeMenu(anchor)
                 "Infinite Canvas" -> applyInfiniteLayout()
             }
-            true
         }
-        popup.show()
     }
 
     internal fun setActiveTool(btn: ImageButton?, tool: Tool) {
@@ -1777,7 +1815,7 @@ class MainActivity : AppCompatActivity() {
             })
         }
 
-        val allPenTypes = listOf("Fountain" to PenStyle.FOUNTAIN, "Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
+        val allPenTypes = listOf("Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
         val allBrushTypes = listOf("Round" to BrushStyle.ROUND, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Neon" to BrushStyle.NEON, "Dry Brush" to BrushStyle.DRY_BRUSH, "Spray" to BrushStyle.SPRAY, "Fire" to BrushStyle.FIRE, "Grass" to BrushStyle.GRASS)
         val allFontFamilies = listOf(
             "Default" to "sans-serif", "Serif" to "serif", "Monospace" to "monospace",
@@ -2065,6 +2103,51 @@ class MainActivity : AppCompatActivity() {
     internal fun currentThemeButtonColor(): Int = Color.parseColor(currentThemeSpec().button)
     internal fun currentThemeIsGradient(): Boolean = currentThemeSpec().isGradient
 
+    // Current bottom navigation-bar inset (0 on gesture-nav devices where the system bar is a
+    // thin overlay, several dp on devices with a classic 3-button bar). Bottom-anchored panels
+    // (Gravity.BOTTOM inside canvasContainer) sit at the raw bottom of the screen since
+    // setDecorFitsSystemWindows(false) means nothing pads for system bars automatically —
+    // without this, their lowest content/buttons render underneath the nav bar.
+    internal fun navBarBottomInset(): Int {
+        val insets = androidx.core.view.ViewCompat.getRootWindowInsets(window.decorView)
+        return insets?.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
+    }
+
+    // Small themed replacement for Android's stock PopupMenu. PopupMenu draws from the app's
+    // base Android theme (styles.xml) — it has no idea about the custom Classic/Ocean/Forest/
+    // Sunset/Minimal Mono/Gradient color system below, so switching that theme never changed
+    // these dropdowns; whatever tint they showed was just the base theme's default accent color,
+    // not any chosen theme. This builds a plain themed panel instead, same pattern as the other
+    // hand-rolled panels in this file (Highlighter/Eraser/Pen options etc).
+    private fun showThemedDropdown(anchor: View, items: List<String>, onSelect: (String) -> Unit) {
+        val spec = currentThemeSpec()
+        val bg = Color.parseColor(spec.bg)
+        val accent = Color.parseColor(spec.toolbar)
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(bg); cornerRadius = dp(10).toFloat(); setStroke(dp(1), Color.parseColor("#22000000"))
+            }
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+        }
+        val popupWindow = android.widget.PopupWindow(
+            container, LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT, true
+        ).apply {
+            isOutsideTouchable = true
+            elevation = dp(10).toFloat()
+        }
+        for (label in items) {
+            container.addView(TextView(this).apply {
+                text = label; textSize = 14f; setTextColor(accent)
+                setPadding(dp(18), dp(12), dp(18), dp(12))
+                isClickable = true
+                background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.TRANSPARENT); cornerRadius = dp(6).toFloat() }
+                setOnClickListener { popupWindow.dismiss(); onSelect(label) }
+            })
+        }
+        popupWindow.showAsDropDown(anchor)
+    }
+
     private fun showOffsetDialog(item: StrokeItem) {
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(12), dp(20), dp(4))
@@ -2123,24 +2206,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showEraserModePopup(anchor: View) {
-        val popup = PopupMenu(this, anchor)
-        popup.menu.add("Object Eraser")
-        popup.menu.add("Area Eraser")
-        popup.setOnMenuItemClickListener { item ->
-            drawingView.eraserMode = if (item.title == "Object Eraser") EraserMode.OBJECT else EraserMode.AREA
-            Toast.makeText(this, item.title, Toast.LENGTH_SHORT).show()
-            true
+        showThemedDropdown(anchor, listOf("Object Eraser", "Area Eraser")) { label ->
+            drawingView.eraserMode = if (label == "Object Eraser") EraserMode.OBJECT else EraserMode.AREA
+            Toast.makeText(this, label, Toast.LENGTH_SHORT).show()
         }
-        popup.show()
     }
 
     private fun showSelectModePopup(anchor: View) {
-        val popup = PopupMenu(this, anchor)
-        popup.menu.add("Select (default)")
-        popup.menu.add("Box Select (drag a rectangle)")
-        popup.menu.add("Lasso (freeform loop)")
-        popup.setOnMenuItemClickListener { item ->
-            when (item.title) {
+        showThemedDropdown(anchor, listOf("Select (default)", "Box Select (drag a rectangle)", "Lasso (freeform loop)")) { label ->
+            when (label) {
                 "Select (default)" -> setActiveTool(null, Tool.SELECT)
                 "Box Select (drag a rectangle)" -> {
                     setActiveTool(null, Tool.AUTOSELECT)
@@ -2151,23 +2225,17 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, "Trace a loop around items to select them", Toast.LENGTH_SHORT).show()
                 }
             }
-            true
         }
-        popup.show()
     }
 
     private fun showFillModePopup(anchor: View) {
-        val popup = PopupMenu(this, anchor)
-        popup.menu.add("Pick Fill Color")
-        popup.menu.add(if (drawingView.fillShapes) "Auto-fill: On" else "Auto-fill: Off")
-        popup.setOnMenuItemClickListener { item ->
+        val autoFillLabel = if (drawingView.fillShapes) "Auto-fill: On" else "Auto-fill: Off"
+        showThemedDropdown(anchor, listOf("Pick Fill Color", autoFillLabel)) { label ->
             when {
-                item.title == "Pick Fill Color" -> showColorGridDialog { c -> drawingView.fillColor = c }
-                item.title.toString().startsWith("Auto-fill") -> { drawingView.fillShapes = !drawingView.fillShapes; Toast.makeText(this, if (drawingView.fillShapes) "Auto-fill: On" else "Auto-fill: Off", Toast.LENGTH_SHORT).show() }
+                label == "Pick Fill Color" -> showColorGridDialog { c -> drawingView.fillColor = c }
+                label.startsWith("Auto-fill") -> { drawingView.fillShapes = !drawingView.fillShapes; Toast.makeText(this, if (drawingView.fillShapes) "Auto-fill: On" else "Auto-fill: Off", Toast.LENGTH_SHORT).show() }
             }
-            true
         }
-        popup.show()
     }
 
     private var layersToggleBtn: ImageButton? = null
@@ -3417,6 +3485,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this).apply { addView(panel) }
         scrollRef[0] = scroll
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(scroll, lp)
     }
 
@@ -3882,7 +3951,13 @@ class MainActivity : AppCompatActivity() {
         val name = (currentFileName ?: "EngiNote_${System.currentTimeMillis()}").replace(" ","_")
         AlertDialog.Builder(this).setTitle("Export as...")
             .setItems(arrayOf("PDF","JPG","PNG","BMP","TXT","DOCX")) { _,i ->
-                pendingExportBitmap = drawingView.exportBitmap()
+                if (i == 0) {
+                    // PDF specifically gets one real page per app-page (see exportAllPagesAsBitmaps),
+                    // not the single on-screen-viewport screenshot the other formats use.
+                    pendingExportBitmaps = drawingView.exportAllPagesAsBitmaps()
+                } else {
+                    pendingExportBitmap = drawingView.exportBitmap()
+                }
                 when(i){ 0->savePdfLauncher.launch("$name.pdf"); 1->{ pendingExportFormat="jpg"; saveImageLauncher.launch("$name.jpg") }; 2->{ pendingExportFormat="png"; saveImageLauncher.launch("$name.png") }; 3->{ pendingExportFormat="bmp"; saveImageLauncher.launch("$name.bmp") }; 4->saveTxtLauncher.launch("$name.txt"); 5->saveDocxLauncher.launch("$name.docx") }
             }.show()
     }
@@ -4129,6 +4204,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this)
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(scroll, lp)
         textOptionsPanel = scroll
         animatePanelIn(scroll)
@@ -4385,6 +4461,7 @@ class MainActivity : AppCompatActivity() {
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         lp.gravity = android.view.Gravity.BOTTOM
+        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(scroll, lp)
         shapeOptionsPanel = scroll
         animatePanelIn(scroll)
@@ -4595,7 +4672,7 @@ class MainActivity : AppCompatActivity() {
 
         scroll.addView(panel)
         val lp2 = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        lp2.gravity = android.view.Gravity.BOTTOM; lp2.bottomMargin = dp(120)
+        lp2.gravity = android.view.Gravity.BOTTOM; lp2.bottomMargin = dp(120) + navBarBottomInset()
         lp2.leftMargin = dp(12); lp2.rightMargin = dp(12)
         canvasContainer.addView(scroll, lp2)
         dimScalePanel = scroll
@@ -4701,13 +4778,13 @@ class MainActivity : AppCompatActivity() {
         })
         panel.addView(header)
 
-        // Pen type row: Fountain / Ball / Pencil / Calligraphy / Marker
+        // Pen type row: Ball / Pencil / Calligraphy / Marker
         fun sectionLabel(text: String) {
             panel.addView(TextView(this).apply { this.text = text; textSize = 13f; setTextColor(Color.parseColor("#8D6E63")); setPadding(0, dp(14), 0, dp(6)) })
         }
         sectionLabel("Pen Type")
         val typeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val penTypes = listOf("Fountain" to PenStyle.FOUNTAIN, "Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
+        val penTypes = listOf("Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
         val typeButtons = mutableListOf<TextView>()
         for ((label, style) in penTypes) {
             val b = TextView(this).apply {
@@ -4788,6 +4865,7 @@ class MainActivity : AppCompatActivity() {
 
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(scroll, lp)
         penOptionsPanel = scroll
         animatePanelIn(scroll)
@@ -4894,6 +4972,7 @@ class MainActivity : AppCompatActivity() {
         panel.addView(clearBtn)
 
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(panel, lp)
         eraserOptionsPanel = panel
         animatePanelIn(panel)
@@ -4978,6 +5057,7 @@ class MainActivity : AppCompatActivity() {
 
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(scroll, lp)
         highlighterOptionsPanel = scroll
         animatePanelIn(scroll)
@@ -5086,6 +5166,7 @@ class MainActivity : AppCompatActivity() {
 
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(scroll, lp)
         brushOptionsPanel = scroll
         animatePanelIn(scroll)
@@ -5319,6 +5400,7 @@ class MainActivity : AppCompatActivity() {
         // above it the way Text/Eraser/Highlighter panels do.
         val maxPanelHeight = (canvasContainer.height * 0.55f).toInt().coerceAtLeast(dp(280))
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, maxPanelHeight, Gravity.BOTTOM)
+        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(scroll, lp)
         tablePropertiesPanel = scroll
         animatePanelIn(scroll)
