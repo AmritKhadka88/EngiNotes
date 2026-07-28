@@ -586,6 +586,64 @@ class StrokeData(
         return ribbon
     }
 
+    // Real graphite grain: many small circles scattered tightly around the (accurate,
+    // undistorted) centerline, batched into one Path and filled once — same technique the Spray
+    // brush already uses. Overlapping grains don't double-darken here since it's a single fill
+    // over the union of all of them (nonzero winding just means "inside", it doesn't stack
+    // alpha), and one drawPath call is cheap regardless of how many grains went into it. The
+    // centerline positions themselves are never touched, only where individual grains scatter
+    // around each point — unlike DiscretePathEffect, which displaced the path's own points and
+    // made the stroke visibly wander from where you actually wrote.
+    fun drawPencilStroke(canvas: Canvas, basePaint: Paint) {
+        if (points.size < 4) { canvas.drawPath(buildPath(), basePaint); return }
+        val pts = smoothedPoints()
+        val n = pts.size / 2
+        if (n < 2) { canvas.drawPath(buildPath(), basePaint); return }
+        val fillPaint = Paint(basePaint).apply { style = Paint.Style.FILL; pathEffect = null; isAntiAlias = true }
+        val sw = (strokeWidth * 0.55f).coerceAtLeast(1f)
+        val totalSegments = (n - 1).coerceAtLeast(1)
+        val taperCount = 4
+        fun endTaper(segIndex: Int): Float {
+            val fadeIn = if (taperStart) ((segIndex + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
+            val fadeOut = if (taperEnd) ((totalSegments - segIndex).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
+            return minOf(fadeIn, fadeOut).coerceIn(0.3f, 1f)
+        }
+        // Seeded from the stroke's own first point (stable for its whole lifetime) rather than
+        // a fresh unseeded Random — otherwise every redraw (scroll, zoom, live preview frame)
+        // would reshuffle the grain pattern and it would visibly crawl instead of sitting still.
+        val rand = java.util.Random((pts[0] * 1000 + pts[1]).toLong())
+        val stepSize = (sw * 0.4f).coerceAtLeast(0.8f)
+        val batchPath = Path()
+        var i = 0
+        while (i < n - 1) {
+            val x1 = pts[i * 2]; val y1 = pts[i * 2 + 1]; val x2 = pts[(i + 1) * 2]; val y2 = pts[(i + 1) * 2 + 1]
+            val dx = x2 - x1; val dy = y2 - y1
+            val segLen = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(0.01f)
+            val ux = dx / segLen; val uy = dy / segLen
+            val nx = -uy; val ny = ux
+            val localW = (sw * endTaper(i)).coerceAtLeast(1f)
+            var d = 0f
+            while (d < segLen) {
+                val t = d / segLen
+                val cx = x1 + dx * t; val cy = y1 + dy * t
+                // A few grains per stamp position, tightly clustered (not a wide scatter like
+                // Spray) so the line stays clearly legible — this is texture on a real stroke,
+                // not a particle effect.
+                repeat(3) {
+                    val perpOffset = rand.nextGaussian().toFloat().coerceIn(-1.6f, 1.6f) * localW * 0.28f
+                    val alongJitter = (rand.nextFloat() - 0.5f) * stepSize * 0.6f
+                    val gx = cx + nx * perpOffset + ux * alongJitter
+                    val gy = cy + ny * perpOffset + uy * alongJitter
+                    val r = (localW * (0.16f + rand.nextFloat() * 0.14f)).coerceAtLeast(0.5f)
+                    batchPath.addCircle(gx, gy, r, Path.Direction.CW)
+                }
+                d += stepSize
+            }
+            i++
+        }
+        canvas.drawPath(batchPath, fillPaint)
+    }
+
 
     // Draws a Calligraphy stroke segment-by-segment as native stroked lines with a per-segment
     // chisel-nib width, using ROUND caps/joins — the same proven technique already used above
@@ -682,18 +740,13 @@ class StrokeData(
             PenStyle.FOUNTAIN -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
             // Ballpoint: thinner and crisper than fountain, uniform line - no flow variation
             PenStyle.BALL -> { p.strokeWidth = (strokeWidth * 0.65f).coerceAtLeast(1.5f); p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
-            // Pencil: thin, grainy graphite texture — a fine dash broken up further by small
-            // random deviations along the path (same layered dash+discrete technique already
-            // used for Charcoal/Dry Brush), so it reads as a sketched pencil line rather than a
-            // perfectly clean dashed stroke. Visible live while writing since this comes from
-            // toPaint(), not a separate finalize-only effect.
+            // Pencil: base fallback paint (used for tiny/degenerate strokes and hit-testing).
+            // The actual graphite grain comes from drawPencilStroke below via batched geometry,
+            // not a path effect — DiscretePathEffect physically displaces the path's own points,
+            // which is why the line used to wobble/zigzag away from where you actually wrote.
             PenStyle.PENCIL -> {
                 p.strokeWidth = (strokeWidth * 0.55f).coerceAtLeast(1f); p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND
                 p.alpha = (opacity * 0.8f).toInt()
-                p.pathEffect = android.graphics.ComposePathEffect(
-                    android.graphics.DashPathEffect(floatArrayOf(2.2f, 0.6f), 0f),
-                    android.graphics.DiscretePathEffect(3f, 0.8f)
-                )
                 // A real pencil only ever lays down graphite gray, never the vivid hue of a
                 // colored pen. Desaturate whatever color was picked down to its own luminance
                 // (so picking black still comes out darker than picking a light color) rather
@@ -1881,8 +1934,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 val isCalligraphyPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.CALLIGRAPHY
                 val isFountainPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.FOUNTAIN && action.data.widths.size >= 2
+                val isPencilPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.PENCIL && action.data.points.size >= 4
                 if (isCalligraphyPen && action.data.rotation == 0f) {
                     drawWithBitmapCache(canvas, action, action.data.strokeWidth * 2f) { c, item -> item.data.drawCalligraphyStroke(c, item.paint) }
+                    return
+                }
+                if (isPencilPen && action.data.rotation == 0f && action.data.clipHoles.isEmpty()) {
+                    drawWithBitmapCache(canvas, action, action.data.strokeWidth * 1.5f) { c, item -> item.data.drawPencilStroke(c, item.paint) }
                     return
                 }
                 val renderPath = when { isCalligraphyPen -> action.data.buildCalligraphyRibbonPath(); isFountainPen -> action.data.buildFountainRibbonPath(); else -> action.path }
@@ -2630,10 +2688,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         for (action in remainingItems) drawActionItem(canvas, action, true)
         currentItem?.let {
             val isCalligraphyPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.CALLIGRAPHY
+            val isPencilPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.PENCIL && it.data.points.size >= 4
             when {
                 // Same native-stroke renderer used for the finalized stroke, so live preview
                 // and final look match exactly with no separate code path to drift out of sync.
                 isCalligraphyPen -> it.data.drawCalligraphyStroke(canvas, it.paint)
+                isPencilPen -> it.data.drawPencilStroke(canvas, it.paint)
                 // Was falling through to the flat-width `else` below, so Brush strokes only
                 // showed their real per-point width variation once finalized (via
                 // drawBrushStrokeWithCache) — the live stroke looked uniform-width the whole
