@@ -192,6 +192,12 @@ class StrokeData(
     var taperStart: Boolean = true,
     var taperEnd: Boolean = true
 ) {
+    // Backing cache for smoothedPoints()'s incremental recompute — see that function for why
+    // this is safe (a moving-average's dependency radius is bounded, so a settled prefix never
+    // needs to be touched again once the tip has moved far enough past it).
+    private var smoothCache: MutableList<Float>? = null
+    private var smoothCachePointCount: Int = 0
+
     fun buildPath(): Path {
         val path = Path()
         if (type == Tool.PEN || type == Tool.ERASER || type == Tool.HIGHLIGHTER || type == Tool.BRUSH) {
@@ -439,7 +445,13 @@ class StrokeData(
     private fun smoothedPoints(): List<Float> {
         if (isPolyline) return points
         if (points.size < 6) return points
-        fun onePass(src: List<Float>): List<Float> {
+
+        // Nothing changed since the last call — a redraw triggered by something else entirely
+        // (panning, zooming, another stroke elsewhere) still calls through to here every time;
+        // reuse the previous result verbatim instead of re-smoothing an unchanged stroke.
+        if (smoothCache != null && smoothCachePointCount == points.size) return smoothCache!!
+
+        fun onePass(src: List<Float>): MutableList<Float> {
             val out = src.toMutableList()
             var i = 2
             while (i + 3 < src.size) {
@@ -449,14 +461,33 @@ class StrokeData(
             }
             return out
         }
-        // Five passes now, not two — the circled bumps in testing showed two passes still
-        // wasn't enough to fully absorb real-world hand tremor / touch-sensor noise. Each pass
-        // only pulls a point toward its neighbors' midpoint, so it can only ever erode small
-        // back-and-forth jitter, not a genuine corner or the overall shape of a letterform —
-        // repeating it more times just keeps eroding whatever jitter is left, favoring a
-        // smooth result over microscopically tracking every sampled point, which is exactly
-        // what's wanted here even if the shakiness is coming from the finger/pen/digitizer
-        // rather than the smoothing being too weak.
+
+        // Each pass only pulls a point toward its immediate neighbors, so after 5 passes a
+        // point's final smoothed value only ever depends on raw points within ~5 point-pairs of
+        // it. Once the tip has moved further than that past an earlier point, appending more
+        // points can never change that point's smoothed value again — so it's safe to keep an
+        // already-settled prefix exactly as it was and only re-run the 5 passes on a small
+        // trailing slice (RUNWAY_PAIRS of leading context, so the slice's own missing further-
+        // left context can't reach the genuinely new tail before it's discarded) instead of the
+        // whole stroke every time. RUNWAY_PAIRS is generously above the ~5 that's mathematically
+        // required.
+        val RUNWAY_PAIRS = 16
+        val oldCache = smoothCache
+        val oldCount = smoothCachePointCount
+        if (oldCache != null && points.size > oldCount && oldCount / 2 > RUNWAY_PAIRS + 4) {
+            val sliceStart = (oldCount / 2 - RUNWAY_PAIRS) * 2
+            var slice: List<Float> = points.subList(sliceStart, points.size)
+            repeat(5) { slice = onePass(slice) }
+            val result = ArrayList<Float>(points.size)
+            result.addAll(oldCache.subList(0, sliceStart))
+            result.addAll(slice)
+            smoothCache = result
+            smoothCachePointCount = points.size
+            return result
+        }
+
+        // Full recompute: first call for this stroke, still too short to window, or the cache
+        // was explicitly invalidated (see finalizeSmoothing()).
         var smoothed: List<Float> = points
         repeat(5) { smoothed = onePass(smoothed) }
 
@@ -464,11 +495,15 @@ class StrokeData(
         // but a stroke the person clearly INTENDED as straight (an underline, a ruled line)
         // has no reason to keep any deviation at all. If the whole stroke barely strays from
         // the direct line between its first and last point, snap every point exactly onto
-        // that line instead of just smoothing around it.
+        // that line instead of just smoothing around it. Only runs on a full recompute — it
+        // needs the whole stroke's shape to judge overall straightness, and only matters for
+        // what actually gets saved, so there's no reason to keep re-evaluating it on every
+        // incremental live update in between too.
         val x0 = smoothed[0]; val y0 = smoothed[1]
         val xn = smoothed[smoothed.size - 2]; val yn = smoothed[smoothed.size - 1]
         val dx = xn - x0; val dy = yn - y0
         val lineLen = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+        var finalResult: List<Float> = smoothed
         if (lineLen > 8f) {  // too short to judge straightness (a dot, a tiny flick) — skip
             val ux = dx / lineLen; val uy = dy / lineLen
             var maxDeviation = 0f
@@ -495,11 +530,25 @@ class StrokeData(
                     snapped[j + 1] = y0 + uy * proj
                     j += 2
                 }
-                return snapped
+                finalResult = snapped
             }
         }
-        return smoothed
+        val cached = finalResult.toMutableList()
+        smoothCache = cached
+        smoothCachePointCount = points.size
+        return cached
     }
+
+    // Forces the next smoothedPoints() call to do one full, authoritative recompute (all 5
+    // passes over the entire stroke, plus the straight-line-snap check) instead of the cheaper
+    // incremental path meant for live drawing. Call this once at stroke-commit time so the
+    // geometry that actually gets saved is always fully correct.
+    fun finalizeSmoothing() {
+        smoothCache = null
+        smoothedPoints()
+    }
+
+
 
     // Legacy single-polygon path - kept only as a fallback for very short strokes (under 2
     // segments) where quad-splitting has nothing to split; never used for real handwriting.
@@ -5893,6 +5942,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     // extension on the very last move sample — always do one final proper rebuild
                     // at commit time so the saved stroke is fully smoothed, same as before.
                     if (item.data.type == Tool.PEN || item.data.type == Tool.HIGHLIGHTER || item.data.type == Tool.BRUSH) {
+                        // Forces one authoritative full 5-pass smoothing + straight-line-snap
+                        // recompute — smoothedPoints() otherwise took the cheaper incremental
+                        // path meant for live drawing, which skips the snap check and only keeps
+                        // a settled prefix from earlier, not the full-precision final geometry
+                        // that should actually get saved. Only PEN strokes actually consult
+                        // smoothedPoints() at all (Highlighter/Brush render straight lineTo
+                        // segments over the raw points), so this is scoped to just PEN.
+                        if (item.data.type == Tool.PEN) item.data.finalizeSmoothing()
                         item.path = item.data.buildPath()
                     }
                     // Downsample overly dense PEN strokes (>6000 pts) to keep serialization and
