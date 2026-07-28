@@ -796,13 +796,10 @@ class StrokeData(
             PenStyle.PENCIL -> {
                 p.strokeWidth = (strokeWidth * 0.55f).coerceAtLeast(1f); p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND
                 p.alpha = (opacity * 0.8f).toInt()
-                // A real pencil only ever lays down graphite gray, never the vivid hue of a
-                // colored pen. Desaturate whatever color was picked down to its own luminance
-                // (so picking black still comes out darker than picking a light color) rather
-                // than hard-coding one fixed gray — coerced so it never goes invisibly light or
-                // starkly pure-black, both unlike actual graphite.
-                val lum = (0.299f * android.graphics.Color.red(color) + 0.587f * android.graphics.Color.green(color) + 0.114f * android.graphics.Color.blue(color)).toInt().coerceIn(45, 150)
-                p.color = android.graphics.Color.rgb(lum, lum, lum)
+                // Colored pencils are a real thing — respect whatever color was actually picked
+                // (p.color is already set to `color` above) instead of forcing everything to
+                // gray. The graphite-style texture/opacity still comes through via
+                // drawPencilStroke's grain and this slightly reduced alpha either way.
             }
             // Calligraphy: handled separately via the ribbon path (see buildCalligraphyRibbonPath);
             // this stroke paint is only a fallback for hit-test rendering contexts.
