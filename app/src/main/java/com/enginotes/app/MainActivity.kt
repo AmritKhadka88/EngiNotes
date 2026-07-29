@@ -2027,7 +2027,6 @@ class MainActivity : AppCompatActivity() {
     // when this is tapped stays active — this only ever touches view visibility, never
     // drawingView.currentTool, so there's nothing here that could reset it.
     private var fullscreenRestoreBtn: View? = null
-    private var canvasContainerOrigTopMargin: Int? = null
     private fun addFullscreenToggleButton() {
         val topBar = findViewById<LinearLayout?>(R.id.topBarContainer) ?: return
         val outValue = android.util.TypedValue()
@@ -2070,16 +2069,6 @@ class MainActivity : AppCompatActivity() {
                     android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
         }
-        // Hiding topBarContainer only reflows canvasContainer if the layout is set up to collapse
-        // around it automatically — can't rely on that blindly, so force the top margin to 0
-        // directly. Without this, the newly-freed strip at the top just showed canvasContainer's
-        // own plain background instead of the actual page/paper extending up into it.
-        (canvasContainer.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.let { ccLp ->
-            if (canvasContainerOrigTopMargin == null) canvasContainerOrigTopMargin = ccLp.topMargin
-            ccLp.topMargin = 0
-            canvasContainer.layoutParams = ccLp
-        }
-        canvasContainer.post { drawingView.clampTranslation(); drawingView.invalidate() }
         if (fullscreenRestoreBtn != null) return
         val btn = TextView(this).apply {
             text = "⛶"; textSize = 16f; gravity = Gravity.CENTER
@@ -2110,14 +2099,6 @@ class MainActivity : AppCompatActivity() {
                 layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
             }
         }
-        canvasContainerOrigTopMargin?.let { orig ->
-            (canvasContainer.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.let { ccLp ->
-                ccLp.topMargin = orig
-                canvasContainer.layoutParams = ccLp
-            }
-        }
-        canvasContainerOrigTopMargin = null
-        canvasContainer.post { drawingView.clampTranslation(); drawingView.invalidate() }
         fullscreenRestoreBtn?.let { canvasContainer.removeView(it) }
         fullscreenRestoreBtn = null
     }
