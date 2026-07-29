@@ -198,6 +198,37 @@ class StrokeData(
     private var smoothCache: MutableList<Float>? = null
     private var smoothCachePointCount: Int = 0
 
+    // Bounding box per fixed-size run of points, cached and only recomputed if the point count
+    // changed. Lets the eraser reject a whole chunk of a very long stroke (a value once split
+    // once and left alone, or the giant original stroke before it's had time to fragment) in one
+    // check, instead of testing every individual segment in it — the eraser was doing exactly
+    // that testing, over and over, on every single interpolated sample along a drag, which is
+    // what "single stroke with so many lines gets slow to erase" actually was.
+    private var chunkBoundsCache: Array<FloatArray>? = null
+    private var chunkBoundsForPointCount: Int = -1
+    private val CHUNK_SIZE = 64
+    fun chunkBounds(): Array<FloatArray> {
+        val cached = chunkBoundsCache
+        if (cached != null && chunkBoundsForPointCount == points.size) return cached
+        val n = points.size / 2
+        val chunkCount = ((n + CHUNK_SIZE - 1) / CHUNK_SIZE).coerceAtLeast(1)
+        val result = Array(chunkCount) { c ->
+            val startPair = c * CHUNK_SIZE
+            val endPair = ((c + 1) * CHUNK_SIZE).coerceAtMost(n)
+            var mnX = points[startPair * 2]; var mxX = mnX; var mnY = points[startPair * 2 + 1]; var mxY = mnY
+            var k = startPair
+            while (k < endPair) {
+                val px = points[k * 2]; val py = points[k * 2 + 1]
+                if (px < mnX) mnX = px; if (px > mxX) mxX = px
+                if (py < mnY) mnY = py; if (py > mxY) mxY = py
+                k++
+            }
+            floatArrayOf(startPair.toFloat(), endPair.toFloat(), mnX, mnY, mxX, mxY)
+        }
+        chunkBoundsCache = result; chunkBoundsForPointCount = points.size
+        return result
+    }
+
     fun buildPath(): Path {
         val path = Path()
         if (type == Tool.PEN || type == Tool.ERASER || type == Tool.HIGHLIGHTER || type == Tool.BRUSH) {
@@ -5879,7 +5910,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH || SHAPE_TOOLS.contains(currentTool)) {
             val (cx, cy) = clampToPage(wx, wy); wx = cx; wy = cy
         }
-        val pressure = event.pressure.coerceIn(0.3f, 1.5f)
+        // Pressure only means anything for a genuine stylus. Most touchscreens don't report a
+        // real, comparable pressure value for a finger — getPressure() for finger touches is
+        // typically pinned near a fixed value (or reflects contact-area size) regardless of how
+        // hard you're actually pressing, while a calibrated stylus digitizer reports meaningfully
+        // lower values for a normal-force touch. Applying the same multiplier to both is why
+        // finger strokes came out systematically thicker than stylus strokes at the same
+        // configured width — not because you pressed harder, but because of how each input
+        // method happens to report "pressure".
+        val isStylusInput = event.getToolType(0).let { it == MotionEvent.TOOL_TYPE_STYLUS || it == MotionEvent.TOOL_TYPE_ERASER }
+        val pressure = if (isStylusInput) event.pressure.coerceIn(0.3f, 1.5f) else 1f
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 if (currentTool == Tool.ERASER) { eraserLastX = wx; eraserLastY = wy; eraseAt(wx, wy); invalidate(); return }
@@ -6443,10 +6483,32 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         var prevIn = ptIn(pts[0], pts[1])
         if (!prevIn) { cur.add(pts[0]); cur.add(pts[1]); curW.add(widthAt(0)) }
 
+        val chunks = data.chunkBounds()
+        val chunkOverlaps = BooleanArray(chunks.size) { c ->
+            val ch = chunks[c]
+            !(ex + r < ch[2] || ex - r > ch[4] || ey + r < ch[3] || ey - r > ch[5])
+        }
+        var chunkIdx = 0
+
         var i = 0
         while (i + 3 < pts.size) {
-            val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
             val vIdx = i / 2
+            while (chunkIdx < chunks.size - 1 && vIdx >= chunks[chunkIdx][1].toInt()) chunkIdx++
+            val chunkEndPair = chunks[chunkIdx][1].toInt()
+            // Segment fully inside this one chunk (doesn't straddle into the next), and that
+            // chunk's bbox doesn't reach the eraser circle at all — both endpoints, and every
+            // point between them (convexity: the whole segment lies within the chunk's own
+            // bbox), are guaranteed outside it. No crossing is possible, so skip straight to the
+            // "stayed outside" bookkeeping without the exact intersection math. A segment that
+            // straddles a chunk boundary always falls through to the precise check below —
+            // its own extent isn't bounded by either single chunk's box alone.
+            if ((vIdx + 1) < chunkEndPair && !chunkOverlaps[chunkIdx]) {
+                if (!prevIn) { cur.add(pts[i + 2]); cur.add(pts[i + 3]); curW.add(widthAt(vIdx + 1)) }
+                prevIn = false
+                i += 2
+                continue
+            }
+            val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
             val endIn = ptIn(x2, y2)
             val crossings = findAllCircleSegIntersections(ex, ey, r, x1, y1, x2, y2)
 
@@ -6873,7 +6935,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // highlighter strokes where the painted area extends well past the recorded points.
             val effectiveR = r + (data.strokeWidth / 2f).coerceAtMost(r * 2f)
             if (data.points.size == 2) return distance(x, y, data.points[0], data.points[1]) <= effectiveR
-            var i = 0; while (i + 3 < data.points.size) { if (distToSeg(x, y, data.points[i], data.points[i + 1], data.points[i + 2], data.points[i + 3]) <= effectiveR) return true; i += 2 }; return false
+            // Chunk pre-check: a chunk whose padded bbox doesn't reach (x,y) can't possibly
+            // contain a hit, so skip straight past every segment in it — for a long stroke where
+            // the eraser is only actually near a small part of it, this turns an O(all segments)
+            // scan into effectively O(nearby segments).
+            for (chunk in data.chunkBounds()) {
+                if (x + effectiveR < chunk[2] || x - effectiveR > chunk[4] || y + effectiveR < chunk[3] || y - effectiveR > chunk[5]) continue
+                var i = chunk[0].toInt() * 2
+                val end = (chunk[1].toInt() * 2).coerceAtMost(data.points.size - 2)
+                while (i <= end && i + 3 < data.points.size) {
+                    if (distToSeg(x, y, data.points[i], data.points[i + 1], data.points[i + 2], data.points[i + 3]) <= effectiveR) return true
+                    i += 2
+                    if (i > end) break
+                }
+            }
+            return false
         } else {
             // Shapes: test against the actual outline, not an inflated bounding box, so the
             // eraser only triggers when it genuinely touches the drawn line - this is what makes
