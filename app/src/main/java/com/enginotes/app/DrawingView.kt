@@ -2646,12 +2646,31 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val bc = Canvas(bmp)
             bc.translate(-wl * CACHE_SCALE, -wt * CACHE_SCALE)
             bc.scale(CACHE_SCALE, CACHE_SCALE)
-            drawBrushStroke(bc, item)
+            renderFrozenStroke(bc, item)
             item.eraseSessionBitmap = bmp
             item.eraseSessionLeft = wl; item.eraseSessionTop = wt
             item.eraseSessionRight = wr; item.eraseSessionBottom = wb
             true
         } catch (e: OutOfMemoryError) { false }
+    }
+
+    // Draws whatever this item actually is, once, at freeze time — matching the same per-style
+    // dispatch drawActionItem itself uses, so the frozen bitmap looks pixel-identical to what
+    // was already on screen. From this point on nothing about the stroke's geometry gets
+    // touched again; erasing just clears pixels directly out of this bitmap.
+    private fun renderFrozenStroke(canvas: Canvas, item: StrokeItem) {
+        val data = item.data
+        when {
+            data.type == Tool.BRUSH -> drawBrushStroke(canvas, item)
+            data.type == Tool.PEN && data.penStyle == PenStyle.CALLIGRAPHY -> data.drawCalligraphyStroke(canvas, item.paint)
+            data.type == Tool.PEN && data.penStyle == PenStyle.PENCIL -> data.drawPencilStroke(canvas, item.paint)
+            data.type == Tool.PEN && data.penStyle == PenStyle.FOUNTAIN && data.widths.size >= 2 ->
+                canvas.drawPath(data.buildFountainRibbonPath(), Paint(item.paint).apply { style = Paint.Style.FILL; pathEffect = null })
+            else -> {
+                data.toFillPaint()?.let { canvas.drawPath(item.path, it) }
+                canvas.drawPath(item.path, item.paint)
+            }
+        }
     }
 
     // Clears a circle of pixels directly from the frozen session bitmap — O(pixels under the
@@ -4182,6 +4201,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     fun deselectTable() { activeTableItem = null; tableIsActive = false; tableSelStart = null; tableSelEnd = null; invalidate() }
 
     fun worldToScreenX(wx: Float): Float = wx * scaleFactor + translateX
+    // Public wrapper around the private getBounds() — lets MainActivity position contextual UI
+    // (e.g. the stroke quick-edit capsule) relative to any selected item's actual bounds.
+    fun publicBounds(item: Any): FloatArray? = getBounds(item)
     fun worldToScreenY(wy: Float): Float = wy * scaleFactor + translateY
 
     private fun drawTableOverlay(canvas: Canvas) {
@@ -6298,12 +6320,29 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             // regardless of whether anything was actually erased — which threw
                             // away its cached render bitmap and forced a full re-render.
                             if (strokeHitTest(a.data, x, y, r)) {
-                                if (a.data.type == Tool.BRUSH && CACHED_BRUSH_STYLES.contains(a.data.brushStyle) && ensureEraseSessionBitmap(a)) {
-                                    // Expensive particle styles (Spray, Dry Brush, Grass, Fire):
-                                    // frozen to a bitmap once, then every further sample just
-                                    // clears pixels directly from it — O(eraser-circle-pixels),
-                                    // not O(total-particles), and never touches the particle
-                                    // generator again for the rest of this drag.
+                                // Only freeze Pen/Highlighter to a raster bitmap once the stroke
+                                // is actually long enough for that to matter — the slowness (and
+                                // the "readjusting" wobble) only ever showed up on a genuinely
+                                // long single stroke. A normal-length stroke stays on the vector
+                                // split path below, so it keeps its full editability (recolor/
+                                // resize/pen-type-change) instead of becoming a fixed image the
+                                // moment any part of it is erased at all.
+                                val LONG_STROKE_FREEZE_THRESHOLD = 500
+                                val isLongPenOrHighlighter = (a.data.type == Tool.PEN || a.data.type == Tool.HIGHLIGHTER) &&
+                                    (a.data.points.size / 2) > LONG_STROKE_FREEZE_THRESHOLD
+                                val useFreezeBitmap = (a.data.type == Tool.BRUSH && CACHED_BRUSH_STYLES.contains(a.data.brushStyle)) ||
+                                    isLongPenOrHighlighter
+                                if (useFreezeBitmap && ensureEraseSessionBitmap(a)) {
+                                    // Freehand ink (Pen/Highlighter) and expensive particle brush
+                                    // styles (Spray, Dry Brush, Grass, Fire): frozen to a bitmap
+                                    // once, then every further sample just clears pixels directly
+                                    // from it — O(eraser-circle-pixels), not O(stroke's total
+                                    // point count), and the stroke's actual geometry (points,
+                                    // widths, smoothing) is never touched again for the rest of
+                                    // this drag. This is also what stops the remaining, already-
+                                    // erased portion from visibly "readjusting" itself — there's
+                                    // no more re-smoothing happening at a new cut edge, because
+                                    // there's no more vector cutting happening at all.
                                     eraseFromSessionBitmap(a, x, y, r)
                                     newActions.add(a)
                                 } else {
