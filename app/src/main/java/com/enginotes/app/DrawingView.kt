@@ -140,10 +140,20 @@ val CACHED_BRUSH_STYLES = setOf(BrushStyle.SPRAY, BrushStyle.GRASS, BrushStyle.F
     BrushStyle.DRY_BRUSH, BrushStyle.CHARCOAL, BrushStyle.CRAYON,
     BrushStyle.WATERCOLOR, BrushStyle.NEON)
 
-// Shapes resized by moving their two endpoints (fine reshaping of start/end point)
-val ENDPOINT_RESIZE_SHAPES = setOf(Tool.LINE, Tool.CIRCLE, Tool.ARROW, Tool.CURVE, Tool.PEN)
-// Shapes that also get bbox (8-handle) scaling — for uniform scale of all points
-val STROKE_SCALE_SHAPES = setOf(Tool.LINE, Tool.ARROW, Tool.CURVE, Tool.PEN)
+// Shapes resized by moving their two endpoints (fine reshaping of start/end point). Pen is
+// deliberately NOT here — see STROKE_SCALE_SHAPES below for why these two sets must stay
+// disjoint.
+val ENDPOINT_RESIZE_SHAPES = setOf(Tool.LINE, Tool.CIRCLE, Tool.ARROW, Tool.CURVE)
+// Shapes that get bbox (8-handle) uniform scaling instead of endpoint-dragging. Only Pen here —
+// Line/Arrow/Curve used to be in both this set AND ENDPOINT_RESIZE_SHAPES, which was a real bug:
+// hit-testing checks bbox handle positions first, then falls back to the stroke's own actual
+// start/end points (which usually aren't AT a bbox corner) — but resizeItem's execution always
+// ran this uniform-scale branch first regardless of which hit-test actually fired, so touching
+// near an endpoint set activeHandle=TL/BR from the endpoint check, then got treated as "you
+// grabbed the geometric TL/BR bbox corner" — the wrong reference point entirely, producing wild,
+// inconsistent scale factors every frame (the reported "vibrating" on Line) or two extra unwanted
+// handles that didn't behave like the visible bbox handles at all (the reported behavior on Pen).
+val STROKE_SCALE_SHAPES = setOf(Tool.PEN)
 
 data class TextSpanData(val start: Int, val end: Int, val type: Char, val value: Int)
 
