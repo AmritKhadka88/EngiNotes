@@ -434,6 +434,34 @@ class StrokeData(
         return path
     }
 
+    // Builds a path for only a bounded tail of points (from point-pair index fromPairIdx to the
+    // end), not the whole stroke — used by the live-drawing flush cache so baking the settled
+    // portion stays cheap regardless of total stroke length. Uses smoothedPoints() the same way
+    // buildPath() does, so it benefits from that function's own windowed-recompute cache (see
+    // smoothedPoints() below).
+    fun buildPathRange(fromPairIdx: Int): Path {
+        val path = Path()
+        if (points.size < 2) return path
+        if (isPolyline || type != Tool.PEN) {
+            val start = (fromPairIdx * 2).coerceIn(0, points.size - 2)
+            path.moveTo(points[start], points[start + 1])
+            var i = start + 2
+            while (i + 1 < points.size) { path.lineTo(points[i], points[i + 1]); i += 2 }
+            return path
+        }
+        val pts = smoothedPoints()
+        val start = (fromPairIdx * 2).coerceIn(0, pts.size - 2)
+        path.moveTo(pts[start], pts[start + 1])
+        var i = start + 2
+        while (i + 3 < pts.size) {
+            val midX = (pts[i] + pts[i + 2]) / 2f; val midY = (pts[i + 1] + pts[i + 3]) / 2f
+            path.quadTo(pts[i], pts[i + 1], midX, midY)
+            i += 2
+        }
+        if (i + 1 < pts.size) path.lineTo(pts[i], pts[i + 1])
+        return path
+    }
+
     // Smooths the raw touch-point list with a weighted moving average before it's used to
     // build a nib/ribbon outline. drawCalligraphyStroke/buildCalligraphyRibbonPath/
     // buildFountainRibbonPath below turn every pair of consecutive points into its own little
@@ -643,7 +671,7 @@ class StrokeData(
     // centerline positions themselves are never touched, only where individual grains scatter
     // around each point — unlike DiscretePathEffect, which displaced the path's own points and
     // made the stroke visibly wander from where you actually wrote.
-    fun drawPencilStroke(canvas: Canvas, basePaint: Paint) {
+    fun drawPencilStroke(canvas: Canvas, basePaint: Paint, fromPairIdx: Int = 0) {
         if (points.size < 4) { canvas.drawPath(buildPath(), basePaint); return }
         val pts = smoothedPoints()
         val n = pts.size / 2
@@ -660,10 +688,14 @@ class StrokeData(
         // Seeded from the stroke's own first point (stable for its whole lifetime) rather than
         // a fresh unseeded Random — otherwise every redraw (scroll, zoom, live preview frame)
         // would reshuffle the grain pattern and it would visibly crawl instead of sitting still.
+        // When only rendering a tail (fromPairIdx > 0, the live-flush case), the RNG restarts
+        // fresh rather than replaying all the skipped grains to reach the "true" sequence
+        // position — harmless, since that tail is only ever a temporary live-preview
+        // approximation; the final committed bake always calls this with fromPairIdx=0.
         val rand = java.util.Random((pts[0] * 1000 + pts[1]).toLong())
         val stepSize = (sw * 0.4f).coerceAtLeast(0.8f)
         val batchPath = Path()
-        var i = 0
+        var i = fromPairIdx.coerceIn(0, n - 1)
         while (i < n - 1) {
             val x1 = pts[i * 2]; val y1 = pts[i * 2 + 1]; val x2 = pts[(i + 1) * 2]; val y2 = pts[(i + 1) * 2 + 1]
             val dx = x2 - x1; val dy = y2 - y1
@@ -694,6 +726,7 @@ class StrokeData(
     }
 
 
+
     // Draws a Calligraphy stroke segment-by-segment as native stroked lines with a per-segment
     // chisel-nib width, using ROUND caps/joins — the same proven technique already used above
     // for Pencil. This replaces an earlier per-segment-quad + joint-circle approach that turned
@@ -703,7 +736,7 @@ class StrokeData(
     // what Android itself uses to guarantee gap-free joins between segments — there's no custom
     // polygon geometry left to get subtly wrong, and pathEffect is explicitly stripped so no
     // inherited dash/dotted line-type setting can ever corrupt the stroke body again.
-    fun drawCalligraphyStroke(canvas: Canvas, basePaint: Paint) {
+    fun drawCalligraphyStroke(canvas: Canvas, basePaint: Paint, fromPairIdx: Int = 0) {
         if (points.size < 4) { canvas.drawPath(buildPath(), basePaint); return }
         val pts = smoothedPoints()
         val nibAngle = Math.toRadians(-45.0) // corrected for Android's Y-down canvas coordinate flip
@@ -720,8 +753,8 @@ class StrokeData(
             val fadeOut = if (taperEnd) ((totalSegments - segIndex).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
             return minOf(fadeIn, fadeOut).coerceIn(0.12f, 1f)
         }
-        var i = 0
-        var segIndex = 0
+        var i = (fromPairIdx * 2).coerceIn(0, (pts.size - 4).coerceAtLeast(0))
+        var segIndex = fromPairIdx.coerceAtLeast(0)
         var smoothedWidth = -1f  // -1 sentinel: first segment sets it directly, no smoothing to blend from yet
         while (i + 3 < pts.size) {
             val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
@@ -1989,6 +2022,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     drawWithBitmapCache(canvas, action, action.data.strokeWidth * 1.5f) { c, item -> item.data.drawPencilStroke(c, item.paint) }
                     return
                 }
+                // Everything else that isn't already handled above (Ball, Marker, Highlighter,
+                // legacy Fountain content with no width data) was drawn straight via
+                // canvas.drawPath() every frame with no caching at all — meaning every already-
+                // finished stroke of these (by far the most common) types got fully re-
+                // rasterized on every single invalidate(), including ones from an entirely
+                // unrelated stroke elsewhere still being actively drawn. The more of these
+                // exist on a page, the slower drawing anything new gets, independent of that
+                // new stroke's own length.
+                if (!isCalligraphyPen && !isFountainPen && action.data.rotation == 0f && action.data.clipHoles.isEmpty()) {
+                    drawWithBitmapCache(canvas, action, action.data.strokeWidth * 2f) { c, item ->
+                        item.data.toFillPaint()?.let { c.drawPath(item.path, it) }
+                        c.drawPath(item.path, item.paint)
+                    }
+                    return
+                }
                 val renderPath = when { isCalligraphyPen -> action.data.buildCalligraphyRibbonPath(); isFountainPen -> action.data.buildFountainRibbonPath(); else -> action.path }
                 val renderPaint = if (isCalligraphyPen || isFountainPen) Paint(action.paint).apply { style = Paint.Style.FILL; pathEffect = null } else action.paint
                 if (action.data.rotation != 0f) {
@@ -2324,6 +2372,99 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // stroke type (Fountain, Calligraphy, cached Brush styles), not a per-style geometry bug.
     private val _bitmapFilterPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private val MAX_CACHE_BYTES = 64L * 1024 * 1024  // 64 MB max total brush cache
+
+    // Live-drawing performance for one very long continuous stroke: every style's live preview
+    // — plain Ball/Marker/Highlighter via canvas.drawPath(it.path,...), but ALSO Pencil's grain
+    // stamping and Calligraphy's per-segment nib — re-generates its FULL geometry from scratch
+    // on every single frame, and that cost scales with total stroke length regardless of how
+    // cheaply the underlying point data was built. This periodically bakes everything already
+    // drawn (the "settled" portion, not currently changing) into a bitmap, so each frame only
+    // needs one cheap bitmap blit plus regenerating the small still-unbaked tail — bounded cost
+    // no matter how long the stroke ultimately gets, for any pen style.
+    private var liveFlushBitmap: Bitmap? = null
+    private var liveFlushCanvas: Canvas? = null
+    private var liveFlushLeft = 0f
+    private var liveFlushTop = 0f
+    private var liveFlushWorldW = 0f
+    private var liveFlushWorldH = 0f
+    private var liveFlushedPairIndex = 0
+    private val LIVE_FLUSH_POINT_INTERVAL = 300
+
+    // Resets the live-flush cache for a brand new stroke (called on ACTION_DOWN and again once
+    // the stroke commits, so the bitmap is freed promptly rather than held until the next one).
+    private fun resetLiveFlush() {
+        liveFlushBitmap = null; liveFlushCanvas = null; liveFlushedPairIndex = 0
+    }
+
+    // Draws either the WHOLE stroke (fromPairIdx omitted/0) or only its tail from fromPairIdx
+    // onward, using whichever renderer the stroke's actual style needs. Pencil/Calligraphy's
+    // range-aware overloads restart their random/width-blend state fresh at that point rather
+    // than replaying everything before it — a live-preview-only approximation; the final
+    // committed bake always calls this with fromPairIdx=0 for full correctness (see
+    // flushLivePath's first-bake branch and the guaranteed rebuild at ACTION_UP).
+    private fun renderLiveStrokeRange(canvas: Canvas, item: StrokeItem, fromPairIdx: Int) {
+        val data = item.data
+        when {
+            data.type == Tool.PEN && data.penStyle == PenStyle.CALLIGRAPHY -> data.drawCalligraphyStroke(canvas, item.paint, fromPairIdx)
+            data.type == Tool.PEN && data.penStyle == PenStyle.PENCIL -> data.drawPencilStroke(canvas, item.paint, fromPairIdx)
+            fromPairIdx <= 0 -> canvas.drawPath(data.buildPath(), item.paint)
+            else -> canvas.drawPath(data.buildPathRange(fromPairIdx), item.paint)
+        }
+    }
+
+    // Bakes points [0, item.data.points.size/2) into liveFlushBitmap: reuses the existing bitmap
+    // and only regenerates the new tail (with a small overlap into already-baked territory so
+    // the seam blends — solid ink drawn twice over the same spot looks identical to once) when
+    // it still fits; reallocates and re-bakes everything once, from scratch, only when the
+    // stroke's bounding box actually grows past what's currently allocated — a rare event
+    // compared to per-frame or even per-300-points cost.
+    private fun flushLivePath(item: StrokeItem) {
+        val data = item.data
+        val n = data.points.size / 2
+        if (n < 2) return
+        var minX = data.points[0]; var maxX = data.points[0]; var minY = data.points[1]; var maxY = data.points[1]
+        var k = 1
+        while (k < n) {
+            val px = data.points[k * 2]; val py = data.points[k * 2 + 1]
+            if (px < minX) minX = px; if (px > maxX) maxX = px
+            if (py < minY) minY = py; if (py > maxY) maxY = py
+            k++
+        }
+        val pad = data.strokeWidth * 3f + 40f
+        val left = minX - pad; val top = minY - pad
+        val worldW = (maxX - minX) + pad * 2f; val worldH = (maxY - minY) + pad * 2f
+
+        val fitsExisting = liveFlushBitmap != null && left >= liveFlushLeft && top >= liveFlushTop &&
+            (left + worldW) <= (liveFlushLeft + liveFlushWorldW) && (top + worldH) <= (liveFlushTop + liveFlushWorldH)
+
+        if (!fitsExisting) {
+            // Bounding box outgrew the current allocation (or this is the first flush) —
+            // (re)allocate to cover it and bake the whole stroke-so-far once from scratch.
+            val bmpW = (worldW * CACHE_SCALE).toInt().coerceIn(1, 4096)
+            val bmpH = (worldH * CACHE_SCALE).toInt().coerceIn(1, 4096)
+            try {
+                liveFlushBitmap = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+            } catch (e: OutOfMemoryError) { liveFlushBitmap = null; liveFlushCanvas = null; return }
+            liveFlushCanvas = Canvas(liveFlushBitmap!!)
+            liveFlushLeft = left; liveFlushTop = top; liveFlushWorldW = worldW; liveFlushWorldH = worldH
+            liveFlushCanvas!!.save()
+            liveFlushCanvas!!.translate(-liveFlushLeft * CACHE_SCALE, -liveFlushTop * CACHE_SCALE)
+            liveFlushCanvas!!.scale(CACHE_SCALE, CACHE_SCALE)
+            renderLiveStrokeRange(liveFlushCanvas!!, item, 0)
+            liveFlushCanvas!!.restore()
+            liveFlushedPairIndex = n
+            return
+        }
+        val overlapPairs = 8
+        val segStart = (liveFlushedPairIndex - overlapPairs).coerceAtLeast(0)
+        liveFlushCanvas!!.save()
+        liveFlushCanvas!!.translate(-liveFlushLeft * CACHE_SCALE, -liveFlushTop * CACHE_SCALE)
+        liveFlushCanvas!!.scale(CACHE_SCALE, CACHE_SCALE)
+        renderLiveStrokeRange(liveFlushCanvas!!, item, segStart)
+        liveFlushCanvas!!.restore()
+        liveFlushedPairIndex = n
+    }
+
     private fun pruneBrushCache() {
         var totalBytes = 0L
         val cached = actions.filterIsInstance<StrokeItem>().filter { it.cacheValid && it.cachedBitmap != null }
@@ -2733,13 +2874,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // Draw all non-batched items (shapes, pen strokes, text, images, everything else)
         for (action in remainingItems) drawActionItem(canvas, action, true)
         currentItem?.let {
-            val isCalligraphyPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.CALLIGRAPHY
-            val isPencilPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.PENCIL && it.data.points.size >= 4
             when {
-                // Same native-stroke renderer used for the finalized stroke, so live preview
-                // and final look match exactly with no separate code path to drift out of sync.
-                isCalligraphyPen -> it.data.drawCalligraphyStroke(canvas, it.paint)
-                isPencilPen -> it.data.drawPencilStroke(canvas, it.paint)
                 // Was falling through to the flat-width `else` below, so Brush strokes only
                 // showed their real per-point width variation once finalized (via
                 // drawBrushStrokeWithCache) — the live stroke looked uniform-width the whole
@@ -2751,6 +2886,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // its result — without invalidating every frame here, it'd keep returning
                 // whatever the point list looked like on the very first frame of the stroke.
                 it.data.type == Tool.BRUSH -> { it.invalidateCache(); drawBrushStroke(canvas, it) }
+                liveFlushBitmap != null -> {
+                    val dst = RectF(liveFlushLeft, liveFlushTop, liveFlushLeft + liveFlushWorldW, liveFlushTop + liveFlushWorldH)
+                    canvas.drawBitmap(liveFlushBitmap!!, null, dst, _bitmapFilterPaint)
+                    renderLiveStrokeRange(canvas, it, liveFlushedPairIndex)
+                }
+                // No flush cache yet (short stroke, hasn't reached the flush interval) — same
+                // native-stroke renderers used for the finalized stroke, so live preview and
+                // final look match exactly with no separate code path to drift out of sync.
+                // Ball/Marker/Highlighter/legacy-Fountain use it.path directly here (maintained
+                // cheaply by the throttle logic in the touch handler) rather than rebuilding via
+                // renderLiveStrokeRange every frame, which would undo that throttling.
+                it.data.type == Tool.PEN && it.data.penStyle == PenStyle.CALLIGRAPHY -> it.data.drawCalligraphyStroke(canvas, it.paint)
+                it.data.type == Tool.PEN && it.data.penStyle == PenStyle.PENCIL -> it.data.drawPencilStroke(canvas, it.paint)
                 else -> canvas.drawPath(it.path, it.paint)
             }
         }
@@ -5734,6 +5882,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
                 currentItem = StrokeItem(data, data.buildPath(), data.toPaint()); invalidate()
                 livePathRebuildPointCount = 1; livePathRebuildTime = event.eventTime
+                resetLiveFlush()
                 onDrawingStarted?.invoke()
             }
             MotionEvent.ACTION_MOVE -> {
@@ -5896,12 +6045,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         // rebuild, or the guaranteed one on ACTION_UP, re-smooths this tail.
                         item.path.lineTo(wx, wy)
                     }
+                    val usesFlushCache = currentTool == Tool.HIGHLIGHTER || currentTool == Tool.PEN
+                    if (usesFlushCache && pointCount - liveFlushedPairIndex >= LIVE_FLUSH_POINT_INTERVAL) {
+                        flushLivePath(item)
+                    }
                 } else {
                     item.path = item.data.buildPath()
                 }
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
+                resetLiveFlush()
                 if (currentTool == Tool.ERASER) { flushDirtyFillItems(); flushEraseSessionBitmaps(); eraserLastX = Float.NaN; eraserLastY = Float.NaN }
                 // Snap end point to nearest existing endpoint if snap is enabled
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
