@@ -1160,6 +1160,28 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         spatialDirty = false
     }
 
+    // Removes/adds a single item's grid-cell memberships directly, instead of invalidating the
+    // whole index (markSpatialDirty()) and paying for a full rebuild — over every item on the
+    // page — on the very next itemsNear()/itemsInViewport() call. Erasing calls this once per
+    // item actually replaced per touch sample, which during a drag over a busy page or one very
+    // long stroke could previously mean a full-page spatial rebuild dozens of times per second.
+    private fun removeFromSpatialIndex(item: Any) {
+        if (spatialDirty) return  // already scheduled for a full rebuild — nothing to do here
+        val b = getBounds(item) ?: return
+        val pad = GRID_CELL * 0.6f
+        for (key in boundsToGridCells(b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)) {
+            spatialGrid[key]?.remove(item)
+        }
+    }
+    private fun addToSpatialIndex(item: Any) {
+        if (spatialDirty) return
+        val b = getBounds(item) ?: return
+        val pad = GRID_CELL * 0.6f
+        for (key in boundsToGridCells(b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)) {
+            spatialGrid.getOrPut(key) { mutableListOf() }.add(item)
+        }
+    }
+
     private fun markSpatialDirty() { spatialDirty = true; snapMarkersActionCount = -1 }
     fun markSpatialDirtyAndInvalidate() { spatialDirty = true; snapMarkersDirty = true; snapMarkersActionCount = -1; invalidate() }
     private var snapMarkersDirty = true
@@ -6210,11 +6232,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     toRemove.add(a)
                 }
             }
-            if (toRemove.isNotEmpty()) { actions.removeAll(toRemove); markSpatialDirty() }
+            if (toRemove.isNotEmpty()) {
+                actions.removeAll(toRemove)
+                for (rem in toRemove) removeFromSpatialIndex(rem)
+                snapMarkersActionCount = -1
+            }
         } else {
             val candidates = itemsNear(x, y, r * 3f).toHashSet()
             val newActions = mutableListOf<Any>()
             var changed = false
+            val removedForIndex = mutableListOf<Any>()
+            val addedForIndex = mutableListOf<Any>()
             for (a in actions) {
                 // Items far from eraser pass through unchanged — no processing needed
                 if (a !in candidates) { newActions.add(a); continue }
@@ -6245,7 +6273,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                     // strip of ink on both sides even though the eraser circle
                                     // visually covers it (only a tiny sliver of centerline gets cut).
                                     val effR = r + (a.data.strokeWidth / 2f).coerceAtMost(r * 2f)
-                                    newActions.addAll(splitStrokeAroundEraser(a.data, x, y, effR)); changed = true
+                                    val frags = splitStrokeAroundEraser(a.data, x, y, effR)
+                                    newActions.addAll(frags); changed = true
+                                    removedForIndex.add(a); addedForIndex.addAll(frags)
                                 }
                             } else {
                                 newActions.add(a)
@@ -6260,12 +6290,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 for (comp in components) {
                                     if (strokeHitTest(comp.data, x, y, r)) {
                                         val effR = r + (comp.data.strokeWidth / 2f).coerceAtMost(r * 2f)
-                                        newActions.addAll(splitStrokeAroundEraser(comp.data, x, y, effR))
+                                        val frags = splitStrokeAroundEraser(comp.data, x, y, effR)
+                                        newActions.addAll(frags); addedForIndex.addAll(frags)
                                     } else {
-                                        newActions.add(comp)
+                                        newActions.add(comp); addedForIndex.add(comp)
                                     }
                                 }
                                 changed = true
+                                removedForIndex.add(a)
                             } else {
                                 newActions.add(a)
                             }
@@ -6273,18 +6305,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             // Open shapes (LINE, ARROW): split into fragments
                             if (strokeHitTest(a.data, x, y, r)) {
                                 val effR = r + (a.data.strokeWidth / 2f)
-                                newActions.addAll(splitShapeAroundEraser(a.data, x, y, effR)); changed = true
+                                val frags = splitShapeAroundEraser(a.data, x, y, effR)
+                                newActions.addAll(frags); changed = true
+                                removedForIndex.add(a); addedForIndex.addAll(frags)
                             }
                             else newActions.add(a)
                         }
                     }
-                    is TextItem -> { if (distance(x, y, a.x, a.y) > r + a.size) newActions.add(a) else changed = true }
-                    is ImageItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) else changed = true }
+                    is TextItem -> { if (distance(x, y, a.x, a.y) > r + a.size) newActions.add(a) else { changed = true; removedForIndex.add(a) } }
+                    is ImageItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) else { changed = true; removedForIndex.add(a) } }
                     is FillItem -> {
                         if (eraserMode == EraserMode.AREA && eraserAffectsFill) {
                             // Erase only the pixels the eraser circle touches in the fill bitmap
                             val erased = eraseFillItemRegion(a, x, y, r)
-                            if (erased != null) newActions.add(erased) // null = fully erased
+                            if (erased != null) { newActions.add(erased); if (erased !== a) { removedForIndex.add(a); addedForIndex.add(erased) } } // null = fully erased
+                            else removedForIndex.add(a)
                             changed = true
                         } else {
                             newActions.add(a)
@@ -6293,7 +6328,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     else -> newActions.add(a)
                 }
             }
-            if (changed) { actions.clear(); actions.addAll(newActions); markSpatialDirty() }
+            if (changed) {
+                actions.clear(); actions.addAll(newActions)
+                for (rem in removedForIndex) removeFromSpatialIndex(rem)
+                for (add in addedForIndex) addToSpatialIndex(add)
+                snapMarkersActionCount = -1
+            }
         }
     }
 

@@ -2085,6 +2085,10 @@ class MainActivity : AppCompatActivity() {
         lp.topMargin = dp(14); lp.rightMargin = dp(14)
         canvasContainer.addView(btn, lp)
         fullscreenRestoreBtn = btn
+        window.decorView.post {
+            androidx.core.view.ViewCompat.requestApplyInsets(window.decorView)
+            findViewById<View?>(android.R.id.content)?.requestLayout()
+        }
     }
     private fun exitFullscreen() {
         findViewById<View?>(R.id.topBarContainer)?.visibility = View.VISIBLE
@@ -2101,6 +2105,17 @@ class MainActivity : AppCompatActivity() {
         }
         fullscreenRestoreBtn?.let { canvasContainer.removeView(it) }
         fullscreenRestoreBtn = null
+        // Force a fresh WindowInsets dispatch — the bottomToolbarDock/textOptionsPanel margin
+        // listener registered in onCreate() reacts to insets callbacks, but toggling
+        // setDecorFitsSystemWindows/status-bar visibility back doesn't reliably re-trigger that
+        // callback at the right moment on every device, which is exactly the misalignment that
+        // only "fixes itself" by closing and reopening the note (a fresh onCreate + layout pass
+        // re-establishes everything correctly). Requesting it explicitly here removes the
+        // dependency on that implicit timing.
+        window.decorView.post {
+            androidx.core.view.ViewCompat.requestApplyInsets(window.decorView)
+            findViewById<View?>(android.R.id.content)?.requestLayout()
+        }
     }
 
     internal fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
