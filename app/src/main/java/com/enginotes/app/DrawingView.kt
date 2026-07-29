@@ -207,6 +207,17 @@ class StrokeData(
     private var chunkBoundsCache: Array<FloatArray>? = null
     private var chunkBoundsForPointCount: Int = -1
     private val CHUNK_SIZE = 64
+
+    // Both caches above are keyed on point COUNT only, since that's all live-drawing ever
+    // changes (points get appended, never edited). Moving/resizing/rotating an already-drawn
+    // stroke mutates the SAME points in place instead — count stays identical, so without this
+    // both caches would keep serving stale pre-move geometry forever after. Call this any time
+    // existing points get bulk-edited rather than grown.
+    fun invalidateGeometryCaches() {
+        smoothCache = null
+        chunkBoundsCache = null
+    }
+
     fun chunkBounds(): Array<FloatArray> {
         val cached = chunkBoundsCache
         if (cached != null && chunkBoundsForPointCount == points.size) return cached
@@ -3578,6 +3589,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is StrokeItem -> {
                 var i = 0
                 while (i + 1 < item.data.points.size) { item.data.points[i] += dx; item.data.points[i + 1] += dy; i += 2 }
+                item.data.invalidateGeometryCaches()
                 item.path = item.data.buildPath()
                 item.invalidateCache()
                 markSpatialDirty()  // spatial grid must update or hit testing fails at new position
@@ -3655,6 +3667,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                     if (newHalfW > 0.5f && newHalfH > 0.5f) {
                         var j = 0; while (j + 1 < pts.size) { pts[j] = newCx + (pts[j] - cx) * scaleX; pts[j+1] = newCy + (pts[j+1] - cy) * scaleY; j += 2 }
+                        item.data.invalidateGeometryCaches()
                         item.path = item.data.buildPath()
                     }
                 } else if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
@@ -3680,6 +3693,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val newCy = fixedWorldY - (newFixedLocalX * sin + newFixedLocalY * cos)
                     item.data.points[0] = newCx - newW / 2f; item.data.points[1] = newCy - newH / 2f
                     item.data.points[2] = newCx + newW / 2f; item.data.points[3] = newCy + newH / 2f
+                    item.data.invalidateGeometryCaches()
                     item.path = item.data.buildPath()
                 } else if (ENDPOINT_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
                     val rot = item.data.rotation
@@ -3697,6 +3711,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         }
                         else -> {}
                     }
+                    item.data.invalidateGeometryCaches()
                     item.path = item.data.buildPath()
                 }
             }
@@ -4201,9 +4216,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     fun deselectTable() { activeTableItem = null; tableIsActive = false; tableSelStart = null; tableSelEnd = null; invalidate() }
 
     fun worldToScreenX(wx: Float): Float = wx * scaleFactor + translateX
-    // Public wrapper around the private getBounds() — lets MainActivity position contextual UI
-    // (e.g. the stroke quick-edit capsule) relative to any selected item's actual bounds.
-    fun publicBounds(item: Any): FloatArray? = getBounds(item)
     fun worldToScreenY(wy: Float): Float = wy * scaleFactor + translateY
 
     private fun drawTableOverlay(canvas: Canvas) {
@@ -4716,7 +4728,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun scaleItemInGroup(item: Any, ox: Float, oy: Float, sx: Float, sy: Float) {
         when (item) {
-            is StrokeItem -> { var i = 0; while (i + 1 < item.data.points.size) { item.data.points[i] = ox + (item.data.points[i] - ox) * sx; item.data.points[i + 1] = oy + (item.data.points[i + 1] - oy) * sy; i += 2 }; item.path = item.data.buildPath(); item.invalidateCache(); markSpatialDirty() }
+            is StrokeItem -> { var i = 0; while (i + 1 < item.data.points.size) { item.data.points[i] = ox + (item.data.points[i] - ox) * sx; item.data.points[i + 1] = oy + (item.data.points[i + 1] - oy) * sy; i += 2 }; item.data.invalidateGeometryCaches(); item.path = item.data.buildPath(); item.invalidateCache(); markSpatialDirty() }
             is TextItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.size = (item.size * ((sx + sy) / 2f)).coerceIn(6f, 500f) }
             is ImageItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.w *= sx; item.h *= sy }
             is FillItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.w *= sx; item.h *= sy }
@@ -6324,9 +6336,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 // is actually long enough for that to matter — the slowness (and
                                 // the "readjusting" wobble) only ever showed up on a genuinely
                                 // long single stroke. A normal-length stroke stays on the vector
-                                // split path below, so it keeps its full editability (recolor/
-                                // resize/pen-type-change) instead of becoming a fixed image the
-                                // moment any part of it is erased at all.
+                                // split path below, so it keeps its full editability (resize/
+                                // move/select) instead of becoming a fixed image the moment any
+                                // part of it is erased at all.
                                 val LONG_STROKE_FREEZE_THRESHOLD = 500
                                 val isLongPenOrHighlighter = (a.data.type == Tool.PEN || a.data.type == Tool.HIGHLIGHTER) &&
                                     (a.data.points.size / 2) > LONG_STROKE_FREEZE_THRESHOLD
@@ -6339,10 +6351,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                     // from it — O(eraser-circle-pixels), not O(stroke's total
                                     // point count), and the stroke's actual geometry (points,
                                     // widths, smoothing) is never touched again for the rest of
-                                    // this drag. This is also what stops the remaining, already-
-                                    // erased portion from visibly "readjusting" itself — there's
-                                    // no more re-smoothing happening at a new cut edge, because
-                                    // there's no more vector cutting happening at all.
+                                    // this drag.
                                     eraseFromSessionBitmap(a, x, y, r)
                                     newActions.add(a)
                                 } else {

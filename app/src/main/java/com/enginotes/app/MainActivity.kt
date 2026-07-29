@@ -853,7 +853,6 @@ class MainActivity : AppCompatActivity() {
         }
         drawingView.onExportWindowSelected  = { l,t,r,b -> exportWindowBitmap = drawingView.exportWindow(l,t,r,b); showExportWindowDialog() }
         drawingView.onAudioItemTap          = { item -> AudioHelper.togglePlay(item) { drawingView.invalidate() }; drawingView.invalidate() }
-        drawingView.onItemSelected = { item -> runOnUiThread { updateStrokeEditCapsule(item) } }
 
         setupBottomToolbar()
         setActiveTool(null, Tool.SELECT)
@@ -3559,14 +3558,6 @@ class MainActivity : AppCompatActivity() {
         div(); hdr("GENERAL")
         val confirmCb = CheckBox(this).apply{ text="Confirm before exit or clear canvas"; isChecked=prefs.getBoolean("confirm_exit_clear",true) }; container.addView(confirmCb)
         val autosaveCb = CheckBox(this).apply{ text="Autosave every 10 seconds"; isChecked=prefs.getBoolean("autosave",true) }; container.addView(autosaveCb)
-        val strokeEditCapsuleCb = CheckBox(this).apply {
-            text = "Show colour/thickness/type editor when selecting a stroke"
-            isChecked = prefs.getBoolean("show_stroke_edit_capsule", true)
-            setOnCheckedChangeListener { _, on ->
-                prefs.edit().putBoolean("show_stroke_edit_capsule", on).apply()
-                if (!on) updateStrokeEditCapsule(null)
-            }
-        }; container.addView(strokeEditCapsuleCb)
         val layersBtnCb = CheckBox(this).apply {
             text = "Always show Layers button in toolbar"
             isChecked = prefs.getBoolean("layers_button_always_visible", false)
@@ -5211,125 +5202,6 @@ class MainActivity : AppCompatActivity() {
         canvasContainer.addView(scroll, lp)
         brushOptionsPanel = scroll
         animatePanelIn(scroll)
-    }
-
-    private var strokeEditCapsule: View? = null
-
-    // Rebuilds (or removes) the small floating capsule shown below a selected stroke, letting
-    // its colour/thickness/pen-type be changed after the fact — same visual pattern as the
-    // table's own below-item contextual toolbar. Called every time selection changes.
-    private fun updateStrokeEditCapsule(selected: Any?) {
-        strokeEditCapsule?.let { canvasContainer.removeView(it) }
-        strokeEditCapsule = null
-        if (selected !is StrokeItem) return
-        if (!getPrefs().getBoolean("show_stroke_edit_capsule", true)) return
-        if (selected.data.type != Tool.PEN && selected.data.type != Tool.HIGHLIGHTER) return
-        val item = selected
-
-        fun refresh() { updateStrokeEditCapsule(item) }
-        fun applyChange() {
-            item.path = item.data.buildPath(); item.invalidateCache()
-            drawingView.markSpatialDirtyAndInvalidate()
-        }
-
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        fun pillBg() = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#DD1C1C1E")); cornerRadius = dp(16).toFloat() }
-        fun addChip(build: LinearLayout.() -> Unit) {
-            val chip = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                background = pillBg(); setPadding(dp(12), dp(7), dp(12), dp(7))
-                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                lp.marginEnd = dp(8); layoutParams = lp
-                build()
-            }
-            row.addView(chip)
-        }
-
-        // Colour chip: small swatch + label, opens the same color grid used everywhere else
-        addChip {
-            addView(View(this@MainActivity).apply {
-                layoutParams = LinearLayout.LayoutParams(dp(18), dp(18)).also { it.marginEnd = dp(6) }
-                background = android.graphics.drawable.GradientDrawable().apply {
-                    setColor(item.data.color); setStroke(dp(1), Color.parseColor("#88FFFFFF")); shape = android.graphics.drawable.GradientDrawable.OVAL
-                }
-            })
-            addView(TextView(this@MainActivity).apply { text = "Colour"; setTextColor(Color.WHITE); textSize = 13f })
-            setOnClickListener {
-                showColorGridDialog { c ->
-                    item.data.color = c; item.data.fillColorVal = c
-                    applyChange(); refresh()
-                }
-            }
-        }
-
-        // Thickness chip: opens a simple slider popup
-        addChip {
-            addView(TextView(this@MainActivity).apply { text = "Thickness: ${item.data.strokeWidth.toInt()}"; setTextColor(Color.WHITE); textSize = 13f })
-            setOnClickListener { anchor ->
-                val popup = android.widget.PopupWindow(this@MainActivity)
-                val pLayout = LinearLayout(this@MainActivity).apply {
-                    orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(10))
-                    background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
-                }
-                val label = TextView(this@MainActivity).apply { text = "Thickness: ${item.data.strokeWidth.toInt()}"; textSize = 13f; setTextColor(Color.parseColor("#4A4A4A")) }
-                val seek = android.widget.SeekBar(this@MainActivity).apply {
-                    max = 60; progress = item.data.strokeWidth.toInt().coerceIn(1, 60)
-                    setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
-                        override fun onProgressChanged(sb: android.widget.SeekBar?, v: Int, fromUser: Boolean) {
-                            if (!fromUser) return
-                            item.data.strokeWidth = v.coerceAtLeast(1).toFloat()
-                            label.text = "Thickness: ${item.data.strokeWidth.toInt()}"
-                            applyChange()
-                        }
-                        override fun onStartTrackingTouch(sb: android.widget.SeekBar?) {}
-                        override fun onStopTrackingTouch(sb: android.widget.SeekBar?) { refresh() }
-                    })
-                }
-                pLayout.addView(label); pLayout.addView(seek)
-                popup.contentView = pLayout; popup.width = dp(220); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-                popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
-                popup.showAsDropDown(anchor, 0, -dp(120))
-            }
-        }
-
-        // Pen Type chip: only meaningful for actual Pen strokes, not Highlighter
-        if (item.data.type == Tool.PEN) {
-            addChip {
-                addView(TextView(this@MainActivity).apply {
-                    text = "Type: ${item.data.penStyle.name.lowercase().replaceFirstChar { it.uppercase() }}"
-                    setTextColor(Color.WHITE); textSize = 13f
-                })
-                setOnClickListener { anchor ->
-                    val penTypes = listOf("Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
-                    showThemedDropdown(anchor, penTypes.map { it.first }) { label ->
-                        val newStyle = penTypes.first { it.first == label }.second
-                        item.data.penStyle = newStyle
-                        // Old per-point width/intensity samples were specific to whatever style
-                        // recorded them (or weren't recorded at all) — clear them so the new
-                        // style starts clean rather than misreading stale data left from before.
-                        item.data.widths.clear()
-                        applyChange(); refresh()
-                    }
-                }
-            }
-        }
-
-        val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(row) }
-        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        canvasContainer.addView(scroll, lp)
-        strokeEditCapsule = scroll
-
-        val b = drawingView.publicBounds(item)
-        if (b != null) {
-            val sx0 = drawingView.worldToScreenX(b[0])
-            val sy1 = drawingView.worldToScreenY(b[3])
-            scroll.post {
-                val alp = scroll.layoutParams as FrameLayout.LayoutParams
-                alp.leftMargin = sx0.toInt().coerceIn(0, (canvasContainer.width - scroll.width).coerceAtLeast(0))
-                alp.topMargin = (sy1.toInt() + dp(10)).coerceIn(0, (canvasContainer.height - dp(48)).coerceAtLeast(0))
-                scroll.layoutParams = alp
-            }
-        }
     }
 
     private fun showColorGridDialog(onPicked: (Int) -> Unit) {
