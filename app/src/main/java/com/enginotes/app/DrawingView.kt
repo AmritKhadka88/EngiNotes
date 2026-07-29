@@ -1548,6 +1548,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var dragStartAngle = 0f; private var dragStartRotation = 0f
     private var dragStartPivotX = 0f; private var dragStartPivotY = 0f
     private var resizePrevWorldX = 0f; private var resizePrevWorldY = 0f
+    // Snapshot of a StrokeItem's points/bounds taken once when a bbox resize handle is first
+    // grabbed — see resizeItem()'s STROKE_SCALE_SHAPES branch for why this is necessary: without
+    // a fixed reference, recomputing "the original size" from the already-scaled points on every
+    // single frame creates a compounding feedback loop (this frame's output becomes next frame's
+    // "original", so the scale factor swings wildly instead of tracking the finger smoothly).
+    private var strokeResizeOrigPoints: FloatArray? = null
+    private var strokeResizeOrigBounds: FloatArray? = null  // [minX, minY, maxX, maxY]
 
     private var activeArcItem: StrokeItem? = null
     private var arcDragPointIndex = -1
@@ -2755,6 +2762,35 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (changed) markSpatialDirty()
     }
 
+    // Threshold shared with the eraser's freeze-to-bitmap check — a stroke past this point is
+    // long enough that vector operations on it (re-rendering, re-offsetting the whole path) stay
+    // noticeably expensive every single frame, even after cheaper per-op fixes.
+    private val LONG_STROKE_FREEZE_THRESHOLD = 500
+
+    // Converts a Pen/Highlighter stroke to a plain image, once, right when a move-drag on a very
+    // long stroke begins — from then on the drag is just adjusting an image's x/y, an O(1)
+    // per-frame cost, instead of re-offsetting a multi-thousand-point path every frame. Reuses
+    // ensureEraseSessionBitmap (the exact same bake used for the long-stroke eraser case) so the
+    // baked appearance is guaranteed identical to what was already on screen.
+    private fun convertLongStrokeToImage(item: StrokeItem): ImageItem? {
+        if (!ensureEraseSessionBitmap(item)) return null
+        val bmp = item.eraseSessionBitmap ?: return null
+        item.eraseSessionBitmap = null
+        val idx = actions.indexOf(item)
+        if (idx < 0) return null
+        return try {
+            val folder = File(ctx.filesDir, "images"); if (!folder.exists()) folder.mkdirs()
+            val outFile = File(folder, "moved_${System.currentTimeMillis()}_${idx}.png")
+            FileOutputStream(outFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            val img = ImageItem(outFile.absolutePath, item.eraseSessionLeft, item.eraseSessionTop,
+                item.eraseSessionRight - item.eraseSessionLeft, item.eraseSessionBottom - item.eraseSessionTop, 0f)
+            img.layerId = item.layerId; img.bitmap = bmp
+            actions[idx] = img
+            removeFromSpatialIndex(item); addToSpatialIndex(img)
+            img
+        } catch (e: Exception) { null }
+    }
+
     private fun drawBrushStroke(canvas: Canvas, item: StrokeItem) {
         val pts = item.data.points; if (pts.size < 2) return
         val sw = item.data.strokeWidth; val col = item.data.color
@@ -3649,49 +3685,53 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             is StrokeItem -> {
                 if (STROKE_SCALE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    // Uniform scale from centroid using delta-drag (not absolute position).
-                    // We compare finger distance from centroid NOW vs at the point the handle was grabbed.
-                    // The ratio of those distances = the scale factor. This makes small drags = small changes.
-                    val pts = item.data.points
-                    var minX = pts[0]; var minY = pts[1]; var maxX = pts[0]; var maxY = pts[1]
-                    var i2 = 0; while (i2 + 1 < pts.size) { minX = minOf(minX, pts[i2]); minY = minOf(minY, pts[i2+1]); maxX = maxOf(maxX, pts[i2]); maxY = maxOf(maxY, pts[i2+1]); i2 += 2 }
-                    val cx = (minX + maxX) / 2f; val cy = (minY + maxY) / 2f
-                    val oldW = (maxX - minX).coerceAtLeast(1f); val oldH = (maxY - minY).coerceAtLeast(1f)
-                    val halfW = oldW / 2f; val halfH = oldH / 2f
-                    // Finger offset from centroid
-                    val fx = wx - cx; val fy = wy - cy
-                    // For each handle, the "fixed" opposite corner stays, and the dragged edge follows finger.
-                    // Scale = finger_dist / original_half_size. Use only the relevant axis per handle.
-                    val scaleX = when (handle) {
-                        HandleType.ML -> if (halfW > 1f) (-fx / halfW).coerceIn(0.05f, 20f) else 1f
-                        HandleType.MR -> if (halfW > 1f) (fx / halfW).coerceIn(0.05f, 20f) else 1f
-                        HandleType.TL, HandleType.BL -> if (halfW > 1f) (-fx / halfW).coerceIn(0.05f, 20f) else 1f
-                        HandleType.TR, HandleType.BR -> if (halfW > 1f) (fx / halfW).coerceIn(0.05f, 20f) else 1f
-                        else -> 1f
-                    }
-                    val scaleY = when (handle) {
-                        HandleType.TM -> if (halfH > 1f) (-fy / halfH).coerceIn(0.05f, 20f) else 1f
-                        HandleType.BM -> if (halfH > 1f) (fy / halfH).coerceIn(0.05f, 20f) else 1f
-                        HandleType.TL, HandleType.TR -> if (halfH > 1f) (-fy / halfH).coerceIn(0.05f, 20f) else 1f
-                        HandleType.BL, HandleType.BR -> if (halfH > 1f) (fy / halfH).coerceIn(0.05f, 20f) else 1f
-                        else -> 1f
-                    }
-                    val newHalfW = halfW * scaleX; val newHalfH = halfH * scaleY
-                    // Shift centroid: the opposite (fixed) side stays put
-                    val newCx = when (handle) {
-                        HandleType.TL, HandleType.ML, HandleType.BL -> maxX - newHalfW  // right edge fixed
-                        HandleType.TR, HandleType.MR, HandleType.BR -> minX + newHalfW  // left edge fixed
-                        else -> cx
-                    }
-                    val newCy = when (handle) {
-                        HandleType.TL, HandleType.TM, HandleType.TR -> maxY - newHalfH  // bottom edge fixed
-                        HandleType.BL, HandleType.BM, HandleType.BR -> minY + newHalfH  // top edge fixed
-                        else -> cy
-                    }
-                    if (newHalfW > 0.5f && newHalfH > 0.5f) {
-                        var j = 0; while (j + 1 < pts.size) { pts[j] = newCx + (pts[j] - cx) * scaleX; pts[j+1] = newCy + (pts[j+1] - cy) * scaleY; j += 2 }
-                        item.data.invalidateGeometryCaches()
-                        item.path = item.data.buildPath()
+                    // Uniform scale from centroid using the FIXED snapshot taken when the handle
+                    // was first grabbed (see strokeResizeOrigPoints/strokeResizeOrigBounds) —
+                    // every frame recomputes fresh from that same fixed starting point using the
+                    // CURRENT finger position, rather than compounding off last frame's result.
+                    val origPts = strokeResizeOrigPoints
+                    val origB = strokeResizeOrigBounds
+                    if (origPts != null && origB != null && origPts.size == item.data.points.size) {
+                        val minX = origB[0]; val minY = origB[1]; val maxX = origB[2]; val maxY = origB[3]
+                        val cx = (minX + maxX) / 2f; val cy = (minY + maxY) / 2f
+                        val oldW = (maxX - minX).coerceAtLeast(1f); val oldH = (maxY - minY).coerceAtLeast(1f)
+                        val halfW = oldW / 2f; val halfH = oldH / 2f
+                        // Finger offset from centroid
+                        val fx = wx - cx; val fy = wy - cy
+                        // For each handle, the "fixed" opposite corner stays, and the dragged edge follows finger.
+                        // Scale = finger_dist / original_half_size. Use only the relevant axis per handle.
+                        val scaleX = when (handle) {
+                            HandleType.ML -> if (halfW > 1f) (-fx / halfW).coerceIn(0.05f, 20f) else 1f
+                            HandleType.MR -> if (halfW > 1f) (fx / halfW).coerceIn(0.05f, 20f) else 1f
+                            HandleType.TL, HandleType.BL -> if (halfW > 1f) (-fx / halfW).coerceIn(0.05f, 20f) else 1f
+                            HandleType.TR, HandleType.BR -> if (halfW > 1f) (fx / halfW).coerceIn(0.05f, 20f) else 1f
+                            else -> 1f
+                        }
+                        val scaleY = when (handle) {
+                            HandleType.TM -> if (halfH > 1f) (-fy / halfH).coerceIn(0.05f, 20f) else 1f
+                            HandleType.BM -> if (halfH > 1f) (fy / halfH).coerceIn(0.05f, 20f) else 1f
+                            HandleType.TL, HandleType.TR -> if (halfH > 1f) (-fy / halfH).coerceIn(0.05f, 20f) else 1f
+                            HandleType.BL, HandleType.BR -> if (halfH > 1f) (fy / halfH).coerceIn(0.05f, 20f) else 1f
+                            else -> 1f
+                        }
+                        val newHalfW = halfW * scaleX; val newHalfH = halfH * scaleY
+                        // Shift centroid: the opposite (fixed) side stays put
+                        val newCx = when (handle) {
+                            HandleType.TL, HandleType.ML, HandleType.BL -> maxX - newHalfW  // right edge fixed
+                            HandleType.TR, HandleType.MR, HandleType.BR -> minX + newHalfW  // left edge fixed
+                            else -> cx
+                        }
+                        val newCy = when (handle) {
+                            HandleType.TL, HandleType.TM, HandleType.TR -> maxY - newHalfH  // bottom edge fixed
+                            HandleType.BL, HandleType.BM, HandleType.BR -> minY + newHalfH  // top edge fixed
+                            else -> cy
+                        }
+                        if (newHalfW > 0.5f && newHalfH > 0.5f) {
+                            val pts = item.data.points
+                            var j = 0; while (j + 1 < pts.size) { pts[j] = newCx + (origPts[j] - cx) * scaleX; pts[j + 1] = newCy + (origPts[j + 1] - cy) * scaleY; j += 2 }
+                            item.data.invalidateGeometryCaches()
+                            item.path = item.data.buildPath()
+                        }
                     }
                 } else if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
                     val rot = Math.toRadians(item.data.rotation.toDouble())
@@ -4385,7 +4425,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val isEndpoint = item is StrokeItem && ENDPOINT_RESIZE_SHAPES.contains(item.data.type)
                         if (!handled && isBbox) {
                             for ((type, pos) in bboxHandlePositions(b)) {
-                                if (distance(lx, ly, pos.first, pos.second) <= hit) { activeHandle = type; dragStartPivotX = px; dragStartPivotY = py; dragStartRotation = rot; resizePrevWorldX = wx; resizePrevWorldY = wy; handled = true; break }
+                                if (distance(lx, ly, pos.first, pos.second) <= hit) {
+                                    activeHandle = type; dragStartPivotX = px; dragStartPivotY = py; dragStartRotation = rot; resizePrevWorldX = wx; resizePrevWorldY = wy; handled = true
+                                    if (item is StrokeItem && STROKE_SCALE_SHAPES.contains(item.data.type)) {
+                                        strokeResizeOrigPoints = item.data.points.toFloatArray()
+                                        var mnX = item.data.points[0]; var mnY = item.data.points[1]; var mxX = mnX; var mxY = mnY
+                                        var k = 2
+                                        while (k + 1 < item.data.points.size) {
+                                            mnX = minOf(mnX, item.data.points[k]); mnY = minOf(mnY, item.data.points[k + 1])
+                                            mxX = maxOf(mxX, item.data.points[k]); mxY = maxOf(mxY, item.data.points[k + 1])
+                                            k += 2
+                                        }
+                                        strokeResizeOrigBounds = floatArrayOf(mnX, mnY, mxX, mxY)
+                                    }
+                                    break
+                                }
                             }
                         }
                         if (!handled && isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
@@ -4395,7 +4449,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             if (distance(lx, ly, p0x, p0y) <= hit) { activeHandle = HandleType.TL; resizePrevWorldX = wx; resizePrevWorldY = wy; handled = true }
                             else if (distance(lx, ly, p1x, p1y) <= hit) { activeHandle = HandleType.BR; resizePrevWorldX = wx; resizePrevWorldY = wy; handled = true }
                         }
-                        if (!handled && lx >= b[0] - hit && lx <= b[2] + hit && ly >= b[1] - hit && ly <= b[3] + hit) { activeHandle = HandleType.MOVE; dragStartWorldX = wx; dragStartWorldY = wy; handled = true }
+                        if (!handled && lx >= b[0] - hit && lx <= b[2] + hit && ly >= b[1] - hit && ly <= b[3] + hit) {
+                            if (item is StrokeItem && (item.data.type == Tool.PEN || item.data.type == Tool.HIGHLIGHTER) &&
+                                item.data.points.size / 2 > LONG_STROKE_FREEZE_THRESHOLD) {
+                                convertLongStrokeToImage(item)?.let { selectedItem = it }
+                            }
+                            activeHandle = HandleType.MOVE; dragStartWorldX = wx; dragStartWorldY = wy; handled = true
+                        }
                     }
                 }
                 if (!handled) {
@@ -4587,6 +4647,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_UP -> {
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
                 activeHandle = HandleType.NONE; groupActiveHandle = HandleType.NONE; groupSnapshots.clear(); pinkGroupRotation = 0f
+                strokeResizeOrigPoints = null; strokeResizeOrigBounds = null
                 // MULTISELECT: toggle item only if this was a tap (not a drag)
                 if (currentTool == Tool.MULTISELECT && !msTapDownWx.isNaN() && !msDragging) {
                     val hit = findItemAtPreferSelected(msTapDownWx, msTapDownWy)
@@ -6362,7 +6423,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 // split path below, so it keeps its full editability (resize/
                                 // move/select) instead of becoming a fixed image the moment any
                                 // part of it is erased at all.
-                                val LONG_STROKE_FREEZE_THRESHOLD = 500
                                 val isLongPenOrHighlighter = (a.data.type == Tool.PEN || a.data.type == Tool.HIGHLIGHTER) &&
                                     (a.data.points.size / 2) > LONG_STROKE_FREEZE_THRESHOLD
                                 val useFreezeBitmap = (a.data.type == Tool.BRUSH && CACHED_BRUSH_STYLES.contains(a.data.brushStyle)) ||
