@@ -1355,9 +1355,31 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (field != value && value != Tool.SELECT && activeTableItem != null) {
                 activeTableItem = null; tableIsActive = false
             }
-            if (field == Tool.SELECT && value != Tool.SELECT) selectedItem = null
             if (field == Tool.ARC && value != Tool.ARC) activeArcItem = null
-            if ((field == Tool.AUTOSELECT || field == Tool.LASSO) && value != Tool.AUTOSELECT && value != Tool.LASSO) {
+            // Selection now carries over between all four selection tools (Select/Multi/Lasso/
+            // Rect) instead of being wiped on every switch. Previously each tool cleared its OWN
+            // tracking variable the moment you left it — selectedItem/selectedItems for Select
+            // and Multi, selectedGroup for Lasso and Rect — even switching between two tools that
+            // share the exact same underlying handler (Select <-> Multi) lost the selection. Most
+            // visibly: switching to Rect or Lasso always left selectedGroup empty, so the very
+            // next touch was read as "start a brand-new selection-region trace" instead of
+            // resizing/moving what was already selected — reported as "just crops the area".
+            val selectFamily = value == Tool.SELECT || value == Tool.MULTISELECT
+            val groupFamily = value == Tool.AUTOSELECT || value == Tool.LASSO
+            val wasSelectFamily = field == Tool.SELECT || field == Tool.MULTISELECT
+            val wasGroupFamily = field == Tool.AUTOSELECT || field == Tool.LASSO
+            if (wasSelectFamily && groupFamily) {
+                val carry = (selectedItems + setOfNotNull(selectedItem)).toMutableList()
+                if (carry.isNotEmpty()) selectedGroup = carry
+            } else if (wasGroupFamily && selectFamily) {
+                val carry = selectedGroup
+                if (carry != null && carry.isNotEmpty()) {
+                    selectedItems.clear()
+                    if (carry.size == 1) { selectedItem = carry[0] } else { selectedItems.addAll(carry); selectedItem = carry.last() }
+                }
+            }
+            if (wasSelectFamily && !selectFamily && !groupFamily) selectedItem = null
+            if (wasGroupFamily && !groupFamily && !selectFamily) {
                 selectedGroup = null; regionPath = null; regionStart = null
                 groupCurrentRotation = 0f
             }
@@ -4348,7 +4370,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     for ((hType,pos) in corners) {
                         if (distance(wx,wy,pos.first,pos.second) <= hr*1.5f) {
                             groupActiveHandle=hType; groupDragStartX=wx; groupDragStartY=wy; groupOrigBounds=gb.copyOf(); groupSnapshots.clear()
-                            for (it in allSel) { val b2=getBounds(it); if (b2!=null) groupSnapshots.add(Pair(it,b2.copyOf())) }
+                            // Full points for StrokeItem, not just bounds — same snapshot shape
+                            // scaleItemInGroupFromSnapshot() (Lasso/Rect's already-correct resize)
+                            // expects, so this path can reuse that instead of its own logic.
+                            for (it in allSel) {
+                                if (it is StrokeItem) { groupSnapshots.add(Pair(it, it.data.points.toFloatArray())) }
+                                else { val b2=getBounds(it); if (b2!=null) groupSnapshots.add(Pair(it,b2.copyOf())) }
+                            }
                             return
                         }
                     }
@@ -4571,18 +4599,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             val scaleY = (if (gH > 0f) newH/gH else 1f).coerceIn(0.01f, 50f)
                             for ((it, snap) in groupSnapshots) {
                                 if (it !is StrokeItem || !it.data.isLocked) {
-                                    val relL = (snap[0]-ogb[0])*scaleX + newMinX
-                                    val relT = (snap[1]-ogb[1])*scaleY + newMinY
-                                    val relR = (snap[2]-ogb[0])*scaleX + newMinX
-                                    val relB = (snap[3]-ogb[1])*scaleY + newMinY
                                     if (it is StrokeItem) {
-                                        val pts = it.data.points
-                                        if (pts.size >= 4) {
-                                            pts[0] = relL; pts[1] = relT
-                                            pts[pts.size-2] = relR; pts[pts.size-1] = relB
-                                            it.path = it.data.buildPath(); it.invalidateCache()
-                                        }
-                                    } else if (it is ImageItem) { it.x=relL; it.y=relT; it.w=relR-relL; it.h=relB-relT }
+                                        scaleItemInGroupFromSnapshot(it, snap, ogb[0], ogb[1], scaleX, scaleY, newMinX, newMinY)
+                                    } else if (it is ImageItem) {
+                                        val relL = (snap[0]-ogb[0])*scaleX + newMinX
+                                        val relT = (snap[1]-ogb[1])*scaleY + newMinY
+                                        val relR = (snap[2]-ogb[0])*scaleX + newMinX
+                                        val relB = (snap[3]-ogb[1])*scaleY + newMinY
+                                        it.x=relL; it.y=relT; it.w=relR-relL; it.h=relB-relT
+                                    }
                                 }
                             }
                         }
