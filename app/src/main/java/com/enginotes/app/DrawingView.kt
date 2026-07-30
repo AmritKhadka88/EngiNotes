@@ -1356,30 +1356,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 activeTableItem = null; tableIsActive = false
             }
             if (field == Tool.ARC && value != Tool.ARC) activeArcItem = null
-            // Selection now carries over between all four selection tools (Select/Multi/Lasso/
-            // Rect) instead of being wiped on every switch. Previously each tool cleared its OWN
-            // tracking variable the moment you left it — selectedItem/selectedItems for Select
-            // and Multi, selectedGroup for Lasso and Rect — even switching between two tools that
-            // share the exact same underlying handler (Select <-> Multi) lost the selection. Most
-            // visibly: switching to Rect or Lasso always left selectedGroup empty, so the very
-            // next touch was read as "start a brand-new selection-region trace" instead of
-            // resizing/moving what was already selected — reported as "just crops the area".
-            val selectFamily = value == Tool.SELECT || value == Tool.MULTISELECT
-            val groupFamily = value == Tool.AUTOSELECT || value == Tool.LASSO
-            val wasSelectFamily = field == Tool.SELECT || field == Tool.MULTISELECT
-            val wasGroupFamily = field == Tool.AUTOSELECT || field == Tool.LASSO
-            if (wasSelectFamily && groupFamily) {
-                val carry = (selectedItems + setOfNotNull(selectedItem)).toMutableList()
-                if (carry.isNotEmpty()) selectedGroup = carry
-            } else if (wasGroupFamily && selectFamily) {
-                val carry = selectedGroup
-                if (carry != null && carry.isNotEmpty()) {
-                    selectedItems.clear()
-                    if (carry.size == 1) { selectedItem = carry[0] } else { selectedItems.addAll(carry); selectedItem = carry.last() }
-                }
-            }
-            if (wasSelectFamily && !selectFamily && !groupFamily) selectedItem = null
-            if (wasGroupFamily && !groupFamily && !selectFamily) {
+            // Switching tools always exits whatever was selected first, rather than handing it
+            // to the new tool — selection doesn't carry over between Select/Multi/Lasso/Rect.
+            if ((field == Tool.SELECT || field == Tool.MULTISELECT) && value != field) selectedItem = null
+            if ((field == Tool.AUTOSELECT || field == Tool.LASSO) && value != field) {
                 selectedGroup = null; regionPath = null; regionStart = null
                 groupCurrentRotation = 0f
             }
@@ -3759,8 +3739,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         if (newHalfW > 0.5f && newHalfH > 0.5f) {
                             val pts = item.data.points
                             var j = 0; while (j + 1 < pts.size) { pts[j] = newCx + (origPts[j] - cx) * scaleX; pts[j + 1] = newCy + (origPts[j + 1] - cy) * scaleY; j += 2 }
-                            item.data.invalidateGeometryCaches()
-                            item.path = item.data.buildPath()
+                            // Deliberately NOT rebuilding item.path here — nothing shown during
+                            // the live drag needs it (the selection box and the stretched-bitmap
+                            // preview both read item.data.points directly), and rebuilding it
+                            // meant a full smoothing recompute every single frame regardless of
+                            // stroke size. Done once, properly, at release instead (ACTION_UP).
                         }
                     }
                 } else if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
@@ -4684,7 +4667,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
                 activeHandle = HandleType.NONE; groupActiveHandle = HandleType.NONE; groupSnapshots.clear(); pinkGroupRotation = 0f
                 strokeResizeOrigPoints = null; strokeResizeOrigBounds = null
-                activeResizeItem?.invalidateCache(); activeResizeItem = null
+                activeResizeItem?.let { it.data.invalidateGeometryCaches(); it.path = it.data.buildPath(); it.invalidateCache() }
+                activeResizeItem = null
                 // MULTISELECT: toggle item only if this was a tap (not a drag)
                 if (currentTool == Tool.MULTISELECT && !msTapDownWx.isNaN() && !msDragging) {
                     val hit = findItemAtPreferSelected(msTapDownWx, msTapDownWy)
