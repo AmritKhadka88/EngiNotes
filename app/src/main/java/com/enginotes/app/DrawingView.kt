@@ -1555,6 +1555,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // "original", so the scale factor swings wildly instead of tracking the finger smoothly).
     private var strokeResizeOrigPoints: FloatArray? = null
     private var strokeResizeOrigBounds: FloatArray? = null  // [minX, minY, maxX, maxY]
+    // Smoothed scale factor for stroke resize — NaN means "not started yet this drag". A
+    // stylus tip reports a precise, low-noise position; a finger's soft contact area doesn't,
+    // and that raw noise gets divided by the stroke's halfW/halfH each frame — for a small
+    // stroke, a small amount of positional noise becomes a proportionally large, visibly
+    // fluctuating scale factor. Blending toward the new target instead of jumping straight to
+    // it each frame damps that out while still tracking real, deliberate movement.
+    private var strokeResizeSmoothScaleX = Float.NaN
+    private var strokeResizeSmoothScaleY = Float.NaN
 
     private var activeArcItem: StrokeItem? = null
     private var arcDragPointIndex = -1
@@ -3714,7 +3722,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             HandleType.BL, HandleType.BR -> if (halfH > 1f) (fy / halfH).coerceIn(0.05f, 20f) else 1f
                             else -> 1f
                         }
-                        val newHalfW = halfW * scaleX; val newHalfH = halfH * scaleY
+                        strokeResizeSmoothScaleX = if (strokeResizeSmoothScaleX.isNaN()) scaleX else strokeResizeSmoothScaleX * 0.5f + scaleX * 0.5f
+                        strokeResizeSmoothScaleY = if (strokeResizeSmoothScaleY.isNaN()) scaleY else strokeResizeSmoothScaleY * 0.5f + scaleY * 0.5f
+                        val smoothScaleX = strokeResizeSmoothScaleX; val smoothScaleY = strokeResizeSmoothScaleY
+                        val newHalfW = halfW * smoothScaleX; val newHalfH = halfH * smoothScaleY
                         // Shift centroid: the opposite (fixed) side stays put
                         val newCx = when (handle) {
                             HandleType.TL, HandleType.ML, HandleType.BL -> maxX - newHalfW  // right edge fixed
@@ -3728,7 +3739,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         }
                         if (newHalfW > 0.5f && newHalfH > 0.5f) {
                             val pts = item.data.points
-                            var j = 0; while (j + 1 < pts.size) { pts[j] = newCx + (origPts[j] - cx) * scaleX; pts[j + 1] = newCy + (origPts[j + 1] - cy) * scaleY; j += 2 }
+                            var j = 0; while (j + 1 < pts.size) { pts[j] = newCx + (origPts[j] - cx) * smoothScaleX; pts[j + 1] = newCy + (origPts[j + 1] - cy) * smoothScaleY; j += 2 }
                             item.data.invalidateGeometryCaches()
                             item.path = item.data.buildPath()
                         }
@@ -4437,6 +4448,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                             k += 2
                                         }
                                         strokeResizeOrigBounds = floatArrayOf(mnX, mnY, mxX, mxY)
+                                        strokeResizeSmoothScaleX = Float.NaN; strokeResizeSmoothScaleY = Float.NaN
                                     }
                                     break
                                 }
@@ -4648,6 +4660,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
                 activeHandle = HandleType.NONE; groupActiveHandle = HandleType.NONE; groupSnapshots.clear(); pinkGroupRotation = 0f
                 strokeResizeOrigPoints = null; strokeResizeOrigBounds = null
+                strokeResizeSmoothScaleX = Float.NaN; strokeResizeSmoothScaleY = Float.NaN
                 // MULTISELECT: toggle item only if this was a tap (not a drag)
                 if (currentTool == Tool.MULTISELECT && !msTapDownWx.isNaN() && !msDragging) {
                     val hit = findItemAtPreferSelected(msTapDownWx, msTapDownWy)
