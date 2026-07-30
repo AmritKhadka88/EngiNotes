@@ -3764,6 +3764,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             var j = 0; while (j + 1 < pts.size) { pts[j] = newCx + (origPts[j] - cx) * smoothScaleX; pts[j + 1] = newCy + (origPts[j + 1] - cy) * smoothScaleY; j += 2 }
                             item.data.invalidateGeometryCaches()
                             item.path = item.data.buildPath()
+                            item.invalidateCache()
                         }
                     }
                 } else if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
@@ -3791,6 +3792,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     item.data.points[2] = newCx + newW / 2f; item.data.points[3] = newCy + newH / 2f
                     item.data.invalidateGeometryCaches()
                     item.path = item.data.buildPath()
+                    item.invalidateCache()
                 } else if (ENDPOINT_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
                     val rot = item.data.rotation
                     val (ux, uy) = if (rot != 0f) {
@@ -3809,6 +3811,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                     item.data.invalidateGeometryCaches()
                     item.path = item.data.buildPath()
+                    item.invalidateCache()
                 }
             }
             is TextItem -> {
@@ -4872,6 +4875,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         pts[i+1] = newOy + (snap[i+1] - oy) * sy
                         i += 2
                     }
+                    item.data.invalidateGeometryCaches()
                     item.path = item.data.buildPath(); item.invalidateCache(); markSpatialDirty()
                 }
             }
