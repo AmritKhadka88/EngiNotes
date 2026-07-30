@@ -1577,6 +1577,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // "original", so the scale factor swings wildly instead of tracking the finger smoothly).
     private var strokeResizeOrigPoints: FloatArray? = null
     private var strokeResizeOrigBounds: FloatArray? = null  // [minX, minY, maxX, maxY]
+    // Tracks which StrokeItem is currently mid-resize-drag, so drawWithBitmapCache can stretch
+    // its already-cached bitmap to the live bounds instead of re-baking (a fresh allocation plus
+    // full render) on every single frame of the drag.
+    private var activeResizeItem: StrokeItem? = null
 
     private var activeArcItem: StrokeItem? = null
     private var arcDragPointIndex = -1
@@ -2629,6 +2633,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // off-screen bitmap; every frame after that is a single drawBitmap call regardless of how
     // complex the underlying geometry was.
     private fun drawWithBitmapCache(canvas: Canvas, item: StrokeItem, pad: Float, render: (Canvas, StrokeItem) -> Unit) {
+        if (item === activeResizeItem && item.cachedBitmap != null) {
+            val bounds = getBounds(item)
+            if (bounds != null) {
+                val dst = android.graphics.RectF(bounds[0] - pad, bounds[1] - pad, bounds[2] + pad, bounds[3] + pad)
+                canvas.drawBitmap(item.cachedBitmap!!, null, dst, _bitmapFilterPaint)
+                return
+            }
+        }
         if (!item.cacheValid || item.cachedBitmap == null) {
             val bounds = getBounds(item) ?: run { render(canvas, item); return }
             val wl = bounds[0] - pad; val wt = bounds[1] - pad
@@ -3717,26 +3729,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val minX = origB[0]; val minY = origB[1]; val maxX = origB[2]; val maxY = origB[3]
                         val cx = (minX + maxX) / 2f; val cy = (minY + maxY) / 2f
                         val oldW = (maxX - minX).coerceAtLeast(1f); val oldH = (maxY - minY).coerceAtLeast(1f)
-                        val halfW = oldW / 2f; val halfH = oldH / 2f
-                        // Finger offset from centroid
-                        val fx = wx - cx; val fy = wy - cy
-                        // For each handle, the "fixed" opposite corner stays, and the dragged edge follows finger.
-                        // Scale = finger_dist / original_half_size. Use only the relevant axis per handle.
+                        // Scale = (distance from the FIXED opposite edge) / (the full original
+                        // width/height) — NOT distance-from-center divided by half-width. Those
+                        // only agree exactly at the grab point; drag at all and center-based
+                        // scaling overshoots what opposite-edge-fixed geometry actually calls
+                        // for, worse the further you drag.
                         val scaleX = when (handle) {
-                            HandleType.ML -> if (halfW > 1f) (-fx / halfW).coerceIn(0.05f, 20f) else 1f
-                            HandleType.MR -> if (halfW > 1f) (fx / halfW).coerceIn(0.05f, 20f) else 1f
-                            HandleType.TL, HandleType.BL -> if (halfW > 1f) (-fx / halfW).coerceIn(0.05f, 20f) else 1f
-                            HandleType.TR, HandleType.BR -> if (halfW > 1f) (fx / halfW).coerceIn(0.05f, 20f) else 1f
+                            HandleType.ML, HandleType.TL, HandleType.BL -> ((maxX - wx) / oldW).coerceIn(0.05f, 20f)
+                            HandleType.MR, HandleType.TR, HandleType.BR -> ((wx - minX) / oldW).coerceIn(0.05f, 20f)
                             else -> 1f
                         }
                         val scaleY = when (handle) {
-                            HandleType.TM -> if (halfH > 1f) (-fy / halfH).coerceIn(0.05f, 20f) else 1f
-                            HandleType.BM -> if (halfH > 1f) (fy / halfH).coerceIn(0.05f, 20f) else 1f
-                            HandleType.TL, HandleType.TR -> if (halfH > 1f) (-fy / halfH).coerceIn(0.05f, 20f) else 1f
-                            HandleType.BL, HandleType.BR -> if (halfH > 1f) (fy / halfH).coerceIn(0.05f, 20f) else 1f
+                            HandleType.TM, HandleType.TL, HandleType.TR -> ((maxY - wy) / oldH).coerceIn(0.05f, 20f)
+                            HandleType.BM, HandleType.BL, HandleType.BR -> ((wy - minY) / oldH).coerceIn(0.05f, 20f)
                             else -> 1f
                         }
-                        val newHalfW = halfW * scaleX; val newHalfH = halfH * scaleY
+                        val newHalfW = (oldW / 2f) * scaleX; val newHalfH = (oldH / 2f) * scaleY
                         // Shift centroid: the opposite (fixed) side stays put
                         val newCx = when (handle) {
                             HandleType.TL, HandleType.ML, HandleType.BL -> maxX - newHalfW  // right edge fixed
@@ -3753,7 +3761,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             var j = 0; while (j + 1 < pts.size) { pts[j] = newCx + (origPts[j] - cx) * scaleX; pts[j + 1] = newCy + (origPts[j + 1] - cy) * scaleY; j += 2 }
                             item.data.invalidateGeometryCaches()
                             item.path = item.data.buildPath()
-                            item.invalidateCache()
                         }
                     }
                 } else if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
@@ -4468,6 +4475,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                             k += 2
                                         }
                                         strokeResizeOrigBounds = floatArrayOf(mnX, mnY, mxX, mxY)
+                                        activeResizeItem = item
                                     }
                                     break
                                 }
@@ -4676,6 +4684,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
                 activeHandle = HandleType.NONE; groupActiveHandle = HandleType.NONE; groupSnapshots.clear(); pinkGroupRotation = 0f
                 strokeResizeOrigPoints = null; strokeResizeOrigBounds = null
+                activeResizeItem?.invalidateCache(); activeResizeItem = null
                 // MULTISELECT: toggle item only if this was a tap (not a drag)
                 if (currentTool == Tool.MULTISELECT && !msTapDownWx.isNaN() && !msDragging) {
                     val hit = findItemAtPreferSelected(msTapDownWx, msTapDownWy)
