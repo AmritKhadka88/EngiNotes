@@ -14,32 +14,197 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
 
+// Top-level (not nested in a companion object) so it's referenced simply as ThemeSpec from any
+// file in this package — a nested class declared inside a companion object isn't accessible via
+// OuterClass.ClassName the same simple way properties/functions are, which is what broke the
+// build when MainActivity.kt tried to reference BooksActivity.ThemeSpec.
+data class ThemeSpec(val toolbar: String, val bg: String, val button: String, val isGradient: Boolean = false)
+
+// Combines the current color theme's button color with the existing Original/Transparent/Glass
+// Appearance setting — e.g. Forest theme + Glass appearance = a green-tinted glass button,
+// instead of buttons always looking flat-solid regardless of which Appearance mode is active.
+// Mirrors MainActivity's themedPillDrawable's per-mode visual treatment (opaque/translucent/
+// glass sheen), just parameterized by the theme's own color instead of a fixed hardcoded one.
+// Does NOT attempt the bottom toolbar's real behind-content blur for Glass mode — that relies on
+// capturing the canvas's own rendered bitmap (updateBlurBackdrops), which doesn't extend cleanly
+// to a FAB sitting over a scrolling list or other arbitrary content; this uses the same gradient
+// sheen + stroke look instead, which is what actually reads as "glass" visually.
+fun themedButtonDrawable(context: Context, appearanceMode: String, baseColorHex: String, oval: Boolean = false): android.graphics.drawable.Drawable {
+    fun dp(v: Int) = (v * context.resources.displayMetrics.density).toInt()
+    val base = android.graphics.Color.parseColor(baseColorHex)
+    val radius = dp(20).toFloat()
+    fun android.graphics.drawable.GradientDrawable.applyShape() { if (oval) shape = android.graphics.drawable.GradientDrawable.OVAL else cornerRadius = radius }
+    return when (appearanceMode) {
+        "TRANSLUCENT" -> android.graphics.drawable.GradientDrawable().apply {
+            setColor(androidx.core.graphics.ColorUtils.setAlphaComponent(base, 140))
+            applyShape()
+            setStroke(dp(2), androidx.core.graphics.ColorUtils.setAlphaComponent(base, 210))
+        }
+        "GLASS" -> {
+            val lighter = androidx.core.graphics.ColorUtils.blendARGB(base, android.graphics.Color.WHITE, 0.55f)
+            val top = androidx.core.graphics.ColorUtils.setAlphaComponent(lighter, 150)
+            val bottom = androidx.core.graphics.ColorUtils.setAlphaComponent(base, 70)
+            android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TL_BR, intArrayOf(top, bottom)
+            ).apply {
+                applyShape()
+                setStroke(dp(2), androidx.core.graphics.ColorUtils.setAlphaComponent(android.graphics.Color.WHITE, 220))
+            }
+        }
+        else -> android.graphics.drawable.GradientDrawable().apply {
+            setColor(base)
+            applyShape()
+            setStroke(dp(1), androidx.core.graphics.ColorUtils.blendARGB(base, android.graphics.Color.BLACK, 0.2f))
+        }
+    }
+}
+
 class BooksActivity : AppCompatActivity() {
+
+    // Six themes total (Classic = the original look, five new ones). Each is just a toolbar
+    // color + a background color — kept simple and reliable rather than a deep per-element
+    // theming system, so this can't introduce visual inconsistencies elsewhere in the app.
+    companion object {
+        // Button color chosen to match each theme's own hue family — a lighter/brighter shade
+        // of the same color the theme is named after, rather than a complementary contrasting
+        // color (Ocean's button is blue, not amber; Forest's is green, not orange; etc.), so the
+        // whole theme reads as one consistent color rather than two different ones competing.
+        val THEMES = linkedMapOf(
+            "Classic" to ThemeSpec("#8D6E63", "#FAF6EF", "#6D4C41"),
+            "Ocean" to ThemeSpec("#0277BD", "#E1F5FE", "#29B6F6"),
+            "Forest" to ThemeSpec("#2E7D32", "#F1F8E9", "#7CB342"),
+            "Sunset" to ThemeSpec("#E64A19", "#FFF3E0", "#FB8C00"),
+            "Minimal Mono" to ThemeSpec("#212121", "#FAFAFA", "#000000"),
+            // No hard edge between the top bar and the page below it — the top bar itself is a
+            // gradient that fades from its own color down into the exact same shade as the page
+            // background, so the seam disappears instead of being a visible contrast line.
+            "Gradient" to ThemeSpec("#5C6BC0", "#ECEFF1", "#7E57C2", isGradient = true)
+        )
+        // Only Android's own built-in system animation resources — guaranteed to exist on every
+        // API level since these ship with the framework itself, unlike custom XML anim resources
+        // which would need to be added as separate resource files.
+        val ANIMATIONS = linkedMapOf(
+            "None" to Pair(0, 0),
+            "Fade" to Pair(android.R.anim.fade_in, android.R.anim.fade_out),
+            "Slide" to Pair(android.R.anim.slide_in_left, android.R.anim.slide_out_right)
+        )
+    }
 
     private lateinit var recentContainer: LinearLayout
     private lateinit var booksContainer: LinearLayout
     private lateinit var emptyView: TextView
     private val dateFormat = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
     private val driveManager by lazy { DriveManager(this) }
+    private val security by lazy { SecurityManager(this) }
+
+    // Multi-select state for the Recent Notes list — selectedNotes holds the actual note files;
+    // each file's own parentFile gives its book name directly, so no separate book-tracking map
+    // is needed for move/delete/etc.
+    private var selectionMode = false
+    private val selectedNotes = mutableSetOf<File>()
+    private lateinit var topBar: LinearLayout
+    private lateinit var selectionBar: LinearLayout
+    private lateinit var selectionCountLbl: TextView
+
+    private fun currentThemeSpec(): ThemeSpec {
+        val prefs = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
+        val name = prefs.getString("app_color_theme", "Classic") ?: "Classic"
+        return THEMES[name] ?: THEMES["Classic"]!!
+    }
+    private fun currentThemeColors(): Pair<String, String> {
+        val spec = currentThemeSpec()
+        return Pair(spec.toolbar, spec.bg)
+    }
+    private fun currentThemeButtonColorHex(): String = currentThemeSpec().button
+    private fun currentThemeIsGradient(): Boolean = currentThemeSpec().isGradient
+
+    // Applies the currently selected transition animation — call this immediately after any
+    // startActivity() that opens MainActivity. Kept as a standalone helper (not wrapped around
+    // intent-building) since call sites build their intents differently (opening an existing
+    // note vs. creating a new one), so this can be appended after any of them unchanged.
+    private fun applyNoteTransition() {
+        val prefs = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
+        val animName = prefs.getString("app_animation", "None") ?: "None"
+        val (enter, exit) = ANIMATIONS[animName] ?: ANIMATIONS["None"]!!
+        if (enter != 0 || exit != 0) @Suppress("DEPRECATION") overridePendingTransition(enter, exit)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Lock gate — checked before anything else happens, including reading a single note
+        // file. If security is on and this process hasn't been unlocked yet (a fresh launch,
+        // or returning after the process was killed), redirect to the lock screen immediately
+        // and skip the rest of this Activity's setup entirely — there's nothing safe to show
+        // until that resolves.
+        if (security.isSecurityEnabled() && !security.isUnlockedThisSession()) {
+            startActivity(Intent(this, LockScreenActivity::class.java))
+            finish()
+            return
+        }
+
+        val (themeToolbar, themeBg) = currentThemeColors()
+
         val root = android.widget.FrameLayout(this)
-        root.setBackgroundColor(android.graphics.Color.parseColor("#FAF6EF"))
+        root.setBackgroundColor(android.graphics.Color.parseColor(themeBg))
 
         // Top bar
-        val topBar = LinearLayout(this)
+        topBar = LinearLayout(this)
         topBar.orientation = LinearLayout.HORIZONTAL
-        topBar.setBackgroundColor(android.graphics.Color.parseColor("#8D6E63"))
         topBar.setPadding(dp(16), dp(12), dp(16), dp(12))
         topBar.gravity = Gravity.CENTER_VERTICAL
+        if (currentThemeIsGradient()) {
+            // Fades from the toolbar color down to the EXACT same color as the page background
+            // below it — that's what makes the seam disappear rather than just softening it.
+            topBar.background = android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(android.graphics.Color.parseColor(themeToolbar), android.graphics.Color.parseColor(themeBg))
+            )
+        } else {
+            topBar.setBackgroundColor(android.graphics.Color.parseColor(themeToolbar))
+        }
         val topLp = android.widget.FrameLayout.LayoutParams(
             android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
             android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
         )
         topLp.gravity = Gravity.TOP
         root.addView(topBar, topLp)
+
+        // Selection-mode action bar — swapped in for topBar while selectionMode is active.
+        // Icons only (no text), matching the request: Move / Copy / Delete / Share, plus a
+        // cancel (X) button and a "N selected" count.
+        selectionBar = LinearLayout(this)
+        selectionBar.orientation = LinearLayout.HORIZONTAL
+        selectionBar.setBackgroundColor(androidx.core.graphics.ColorUtils.blendARGB(android.graphics.Color.parseColor(themeToolbar), android.graphics.Color.BLACK, 0.25f))
+        selectionBar.setPadding(dp(16), dp(12), dp(16), dp(12))
+        selectionBar.gravity = Gravity.CENTER_VERTICAL
+        selectionBar.visibility = View.GONE
+        root.addView(selectionBar, topLp)
+
+        val cancelSelBtn = Button(this).apply {
+            text = "\u2715"; textSize = 18f; setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            setTextColor(android.graphics.Color.WHITE); minWidth = 0; minimumWidth = 0; setPadding(dp(8), 0, dp(8), 0)
+            setOnClickListener { exitSelectionMode() }
+        }
+        selectionBar.addView(cancelSelBtn)
+        selectionCountLbl = TextView(this).apply {
+            textSize = 16f; setTextColor(android.graphics.Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        selectionBar.addView(selectionCountLbl)
+        fun selBtn(emoji: String, action: () -> Unit) {
+            val b = Button(this); b.text = emoji; b.textSize = 18f
+            b.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            b.setTextColor(android.graphics.Color.WHITE)
+            b.minWidth = 0; b.minimumWidth = 0
+            b.setPadding(dp(10), 0, dp(10), 0)
+            b.setOnClickListener { action() }
+            selectionBar.addView(b)
+        }
+        selBtn("\uD83D\uDCE6") { moveSelectedNotes() }   // Move (box)
+        selBtn("\uD83D\uDCCB") { copySelectedNotes() }   // Copy (clipboard)
+        selBtn("\uD83D\uDDD1") { deleteSelectedNotes() } // Delete (trash)
+        selBtn("\uD83D\uDCE4") { shareSelectedNotes() }  // Share (outbox tray)
 
         val appTitle = TextView(this)
         appTitle.text = "\uD83D\uDCDA EngiNotes  \u25BE"
@@ -146,10 +311,8 @@ class BooksActivity : AppCompatActivity() {
         fab.setPadding(0, 0, 0, 0)
         fab.elevation = dp(6).toFloat()
         fab.post {
-            fab.background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(android.graphics.Color.parseColor("#8D6E63"))
-            }
+            val appearanceMode = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE).getString("app_theme", "ORIGINAL") ?: "ORIGINAL"
+            fab.background = themedButtonDrawable(this, appearanceMode, currentThemeButtonColorHex(), oval = true)
         }
         // Direct: create new note in General book
         fab.setOnClickListener { openNewNoteInGeneral() }
@@ -166,6 +329,7 @@ class BooksActivity : AppCompatActivity() {
         intent.putExtra("book_name", "General")
         // No filename = new note
         startActivity(intent)
+        applyNoteTransition()
     }
 
     private fun ensureDefaultBook() {
@@ -218,7 +382,7 @@ class BooksActivity : AppCompatActivity() {
     // inevitably drift out of sync with what the note actually looks like when opened for real.
     private fun renderThumbnail(note: File, maxWidthPx: Int, maxHeightPx: Int): Bitmap? {
         val dv = DrawingView(this)
-        dv.loadFromString(note.readText())
+        dv.loadFromString(security.readNoteFile(note))
         val convenient = dv.canvasMode == CanvasMode.CONVENIENT
         if (convenient) {
             // Convenient-mode notes (the default canvas mode) don't have a fixed intrinsic page
@@ -395,9 +559,12 @@ class BooksActivity : AppCompatActivity() {
         card.elevation = dp(2).toFloat()
         val cardLp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         cardLp.setMargins(0, 0, 0, dp(8)); card.layoutParams = cardLp
+        val isSelected = selectionMode && selectedNotes.contains(file)
         card.background = android.graphics.drawable.GradientDrawable().apply {
             shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-            setColor(android.graphics.Color.WHITE); cornerRadius = dp(10).toFloat()
+            setColor(if (isSelected) android.graphics.Color.parseColor("#EFE4DC") else android.graphics.Color.WHITE)
+            cornerRadius = dp(10).toFloat()
+            if (isSelected) setStroke(dp(2), android.graphics.Color.parseColor("#8D6E63"))
         }
 
         val row = LinearLayout(this); row.orientation = LinearLayout.HORIZONTAL; row.gravity = Gravity.CENTER_VERTICAL
@@ -417,17 +584,26 @@ class BooksActivity : AppCompatActivity() {
         metaView.textSize = 12f; metaView.setTextColor(android.graphics.Color.parseColor("#9E9E9E")); info.addView(metaView)
         row.addView(info)
 
-        val openBtn = TextView(this); openBtn.text = "\u203a"; openBtn.textSize = 24f
-        openBtn.setTextColor(android.graphics.Color.parseColor("#BDBDBD")); row.addView(openBtn)
+        // Checkmark in selection mode (replacing the ">" open-indicator), plain chevron otherwise.
+        val openBtn = TextView(this)
+        if (selectionMode) {
+            openBtn.text = if (isSelected) "\u2705" else "\u2B55"; openBtn.textSize = 18f
+        } else {
+            openBtn.text = "\u203a"; openBtn.textSize = 24f; openBtn.setTextColor(android.graphics.Color.parseColor("#BDBDBD"))
+        }
+        row.addView(openBtn)
 
         card.addView(row)
         card.setOnClickListener {
+            if (selectionMode) { toggleNoteSelection(file); return@setOnClickListener }
             startActivity(Intent(this, MainActivity::class.java)
                 .putExtra("book_name", bookName)
                 .putExtra("filename", file.nameWithoutExtension))
+            applyNoteTransition()
         }
         card.setOnLongClickListener {
-            showPageOptions(file, bookName); true
+            if (selectionMode) toggleNoteSelection(file) else enterSelectionMode(file)
+            true
         }
         return card
     }
@@ -439,13 +615,16 @@ class BooksActivity : AppCompatActivity() {
                 it.setMargins(dp(4), 0, dp(4), dp(14))
             }
         }
+        val isSelected = selectionMode && selectedNotes.contains(file)
         val thumbMaxW = dp(200); val thumbMaxH = dp(260)
+        // Wrapped in a FrameLayout so a checkmark badge can overlay the thumbnail in selection mode.
+        val thumbFrame = android.widget.FrameLayout(this)
         val imageView = ImageView(this).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(140))
             scaleType = ImageView.ScaleType.CENTER_CROP
             background = android.graphics.drawable.GradientDrawable().apply {
                 setColor(android.graphics.Color.WHITE); cornerRadius = dp(10).toFloat()
-                setStroke(dp(1), android.graphics.Color.parseColor("#E0E0E0"))
+                setStroke(if (isSelected) dp(3) else dp(1), if (isSelected) android.graphics.Color.parseColor("#8D6E63") else android.graphics.Color.parseColor("#E0E0E0"))
             }
             // Without this, the rendered thumbnail bitmap — a plain rectangle — poked past the
             // rounded corners of the white background/border underneath it instead of being
@@ -455,7 +634,17 @@ class BooksActivity : AppCompatActivity() {
             // the Notewise reference) rather than something you'd only notice if you looked.
             elevation = dp(4).toFloat()
         }
-        card.addView(imageView)
+        thumbFrame.addView(imageView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(140)))
+        if (selectionMode) {
+            val badge = TextView(this).apply {
+                text = if (isSelected) "\u2705" else "\u2B55"; textSize = 16f
+                setPadding(dp(4), dp(4), dp(4), dp(4))
+            }
+            val badgeLp = android.widget.FrameLayout.LayoutParams(android.widget.FrameLayout.LayoutParams.WRAP_CONTENT, android.widget.FrameLayout.LayoutParams.WRAP_CONTENT)
+            badgeLp.gravity = Gravity.TOP or Gravity.END
+            thumbFrame.addView(badge, badgeLp)
+        }
+        card.addView(thumbFrame)
         val nameView = TextView(this).apply {
             text = file.nameWithoutExtension; textSize = 12f
             maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
@@ -473,11 +662,16 @@ class BooksActivity : AppCompatActivity() {
         getOrCreateThumbnail(file, thumbMaxW, thumbMaxH) { bmp -> if (bmp != null) imageView.setImageBitmap(bmp) }
 
         card.setOnClickListener {
+            if (selectionMode) { toggleNoteSelection(file); return@setOnClickListener }
             startActivity(Intent(this, MainActivity::class.java)
                 .putExtra("book_name", bookName)
                 .putExtra("filename", file.nameWithoutExtension))
+            applyNoteTransition()
         }
-        card.setOnLongClickListener { showPageOptions(file, bookName); true }
+        card.setOnLongClickListener {
+            if (selectionMode) toggleNoteSelection(file) else enterSelectionMode(file)
+            true
+        }
         return card
     }
 
@@ -538,7 +732,7 @@ class BooksActivity : AppCompatActivity() {
             .setItems(items.toTypedArray()) { _, i ->
                 when (items[i]) {
                     "Open" -> startActivity(Intent(this, HomeActivity::class.java).putExtra("book_name", book.name))
-                    "New Note in this Book" -> startActivity(Intent(this, MainActivity::class.java).putExtra("book_name", book.name))
+                    "New Note in this Book" -> { startActivity(Intent(this, MainActivity::class.java).putExtra("book_name", book.name)); applyNoteTransition() }
                     "Rename" -> {
                         val input = EditText(this).apply { setText(book.name) }
                         AlertDialog.Builder(this).setTitle("Rename").setView(input)
@@ -553,12 +747,110 @@ class BooksActivity : AppCompatActivity() {
             }.show()
     }
 
+    private fun enterSelectionMode(initial: File) {
+        selectionMode = true
+        selectedNotes.clear(); selectedNotes.add(initial)
+        topBar.visibility = View.GONE
+        selectionBar.visibility = View.VISIBLE
+        updateSelectionCount()
+        refresh()
+    }
+
+    private fun exitSelectionMode() {
+        selectionMode = false
+        selectedNotes.clear()
+        topBar.visibility = View.VISIBLE
+        selectionBar.visibility = View.GONE
+        refresh()
+    }
+
+    private fun updateSelectionCount() {
+        selectionCountLbl.text = "${selectedNotes.size} selected"
+    }
+
+    private fun toggleNoteSelection(file: File) {
+        if (!selectedNotes.remove(file)) selectedNotes.add(file)
+        if (selectedNotes.isEmpty()) { exitSelectionMode(); return }
+        updateSelectionCount()
+        refresh()
+    }
+
+    private fun moveSelectedNotes() {
+        if (selectedNotes.isEmpty()) return
+        val currentBooks = selectedNotes.mapNotNull { it.parentFile?.name }.toSet()
+        val books = getBooksRoot().listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
+        if (books.isEmpty()) { Toast.makeText(this, "No books available", Toast.LENGTH_SHORT).show(); return }
+        AlertDialog.Builder(this).setTitle("Move ${selectedNotes.size} note(s) to Book").setItems(books.toTypedArray()) { _, bi ->
+            val destBook = books[bi]
+            var moved = 0
+            for (file in selectedNotes.toList()) {
+                if (file.parentFile?.name == destBook) continue
+                val dest = File(File(getBooksRoot(), destBook), file.name)
+                try { file.copyTo(dest, overwrite = true); file.delete(); moved++ } catch (e: Exception) {}
+            }
+            Toast.makeText(this, "Moved $moved note(s) to $destBook", Toast.LENGTH_SHORT).show()
+            exitSelectionMode()
+        }.show()
+    }
+
+    private fun copySelectedNotes() {
+        if (selectedNotes.isEmpty()) return
+        val books = getBooksRoot().listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
+        if (books.isEmpty()) { Toast.makeText(this, "No books available", Toast.LENGTH_SHORT).show(); return }
+        AlertDialog.Builder(this).setTitle("Copy ${selectedNotes.size} note(s) to Book").setItems(books.toTypedArray()) { _, bi ->
+            val destBook = books[bi]
+            var copied = 0
+            for (file in selectedNotes.toList()) {
+                val destDir = File(getBooksRoot(), destBook)
+                var dest = File(destDir, file.name)
+                // Avoid silently overwriting an existing note of the same name in the
+                // destination book — append a numeric suffix instead, same way most file
+                // managers handle a copy-into-same-name conflict.
+                var n = 1
+                while (dest.exists()) { dest = File(destDir, "${file.nameWithoutExtension} (${n})${if (file.extension.isNotEmpty()) "." + file.extension else ""}"); n++ }
+                try { file.copyTo(dest); copied++ } catch (e: Exception) {}
+            }
+            Toast.makeText(this, "Copied $copied note(s) to $destBook", Toast.LENGTH_SHORT).show()
+            exitSelectionMode()
+        }.show()
+    }
+
+    private fun deleteSelectedNotes() {
+        if (selectedNotes.isEmpty()) return
+        AlertDialog.Builder(this).setTitle("Delete ${selectedNotes.size} note(s)?")
+            .setMessage("This can't be undone.")
+            .setPositiveButton("Delete") { _, _ ->
+                for (file in selectedNotes.toList()) { try { file.delete() } catch (e: Exception) {} }
+                Toast.makeText(this, "Deleted ${selectedNotes.size} note(s)", Toast.LENGTH_SHORT).show()
+                exitSelectionMode()
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun shareSelectedNotes() {
+        if (selectedNotes.isEmpty()) return
+        try {
+            val uris = ArrayList<android.net.Uri>()
+            for (file in selectedNotes) {
+                uris.add(androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", file))
+            }
+            val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = "application/octet-stream"
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "Share ${selectedNotes.size} note(s)"))
+        } catch (e: Exception) {
+            Toast.makeText(this, "Share failed: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun showPageOptions(file: File, bookName: String) {
         AlertDialog.Builder(this).setTitle(file.nameWithoutExtension)
-            .setItems(arrayOf("Open", "Rename", "Move to Book", "Delete")) { _, i ->
+            .setItems(arrayOf("Open", "Select", "Rename", "Move to Book", "Delete")) { _, i ->
                 when (i) {
-                    0 -> startActivity(Intent(this, MainActivity::class.java).putExtra("book_name", bookName).putExtra("filename", file.nameWithoutExtension))
-                    1 -> {
+                    0 -> { startActivity(Intent(this, MainActivity::class.java).putExtra("book_name", bookName).putExtra("filename", file.nameWithoutExtension)); applyNoteTransition() }
+                    1 -> enterSelectionMode(file)
+                    2 -> {
                         val input = EditText(this).apply { setText(file.nameWithoutExtension) }
                         AlertDialog.Builder(this).setTitle("Rename Note").setView(input)
                             .setPositiveButton("Rename") { _, _ ->
@@ -566,7 +858,7 @@ class BooksActivity : AppCompatActivity() {
                                 if (n.isNotEmpty()) { file.renameTo(File(file.parentFile, "$n.eng")); refresh() }
                             }.setNegativeButton("Cancel", null).show()
                     }
-                    2 -> {
+                    3 -> {
                         val books = getBooksRoot().listFiles()?.filter { it.isDirectory && it.name != bookName }?.map { it.name } ?: emptyList()
                         if (books.isEmpty()) { Toast.makeText(this, "No other books", Toast.LENGTH_SHORT).show(); return@setItems }
                         AlertDialog.Builder(this).setTitle("Move to Book").setItems(books.toTypedArray()) { _, bi ->
@@ -575,7 +867,7 @@ class BooksActivity : AppCompatActivity() {
                             Toast.makeText(this, "Moved to ${books[bi]}", Toast.LENGTH_SHORT).show()
                         }.show()
                     }
-                    3 -> AlertDialog.Builder(this).setTitle("Delete '${file.nameWithoutExtension}'?")
+                    4 -> AlertDialog.Builder(this).setTitle("Delete '${file.nameWithoutExtension}'?")
                         .setPositiveButton("Delete") { _, _ -> file.delete(); refresh() }
                         .setNegativeButton("Cancel", null).show()
                 }
@@ -595,13 +887,25 @@ class BooksActivity : AppCompatActivity() {
                     startActivity(Intent(this, MainActivity::class.java)
                         .putExtra("book_name", results[i].second)
                         .putExtra("filename", results[i].first.nameWithoutExtension))
+                    applyNoteTransition()
                 }.show()
             }.setNegativeButton("Cancel", null).show()
     }
 
     private fun showSettingsDialog() {
         val prefs = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
-        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(8)) }
+        val (_, themeBgSettings) = currentThemeColors()
+        val bgColorInt = android.graphics.Color.parseColor(themeBgSettings)
+        // Simple luminance check so text stays readable on a dark theme's background — not a
+        // full per-element recolor (this dialog has many child views with their own hardcoded
+        // colors), just making sure default/unstyled text isn't invisible against a dark
+        // background specifically.
+        val isDark = android.graphics.Color.red(bgColorInt) * 0.299 + android.graphics.Color.green(bgColorInt) * 0.587 + android.graphics.Color.blue(bgColorInt) * 0.114 < 140
+        val defaultTextColor = if (isDark) android.graphics.Color.parseColor("#E8E8E8") else android.graphics.Color.parseColor("#2A2A2A")
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(8))
+            setBackgroundColor(bgColorInt)
+        }
 
         val paperLabels = arrayOf("Blank", "Lined", "Graph Grid", "Dot Grid", "Engineering", "Coloured")
         val paperValues = arrayOf("BLANK", "LINED", "GRID", "DOTS", "ENGINEERING", "BLANK_COLORED")
@@ -617,19 +921,198 @@ class BooksActivity : AppCompatActivity() {
         }
         container.addView(paperBtn)
 
-        val autosaveCb = CheckBox(this).apply { text = "Autosave every 10 seconds"; isChecked = prefs.getBoolean("autosave", true) }
+        val autosaveCb = CheckBox(this).apply { text = "Autosave every 10 seconds"; isChecked = prefs.getBoolean("autosave", true); setTextColor(defaultTextColor) }
         container.addView(autosaveCb)
-        val confirmCb = CheckBox(this).apply { text = "Confirm before exit or clear"; isChecked = prefs.getBoolean("confirm_exit_clear", true) }
+        val confirmCb = CheckBox(this).apply { text = "Confirm before exit or clear"; isChecked = prefs.getBoolean("confirm_exit_clear", true); setTextColor(defaultTextColor) }
         container.addView(confirmCb)
+
+        val themeHdr = TextView(this).apply { text = "APP THEME"; textSize = 13f; setTextColor(android.graphics.Color.parseColor("#8A8580")); setPadding(0, dp(16), 0, dp(4)) }
+        container.addView(themeHdr)
+        var selTheme = prefs.getString("app_color_theme", "Classic") ?: "Classic"
+        val themeLbl = TextView(this).apply { textSize = 15f; setTextColor(android.graphics.Color.parseColor("#1565C0")); setPadding(0, dp(4), 0, dp(8)) }
+        fun updateThemeLbl() { themeLbl.text = "Theme: $selTheme" }
+        updateThemeLbl(); container.addView(themeLbl)
+        val themeBtn = Button(this).apply { text = "Change Theme" }
+        themeBtn.setOnClickListener {
+            val names = THEMES.keys.toTypedArray()
+            AlertDialog.Builder(this).setTitle("App Theme").setItems(names) { _, i ->
+                selTheme = names[i]; updateThemeLbl()
+            }.show()
+        }
+        container.addView(themeBtn)
+
+        val animHdr = TextView(this).apply { text = "NOTE-OPEN ANIMATION"; textSize = 13f; setTextColor(android.graphics.Color.parseColor("#8A8580")); setPadding(0, dp(16), 0, dp(4)) }
+        container.addView(animHdr)
+        var selAnim = prefs.getString("app_animation", "None") ?: "None"
+        val animLbl = TextView(this).apply { textSize = 15f; setTextColor(android.graphics.Color.parseColor("#1565C0")); setPadding(0, dp(4), 0, dp(8)) }
+        fun updateAnimLbl() { animLbl.text = "Animation: $selAnim" }
+        updateAnimLbl(); container.addView(animLbl)
+        val animBtn = Button(this).apply { text = "Change Animation" }
+        animBtn.setOnClickListener {
+            val names = ANIMATIONS.keys.toTypedArray()
+            AlertDialog.Builder(this).setTitle("Note-Open Animation").setItems(names) { _, i ->
+                selAnim = names[i]; updateAnimLbl()
+            }.show()
+        }
+        container.addView(animBtn)
+
+        val secHdr = TextView(this).apply { text = "APP SECURITY"; textSize = 13f; setTextColor(android.graphics.Color.parseColor("#8A8580")); setPadding(0, dp(16), 0, dp(4)) }
+        container.addView(secHdr)
+        val secLbl = TextView(this).apply { textSize = 15f; setTextColor(android.graphics.Color.parseColor("#1565C0")); setPadding(0, dp(4), 0, dp(8)) }
+        fun updateSecLbl() { secLbl.text = if (security.isSecurityEnabled()) "App Lock: ON" else "App Lock: OFF" }
+        updateSecLbl(); container.addView(secLbl)
+        val secBtn = Button(this)
+        fun updateSecBtn() { secBtn.text = if (security.isSecurityEnabled()) "Disable App Lock" else "Enable App Lock" }
+        updateSecBtn()
+        secBtn.setOnClickListener {
+            if (security.isSecurityEnabled()) {
+                AlertDialog.Builder(this).setTitle("Disable App Lock?")
+                    .setMessage("Notes will no longer require a PIN or biometric to open.")
+                    .setPositiveButton("Disable") { _, _ ->
+                        security.disableSecurity()
+                        Toast.makeText(this, "App Lock disabled", Toast.LENGTH_SHORT).show()
+                        updateSecLbl(); updateSecBtn()
+                    }.setNegativeButton("Cancel", null).show()
+            } else {
+                showSecurityWarningDialog { showPinSetupDialog(security) { updateSecLbl(); updateSecBtn() } }
+            }
+        }
+        container.addView(secBtn)
 
         AlertDialog.Builder(this).setTitle("\u2699 Settings").setView(container)
             .setPositiveButton("Save") { _, _ ->
+                val themeChanged = selTheme != (prefs.getString("app_color_theme", "Classic") ?: "Classic")
                 prefs.edit().putString("default_paper", selPaper)
                     .putBoolean("autosave", autosaveCb.isChecked)
                     .putBoolean("confirm_exit_clear", confirmCb.isChecked)
+                    .putString("app_color_theme", selTheme)
+                    .putString("app_animation", selAnim)
                     .apply()
                 Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show()
+                // Theme colors are only ever applied once, in onCreate() — recreate() is what
+                // makes a newly picked theme actually take effect immediately, rather than
+                // silently only applying the next time the app happens to restart.
+                if (themeChanged) recreate()
             }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun showSecurityWarningDialog(onAcknowledged: () -> Unit) {
+        val msg = "Read this before turning on App Lock.\n\n" +
+            "• Your notes will be encrypted and protected by biometric unlock and a 6-digit PIN.\n\n" +
+            "• 5 wrong biometric attempts disables biometric — PIN only from then on.\n\n" +
+            "• 5 wrong PIN attempts locks the app for 1 minute.\n\n" +
+            "• 5 more wrong attempts after that PERMANENTLY locks the app. The only way back in is deleting every note, permanently and irreversibly — not recoverable by any tool, including professional data recovery.\n\n" +
+            "• If you forget your PIN and lose biometric access, this is also the outcome. There is no password reset, no support recovery, no backdoor. That's what makes this actually secure — but it means forgetting your PIN has the same result as an attacker trying to force their way in.\n\n" +
+            "Do not turn this on unless you're comfortable with that trade-off."
+        AlertDialog.Builder(this).setTitle("\u26A0 Before You Continue")
+            .setMessage(msg)
+            .setPositiveButton("I Understand, Continue") { _, _ -> onAcknowledged() }
+            .setNegativeButton("Cancel", null)
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun showRecoveryCodeDialog(security: SecurityManager, result: SecurityManager.SetupResult, onDone: () -> Unit) {
+        val code = result.recoveryCode ?: run { onDone(); return }
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(8)) }
+
+        container.addView(TextView(this).apply {
+            text = "Save Your Recovery Code Now"
+            textSize = 17f; typeface = android.graphics.Typeface.DEFAULT_BOLD; setPadding(0, 0, 0, dp(8))
+        })
+        container.addView(TextView(this).apply {
+            text = "This is shown only once. If you ever forget your PIN and lose biometric access, this code (or its QR code below) is the only way back into your notes without deleting everything. Copy the code somewhere safe, and screenshot the QR code too."
+            textSize = 13f; setPadding(0, 0, 0, dp(16))
+        })
+
+        val codeDisplay = TextView(this).apply {
+            text = code; textSize = 20f; typeface = android.graphics.Typeface.MONOSPACE
+            gravity = Gravity.CENTER; setPadding(dp(12), dp(12), dp(12), dp(12))
+            setBackgroundColor(android.graphics.Color.parseColor("#F0F0F0"))
+        }
+        container.addView(codeDisplay)
+
+        val copyBtn = Button(this).apply { text = "Copy Code" }
+        copyBtn.setOnClickListener {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("EngiNotes Recovery Code", code))
+            Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
+        }
+        container.addView(copyBtn)
+
+        val qrView = ImageView(this).apply {
+            setImageBitmap(security.generateQrBitmap(code))
+            layoutParams = LinearLayout.LayoutParams(dp(220), dp(220)).also { it.gravity = Gravity.CENTER; it.topMargin = dp(16) }
+        }
+        val qrWrapper = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+        qrWrapper.addView(qrView)
+        container.addView(qrWrapper)
+
+        val ackCb = CheckBox(this).apply {
+            text = "I've saved this code and/or screenshotted the QR code"
+            setPadding(0, dp(16), 0, 0)
+        }
+        container.addView(ackCb)
+
+        val dlg = AlertDialog.Builder(this).setTitle("\u26A0 Recovery Code").setView(container)
+            .setPositiveButton("Done", null)
+            .setCancelable(false)
+            .show()
+        dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            if (!ackCb.isChecked) { Toast.makeText(this, "Please confirm you've saved the code first", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+            dlg.dismiss()
+            onDone()
+        }
+    }
+
+    private fun showPinSetupDialog(security: SecurityManager, onDone: () -> Unit) {
+        val input1 = EditText(this).apply {
+            hint = "Enter 6-digit PIN"
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            filters = arrayOf(android.text.InputFilter.LengthFilter(6))
+        }
+        AlertDialog.Builder(this).setTitle("Set Your PIN").setView(input1)
+            .setPositiveButton("Next", null) // overridden below so a bad PIN doesn't dismiss the dialog
+            .setNegativeButton("Cancel", null)
+            .show().also { dlg ->
+                dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                    val pin = input1.text.toString()
+                    if (pin.length != 6) { Toast.makeText(this, "PIN must be exactly 6 digits", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+                    dlg.dismiss()
+                    // Confirmation step — re-entering catches typos before they get baked into
+                    // the actual encryption key derivation, which would otherwise silently lock
+                    // the user out with a PIN that isn't the one they meant to set.
+                    val input2 = EditText(this).apply {
+                        hint = "Re-enter PIN to confirm"
+                        inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
+                        filters = arrayOf(android.text.InputFilter.LengthFilter(6))
+                    }
+                    AlertDialog.Builder(this).setTitle("Confirm Your PIN").setView(input2)
+                        .setPositiveButton("Confirm", null)
+                        .setNegativeButton("Cancel", null)
+                        .show().also { dlg2 ->
+                            dlg2.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                                if (input2.text.toString() != pin) { Toast.makeText(this, "PINs didn't match — try again", Toast.LENGTH_SHORT).show(); return@setOnClickListener }
+                                dlg2.dismiss()
+                                val result = security.setupSecurity(pin)
+                                if (!result.success) {
+                                    Toast.makeText(this, "Something went wrong setting up App Lock. Please try again.", Toast.LENGTH_LONG).show()
+                                    onDone()
+                                    return@setOnClickListener
+                                }
+                                showRecoveryCodeDialog(security, result) {
+                                    if (result.biometricEnabled) {
+                                        Toast.makeText(this, "App Lock enabled with PIN + biometric", Toast.LENGTH_LONG).show()
+                                    } else {
+                                        val reason = result.biometricUnavailableReason ?: "Fingerprint/face wasn't available."
+                                        Toast.makeText(this, "App Lock enabled with PIN. $reason", Toast.LENGTH_LONG).show()
+                                    }
+                                    onDone()
+                                }
+                            }
+                        }
+                }
+            }
     }
 
     private fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
@@ -737,7 +1220,7 @@ class BooksActivity : AppCompatActivity() {
         Toast.makeText(this, "Restoring…", Toast.LENGTH_SHORT).show()
         driveManager.downloadFile(driveFile.name, destFile) { success, error ->
             if (!success) { Toast.makeText(this, "Restore failed: $error", Toast.LENGTH_SHORT).show(); return@downloadFile }
-            val assetPaths = extractAssetPaths(destFile.readText())
+            val assetPaths = extractAssetPaths(security.readNoteFile(destFile))
             restoreAssets(assetPaths, 0) {
                 Toast.makeText(this, "Restored \"${destFile.nameWithoutExtension}\"!", Toast.LENGTH_SHORT).show()
                 refresh()

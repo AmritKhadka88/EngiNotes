@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
@@ -32,6 +33,13 @@
             android:exported="false"
             android:windowSoftInputMode="adjustNothing" />
 
+        <!-- App-lock gate, shown before any note content when security is turned on in
+             Settings. exported="false" — this must only ever be reachable from inside the app
+             itself, never launchable directly by another app on the device. -->
+        <activity
+            android:name=".LockScreenActivity"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -44,7 +52,6 @@
 
         <activity android:name=".PdfViewerActivity" android:label="PDF Viewer" />
         <activity android:name=".ChartActivity" android:label="Chart Builder" />
-        <activity android:name=".HandwritingActivity" android:label="Handwriting Recognition" />
 
     </application>
 </manifest>

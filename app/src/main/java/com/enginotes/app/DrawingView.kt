@@ -140,10 +140,20 @@ val CACHED_BRUSH_STYLES = setOf(BrushStyle.SPRAY, BrushStyle.GRASS, BrushStyle.F
     BrushStyle.DRY_BRUSH, BrushStyle.CHARCOAL, BrushStyle.CRAYON,
     BrushStyle.WATERCOLOR, BrushStyle.NEON)
 
-// Shapes resized by moving their two endpoints (fine reshaping of start/end point)
-val ENDPOINT_RESIZE_SHAPES = setOf(Tool.LINE, Tool.CIRCLE, Tool.ARROW, Tool.CURVE, Tool.PEN)
-// Shapes that also get bbox (8-handle) scaling — for uniform scale of all points
-val STROKE_SCALE_SHAPES = setOf(Tool.LINE, Tool.ARROW, Tool.CURVE, Tool.PEN)
+// Shapes resized by moving their two endpoints (fine reshaping of start/end point). Pen is
+// deliberately NOT here — see STROKE_SCALE_SHAPES below for why these two sets must stay
+// disjoint.
+val ENDPOINT_RESIZE_SHAPES = setOf(Tool.LINE, Tool.CIRCLE, Tool.ARROW, Tool.CURVE)
+// Shapes that get bbox (8-handle) uniform scaling instead of endpoint-dragging. Only Pen here —
+// Line/Arrow/Curve used to be in both this set AND ENDPOINT_RESIZE_SHAPES, which was a real bug:
+// hit-testing checks bbox handle positions first, then falls back to the stroke's own actual
+// start/end points (which usually aren't AT a bbox corner) — but resizeItem's execution always
+// ran this uniform-scale branch first regardless of which hit-test actually fired, so touching
+// near an endpoint set activeHandle=TL/BR from the endpoint check, then got treated as "you
+// grabbed the geometric TL/BR bbox corner" — the wrong reference point entirely, producing wild,
+// inconsistent scale factors every frame (the reported "vibrating" on Line) or two extra unwanted
+// handles that didn't behave like the visible bbox handles at all (the reported behavior on Pen).
+val STROKE_SCALE_SHAPES = setOf(Tool.PEN)
 
 data class TextSpanData(val start: Int, val end: Int, val type: Char, val value: Int)
 
@@ -166,7 +176,7 @@ private val bitmapCache = object : LinkedHashMap<String, Bitmap>(16, 0.75f, true
 class StrokeData(
     val type: Tool, val points: MutableList<Float>,
     var color: Int, var strokeWidth: Float, var fill: Boolean, var rotation: Float = 0f,
-    var fillColorVal: Int = color, var penStyle: PenStyle = PenStyle.FOUNTAIN, var opacity: Int = 255,
+    var fillColorVal: Int = color, var penStyle: PenStyle = PenStyle.BALL, var opacity: Int = 255,
     var brushStyle: BrushStyle = BrushStyle.ROUND,
     var widths: MutableList<Float> = mutableListOf(),
     var lineType: LineType = LineType.CONTINUOUS,
@@ -185,41 +195,73 @@ class StrokeData(
     // handwriting) would round off intentional sharp corners into a curve, which is wrong for
     // a tool whose entire purpose is precise straight segments.
     var isPolyline: Boolean = false,
-    // Distance (in world/path units, same space PathMeasure works in) from the START of the
-    // ORIGINAL, never-erased stroke to this fragment's own first point. Used as the dash
-    // pattern's phase offset so a dashed/dotted line's pattern stays visually anchored to its
-    // true position along the original line, no matter how many times the area eraser has since
-    // split it into fragments — without this, every fragment's dash phase defaulted to 0 at
-    // wherever ITS OWN point list happened to start, so the visible pattern appeared to shift
-    // with every incremental erase as fragments were repeatedly re-split mid-drag.
-    var dashPhase: Float = 0f,
-    // True for a dense point-sampled polyline created by erasing (or Exploding) a shape — marks
-    // it as eligible for the whole-page "Regen" cleanup pass, which simplifies the point list and
-    // hands rendering back to the normal smooth Tool.PEN curve path. Deliberately separate from
-    // isPolyline: that flag is ALSO used by the dedicated Polyline tool (precise strokes drawn on
-    // purpose, which must never be touched by Regen) and by the Offset tool (genuinely straight
-    // geometry that should stay sharp-cornered forever, never smoothed into a curve).
-    var eraseFragment: Boolean = false,
-    // True only if the ORIGINAL shape (before erasing converted it to a point list) was
-    // genuinely round — Tool.CIRCLE or Tool.ELLIPSE. Deliberately conservative: everything else
-    // (rectangles, rounded-rects, triangles, stars, all polygon shapes) is left false, even
-    // though some of those have curved elements too (a rounded-rect's corners, a moon/ring's
-    // arc). regenerateErasedShapes() only re-smooths fragments marked true here — smoothing a
-    // shape with real straight edges and sharp corners doesn't just look a little off, it
-    // actively destroys the shape's geometry (a rounded-rectangle regenerated into something
-    // resembling a circle, in the case that surfaced this).
-    var eraseFragmentCurved: Boolean = false,
-    // Used only by regenerateErasedShapes() for non-curved fragments (rounded-rects, and
-    // anything else with a mix of straight edges and rounded corners in the same stroke).
-    // Deliberately a SEPARATE flag from isPolyline rather than reusing it — isPolyline is also
-    // the deliberate Polyline tool's flag for "render every vertex as a sharp corner, always,"
-    // and this needed its own mechanism that can never affect that.
-    var regenSmoothCorners: Boolean = false,
-    // Parallel to `points` — true at index i means points[i*2],points[i*2+1] was identified by
-    // simplifyRDP as a true curve point (kept because it deviates from a straight chord), false
-    // means it's a straight-run endpoint. Only meaningful when regenSmoothCorners is true.
-    var curvePointFlags: MutableList<Boolean> = mutableListOf()
+    // True only at the stroke's actual pen-down/pen-up ends, where a nib tapering to a point is
+    // correct. An area-eraser split creates brand-new fragment boundaries at the cut — those are
+    // NOT the original ends, and re-tapering them made an erased edge visibly reshape itself
+    // (fading to a point) instead of just showing the width the ink already had there.
+    var taperStart: Boolean = true,
+    var taperEnd: Boolean = true
 ) {
+    // Backing cache for smoothedPoints()'s incremental recompute — see that function for why
+    // this is safe (a moving-average's dependency radius is bounded, so a settled prefix never
+    // needs to be touched again once the tip has moved far enough past it).
+    private var smoothCache: MutableList<Float>? = null
+    private var smoothCachePointCount: Int = 0
+
+    // Bounding box per fixed-size run of points, cached and only recomputed if the point count
+    // changed. Lets the eraser reject a whole chunk of a very long stroke (a value once split
+    // once and left alone, or the giant original stroke before it's had time to fragment) in one
+    // check, instead of testing every individual segment in it — the eraser was doing exactly
+    // that testing, over and over, on every single interpolated sample along a drag, which is
+    // what "single stroke with so many lines gets slow to erase" actually was.
+    private var chunkBoundsCache: Array<FloatArray>? = null
+    private var chunkBoundsForPointCount: Int = -1
+    private val CHUNK_SIZE = 64
+
+    // Both caches above are keyed on point COUNT only, since that's all live-drawing ever
+    // changes (points get appended, never edited). Moving/resizing/rotating an already-drawn
+    // stroke mutates the SAME points in place instead — count stays identical, so without this
+    // both caches would keep serving stale pre-move geometry forever after. Call this any time
+    // existing points get bulk-edited rather than grown.
+    fun invalidateGeometryCaches() {
+        smoothCache = null
+        chunkBoundsCache = null
+    }
+
+    // Cheap alternative to invalidateGeometryCaches() for a pure translation (move): the
+    // moving-average filter is linear, so shifting every raw input point by the same (dx,dy)
+    // shifts every smoothed output by that exact same (dx,dy) too — no need to re-run the
+    // filter at all. Without this, moving a long stroke forced a full 5-pass recompute on every
+    // single frame of the drag (invalidateGeometryCaches() + the next buildPath() call), which
+    // is what made dragging a long stroke visibly laggy even though nothing about its actual
+    // shape needed recalculating, only where it sits.
+    fun shiftGeometryCaches(dx: Float, dy: Float) {
+        smoothCache?.let { c -> var i = 0; while (i + 1 < c.size) { c[i] += dx; c[i + 1] += dy; i += 2 } }
+        chunkBoundsCache?.let { chunks -> for (ch in chunks) { ch[2] += dx; ch[3] += dy; ch[4] += dx; ch[5] += dy } }
+    }
+
+    fun chunkBounds(): Array<FloatArray> {
+        val cached = chunkBoundsCache
+        if (cached != null && chunkBoundsForPointCount == points.size) return cached
+        val n = points.size / 2
+        val chunkCount = ((n + CHUNK_SIZE - 1) / CHUNK_SIZE).coerceAtLeast(1)
+        val result = Array(chunkCount) { c ->
+            val startPair = c * CHUNK_SIZE
+            val endPair = ((c + 1) * CHUNK_SIZE).coerceAtMost(n)
+            var mnX = points[startPair * 2]; var mxX = mnX; var mnY = points[startPair * 2 + 1]; var mxY = mnY
+            var k = startPair
+            while (k < endPair) {
+                val px = points[k * 2]; val py = points[k * 2 + 1]
+                if (px < mnX) mnX = px; if (px > mxX) mxX = px
+                if (py < mnY) mnY = py; if (py > mxY) mxY = py
+                k++
+            }
+            floatArrayOf(startPair.toFloat(), endPair.toFloat(), mnX, mnY, mxX, mxY)
+        }
+        chunkBoundsCache = result; chunkBoundsForPointCount = points.size
+        return result
+    }
+
     fun buildPath(): Path {
         val path = Path()
         if (type == Tool.PEN || type == Tool.ERASER || type == Tool.HIGHLIGHTER || type == Tool.BRUSH) {
@@ -243,19 +285,6 @@ class StrokeData(
                         i += 2
                     }
                     if (i + 1 < pts.size) path.lineTo(pts[i], pts[i + 1])
-                } else if (regenSmoothCorners && points.size >= 8 && curvePointFlags.size == points.size / 2) {
-                    var i = 2
-                    var idx = 1
-                    while (i + 1 < points.size) {
-                        val isCurve = idx < curvePointFlags.size && curvePointFlags[idx]
-                        if (isCurve && i + 3 < points.size) {
-                            val midX = (points[i] + points[i + 2]) / 2f; val midY = (points[i + 1] + points[i + 3]) / 2f
-                            path.quadTo(points[i], points[i + 1], midX, midY)
-                        } else {
-                            path.lineTo(points[i], points[i + 1])
-                        }
-                        i += 2; idx++
-                    }
                 } else {
                     var i = 2
                     while (i + 1 < points.size) { path.lineTo(points[i], points[i + 1]); i += 2 }
@@ -469,6 +498,34 @@ class StrokeData(
         return path
     }
 
+    // Builds a path for only a bounded tail of points (from point-pair index fromPairIdx to the
+    // end), not the whole stroke — used by the live-drawing flush cache so baking the settled
+    // portion stays cheap regardless of total stroke length. Uses smoothedPoints() the same way
+    // buildPath() does, so it benefits from that function's own windowed-recompute cache (see
+    // smoothedPoints() below).
+    fun buildPathRange(fromPairIdx: Int): Path {
+        val path = Path()
+        if (points.size < 2) return path
+        if (isPolyline || type != Tool.PEN) {
+            val start = (fromPairIdx * 2).coerceIn(0, points.size - 2)
+            path.moveTo(points[start], points[start + 1])
+            var i = start + 2
+            while (i + 1 < points.size) { path.lineTo(points[i], points[i + 1]); i += 2 }
+            return path
+        }
+        val pts = smoothedPoints()
+        val start = (fromPairIdx * 2).coerceIn(0, pts.size - 2)
+        path.moveTo(pts[start], pts[start + 1])
+        var i = start + 2
+        while (i + 3 < pts.size) {
+            val midX = (pts[i] + pts[i + 2]) / 2f; val midY = (pts[i + 1] + pts[i + 3]) / 2f
+            path.quadTo(pts[i], pts[i + 1], midX, midY)
+            i += 2
+        }
+        if (i + 1 < pts.size) path.lineTo(pts[i], pts[i + 1])
+        return path
+    }
+
     // Smooths the raw touch-point list with a weighted moving average before it's used to
     // build a nib/ribbon outline. drawCalligraphyStroke/buildCalligraphyRibbonPath/
     // buildFountainRibbonPath below turn every pair of consecutive points into its own little
@@ -480,7 +537,13 @@ class StrokeData(
     private fun smoothedPoints(): List<Float> {
         if (isPolyline) return points
         if (points.size < 6) return points
-        fun onePass(src: List<Float>): List<Float> {
+
+        // Nothing changed since the last call — a redraw triggered by something else entirely
+        // (panning, zooming, another stroke elsewhere) still calls through to here every time;
+        // reuse the previous result verbatim instead of re-smoothing an unchanged stroke.
+        if (smoothCache != null && smoothCachePointCount == points.size) return smoothCache!!
+
+        fun onePass(src: List<Float>): MutableList<Float> {
             val out = src.toMutableList()
             var i = 2
             while (i + 3 < src.size) {
@@ -490,14 +553,33 @@ class StrokeData(
             }
             return out
         }
-        // Five passes now, not two — the circled bumps in testing showed two passes still
-        // wasn't enough to fully absorb real-world hand tremor / touch-sensor noise. Each pass
-        // only pulls a point toward its neighbors' midpoint, so it can only ever erode small
-        // back-and-forth jitter, not a genuine corner or the overall shape of a letterform —
-        // repeating it more times just keeps eroding whatever jitter is left, favoring a
-        // smooth result over microscopically tracking every sampled point, which is exactly
-        // what's wanted here even if the shakiness is coming from the finger/pen/digitizer
-        // rather than the smoothing being too weak.
+
+        // Each pass only pulls a point toward its immediate neighbors, so after 5 passes a
+        // point's final smoothed value only ever depends on raw points within ~5 point-pairs of
+        // it. Once the tip has moved further than that past an earlier point, appending more
+        // points can never change that point's smoothed value again — so it's safe to keep an
+        // already-settled prefix exactly as it was and only re-run the 5 passes on a small
+        // trailing slice (RUNWAY_PAIRS of leading context, so the slice's own missing further-
+        // left context can't reach the genuinely new tail before it's discarded) instead of the
+        // whole stroke every time. RUNWAY_PAIRS is generously above the ~5 that's mathematically
+        // required.
+        val RUNWAY_PAIRS = 16
+        val oldCache = smoothCache
+        val oldCount = smoothCachePointCount
+        if (oldCache != null && points.size > oldCount && oldCount / 2 > RUNWAY_PAIRS + 4) {
+            val sliceStart = (oldCount / 2 - RUNWAY_PAIRS) * 2
+            var slice: List<Float> = points.subList(sliceStart, points.size)
+            repeat(5) { slice = onePass(slice) }
+            val result = ArrayList<Float>(points.size)
+            result.addAll(oldCache.subList(0, sliceStart))
+            result.addAll(slice)
+            smoothCache = result
+            smoothCachePointCount = points.size
+            return result
+        }
+
+        // Full recompute: first call for this stroke, still too short to window, or the cache
+        // was explicitly invalidated (see finalizeSmoothing()).
         var smoothed: List<Float> = points
         repeat(5) { smoothed = onePass(smoothed) }
 
@@ -505,11 +587,15 @@ class StrokeData(
         // but a stroke the person clearly INTENDED as straight (an underline, a ruled line)
         // has no reason to keep any deviation at all. If the whole stroke barely strays from
         // the direct line between its first and last point, snap every point exactly onto
-        // that line instead of just smoothing around it.
+        // that line instead of just smoothing around it. Only runs on a full recompute — it
+        // needs the whole stroke's shape to judge overall straightness, and only matters for
+        // what actually gets saved, so there's no reason to keep re-evaluating it on every
+        // incremental live update in between too.
         val x0 = smoothed[0]; val y0 = smoothed[1]
         val xn = smoothed[smoothed.size - 2]; val yn = smoothed[smoothed.size - 1]
         val dx = xn - x0; val dy = yn - y0
         val lineLen = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+        var finalResult: List<Float> = smoothed
         if (lineLen > 8f) {  // too short to judge straightness (a dot, a tiny flick) — skip
             val ux = dx / lineLen; val uy = dy / lineLen
             var maxDeviation = 0f
@@ -536,11 +622,25 @@ class StrokeData(
                     snapped[j + 1] = y0 + uy * proj
                     j += 2
                 }
-                return snapped
+                finalResult = snapped
             }
         }
-        return smoothed
+        val cached = finalResult.toMutableList()
+        smoothCache = cached
+        smoothCachePointCount = points.size
+        return cached
     }
+
+    // Forces the next smoothedPoints() call to do one full, authoritative recompute (all 5
+    // passes over the entire stroke, plus the straight-line-snap check) instead of the cheaper
+    // incremental path meant for live drawing. Call this once at stroke-commit time so the
+    // geometry that actually gets saved is always fully correct.
+    fun finalizeSmoothing() {
+        smoothCache = null
+        smoothedPoints()
+    }
+
+
 
     // Legacy single-polygon path - kept only as a fallback for very short strokes (under 2
     // segments) where quad-splitting has nothing to split; never used for real handwriting.
@@ -562,49 +662,52 @@ class StrokeData(
     // Velocity-sensitive Fountain pen ribbon: width is inversely proportional to drawing speed
     // (fast = thin, slow = pools thicker, like real ink flow), built from the per-point `widths`
     // samples recorded while drawing. Falls back to a uniform-width ribbon if no samples exist
-    // (e.g. for strokes loaded from older saved files).
+    // (e.g. for strokes loaded from older saved files). Kept only as the renderer for the rare
+    // rotated/pixel-erased case — see drawFountainStroke below for the normal path, which fixes
+    // this flat-ribbon offset's real weakness: it models the nib as a flat plate perpendicular to
+    // the direction of travel, so on a sharp turn or reversal that plate's orientation swings
+    // with it and can momentarily point the wrong way, leaving a wedge-shaped gap at the turn.
     fun buildFountainRibbonPath(): Path {
         val ribbon = Path()
         if (points.size < 4) return buildPath()
         val pts = smoothedPoints()
+        val n = pts.size / 2
+        if (n < 2) return buildPath()
         val left = mutableListOf<Pair<Float, Float>>(); val right = mutableListOf<Pair<Float, Float>>()
-        // Segment count, used below to taper width at both ends of the stroke — without this,
-        // the very first/last sample already carries near-full width, so the ribbon starts and
-        // ends as an abrupt blunt blob instead of tapering to a point like a real nib lifting
-        // on/off the page.
-        val totalSegments = ((pts.size - 2) / 2).coerceAtLeast(1)
+        val totalSegments = (n - 1).coerceAtLeast(1)
         val taperCount = 4
         fun endTaper(segIndex: Int): Float {
-            val fadeIn = ((segIndex + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
-            val fadeOut = ((totalSegments - segIndex).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
+            val fadeIn = if (taperStart) ((segIndex + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
+            val fadeOut = if (taperEnd) ((totalSegments - segIndex).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
             return minOf(fadeIn, fadeOut).coerceIn(0.12f, 1f)
         }
-        var i = 0; var wi = 0
-        while (i + 3 < pts.size) {
-            val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
-            val dx = x2 - x1; val dy = y2 - y1
-            val len = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(0.01f)
-            val nx = -dy / len; val ny = dx / len
-            val w = (if (wi < widths.size) widths[wi] else strokeWidth) * endTaper(wi) / 2f
-            left.add(Pair(x1 + nx * w, y1 + ny * w)); right.add(Pair(x1 - nx * w, y1 - ny * w))
-            i += 2; wi++
-        }
-        // Cap the final point with the last known width, also tapered
-        val lastIdx = pts.size - 2
-        val lastW = (if (widths.isNotEmpty()) widths.last() else strokeWidth) * endTaper(totalSegments) / 2f
-        if (i >= 2) {
-            val px = pts[lastIdx]; val py = pts[lastIdx + 1]
-            val pdx = px - pts[i - 2]; val pdy = py - pts[i - 1]
-            val plen = kotlin.math.hypot(pdx.toDouble(), pdy.toDouble()).toFloat().coerceAtLeast(0.01f)
-            val nx = -pdy / plen; val ny = pdx / plen
-            left.add(Pair(px + nx * lastW, py + ny * lastW)); right.add(Pair(px - nx * lastW, py - ny * lastW))
+        for (k in 0 until n) {
+            val px = pts[k * 2]; val py = pts[k * 2 + 1]
+            var dxIn = 0f; var dyIn = 0f
+            if (k > 0) {
+                val ddx = px - pts[(k - 1) * 2]; val ddy = py - pts[(k - 1) * 2 + 1]
+                val dl = kotlin.math.hypot(ddx.toDouble(), ddy.toDouble()).toFloat().coerceAtLeast(0.01f)
+                dxIn = ddx / dl; dyIn = ddy / dl
+            }
+            var dxOut = 0f; var dyOut = 0f
+            if (k < n - 1) {
+                val ddx = pts[(k + 1) * 2] - px; val ddy = pts[(k + 1) * 2 + 1] - py
+                val dl = kotlin.math.hypot(ddx.toDouble(), ddy.toDouble()).toFloat().coerceAtLeast(0.01f)
+                dxOut = ddx / dl; dyOut = ddy / dl
+            }
+            var tx = dxIn + dxOut; var ty = dyIn + dyOut
+            val tl = kotlin.math.hypot(tx.toDouble(), ty.toDouble()).toFloat()
+            if (tl < 0.01f) {
+                tx = if (dxIn != 0f || dyIn != 0f) dxIn else dxOut
+                ty = if (dxIn != 0f || dyIn != 0f) dyIn else dyOut
+                val tl2 = kotlin.math.hypot(tx.toDouble(), ty.toDouble()).toFloat().coerceAtLeast(0.01f)
+                tx /= tl2; ty /= tl2
+            } else { tx /= tl; ty /= tl }
+            val nx = -ty; val ny = tx
+            val w = (if (k < widths.size) widths[k] else strokeWidth) * endTaper(k) / 2f
+            left.add(Pair(px + nx * w, py + ny * w)); right.add(Pair(px - nx * w, py - ny * w))
         }
         if (left.isEmpty() || right.isEmpty()) return buildPath()
-        // Curve through the offset points instead of connecting them with straight lineTo
-        // segments (the polygon-edge look was part of why the ribbon read as faceted rather
-        // than a fluently tapering nib stroke) — same midpoint-quadTo technique already used
-        // to smooth plain pen strokes in buildPath(). Skipped for polylines, same reason as
-        // there: quadTo would round off intentional sharp vertices into a curve.
         fun addSmoothed(path: Path, pts: List<Pair<Float, Float>>, moveToFirst: Boolean) {
             if (pts.isEmpty()) return
             if (moveToFirst) path.moveTo(pts[0].first, pts[0].second)
@@ -624,20 +727,69 @@ class StrokeData(
         return ribbon
     }
 
-    // Draws a Pencil stroke segment-by-segment with per-segment opacity derived from drawing
-    // speed (stored in `widths` as a 0..1 intensity factor) - faster strokes fade lighter, slower
-    // strokes stay darker, mimicking how graphite deposits less material when moved quickly.
-    fun drawPencilStroke(canvas: Canvas, basePaint: Paint) {
-        if (points.size < 4 || widths.size < 2) { canvas.drawPath(buildPath(), basePaint); return }
-        var i = 0; var wi = 0
-        val segPaint = Paint(basePaint)
-        while (i + 3 < points.size) {
-            val intensity = (if (wi < widths.size) widths[wi] else 1f).coerceIn(0.25f, 1f)
-            segPaint.alpha = (basePaint.alpha * intensity).toInt()
-            canvas.drawLine(points[i], points[i + 1], points[i + 2], points[i + 3], segPaint)
-            i += 2; wi++
+    // Real graphite grain: many small circles scattered tightly around the (accurate,
+    // undistorted) centerline, batched into one Path and filled once — same technique the Spray
+    // brush already uses. Overlapping grains don't double-darken here since it's a single fill
+    // over the union of all of them (nonzero winding just means "inside", it doesn't stack
+    // alpha), and one drawPath call is cheap regardless of how many grains went into it. The
+    // centerline positions themselves are never touched, only where individual grains scatter
+    // around each point — unlike DiscretePathEffect, which displaced the path's own points and
+    // made the stroke visibly wander from where you actually wrote.
+    fun drawPencilStroke(canvas: Canvas, basePaint: Paint, fromPairIdx: Int = 0) {
+        if (points.size < 4) { canvas.drawPath(buildPath(), basePaint); return }
+        val pts = smoothedPoints()
+        val n = pts.size / 2
+        if (n < 2) { canvas.drawPath(buildPath(), basePaint); return }
+        val fillPaint = Paint(basePaint).apply { style = Paint.Style.FILL; pathEffect = null; isAntiAlias = true }
+        val sw = (strokeWidth * 0.55f).coerceAtLeast(1f)
+        val totalSegments = (n - 1).coerceAtLeast(1)
+        val taperCount = 4
+        fun endTaper(segIndex: Int): Float {
+            val fadeIn = if (taperStart) ((segIndex + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
+            val fadeOut = if (taperEnd) ((totalSegments - segIndex).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
+            return minOf(fadeIn, fadeOut).coerceIn(0.3f, 1f)
         }
+        // Seeded from the stroke's own first point (stable for its whole lifetime) rather than
+        // a fresh unseeded Random — otherwise every redraw (scroll, zoom, live preview frame)
+        // would reshuffle the grain pattern and it would visibly crawl instead of sitting still.
+        // When only rendering a tail (fromPairIdx > 0, the live-flush case), the RNG restarts
+        // fresh rather than replaying all the skipped grains to reach the "true" sequence
+        // position — harmless, since that tail is only ever a temporary live-preview
+        // approximation; the final committed bake always calls this with fromPairIdx=0.
+        val rand = java.util.Random((pts[0] * 1000 + pts[1]).toLong())
+        val stepSize = (sw * 0.4f).coerceAtLeast(0.8f)
+        val batchPath = Path()
+        var i = fromPairIdx.coerceIn(0, n - 1)
+        while (i < n - 1) {
+            val x1 = pts[i * 2]; val y1 = pts[i * 2 + 1]; val x2 = pts[(i + 1) * 2]; val y2 = pts[(i + 1) * 2 + 1]
+            val dx = x2 - x1; val dy = y2 - y1
+            val segLen = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(0.01f)
+            val ux = dx / segLen; val uy = dy / segLen
+            val nx = -uy; val ny = ux
+            val localW = (sw * endTaper(i)).coerceAtLeast(1f)
+            var d = 0f
+            while (d < segLen) {
+                val t = d / segLen
+                val cx = x1 + dx * t; val cy = y1 + dy * t
+                // A few grains per stamp position, tightly clustered (not a wide scatter like
+                // Spray) so the line stays clearly legible — this is texture on a real stroke,
+                // not a particle effect.
+                repeat(3) {
+                    val perpOffset = rand.nextGaussian().toFloat().coerceIn(-1.6f, 1.6f) * localW * 0.28f
+                    val alongJitter = (rand.nextFloat() - 0.5f) * stepSize * 0.6f
+                    val gx = cx + nx * perpOffset + ux * alongJitter
+                    val gy = cy + ny * perpOffset + uy * alongJitter
+                    val r = (localW * (0.16f + rand.nextFloat() * 0.14f)).coerceAtLeast(0.5f)
+                    batchPath.addCircle(gx, gy, r, Path.Direction.CW)
+                }
+                d += stepSize
+            }
+            i++
+        }
+        canvas.drawPath(batchPath, fillPaint)
     }
+
+
 
     // Draws a Calligraphy stroke segment-by-segment as native stroked lines with a per-segment
     // chisel-nib width, using ROUND caps/joins — the same proven technique already used above
@@ -648,7 +800,7 @@ class StrokeData(
     // what Android itself uses to guarantee gap-free joins between segments — there's no custom
     // polygon geometry left to get subtly wrong, and pathEffect is explicitly stripped so no
     // inherited dash/dotted line-type setting can ever corrupt the stroke body again.
-    fun drawCalligraphyStroke(canvas: Canvas, basePaint: Paint) {
+    fun drawCalligraphyStroke(canvas: Canvas, basePaint: Paint, fromPairIdx: Int = 0) {
         if (points.size < 4) { canvas.drawPath(buildPath(), basePaint); return }
         val pts = smoothedPoints()
         val nibAngle = Math.toRadians(-45.0) // corrected for Android's Y-down canvas coordinate flip
@@ -661,12 +813,12 @@ class StrokeData(
         val totalSegments = ((pts.size - 2) / 2).coerceAtLeast(1)
         val taperCount = 4
         fun endTaper(segIndex: Int): Float {
-            val fadeIn = ((segIndex + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
-            val fadeOut = ((totalSegments - segIndex).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount
+            val fadeIn = if (taperStart) ((segIndex + 1).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
+            val fadeOut = if (taperEnd) ((totalSegments - segIndex).toFloat()).coerceAtMost(taperCount.toFloat()) / taperCount else 1f
             return minOf(fadeIn, fadeOut).coerceIn(0.12f, 1f)
         }
-        var i = 0
-        var segIndex = 0
+        var i = (fromPairIdx * 2).coerceIn(0, (pts.size - 4).coerceAtLeast(0))
+        var segIndex = fromPairIdx.coerceAtLeast(0)
         var smoothedWidth = -1f  // -1 sentinel: first segment sets it directly, no smoothing to blend from yet
         while (i + 3 < pts.size) {
             val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
@@ -734,11 +886,17 @@ class StrokeData(
             PenStyle.FOUNTAIN -> { p.strokeWidth = strokeWidth; p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
             // Ballpoint: thinner and crisper than fountain, uniform line - no flow variation
             PenStyle.BALL -> { p.strokeWidth = (strokeWidth * 0.65f).coerceAtLeast(1.5f); p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND }
-            // Pencil: thin, slightly grainy via a fine dash pattern that breaks up the line like graphite texture
+            // Pencil: base fallback paint (used for tiny/degenerate strokes and hit-testing).
+            // The actual graphite grain comes from drawPencilStroke below via batched geometry,
+            // not a path effect — DiscretePathEffect physically displaces the path's own points,
+            // which is why the line used to wobble/zigzag away from where you actually wrote.
             PenStyle.PENCIL -> {
                 p.strokeWidth = (strokeWidth * 0.55f).coerceAtLeast(1f); p.strokeJoin = Paint.Join.ROUND; p.strokeCap = Paint.Cap.ROUND
                 p.alpha = (opacity * 0.8f).toInt()
-                p.pathEffect = android.graphics.DashPathEffect(floatArrayOf(2.2f, 0.6f), 0f)
+                // Colored pencils are a real thing — respect whatever color was actually picked
+                // (p.color is already set to `color` above) instead of forcing everything to
+                // gray. The graphite-style texture/opacity still comes through via
+                // drawPencilStroke's grain and this slightly reduced alpha either way.
             }
             // Calligraphy: handled separately via the ribbon path (see buildCalligraphyRibbonPath);
             // this stroke paint is only a fallback for hit-test rendering contexts.
@@ -755,7 +913,7 @@ class StrokeData(
         if (lineType != LineType.CONTINUOUS && penStyle != PenStyle.PENCIL && intervals != null) {
             val sw = p.strokeWidth.coerceAtLeast(1f)
             val scaled = intervals.map { it * sw / 3f }.toFloatArray()
-            p.pathEffect = android.graphics.DashPathEffect(scaled, dashPhase)
+            p.pathEffect = android.graphics.DashPathEffect(scaled, 0f)
             if (lineType.cap != android.graphics.Paint.Cap.BUTT) p.strokeCap = lineType.cap
         }
         return p
@@ -829,6 +987,14 @@ class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var
     var spans: MutableList<TextSpanData> = mutableListOf()
     var isEditing: Boolean = false
     var maxWidth: Float = 0f  // 0 = unbounded (legacy); >0 = wrap to this width
+    // True once maxWidth has been deliberately set (a manual resize-handle drag, or an app
+    // feature like the Gemini answer inserting at a chosen column width) rather than left at
+    // the default auto-fit-to-remaining-page-width behavior. settleWrapWidthAfterDrag() in
+    // TextEditingExtensions.kt checks this to decide whether moving the item should re-derive
+    // its width from the new position (normal text) or leave a deliberate width alone (resized
+    // text) — without it, any explicit width got silently overwritten the moment the item was
+    // next moved, in Convenient/Paginated canvas mode specifically.
+    var widthExplicitlySet: Boolean = false
     var fontFamily: String = "sans-serif"  // system family name OR absolute path to .ttf/.otf file
     var opacity: Int = 255
     // Link target: when non-null, this text renders in blue and is tappable to navigate instead
@@ -1026,20 +1192,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (currentLayerId == layerId) currentLayerId = layers.first().id
         redoStack.clear(); markSpatialDirty(); invalidate()
     }
-    fun setLayerVisible(layerId: Int, visible: Boolean) {
-        layers.find { it.id == layerId }?.visible = visible
-        if (!visible) {
-            // An item already selected right before its layer gets hidden would otherwise stay
-            // fully draggable/deletable via the still-active selection reference — hiding a
-            // layer must immediately drop anything of its that's currently selected, not just
-            // block NEW selection attempts.
-            val cur = selectedItem
-            if (cur != null && itemLayerId(cur) == layerId) selectedItem = null
-            selectedItems.removeAll { itemLayerId(it) == layerId }
-            selectedGroup = selectedGroup?.filter { itemLayerId(it) != layerId }?.toMutableList()?.takeIf { it.isNotEmpty() }
-        }
-        markSpatialDirty(); invalidate()
-    }
+    fun setLayerVisible(layerId: Int, visible: Boolean) { layers.find { it.id == layerId }?.visible = visible; markSpatialDirty(); invalidate() }
     fun moveLayerUp(layerId: Int) { val i = layers.indexOfFirst { it.id == layerId }; if (i > 0) { val l = layers.removeAt(i); layers.add(i - 1, l) }; invalidate() }
     fun moveLayerDown(layerId: Int) { val i = layers.indexOfFirst { it.id == layerId }; if (i in 0 until layers.size - 1) { val l = layers.removeAt(i); layers.add(i + 1, l) }; invalidate() }
     // Read/written by drawHatchPattern and loadCustomHatchBitmap in HatchRenderingExtensions.kt.
@@ -1079,6 +1232,28 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         spatialDirty = false
     }
 
+    // Removes/adds a single item's grid-cell memberships directly, instead of invalidating the
+    // whole index (markSpatialDirty()) and paying for a full rebuild — over every item on the
+    // page — on the very next itemsNear()/itemsInViewport() call. Erasing calls this once per
+    // item actually replaced per touch sample, which during a drag over a busy page or one very
+    // long stroke could previously mean a full-page spatial rebuild dozens of times per second.
+    private fun removeFromSpatialIndex(item: Any) {
+        if (spatialDirty) return  // already scheduled for a full rebuild — nothing to do here
+        val b = getBounds(item) ?: return
+        val pad = GRID_CELL * 0.6f
+        for (key in boundsToGridCells(b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)) {
+            spatialGrid[key]?.remove(item)
+        }
+    }
+    private fun addToSpatialIndex(item: Any) {
+        if (spatialDirty) return
+        val b = getBounds(item) ?: return
+        val pad = GRID_CELL * 0.6f
+        for (key in boundsToGridCells(b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)) {
+            spatialGrid.getOrPut(key) { mutableListOf() }.add(item)
+        }
+    }
+
     private fun markSpatialDirty() { spatialDirty = true; snapMarkersActionCount = -1 }
     fun markSpatialDirtyAndInvalidate() { spatialDirty = true; snapMarkersDirty = true; snapMarkersActionCount = -1; invalidate() }
     private var snapMarkersDirty = true
@@ -1111,13 +1286,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun itemsNear(x: Float, y: Float, r: Float): List<Any> {
         if (spatialDirty) rebuildSpatialIndex()
         val wx = x - r; val wy = y - r; val wx2 = x + r; val wy2 = y + r
-        // A hidden layer's items must act like they don't exist at all — not just invisible.
-        // Filtering here (the shared spatial-query primitive behind tap-to-select and other
-        // hit-testing) means every caller gets this for free instead of needing its own check.
-        val hiddenLayerIds = layers.filter { !it.visible }.map { it.id }.toHashSet()
         val seen = HashSet<Any>(); val result = mutableListOf<Any>()
         for (key in boundsToGridCells(wx, wy, wx2, wy2)) {
-            spatialGrid[key]?.forEach { a -> if (seen.add(a) && !hiddenLayerIds.contains(itemLayerId(a))) result.add(a) }
+            spatialGrid[key]?.forEach { a -> if (seen.add(a)) result.add(a) }
         }
         return result
     }
@@ -1173,14 +1344,30 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Velocity tracking for the Fountain pen's speed-sensitive width (fast = thin, slow = thick)
     private var lastMoveX = 0f; private var lastMoveY = 0f; private var lastMoveTime = 0L
 
+    // Full buildPath() for PEN/HIGHLIGHTER/BRUSH re-smooths and rebuilds the ENTIRE stroke's
+    // path from scratch (PEN additionally runs 5 full smoothing passes over every point). Calling
+    // that on every single ACTION_MOVE made a stroke get progressively slower to draw the longer
+    // it got, and a slow, careful stroke racks up far more sampled points than a fast one covering
+    // the same distance — same behavior, much worse cost, which read as "moving slowly makes the
+    // pen lag". These two throttle how often that expensive rebuild actually runs during a live
+    // stroke; in between, the already-built Path is just cheaply extended with the raw new point
+    // for immediate visual feedback, and a full rebuild always runs once more on ACTION_UP so the
+    // committed stroke ends up exactly as smoothed as before.
+    private var livePathRebuildPointCount = 0
+    private var livePathRebuildTime = 0L
+    private val LIVE_PATH_REBUILD_POINT_INTERVAL = 12
+    private val LIVE_PATH_REBUILD_TIME_INTERVAL_MS = 90L
+
     var currentTool: Tool = Tool.PEN
         set(value) {
             if (field != value && value != Tool.SELECT && activeTableItem != null) {
                 activeTableItem = null; tableIsActive = false
             }
-            if (field == Tool.SELECT && value != Tool.SELECT) selectedItem = null
             if (field == Tool.ARC && value != Tool.ARC) activeArcItem = null
-            if ((field == Tool.AUTOSELECT || field == Tool.LASSO) && value != Tool.AUTOSELECT && value != Tool.LASSO) {
+            // Switching tools always exits whatever was selected first, rather than handing it
+            // to the new tool — selection doesn't carry over between Select/Multi/Lasso/Rect.
+            if ((field == Tool.SELECT || field == Tool.MULTISELECT) && value != field) selectedItem = null
+            if ((field == Tool.AUTOSELECT || field == Tool.LASSO) && value != field) {
                 selectedGroup = null; regionPath = null; regionStart = null
                 groupCurrentRotation = 0f
             }
@@ -1195,7 +1382,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     var currentColor: Int = Color.BLACK
     var currentStrokeWidth: Float = 6f
-    var currentPenStyle: PenStyle = PenStyle.FOUNTAIN
+    var currentPenStyle: PenStyle = PenStyle.BALL
     var currentCalligraphySlant: Float = 0.65f  // applied to new fountain-pen strokes; adjustable separately from base thickness
     var currentLineType: LineType = LineType.CONTINUOUS
     // Resolves "what should a brand-new item actually use" — the active layer's explicit
@@ -1286,6 +1473,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // Fill items currently mutated in-memory during an active erase drag, not yet written to
     // disk. Flushed once on ACTION_UP instead of on every touch tick — see eraseFillItemRegion.
     private val dirtyFillItems = mutableSetOf<FillItem>()
+    private val dirtyImageItems = mutableSetOf<ImageItem>()
     private var eraserLastX = Float.NaN; private var eraserLastY = Float.NaN  // persists ACROSS ACTION_MOVE calls for gap-free interpolation
     var eraserShape: EraserShape = EraserShape.ROUND
     var inputMode: InputMode = InputMode.AUTO  // AUTO = existing palm-rejection-while-stylus-down behavior
@@ -1370,6 +1558,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var dragStartAngle = 0f; private var dragStartRotation = 0f
     private var dragStartPivotX = 0f; private var dragStartPivotY = 0f
     private var resizePrevWorldX = 0f; private var resizePrevWorldY = 0f
+    // Snapshot of a StrokeItem's points/bounds taken once when a bbox resize handle is first
+    // grabbed — see resizeItem()'s STROKE_SCALE_SHAPES branch for why this is necessary: without
+    // a fixed reference, recomputing "the original size" from the already-scaled points on every
+    // single frame creates a compounding feedback loop (this frame's output becomes next frame's
+    // "original", so the scale factor swings wildly instead of tracking the finger smoothly).
+    private var strokeResizeOrigPoints: FloatArray? = null
+    private var strokeResizeOrigBounds: FloatArray? = null  // [minX, minY, maxX, maxY]
+    // Tracks which StrokeItem is currently mid-resize-drag, so drawWithBitmapCache can stretch
+    // its already-cached bitmap to the live bounds instead of re-baking (a fresh allocation plus
+    // full render) on every single frame of the drag.
+    private var activeResizeItem: StrokeItem? = null
+    // Same idea as activeResizeItem above, but for group resize (Lasso/Rect/Multi can resize
+    // several items in one drag) — drawWithBitmapCache stretches each one's already-cached
+    // bitmap live instead of re-baking every frame.
+    private val activeGroupResizeItems = mutableSetOf<StrokeItem>()
 
     private var activeArcItem: StrokeItem? = null
     private var arcDragPointIndex = -1
@@ -1487,6 +1690,42 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return kotlin.math.ceil(maxY / pageH).toInt().coerceAtLeast(1)
     }
 
+    // Renders each page of the note as its own separate bitmap, at a fixed export resolution —
+    // used by "Export as PDF" so each app-page becomes its own PDF page, instead of a single
+    // on-screen-viewport screenshot (which only ever captured whatever was currently scrolled
+    // into view, not the whole note, with no concept of page boundaries at all — that's what let
+    // two adjacent pages' content end up merged into one PDF page).
+    //
+    // Renders from a fresh, separate off-screen DrawingView (same technique as BooksActivity's
+    // thumbnail rendering) rather than this live instance directly — reusing this instance's own
+    // width/height would risk viewport-culling incorrectly hiding content that's within the
+    // export bitmap's area but outside whatever the screen's own current on-screen size happens
+    // to be. A fresh instance per page (not one instance reused across all pages) eliminates any
+    // risk of internal state from one page's render carrying over into the next.
+    fun exportAllPagesAsBitmaps(dpi: Int = 150): List<Bitmap> {
+        val pageCount = estimatePageCount()
+        val pw = pageWidthPx(); val ph = pageHeightPx()
+        if (pw <= 0f || ph <= 0f) return emptyList()
+        val exportScale = dpi / 96f
+        val bmpW = (pw * exportScale).toInt().coerceAtLeast(1)
+        val bmpH = (ph * exportScale).toInt().coerceAtLeast(1)
+        val savedState = serialize()
+
+        val bitmaps = mutableListOf<Bitmap>()
+        for (pageIdx in 0 until pageCount) {
+            val dv = DrawingView(context)
+            dv.isExportRender = true
+            dv.loadFromString(savedState)
+            dv.measure(View.MeasureSpec.makeMeasureSpec(bmpW, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(bmpH, View.MeasureSpec.EXACTLY))
+            dv.layout(0, 0, bmpW, bmpH)
+            dv.resetViewForThumbnail(exportScale, 0f, pageIdx * ph)
+            val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+            dv.draw(android.graphics.Canvas(bmp))
+            bitmaps.add(bmp)
+        }
+        return bitmaps
+    }
+
     internal var exportWindowStart: Pair<Float, Float>? = null
     internal var exportWindowEnd: Pair<Float, Float>? = null
     var onExportWindowSelected: ((Float, Float, Float, Float) -> Unit)? = null
@@ -1565,6 +1804,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
+            pendingPlacementTap?.let { cb -> pendingPlacementTap = null; cb(wx, wy); return true }
             // Audio items: tapping an already-selected audio item toggles play.
             // Tapping an unselected one (in SELECT tool) selects it first so it can be moved/resized.
             for (a in actions.reversed()) {
@@ -1658,7 +1898,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // Double-tap on a DimensionItem → edit it
             if (currentTool == Tool.DIMENSION || currentTool == Tool.SELECT) {
                 val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
-                    if (layers.find { it.id == d.layerId }?.visible == false) return@firstOrNull false
                     val hr = 80f
                     kotlin.math.hypot((e.x - d.handleMidsx), (e.y - d.handleMidsy)) < hr ||
                     kotlin.math.hypot((e.x - d.handleP1sx), (e.y - d.handleP1sy)) < hr ||
@@ -1755,7 +1994,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     })
 
-    private fun clampTranslation() {
+    fun clampTranslation() {
         if (canvasMode == CanvasMode.INFINITE) return
         val pw = pageWidthPx() * scaleFactor; val ph = pageHeightPx() * scaleFactor
         val margin = 16f
@@ -1782,6 +2021,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val topBarH = 64f * resources.displayMetrics.density
             translateY = translateY.coerceAtMost(topBarH)
         }
+    }
+
+    // Public entry point for running OCR on the currently selected image, rather than only ever
+    // looking at pen strokes. Reuses the existing async bitmap loader so this works reliably even
+    // if the image's bitmap wasn't already decoded/cached at the moment this gets called.
+    fun getSelectedImageBitmap(onLoaded: (Bitmap?, ImageItem?) -> Unit) {
+        val item = selectedItem
+        if (item is ImageItem) loadBitmapAsync(item.path) { bmp -> onLoaded(bmp, item) } else onLoaded(null, null)
     }
 
     private fun loadBitmapAsync(path: String, onLoaded: (Bitmap?) -> Unit) {
@@ -1879,18 +2126,27 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 val isCalligraphyPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.CALLIGRAPHY
                 val isFountainPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.FOUNTAIN && action.data.widths.size >= 2
-                val isPencilPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.PENCIL && action.data.widths.size >= 2
-                if (isPencilPen && action.data.rotation == 0f) { action.data.drawPencilStroke(canvas, action.paint); return }
+                val isPencilPen = action.data.type == Tool.PEN && action.data.penStyle == PenStyle.PENCIL && action.data.points.size >= 4
                 if (isCalligraphyPen && action.data.rotation == 0f) {
                     drawWithBitmapCache(canvas, action, action.data.strokeWidth * 2f) { c, item -> item.data.drawCalligraphyStroke(c, item.paint) }
                     return
                 }
-                // clipHoles (pixel-eraser holes) and rotation both need the shared handling
-                // further below, so only the common case — no rotation, nothing erased out of
-                // it — takes the fast cached path here.
-                if (isFountainPen && action.data.rotation == 0f && action.data.clipHoles.isEmpty()) {
+                if (isPencilPen && action.data.rotation == 0f && action.data.clipHoles.isEmpty()) {
+                    drawWithBitmapCache(canvas, action, action.data.strokeWidth * 1.5f) { c, item -> item.data.drawPencilStroke(c, item.paint) }
+                    return
+                }
+                // Everything else that isn't already handled above (Ball, Marker, Highlighter,
+                // legacy Fountain content with no width data) was drawn straight via
+                // canvas.drawPath() every frame with no caching at all — meaning every already-
+                // finished stroke of these (by far the most common) types got fully re-
+                // rasterized on every single invalidate(), including ones from an entirely
+                // unrelated stroke elsewhere still being actively drawn. The more of these
+                // exist on a page, the slower drawing anything new gets, independent of that
+                // new stroke's own length.
+                if (!isCalligraphyPen && !isFountainPen && action.data.rotation == 0f && action.data.clipHoles.isEmpty()) {
                     drawWithBitmapCache(canvas, action, action.data.strokeWidth * 2f) { c, item ->
-                        c.drawPath(item.data.buildFountainRibbonPath(), Paint(item.paint).apply { style = Paint.Style.FILL; pathEffect = null })
+                        item.data.toFillPaint()?.let { c.drawPath(item.path, it) }
+                        c.drawPath(item.path, item.paint)
                     }
                     return
                 }
@@ -2221,7 +2477,107 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // so the already-transformed canvas scales it correctly at any zoom level WITHOUT re-rendering.
     // Cache is NEVER invalidated by zoom/pan — only when stroke data actually changes.
     private val CACHE_SCALE = 2f
+    // Cached bitmaps are rendered at a fixed world-space resolution and then scaled by
+    // drawBitmap into the current dst rect — at any zoom above native resolution that's an
+    // upscale. drawBitmap(..., paint=null) upscales with nearest-neighbor, which is exactly what
+    // reads as "smooth while actively drawing (rendered live, no cache), blocky/pixelated the
+    // instant the pen lifts and the stroke gets cached" — same root cause for every cached
+    // stroke type (Fountain, Calligraphy, cached Brush styles), not a per-style geometry bug.
+    private val _bitmapFilterPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private val MAX_CACHE_BYTES = 64L * 1024 * 1024  // 64 MB max total brush cache
+
+    // Live-drawing performance for one very long continuous stroke: every style's live preview
+    // — plain Ball/Marker/Highlighter via canvas.drawPath(it.path,...), but ALSO Pencil's grain
+    // stamping and Calligraphy's per-segment nib — re-generates its FULL geometry from scratch
+    // on every single frame, and that cost scales with total stroke length regardless of how
+    // cheaply the underlying point data was built. This periodically bakes everything already
+    // drawn (the "settled" portion, not currently changing) into a bitmap, so each frame only
+    // needs one cheap bitmap blit plus regenerating the small still-unbaked tail — bounded cost
+    // no matter how long the stroke ultimately gets, for any pen style.
+    private var liveFlushBitmap: Bitmap? = null
+    private var liveFlushCanvas: Canvas? = null
+    private var liveFlushLeft = 0f
+    private var liveFlushTop = 0f
+    private var liveFlushWorldW = 0f
+    private var liveFlushWorldH = 0f
+    private var liveFlushedPairIndex = 0
+    private val LIVE_FLUSH_POINT_INTERVAL = 300
+
+    // Resets the live-flush cache for a brand new stroke (called on ACTION_DOWN and again once
+    // the stroke commits, so the bitmap is freed promptly rather than held until the next one).
+    private fun resetLiveFlush() {
+        liveFlushBitmap = null; liveFlushCanvas = null; liveFlushedPairIndex = 0
+    }
+
+    // Draws either the WHOLE stroke (fromPairIdx omitted/0) or only its tail from fromPairIdx
+    // onward, using whichever renderer the stroke's actual style needs. Pencil/Calligraphy's
+    // range-aware overloads restart their random/width-blend state fresh at that point rather
+    // than replaying everything before it — a live-preview-only approximation; the final
+    // committed bake always calls this with fromPairIdx=0 for full correctness (see
+    // flushLivePath's first-bake branch and the guaranteed rebuild at ACTION_UP).
+    private fun renderLiveStrokeRange(canvas: Canvas, item: StrokeItem, fromPairIdx: Int) {
+        val data = item.data
+        when {
+            data.type == Tool.PEN && data.penStyle == PenStyle.CALLIGRAPHY -> data.drawCalligraphyStroke(canvas, item.paint, fromPairIdx)
+            data.type == Tool.PEN && data.penStyle == PenStyle.PENCIL -> data.drawPencilStroke(canvas, item.paint, fromPairIdx)
+            fromPairIdx <= 0 -> canvas.drawPath(data.buildPath(), item.paint)
+            else -> canvas.drawPath(data.buildPathRange(fromPairIdx), item.paint)
+        }
+    }
+
+    // Bakes points [0, item.data.points.size/2) into liveFlushBitmap: reuses the existing bitmap
+    // and only regenerates the new tail (with a small overlap into already-baked territory so
+    // the seam blends — solid ink drawn twice over the same spot looks identical to once) when
+    // it still fits; reallocates and re-bakes everything once, from scratch, only when the
+    // stroke's bounding box actually grows past what's currently allocated — a rare event
+    // compared to per-frame or even per-300-points cost.
+    private fun flushLivePath(item: StrokeItem) {
+        val data = item.data
+        val n = data.points.size / 2
+        if (n < 2) return
+        var minX = data.points[0]; var maxX = data.points[0]; var minY = data.points[1]; var maxY = data.points[1]
+        var k = 1
+        while (k < n) {
+            val px = data.points[k * 2]; val py = data.points[k * 2 + 1]
+            if (px < minX) minX = px; if (px > maxX) maxX = px
+            if (py < minY) minY = py; if (py > maxY) maxY = py
+            k++
+        }
+        val pad = data.strokeWidth * 3f + 40f
+        val left = minX - pad; val top = minY - pad
+        val worldW = (maxX - minX) + pad * 2f; val worldH = (maxY - minY) + pad * 2f
+
+        val fitsExisting = liveFlushBitmap != null && left >= liveFlushLeft && top >= liveFlushTop &&
+            (left + worldW) <= (liveFlushLeft + liveFlushWorldW) && (top + worldH) <= (liveFlushTop + liveFlushWorldH)
+
+        if (!fitsExisting) {
+            // Bounding box outgrew the current allocation (or this is the first flush) —
+            // (re)allocate to cover it and bake the whole stroke-so-far once from scratch.
+            val bmpW = (worldW * CACHE_SCALE).toInt().coerceIn(1, 4096)
+            val bmpH = (worldH * CACHE_SCALE).toInt().coerceIn(1, 4096)
+            try {
+                liveFlushBitmap = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+            } catch (e: OutOfMemoryError) { liveFlushBitmap = null; liveFlushCanvas = null; return }
+            liveFlushCanvas = Canvas(liveFlushBitmap!!)
+            liveFlushLeft = left; liveFlushTop = top; liveFlushWorldW = worldW; liveFlushWorldH = worldH
+            liveFlushCanvas!!.save()
+            liveFlushCanvas!!.translate(-liveFlushLeft * CACHE_SCALE, -liveFlushTop * CACHE_SCALE)
+            liveFlushCanvas!!.scale(CACHE_SCALE, CACHE_SCALE)
+            renderLiveStrokeRange(liveFlushCanvas!!, item, 0)
+            liveFlushCanvas!!.restore()
+            liveFlushedPairIndex = n
+            return
+        }
+        val overlapPairs = 8
+        val segStart = (liveFlushedPairIndex - overlapPairs).coerceAtLeast(0)
+        liveFlushCanvas!!.save()
+        liveFlushCanvas!!.translate(-liveFlushLeft * CACHE_SCALE, -liveFlushTop * CACHE_SCALE)
+        liveFlushCanvas!!.scale(CACHE_SCALE, CACHE_SCALE)
+        renderLiveStrokeRange(liveFlushCanvas!!, item, segStart)
+        liveFlushCanvas!!.restore()
+        liveFlushedPairIndex = n
+    }
+
     private fun pruneBrushCache() {
         var totalBytes = 0L
         val cached = actions.filterIsInstance<StrokeItem>().filter { it.cacheValid && it.cachedBitmap != null }
@@ -2270,6 +2626,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // off-screen bitmap; every frame after that is a single drawBitmap call regardless of how
     // complex the underlying geometry was.
     private fun drawWithBitmapCache(canvas: Canvas, item: StrokeItem, pad: Float, render: (Canvas, StrokeItem) -> Unit) {
+        if ((item === activeResizeItem || activeGroupResizeItems.contains(item)) && item.cachedBitmap != null) {
+            val bounds = getBounds(item)
+            if (bounds != null) {
+                val dst = android.graphics.RectF(bounds[0] - pad, bounds[1] - pad, bounds[2] + pad, bounds[3] + pad)
+                canvas.drawBitmap(item.cachedBitmap!!, null, dst, _bitmapFilterPaint)
+                return
+            }
+        }
         if (!item.cacheValid || item.cachedBitmap == null) {
             val bounds = getBounds(item) ?: run { render(canvas, item); return }
             val wl = bounds[0] - pad; val wt = bounds[1] - pad
@@ -2292,14 +2656,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         val bmp = item.cachedBitmap ?: return
         val dst = android.graphics.RectF(item.cacheLeft, item.cacheTop, item.cacheRight, item.cacheBottom)
-        canvas.drawBitmap(bmp, null, dst, null)
+        canvas.drawBitmap(bmp, null, dst, _bitmapFilterPaint)
     }
 
     private fun drawBrushStrokeWithCache(canvas: Canvas, item: StrokeItem) {
         val sessionBmp = item.eraseSessionBitmap
         if (sessionBmp != null) {
             val dst = android.graphics.RectF(item.eraseSessionLeft, item.eraseSessionTop, item.eraseSessionRight, item.eraseSessionBottom)
-            canvas.drawBitmap(sessionBmp, null, dst, null)
+            canvas.drawBitmap(sessionBmp, null, dst, _bitmapFilterPaint)
             return
         }
         if (!CACHED_BRUSH_STYLES.contains(item.data.brushStyle)) {
@@ -2330,7 +2694,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val bmp = item.cachedBitmap ?: return
         // dstRect is in world coords — the canvas transform (translate+scale) maps to screen correctly
         val dst = android.graphics.RectF(item.cacheLeft, item.cacheTop, item.cacheRight, item.cacheBottom)
-        canvas.drawBitmap(bmp, null, dst, null)
+        canvas.drawBitmap(bmp, null, dst, _bitmapFilterPaint)
     }
 
     // Renders the stroke's current appearance into item.eraseSessionBitmap exactly once (if not
@@ -2350,12 +2714,31 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val bc = Canvas(bmp)
             bc.translate(-wl * CACHE_SCALE, -wt * CACHE_SCALE)
             bc.scale(CACHE_SCALE, CACHE_SCALE)
-            drawBrushStroke(bc, item)
+            renderFrozenStroke(bc, item)
             item.eraseSessionBitmap = bmp
             item.eraseSessionLeft = wl; item.eraseSessionTop = wt
             item.eraseSessionRight = wr; item.eraseSessionBottom = wb
             true
         } catch (e: OutOfMemoryError) { false }
+    }
+
+    // Draws whatever this item actually is, once, at freeze time — matching the same per-style
+    // dispatch drawActionItem itself uses, so the frozen bitmap looks pixel-identical to what
+    // was already on screen. From this point on nothing about the stroke's geometry gets
+    // touched again; erasing just clears pixels directly out of this bitmap.
+    private fun renderFrozenStroke(canvas: Canvas, item: StrokeItem) {
+        val data = item.data
+        when {
+            data.type == Tool.BRUSH -> drawBrushStroke(canvas, item)
+            data.type == Tool.PEN && data.penStyle == PenStyle.CALLIGRAPHY -> data.drawCalligraphyStroke(canvas, item.paint)
+            data.type == Tool.PEN && data.penStyle == PenStyle.PENCIL -> data.drawPencilStroke(canvas, item.paint)
+            data.type == Tool.PEN && data.penStyle == PenStyle.FOUNTAIN && data.widths.size >= 2 ->
+                canvas.drawPath(data.buildFountainRibbonPath(), Paint(item.paint).apply { style = Paint.Style.FILL; pathEffect = null })
+            else -> {
+                data.toFillPaint()?.let { canvas.drawPath(item.path, it) }
+                canvas.drawPath(item.path, item.paint)
+            }
+        }
     }
 
     // Clears a circle of pixels directly from the frozen session bitmap — O(pixels under the
@@ -2404,6 +2787,35 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             } catch (e: Exception) { /* keep the stroke as-is if saving failed */ }
         }
         if (changed) markSpatialDirty()
+    }
+
+    // Threshold shared with the eraser's freeze-to-bitmap check — a stroke past this point is
+    // long enough that vector operations on it (re-rendering, re-offsetting the whole path) stay
+    // noticeably expensive every single frame, even after cheaper per-op fixes.
+    private val LONG_STROKE_FREEZE_THRESHOLD = 80
+
+    // Converts a Pen/Highlighter stroke to a plain image, once, right when a move-drag on a very
+    // long stroke begins — from then on the drag is just adjusting an image's x/y, an O(1)
+    // per-frame cost, instead of re-offsetting a multi-thousand-point path every frame. Reuses
+    // ensureEraseSessionBitmap (the exact same bake used for the long-stroke eraser case) so the
+    // baked appearance is guaranteed identical to what was already on screen.
+    private fun convertLongStrokeToImage(item: StrokeItem): ImageItem? {
+        if (!ensureEraseSessionBitmap(item)) return null
+        val bmp = item.eraseSessionBitmap ?: return null
+        item.eraseSessionBitmap = null
+        val idx = actions.indexOf(item)
+        if (idx < 0) return null
+        return try {
+            val folder = File(ctx.filesDir, "images"); if (!folder.exists()) folder.mkdirs()
+            val outFile = File(folder, "moved_${System.currentTimeMillis()}_${idx}.png")
+            FileOutputStream(outFile).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            val img = ImageItem(outFile.absolutePath, item.eraseSessionLeft, item.eraseSessionTop,
+                item.eraseSessionRight - item.eraseSessionLeft, item.eraseSessionBottom - item.eraseSessionTop, 0f)
+            img.layerId = item.layerId; img.bitmap = bmp
+            actions[idx] = img
+            removeFromSpatialIndex(item); addToSpatialIndex(img)
+            img
+        } catch (e: Exception) { null }
     }
 
     private fun drawBrushStroke(canvas: Canvas, item: StrokeItem) {
@@ -2590,7 +3002,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (++drawCount % 60 == 0) pruneBrushCache()
-        canvas.drawColor(Color.WHITE)
+        canvas.drawColor(if (isExportRender) Color.WHITE else canvasBackgroundColor)
         canvas.save()
         canvas.translate(translateX, translateY)
         canvas.scale(scaleFactor, scaleFactor)
@@ -2631,15 +3043,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // Draw all non-batched items (shapes, pen strokes, text, images, everything else)
         for (action in remainingItems) drawActionItem(canvas, action, true)
         currentItem?.let {
-            val isCalligraphyPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.CALLIGRAPHY
-            val isFountainPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.FOUNTAIN && it.data.widths.size >= 2
-            val isPencilPen = it.data.type == Tool.PEN && it.data.penStyle == PenStyle.PENCIL && it.data.widths.size >= 2
             when {
-                // Same native-stroke renderer used for the finalized stroke, so live preview
-                // and final look match exactly with no separate code path to drift out of sync.
-                isCalligraphyPen -> it.data.drawCalligraphyStroke(canvas, it.paint)
-                isFountainPen -> canvas.drawPath(it.data.buildFountainRibbonPath(), Paint(it.paint).apply { style = Paint.Style.FILL; pathEffect = null })
-                isPencilPen -> it.data.drawPencilStroke(canvas, it.paint)
                 // Was falling through to the flat-width `else` below, so Brush strokes only
                 // showed their real per-point width variation once finalized (via
                 // drawBrushStrokeWithCache) — the live stroke looked uniform-width the whole
@@ -2651,6 +3055,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // its result — without invalidating every frame here, it'd keep returning
                 // whatever the point list looked like on the very first frame of the stroke.
                 it.data.type == Tool.BRUSH -> { it.invalidateCache(); drawBrushStroke(canvas, it) }
+                liveFlushBitmap != null -> {
+                    val dst = RectF(liveFlushLeft, liveFlushTop, liveFlushLeft + liveFlushWorldW, liveFlushTop + liveFlushWorldH)
+                    canvas.drawBitmap(liveFlushBitmap!!, null, dst, _bitmapFilterPaint)
+                    renderLiveStrokeRange(canvas, it, liveFlushedPairIndex)
+                }
+                // No flush cache yet (short stroke, hasn't reached the flush interval) — same
+                // native-stroke renderers used for the finalized stroke, so live preview and
+                // final look match exactly with no separate code path to drift out of sync.
+                // Ball/Marker/Highlighter/legacy-Fountain use it.path directly here (maintained
+                // cheaply by the throttle logic in the touch handler) rather than rebuilding via
+                // renderLiveStrokeRange every frame, which would undo that throttling.
+                it.data.type == Tool.PEN && it.data.penStyle == PenStyle.CALLIGRAPHY -> it.data.drawCalligraphyStroke(canvas, it.paint)
+                it.data.type == Tool.PEN && it.data.penStyle == PenStyle.PENCIL -> it.data.drawPencilStroke(canvas, it.paint)
                 else -> canvas.drawPath(it.path, it.paint)
             }
         }
@@ -2688,8 +3105,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (isFirstLayout || widthChanged || stableLayoutHeight == 0) {
                 stableLayoutHeight = height
             }
-            convenientPageW = width.toFloat() * 0.82f
-            convenientPageH = stableLayoutHeight.toFloat() * 1.1f
+            // Was view.width * 0.82 / stableLayoutHeight * 1.1 — a fixed, view-relative size with
+            // no relationship to any real paper size. Now driven by the same selectable paperSize
+            // every other mode uses (same mm-to-px conversion), so Convenient mode's page size
+            // actually changes when the user picks a different paper size.
+            val m = 3.7795f
+            convenientPageW = if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
+            convenientPageH = if (pageOrientation == Orientation.PORTRAIT) paperSize.heightMM * m else paperSize.widthMM * m
             if (isFirstLayout) {
                 hasInitialLayout = true
                 when (canvasMode) {
@@ -2718,20 +3140,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     fun resetLayoutPosition() { hasInitialLayout = false }
 
     // Rearranges text items to wrap and fit within the current page width (used when switching to print)
-    fun rearrangeTextForPrint() {
+    // Rewraps text items to start within the current page width — called whenever paper size
+    // changes. Always rewraps; there's no separate "keep as is" choice anymore, the same way
+    // changing page size in a word processor always reflows text.
+    fun rewrapTextToPage() {
         val pw = pageWidthPx()
         for (a in actions) {
             if (a is TextItem) {
                 a.x = a.x.coerceIn(16f, pw - 60f)
-                a.maxWidth = (pw - a.x - 16f).coerceAtLeast(80f)
+                // Deliberately NOT setting a.maxWidth here. textWrapWidth() already recalculates
+                // (pw - a.x - 16f) dynamically every time when maxWidth is unset (0) — freezing
+                // a one-time snapshot here previously caused the wrap width to go stale relative
+                // to the item's actual current position/size after any later change.
             }
         }
-        invalidate()
-    }
-
-    // Keeps text exactly as typed (no rewrapping) - single logical line per paragraph, may extend past visual edge
-    fun keepTextAsIs() {
-        for (a in actions) { if (a is TextItem) a.maxWidth = 4000f }
         invalidate()
     }
 
@@ -2768,7 +3190,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // recompute item.y = desiredTopY + currentHeight every time the content changes, rather
     // than setting item.y once and leaving it. Otherwise the rendered top silently climbs
     // upward as the content grows, since the same fixed "bottom" now has more height above it.
-    fun textItemHeight(item: TextItem): Float = getOrBuildLayout(item).height.toFloat().coerceAtLeast(item.size * 1.2f)
+    fun textItemHeight(item: TextItem): Float { val l = getOrBuildLayout(item); return textItemVisualHeight(item, l).coerceAtLeast(item.size * 1.2f) }
     fun repositionTextItemTop(item: TextItem, desiredTopY: Float) {
         item.y = desiredTopY + textItemHeight(item)
         markSpatialDirty()
@@ -2821,6 +3243,44 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // split re-applies cleanly the moment the drag ends and this is cleared.
     var draggingTextItem: TextItem? = null
 
+    // The true visual height of a text item, including any gaps inserted by the per-page
+    // splitting in drawTextItem below (when an item is taller than one page, it's drawn as
+    // separate runs with a visual gap between each page's portion — plain layout.height knows
+    // nothing about those gaps). Mirrors that exact same loop's gap accumulation rather than
+    // reimplementing the logic separately, so the two can never quietly diverge again. Used by
+    // getBounds()/drawSelection()/textItemHeight()/findTextItemAt() so the selection box (and the
+    // rotation pivot computed from it), hit-testing, and drag-surface sizing all actually match
+    // what's drawn, instead of being undersized by however many page breaks the item crosses.
+    private fun textItemVisualHeight(item: TextItem, layout: StaticLayout): Float {
+        val contentH = layout.height.toFloat()
+        val ph = pageHeightPx()
+        if (item === draggingTextItem || canvasMode == CanvasMode.INFINITE || item.rotation != 0f || contentH <= ph) return contentH
+        val gap = if (canvasMode == CanvasMode.CONVENIENT) 24f else 40f
+        // Breathing room at a page split specifically — text stops this far short of the true
+        // page bottom, and resumes this far below the next page's true top, instead of running
+        // edge-to-edge. Doesn't affect the very first page's starting position at all (that's
+        // wherever the item was actually placed) — only where a split itself happens.
+        val pageBottomMargin = 24f
+        val pageTopMargin = 24f
+        val period = ph + gap
+        val topY = item.y - contentH
+        var lineIdx = 0
+        var extraSkip = 0f
+        var guard = 0
+        while (lineIdx < layout.lineCount && guard < 10000) {
+            guard++
+            val lineTopAbs = topY + layout.getLineTop(lineIdx) + extraSkip
+            val pageIdx = kotlin.math.floor(lineTopAbs / period)
+            val pageBottomAbs = pageIdx * period + ph - pageBottomMargin
+            var endLineIdx = lineIdx
+            while (endLineIdx < layout.lineCount && topY + layout.getLineBottom(endLineIdx) + extraSkip <= pageBottomAbs) endLineIdx++
+            if (endLineIdx == lineIdx) { extraSkip += (pageIdx + 1) * period - lineTopAbs + pageTopMargin; continue }
+            lineIdx = endLineIdx
+            if (lineIdx < layout.lineCount) extraSkip += gap + pageTopMargin
+        }
+        return contentH + extraSkip
+    }
+
     private fun drawTextItem(canvas: Canvas, item: TextItem) {
         val layout = getOrBuildLayout(item)
         // Actual content width = widest line, not the wrap width (which can be 4000 for infinite canvas)
@@ -2839,6 +3299,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val ph = pageHeightPx()
         if (item !== draggingTextItem && canvasMode != CanvasMode.INFINITE && item.rotation == 0f && contentH > ph) {
             val gap = if (canvasMode == CanvasMode.CONVENIENT) 24f else 40f
+            // Same margin as textItemVisualHeight — must match exactly or the box/hit-testing
+            // and the actual render would disagree on where each page's text starts and stops.
+            val pageBottomMargin = 24f
+            val pageTopMargin = 24f
             val period = ph + gap
             var lineIdx = 0
             var extraSkip = 0f
@@ -2847,13 +3311,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 guard++
                 val lineTopAbs = topY + layout.getLineTop(lineIdx) + extraSkip
                 val pageIdx = kotlin.math.floor(lineTopAbs / period)
-                val pageBottomAbs = pageIdx * period + ph
+                val pageBottomAbs = pageIdx * period + ph - pageBottomMargin
                 var endLineIdx = lineIdx
                 while (endLineIdx < layout.lineCount && topY + layout.getLineBottom(endLineIdx) + extraSkip <= pageBottomAbs) endLineIdx++
                 if (endLineIdx == lineIdx) {
                     // A single line taller than the remaining page space (rare) - push the
-                    // whole thing to the top of the next page rather than clipping mid-line.
-                    extraSkip += (pageIdx + 1) * period - lineTopAbs
+                    // whole thing to the top of the next page (plus top margin) rather than
+                    // clipping mid-line.
+                    extraSkip += (pageIdx + 1) * period - lineTopAbs + pageTopMargin
                     continue
                 }
                 val runTop = topY + layout.getLineTop(lineIdx) + extraSkip
@@ -2864,7 +3329,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 layout.draw(canvas)
                 canvas.restore()
                 lineIdx = endLineIdx
-                if (lineIdx < layout.lineCount) extraSkip += gap  // jump over the visual gap to the next page's top
+                if (lineIdx < layout.lineCount) extraSkip += gap + pageTopMargin  // jump over the visual gap plus top margin to the next page's text-start
             }
             return
         }
@@ -2885,14 +3350,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawSelection(canvas: Canvas) {
         activeTableItem?.let { drawTableHandles(canvas, it) }
-        // Adjusting an already-placed dimension's handle (point1, point2, or offset) — this had
-        // no magnifier lens at all before, for any of the three handles, unlike the initial-
-        // placement "searching for point" phases below which already handled it. dimCurWx/wy
-        // track the live finger position during this drag too (set unconditionally in
-        // ACTION_MOVE), so the same lens function works here directly.
-        if (currentTool == Tool.DIMENSION && dimDraggingItem != null && dimFingerDown) {
-            drawMagnifierLens(canvas, dimCurWx, dimCurWy)
-        }
         // Preview dimension line while drawing
         if (currentTool == Tool.DIMENSION) {
             if (dimAngular) {
@@ -3014,35 +3471,41 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         val item = selectedItem ?: return
         if (item is TextItem) {
-            // Was rebuilding its own plain StaticLayout here (no spans, separate TextPaint)
-            // instead of reusing getOrBuildLayout() — the exact layout drawTextItem() actually
-            // renders with. Two independently-built layouts can silently differ in width/height
-            // (e.g. any bold/italic/color span here got dropped, since this passed item.text
-            // directly instead of the spannable), so the box rotated around a different pivot
-            // than the glyphs did — the box and text visibly drifted apart when rotated. Reusing
-            // the same cached layout guarantees the box and the glyphs always agree.
             val layout = getOrBuildLayout(item)
-            val contentW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
-            val contentH = layout.height.toFloat()
+            var contentW = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
+            // Same direct-measure safety net as getBounds() — for single-line text, measures the
+            // raw text directly rather than trusting the cached layout's wrap-width-dependent
+            // line width, so this box can't end up narrower than the text actually is.
+            if (layout.lineCount == 1) {
+                val worstStyle = item.spans.filter { it.type == 'S' }.maxOfOrNull { it.value } ?: Typeface.NORMAL
+                val mp = TextPaint(); mp.textSize = item.size; mp.typeface = android.graphics.Typeface.create(typefaceFromFamily(item.fontFamily ?: "sans-serif"), worstStyle)
+                val measured = mp.measureText(item.text)
+                if (measured > contentW) contentW = measured
+            }
+            // Was plain layout.height — didn't account for the gaps drawTextItem() inserts when
+            // an item spans multiple pages, which is why the box was undersized for any text
+            // long enough to cross a page boundary.
+            val contentH = textItemVisualHeight(item, layout)
+            // Equal padding on all 4 sides, proportional to font size.
+            val pad = item.size * 0.12f
+            val boxW = contentW + pad * 2f; val boxH = contentH + pad * 2f
             canvas.save()
-            canvas.translate(item.x, item.y - contentH)
-            canvas.rotate(item.rotation, contentW / 2f, contentH / 2f)
+            canvas.translate(item.x - pad, item.y - contentH - pad)
+            canvas.rotate(item.rotation, boxW / 2f, boxH / 2f)
             // Selection border
             val selP = Paint(); selP.color = Color.parseColor("#2196F3"); selP.style = Paint.Style.STROKE
             selP.strokeWidth = 2f / scaleFactor; selP.isAntiAlias = true
-            canvas.drawRect(0f, 0f, contentW, contentH, selP)
+            canvas.drawRect(0f, 0f, boxW, boxH, selP)
             // Rotate handle — large green circle, 32px screen size, easy to tap
-            val hr = 32f / scaleFactor
-            val hx = contentW / 2f; val hy = -56f / scaleFactor
-            canvas.drawLine(contentW / 2f, 0f, hx, hy + hr, selP)
-            val hFill = Paint(); hFill.color = Color.parseColor("#34C759"); hFill.style = Paint.Style.FILL; hFill.isAntiAlias = true
-            val hStroke = Paint(); hStroke.color = Color.WHITE; hStroke.style = Paint.Style.STROKE; hStroke.strokeWidth = 4f / scaleFactor; hStroke.isAntiAlias = true
-            // Draw rotation symbol inside the handle
-            canvas.drawCircle(hx, hy, hr, hFill)
-            canvas.drawCircle(hx, hy, hr, hStroke)
-            // Draw ↻ arrow inside
+            val hr2 = 32f / scaleFactor
+            val hx = boxW / 2f; val hy = -56f / scaleFactor
+            canvas.drawLine(boxW / 2f, 0f, hx, hy + hr2, selP)
+            val hFill2 = Paint(); hFill2.color = Color.parseColor("#34C759"); hFill2.style = Paint.Style.FILL; hFill2.isAntiAlias = true
+            val hStroke2 = Paint(); hStroke2.color = Color.WHITE; hStroke2.style = Paint.Style.STROKE; hStroke2.strokeWidth = 4f / scaleFactor; hStroke2.isAntiAlias = true
+            canvas.drawCircle(hx, hy, hr2, hFill2)
+            canvas.drawCircle(hx, hy, hr2, hStroke2)
             val ap = Paint(); ap.color = Color.WHITE; ap.style = Paint.Style.STROKE; ap.strokeWidth = 3f / scaleFactor; ap.isAntiAlias = true; ap.strokeCap = Paint.Cap.ROUND
-            val ar = hr * 0.5f
+            val ar = hr2 * 0.5f
             canvas.drawArc(android.graphics.RectF(hx - ar, hy - ar, hx + ar, hy + ar), -150f, 270f, false, ap)
             val arrowPath = android.graphics.Path(); arrowPath.moveTo(hx + ar * 0.3f, hy - ar * 0.95f); arrowPath.lineTo(hx + ar, hy - ar * 0.3f); arrowPath.lineTo(hx + ar * 0.3f, hy + ar * 0.3f)
             canvas.drawPath(arrowPath, ap)
@@ -3106,15 +3569,28 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is AudioItem -> { val r = item.radius; floatArrayOf(item.x - r, item.y - r, item.x + r, item.y + r + 40f) }
             is TextItem -> {
                 val layout = getOrBuildLayout(item)
-                val w = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(10f) ?: 10f
-                val h = layout.height.toFloat().coerceAtLeast(item.size * 1.2f)
+                var w = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(10f) ?: 10f
+                // For single-line text, also measure the raw text directly — independent of
+                // whatever wrap width the cached layout happened to be built with. Whichever is
+                // larger wins. This is what makes the box immune to a timing mismatch between
+                // when the layout was cached and what's currently actually rendering, instead of
+                // requiring the two to always agree perfectly.
+                if (layout.lineCount == 1) {
+                    val worstStyle = item.spans.filter { it.type == 'S' }.maxOfOrNull { it.value } ?: Typeface.NORMAL
+                    val mp = TextPaint(); mp.textSize = item.size; mp.typeface = android.graphics.Typeface.create(typefaceFromFamily(item.fontFamily ?: "sans-serif"), worstStyle)
+                    val measured = mp.measureText(item.text)
+                    if (measured > w) w = measured
+                }
+                // Was plain layout.height — didn't account for the gaps drawTextItem() inserts
+                // when an item spans multiple pages, which is why the box (and hit-testing, which
+                // also uses getBounds()) was undersized for any text long enough to cross a page.
+                val h = textItemVisualHeight(item, layout).coerceAtLeast(item.size * 1.2f)
                 // Equal padding on all 4 sides, proportional to font size — without this, a
                 // cursive/italic font's trailing glyph can visually overhang past the logical
-                // advance width the layout reports (the flourish on an ending "f" is a good
-                // example), poking out of a box sized to exactly match that advance width. Equal
-                // padding everywhere (not just the side that happened to overhang) also means the
-                // box is symmetric around its own center, so rotating it doesn't expose a gap
-                // that's tight on one side and loose on another.
+                // advance width the layout reports, poking out of a box sized to exactly match
+                // that advance width. Equal padding everywhere also means the box is symmetric
+                // around its own center, so rotating it doesn't expose a gap that's tight on one
+                // side and loose on another.
                 val pad = item.size * 0.12f
                 floatArrayOf(item.x - pad, item.y - h - pad, item.x + w + pad, item.y + pad)
             }
@@ -3199,7 +3675,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is StrokeItem -> {
                 var i = 0
                 while (i + 1 < item.data.points.size) { item.data.points[i] += dx; item.data.points[i + 1] += dy; i += 2 }
-                item.path = item.data.buildPath()
+                item.data.shiftGeometryCaches(dx, dy)
+                item.path.offset(dx, dy)
                 item.invalidateCache()
                 markSpatialDirty()  // spatial grid must update or hit testing fails at new position
                 // Also translate clip holes so they move with the shape
@@ -3235,48 +3712,52 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             is StrokeItem -> {
                 if (STROKE_SCALE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
-                    // Uniform scale from centroid using delta-drag (not absolute position).
-                    // We compare finger distance from centroid NOW vs at the point the handle was grabbed.
-                    // The ratio of those distances = the scale factor. This makes small drags = small changes.
-                    val pts = item.data.points
-                    var minX = pts[0]; var minY = pts[1]; var maxX = pts[0]; var maxY = pts[1]
-                    var i2 = 0; while (i2 + 1 < pts.size) { minX = minOf(minX, pts[i2]); minY = minOf(minY, pts[i2+1]); maxX = maxOf(maxX, pts[i2]); maxY = maxOf(maxY, pts[i2+1]); i2 += 2 }
-                    val cx = (minX + maxX) / 2f; val cy = (minY + maxY) / 2f
-                    val oldW = (maxX - minX).coerceAtLeast(1f); val oldH = (maxY - minY).coerceAtLeast(1f)
-                    val halfW = oldW / 2f; val halfH = oldH / 2f
-                    // Finger offset from centroid
-                    val fx = wx - cx; val fy = wy - cy
-                    // For each handle, the "fixed" opposite corner stays, and the dragged edge follows finger.
-                    // Scale = finger_dist / original_half_size. Use only the relevant axis per handle.
-                    val scaleX = when (handle) {
-                        HandleType.ML -> if (halfW > 1f) (-fx / halfW).coerceIn(0.05f, 20f) else 1f
-                        HandleType.MR -> if (halfW > 1f) (fx / halfW).coerceIn(0.05f, 20f) else 1f
-                        HandleType.TL, HandleType.BL -> if (halfW > 1f) (-fx / halfW).coerceIn(0.05f, 20f) else 1f
-                        HandleType.TR, HandleType.BR -> if (halfW > 1f) (fx / halfW).coerceIn(0.05f, 20f) else 1f
-                        else -> 1f
-                    }
-                    val scaleY = when (handle) {
-                        HandleType.TM -> if (halfH > 1f) (-fy / halfH).coerceIn(0.05f, 20f) else 1f
-                        HandleType.BM -> if (halfH > 1f) (fy / halfH).coerceIn(0.05f, 20f) else 1f
-                        HandleType.TL, HandleType.TR -> if (halfH > 1f) (-fy / halfH).coerceIn(0.05f, 20f) else 1f
-                        HandleType.BL, HandleType.BR -> if (halfH > 1f) (fy / halfH).coerceIn(0.05f, 20f) else 1f
-                        else -> 1f
-                    }
-                    val newHalfW = halfW * scaleX; val newHalfH = halfH * scaleY
-                    // Shift centroid: the opposite (fixed) side stays put
-                    val newCx = when (handle) {
-                        HandleType.TL, HandleType.ML, HandleType.BL -> maxX - newHalfW  // right edge fixed
-                        HandleType.TR, HandleType.MR, HandleType.BR -> minX + newHalfW  // left edge fixed
-                        else -> cx
-                    }
-                    val newCy = when (handle) {
-                        HandleType.TL, HandleType.TM, HandleType.TR -> maxY - newHalfH  // bottom edge fixed
-                        HandleType.BL, HandleType.BM, HandleType.BR -> minY + newHalfH  // top edge fixed
-                        else -> cy
-                    }
-                    if (newHalfW > 0.5f && newHalfH > 0.5f) {
-                        var j = 0; while (j + 1 < pts.size) { pts[j] = newCx + (pts[j] - cx) * scaleX; pts[j+1] = newCy + (pts[j+1] - cy) * scaleY; j += 2 }
-                        item.path = item.data.buildPath()
+                    // Uniform scale from centroid using the FIXED snapshot taken when the handle
+                    // was first grabbed (see strokeResizeOrigPoints/strokeResizeOrigBounds) —
+                    // every frame recomputes fresh from that same fixed starting point using the
+                    // CURRENT finger position, rather than compounding off last frame's result.
+                    val origPts = strokeResizeOrigPoints
+                    val origB = strokeResizeOrigBounds
+                    if (origPts != null && origB != null && origPts.size == item.data.points.size) {
+                        val minX = origB[0]; val minY = origB[1]; val maxX = origB[2]; val maxY = origB[3]
+                        val cx = (minX + maxX) / 2f; val cy = (minY + maxY) / 2f
+                        val oldW = (maxX - minX).coerceAtLeast(1f); val oldH = (maxY - minY).coerceAtLeast(1f)
+                        // Scale = (distance from the FIXED opposite edge) / (the full original
+                        // width/height) — NOT distance-from-center divided by half-width. Those
+                        // only agree exactly at the grab point; drag at all and center-based
+                        // scaling overshoots what opposite-edge-fixed geometry actually calls
+                        // for, worse the further you drag.
+                        val scaleX = when (handle) {
+                            HandleType.ML, HandleType.TL, HandleType.BL -> ((maxX - wx) / oldW).coerceIn(0.05f, 20f)
+                            HandleType.MR, HandleType.TR, HandleType.BR -> ((wx - minX) / oldW).coerceIn(0.05f, 20f)
+                            else -> 1f
+                        }
+                        val scaleY = when (handle) {
+                            HandleType.TM, HandleType.TL, HandleType.TR -> ((maxY - wy) / oldH).coerceIn(0.05f, 20f)
+                            HandleType.BM, HandleType.BL, HandleType.BR -> ((wy - minY) / oldH).coerceIn(0.05f, 20f)
+                            else -> 1f
+                        }
+                        val newHalfW = (oldW / 2f) * scaleX; val newHalfH = (oldH / 2f) * scaleY
+                        // Shift centroid: the opposite (fixed) side stays put
+                        val newCx = when (handle) {
+                            HandleType.TL, HandleType.ML, HandleType.BL -> maxX - newHalfW  // right edge fixed
+                            HandleType.TR, HandleType.MR, HandleType.BR -> minX + newHalfW  // left edge fixed
+                            else -> cx
+                        }
+                        val newCy = when (handle) {
+                            HandleType.TL, HandleType.TM, HandleType.TR -> maxY - newHalfH  // bottom edge fixed
+                            HandleType.BL, HandleType.BM, HandleType.BR -> minY + newHalfH  // top edge fixed
+                            else -> cy
+                        }
+                        if (newHalfW > 0.5f && newHalfH > 0.5f) {
+                            val pts = item.data.points
+                            var j = 0; while (j + 1 < pts.size) { pts[j] = newCx + (origPts[j] - cx) * scaleX; pts[j + 1] = newCy + (origPts[j + 1] - cy) * scaleY; j += 2 }
+                            // Deliberately NOT rebuilding item.path here — nothing shown during
+                            // the live drag needs it (the selection box and the stretched-bitmap
+                            // preview both read item.data.points directly), and rebuilding it
+                            // meant a full smoothing recompute every single frame regardless of
+                            // stroke size. Done once, properly, at release instead (ACTION_UP).
+                        }
                     }
                 } else if (BBOX_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
                     val rot = Math.toRadians(item.data.rotation.toDouble())
@@ -3301,7 +3782,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val newCy = fixedWorldY - (newFixedLocalX * sin + newFixedLocalY * cos)
                     item.data.points[0] = newCx - newW / 2f; item.data.points[1] = newCy - newH / 2f
                     item.data.points[2] = newCx + newW / 2f; item.data.points[3] = newCy + newH / 2f
+                    item.data.invalidateGeometryCaches()
                     item.path = item.data.buildPath()
+                    item.invalidateCache()
                 } else if (ENDPOINT_RESIZE_SHAPES.contains(item.data.type) && item.data.points.size >= 4) {
                     val rot = item.data.rotation
                     val (ux, uy) = if (rot != 0f) {
@@ -3318,7 +3801,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         }
                         else -> {}
                     }
+                    item.data.invalidateGeometryCaches()
                     item.path = item.data.buildPath()
+                    item.invalidateCache()
                 }
             }
             is TextItem -> {
@@ -3343,7 +3828,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val compactFloor = (longestWord + 24f).coerceAtLeast(60f)
                         val dx = if (handle == HandleType.MR) (wx - resizePrevWorldX) else (resizePrevWorldX - wx)
                         val current = if (item.maxWidth > 0f) item.maxWidth else textWrapWidth(item).toFloat()
-                        item.maxWidth = (current + dx * 2f).coerceIn(compactFloor, pageWidthPx())
+                        // Ceiling is how much room is actually left from the box's own left edge
+                        // to the page's right edge — NOT the full page width. The box's right
+                        // edge is item.x + maxWidth, so capping maxWidth at the full page width
+                        // let it extend well past the actual page boundary once item.x was
+                        // anything other than 0, pushing this very handle off the visible page.
+                        val maxAllowedWidth = (pageWidthPx() - item.x - 16f).coerceAtLeast(compactFloor)
+                        item.maxWidth = (current + dx * 2f).coerceIn(compactFloor, maxAllowedWidth)
+                        item.widthExplicitlySet = true
                     }
                     else -> {
                         // TM/BM (vertical-only handles) don't apply to text - there's nothing
@@ -3437,10 +3929,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun findTextItemAt(x: Float, y: Float): TextItem? {
         for (a in actions.reversed()) {
             if (a is TextItem) {
-                if (layers.find { it.id == a.layerId }?.visible == false) continue
                 val layout = getOrBuildLayout(a)
                 val cw = (0 until layout.lineCount).maxOfOrNull { layout.getLineWidth(it) }?.coerceAtLeast(1f) ?: 1f
-                val ch = layout.height.toFloat()
+                // Was plain layout.height — same missing-gaps issue as getBounds()/drawSelection().
+                // Without this, tapping the upper portion of a text item spanning multiple pages
+                // would silently miss it, since the tappable region was undersized to match.
+                val ch = textItemVisualHeight(a, layout)
                 val pad = 24f / scaleFactor
                 val pivX = a.x + cw / 2f; val pivY = a.y - ch / 2f
                 val lx: Float; val ly: Float
@@ -3878,7 +4372,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     for ((hType,pos) in corners) {
                         if (distance(wx,wy,pos.first,pos.second) <= hr*1.5f) {
                             groupActiveHandle=hType; groupDragStartX=wx; groupDragStartY=wy; groupOrigBounds=gb.copyOf(); groupSnapshots.clear()
-                            for (it in allSel) { val b2=getBounds(it); if (b2!=null) groupSnapshots.add(Pair(it,b2.copyOf())) }
+                            // Full points for StrokeItem, not just bounds — same snapshot shape
+                            // scaleItemInGroupFromSnapshot() (Lasso/Rect's already-correct resize)
+                            // expects, so this path can reuse that instead of its own logic.
+                            for (it in allSel) {
+                                if (it is StrokeItem) { groupSnapshots.add(Pair(it, it.data.points.toFloatArray())) }
+                                else { val b2=getBounds(it); if (b2!=null) groupSnapshots.add(Pair(it,b2.copyOf())) }
+                            }
                             return
                         }
                     }
@@ -3966,7 +4466,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val isEndpoint = item is StrokeItem && ENDPOINT_RESIZE_SHAPES.contains(item.data.type)
                         if (!handled && isBbox) {
                             for ((type, pos) in bboxHandlePositions(b)) {
-                                if (distance(lx, ly, pos.first, pos.second) <= hit) { activeHandle = type; dragStartPivotX = px; dragStartPivotY = py; dragStartRotation = rot; resizePrevWorldX = wx; resizePrevWorldY = wy; handled = true; break }
+                                if (distance(lx, ly, pos.first, pos.second) <= hit) {
+                                    activeHandle = type; dragStartPivotX = px; dragStartPivotY = py; dragStartRotation = rot; resizePrevWorldX = wx; resizePrevWorldY = wy; handled = true
+                                    if (item is StrokeItem && STROKE_SCALE_SHAPES.contains(item.data.type)) {
+                                        strokeResizeOrigPoints = item.data.points.toFloatArray()
+                                        var mnX = item.data.points[0]; var mnY = item.data.points[1]; var mxX = mnX; var mxY = mnY
+                                        var k = 2
+                                        while (k + 1 < item.data.points.size) {
+                                            mnX = minOf(mnX, item.data.points[k]); mnY = minOf(mnY, item.data.points[k + 1])
+                                            mxX = maxOf(mxX, item.data.points[k]); mxY = maxOf(mxY, item.data.points[k + 1])
+                                            k += 2
+                                        }
+                                        strokeResizeOrigBounds = floatArrayOf(mnX, mnY, mxX, mxY)
+                                        activeResizeItem = item
+                                    }
+                                    break
+                                }
                             }
                         }
                         if (!handled && isEndpoint && item is StrokeItem && item.data.points.size >= 4) {
@@ -3976,7 +4491,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             if (distance(lx, ly, p0x, p0y) <= hit) { activeHandle = HandleType.TL; resizePrevWorldX = wx; resizePrevWorldY = wy; handled = true }
                             else if (distance(lx, ly, p1x, p1y) <= hit) { activeHandle = HandleType.BR; resizePrevWorldX = wx; resizePrevWorldY = wy; handled = true }
                         }
-                        if (!handled && lx >= b[0] - hit && lx <= b[2] + hit && ly >= b[1] - hit && ly <= b[3] + hit) { activeHandle = HandleType.MOVE; dragStartWorldX = wx; dragStartWorldY = wy; handled = true }
+                        if (!handled && lx >= b[0] - hit && lx <= b[2] + hit && ly >= b[1] - hit && ly <= b[3] + hit) {
+                            if (item is StrokeItem && (item.data.type == Tool.PEN || item.data.type == Tool.HIGHLIGHTER) &&
+                                item.data.points.size / 2 > LONG_STROKE_FREEZE_THRESHOLD) {
+                                convertLongStrokeToImage(item)?.let { selectedItem = it }
+                            }
+                            activeHandle = HandleType.MOVE; dragStartWorldX = wx; dragStartWorldY = wy; handled = true
+                        }
                     }
                 }
                 if (!handled) {
@@ -4080,18 +4601,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             val scaleY = (if (gH > 0f) newH/gH else 1f).coerceIn(0.01f, 50f)
                             for ((it, snap) in groupSnapshots) {
                                 if (it !is StrokeItem || !it.data.isLocked) {
-                                    val relL = (snap[0]-ogb[0])*scaleX + newMinX
-                                    val relT = (snap[1]-ogb[1])*scaleY + newMinY
-                                    val relR = (snap[2]-ogb[0])*scaleX + newMinX
-                                    val relB = (snap[3]-ogb[1])*scaleY + newMinY
                                     if (it is StrokeItem) {
-                                        val pts = it.data.points
-                                        if (pts.size >= 4) {
-                                            pts[0] = relL; pts[1] = relT
-                                            pts[pts.size-2] = relR; pts[pts.size-1] = relB
-                                            it.path = it.data.buildPath(); it.invalidateCache()
-                                        }
-                                    } else if (it is ImageItem) { it.x=relL; it.y=relT; it.w=relR-relL; it.h=relB-relT }
+                                        scaleItemInGroupFromSnapshot(it, snap, ogb[0], ogb[1], scaleX, scaleY, newMinX, newMinY)
+                                    } else if (it is ImageItem) {
+                                        val relL = (snap[0]-ogb[0])*scaleX + newMinX
+                                        val relT = (snap[1]-ogb[1])*scaleY + newMinY
+                                        val relR = (snap[2]-ogb[0])*scaleX + newMinX
+                                        val relB = (snap[3]-ogb[1])*scaleY + newMinY
+                                        it.x=relL; it.y=relT; it.w=relR-relL; it.h=relB-relT
+                                    }
                                 }
                             }
                         }
@@ -4168,6 +4686,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_UP -> {
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
                 activeHandle = HandleType.NONE; groupActiveHandle = HandleType.NONE; groupSnapshots.clear(); pinkGroupRotation = 0f
+                finalizeGroupResize()
+                strokeResizeOrigPoints = null; strokeResizeOrigBounds = null
+                activeResizeItem?.let { it.data.invalidateGeometryCaches(); it.path = it.data.buildPath(); it.invalidateCache() }
+                activeResizeItem = null
                 // MULTISELECT: toggle item only if this was a tap (not a drag)
                 if (currentTool == Tool.MULTISELECT && !msTapDownWx.isNaN() && !msDragging) {
                     val hit = findItemAtPreferSelected(msTapDownWx, msTapDownWy)
@@ -4332,7 +4854,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun scaleItemInGroup(item: Any, ox: Float, oy: Float, sx: Float, sy: Float) {
         when (item) {
-            is StrokeItem -> { var i = 0; while (i + 1 < item.data.points.size) { item.data.points[i] = ox + (item.data.points[i] - ox) * sx; item.data.points[i + 1] = oy + (item.data.points[i + 1] - oy) * sy; i += 2 }; item.path = item.data.buildPath(); item.invalidateCache(); markSpatialDirty() }
+            is StrokeItem -> { var i = 0; while (i + 1 < item.data.points.size) { item.data.points[i] = ox + (item.data.points[i] - ox) * sx; item.data.points[i + 1] = oy + (item.data.points[i + 1] - oy) * sy; i += 2 }; item.data.invalidateGeometryCaches(); item.path = item.data.buildPath(); item.invalidateCache(); markSpatialDirty() }
             is TextItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.size = (item.size * ((sx + sy) / 2f)).coerceIn(6f, 500f) }
             is ImageItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.w *= sx; item.h *= sy }
             is FillItem -> { item.x = ox + (item.x - ox) * sx; item.y = oy + (item.y - oy) * sy; item.w *= sx; item.h *= sy }
@@ -4354,11 +4876,30 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         pts[i+1] = newOy + (snap[i+1] - oy) * sy
                         i += 2
                     }
-                    item.path = item.data.buildPath(); item.invalidateCache(); markSpatialDirty()
+                    // Deliberately not rebuilding item.path or busting the bitmap cache here —
+                    // same reasoning as Select's single-item resize: nothing shown during the
+                    // live drag needs it, and doing so every frame meant a full smoothing
+                    // recompute plus bitmap re-bake regardless of stroke size. Done once,
+                    // properly, when the group-resize gesture actually ends.
+                    activeGroupResizeItems.add(item)
                 }
             }
             else -> scaleItemInGroup(item, ox, oy, sx, sy)  // fallback for non-stroke items
         }
+    }
+
+    // Called once when a group-resize gesture ends (Lasso/Rect/Multi) — does the full, correct
+    // path rebuild + bitmap re-bake for every stroke that was live-resized, then stops tracking
+    // them. Mirrors the single-item release logic for Select's own resize.
+    private fun finalizeGroupResize() {
+        if (activeGroupResizeItems.isEmpty()) return
+        for (item in activeGroupResizeItems) {
+            item.data.invalidateGeometryCaches()
+            item.path = item.data.buildPath()
+            item.invalidateCache()
+        }
+        markSpatialDirty()
+        activeGroupResizeItems.clear()
     }
 
     private fun groupBounds(group: List<Any>): FloatArray? {
@@ -4384,9 +4925,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun selectItemsInRegion(region: Region, regionBounds: FloatArray, windowMode: Boolean) {
         val group = mutableListOf<Any>()
         val rl = regionBounds[0]; val rt = regionBounds[1]; val rr = regionBounds[2]; val rb = regionBounds[3]
-        val hiddenLayerIds = layers.filter { !it.visible }.map { it.id }.toHashSet()
         for (action in actions) {
-            if (hiddenLayerIds.contains(itemLayerId(action))) continue
             val b = getBounds(action) ?: continue
             val matches = if (windowMode) {
                 // Window select (L→R): item's full bbox must be completely inside the rectangle
@@ -4576,7 +5115,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                groupResizeHandle = -1; groupRotating = false; groupRotateSnapshots = null; groupCurrentRotation = 0f; val group = selectedGroup; if (group != null && group.isNotEmpty()) return
+                groupResizeHandle = -1; groupRotating = false; groupRotateSnapshots = null; groupCurrentRotation = 0f
+                finalizeGroupResize()
+                val group = selectedGroup; if (group != null && group.isNotEmpty()) return
                 val rp = regionPath; val s = regionStart
                 if (rp != null && s != null) {
                     val bounds = floatArrayOf(minOf(s.first, wx), minOf(s.second, wy), maxOf(s.first, wx), maxOf(s.second, wy))
@@ -4662,7 +5203,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                groupResizeHandle = -1; val group = selectedGroup; if (group != null && group.isNotEmpty()) return
+                groupResizeHandle = -1
+                finalizeGroupResize()
+                val group = selectedGroup; if (group != null && group.isNotEmpty()) return
                 val rp = regionPath
                 if (rp != null) {
                     rp.close()
@@ -4930,6 +5473,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
     }
 
+    // Checks whether any existing item's bounds overlap a rectangle starting at (worldX, worldY)
+    // with the given size — used to decide whether inserting a new Gemini answer there would
+    // land on top of existing content, before it's actually placed.
+    fun hasContentNear(worldX: Float, worldY: Float, w: Float, h: Float): Boolean {
+        val testL = worldX; val testT = worldY; val testR = worldX + w; val testB = worldY + h
+        val cx = worldX + w / 2f; val cy = worldY + h / 2f
+        for (a in itemsNear(cx, cy, maxOf(w, h))) {
+            val b = getBounds(a) ?: continue
+            if (b[0] < testR && b[2] > testL && b[1] < testB && b[3] > testT) return true
+        }
+        return false
+    }
+
+    // When set, the NEXT genuine single tap (not a scroll/drag — onSingleTapConfirmed only ever
+    // fires for an actual tap) is consumed here instead of its normal tool behavior, and the
+    // callback receives the tap's world coordinates. Used for "tap where you'd like the answer
+    // placed" when a Gemini response can't go where it was first requested without landing on
+    // existing content.
+    var pendingPlacementTap: ((Float, Float) -> Unit)? = null
+
     fun pageHeightPx(): Float {
         // Convenient = one screen-height page (tall, comfortable reading/writing)
         if (canvasMode == CanvasMode.CONVENIENT) return if (convenientPageH > 0) convenientPageH else height.toFloat()
@@ -4939,9 +5502,32 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     // Convenient line spacing = 80px (large, comfortable)
     // Print line spacing = 40px (A4 realistic)
-    private fun lineSpacingPx(): Float = if (canvasMode == CanvasMode.CONVENIENT) 80f else 40f
-    private fun gridSpacingPx(): Float = if (canvasMode == CanvasMode.CONVENIENT) 80f else 40f
-    private fun dotSpacingPx(): Float = if (canvasMode == CanvasMode.CONVENIENT) 80f else 40f
+    // User-configurable paper pattern settings — were fixed per-mode constants (80f Convenient /
+    // 40f otherwise) with no way to adjust. Set from SharedPreferences by MainActivity, same
+    // pattern as arcDivisions.
+    var lineSpacingPref = 40f
+    var gridSpacingPref = 40f
+    var dotSpacingPref = 40f
+    var gridMajorDivision = 5  // bold major line every N minor grid lines, 0 = no major lines
+    var linedDoubleMargin = false  // school-notebook-style double vertical margin line on the left
+    var engineeringSpacingPref = 20f
+    var engineeringMajorDivision = 5
+
+    // The area behind/around the actual page, and the gap band between page segments in
+    // multi-page modes — themed to match the app's current theme. Defaults to the original
+    // hardcoded gap color (#EDEAE3) so nothing changes for anyone who never touches themes.
+    var canvasBackgroundColor: Int = Color.parseColor("#EDEAE3")
+
+    // Set to true only on the temporary, throwaway DrawingView instances exportAllPagesAsBitmaps()
+    // creates for PDF export — export must always render on plain white regardless of the
+    // current app theme, since PDFs are meant to be printed/shared and shouldn't carry a
+    // colored background just because the app happens to be in a dark theme. The LIVE on-screen
+    // DrawingView (the one actually attached to MainActivity) never sets this.
+    var isExportRender = false
+
+    private fun lineSpacingPx(): Float = lineSpacingPref
+    private fun gridSpacingPx(): Float = gridSpacingPref
+    private fun dotSpacingPx(): Float = dotSpacingPref
 
     private fun drawBackground(canvas: Canvas) {
         val vl = -translateX / scaleFactor; val vt = -translateY / scaleFactor
@@ -4953,14 +5539,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             CanvasMode.FIXED -> {
                 val pw = pageWidthPx(); val ph = pageHeightPx()
-                val gp = Paint(); gp.color = Color.parseColor("#EDEAE3"); canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                val gp = Paint(); gp.color = if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
                 val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else PAPER_BASE_COLOR; canvas.drawRect(0f, 0f, pw, ph, wp)
                 if (paperType != PaperType.BLANK && paperType != PaperType.BLANK_COLORED) { canvas.save(); canvas.clipRect(0f, 0f, pw, ph); drawPaperPattern(canvas, 0f, 0f, pw, ph); canvas.restore() }
                 val bp = Paint(); bp.color = Color.parseColor("#C8C0B0"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 1.5f / scaleFactor; canvas.drawRect(0f, 0f, pw, ph, bp)
             }
             CanvasMode.CONVENIENT -> {
                 val pw = pageWidthPx(); val ph = pageHeightPx(); val gap = 24f
-                val gp = Paint(); gp.color = Color.parseColor("#EDEAE3"); canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                val gp = Paint(); gp.color = if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
                 val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else PAPER_BASE_COLOR
                 val sp = Paint(); sp.color = Color.parseColor("#00000022"); sp.style = Paint.Style.FILL
                 val period = ph + gap
@@ -4975,7 +5561,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             CanvasMode.PAGINATED -> {
                 val pw = pageWidthPx(); val ph = pageHeightPx(); val gap = 40f
-                val gp = Paint(); gp.color = Color.parseColor("#EDEAE3"); canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                val gp = Paint(); gp.color = if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
                 val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else PAPER_BASE_COLOR
                 val bp = Paint(); bp.color = Color.parseColor("#C8C0B0"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 1.5f / scaleFactor
                 val period = ph + gap
@@ -4996,22 +5582,32 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             PaperType.LINED -> {
                 val p = Paint(); p.color = Color.parseColor("#C8D6F0"); p.strokeWidth = 1f
                 var y = (top / ls).toInt() * ls; while (y < bottom) { canvas.drawLine(left, y, right, y, p); y += ls }
+                // School-notebook-style double vertical margin line near the left edge.
+                if (linedDoubleMargin) {
+                    val mp = Paint(); mp.color = Color.parseColor("#F0A8A8"); mp.strokeWidth = 1.5f
+                    val marginX = left + 60f
+                    canvas.drawLine(marginX, top, marginX, bottom, mp)
+                    canvas.drawLine(marginX + 6f, top, marginX + 6f, bottom, mp)
+                }
             }
             PaperType.GRID -> {
                 val p = Paint(); p.color = Color.parseColor("#D0D0D0"); p.strokeWidth = 1f
-                var x = (left / gs).toInt() * gs; while (x < right) { canvas.drawLine(x, top, x, bottom, p); x += gs }
-                var y = (top / gs).toInt() * gs; while (y < bottom) { canvas.drawLine(left, y, right, y, p); y += gs }
+                val mp = Paint(); mp.color = Color.parseColor("#A0A0A0"); mp.strokeWidth = 1.5f
+                var i = (left / gs).toInt(); var x = i * gs
+                while (x < right) { canvas.drawLine(x, top, x, bottom, if (gridMajorDivision > 0 && i % gridMajorDivision == 0) mp else p); i++; x = i * gs }
+                var j = (top / gs).toInt(); var y = j * gs
+                while (y < bottom) { canvas.drawLine(left, y, right, y, if (gridMajorDivision > 0 && j % gridMajorDivision == 0) mp else p); j++; y = j * gs }
             }
             PaperType.DOTS -> {
                 val p = Paint(); p.color = Color.parseColor("#B0B0B0"); p.style = Paint.Style.FILL
                 var x = (left / ds).toInt() * ds; while (x < right) { var y = (top / ds).toInt() * ds; while (y < bottom) { canvas.drawCircle(x, y, 2.5f, p); y += ds }; x += ds }
             }
             PaperType.ENGINEERING -> {
-                val ms = if (canvasMode == CanvasMode.CONVENIENT) 40f else 20f; val me = 5
+                val ms = engineeringSpacingPref; val me = engineeringMajorDivision
                 val mp = Paint(); mp.color = Color.parseColor("#E0E8F5"); mp.strokeWidth = 1f
                 val Mp = Paint(); Mp.color = Color.parseColor("#A8C0E8"); Mp.strokeWidth = 1.5f
-                var i = (left / ms).toInt(); var x = i * ms; while (x < right) { canvas.drawLine(x, top, x, bottom, if (i % me == 0) Mp else mp); i++; x = i * ms }
-                var j = (top / ms).toInt(); var y = j * ms; while (y < bottom) { canvas.drawLine(left, y, right, y, if (j % me == 0) Mp else mp); j++; y = j * ms }
+                var i = (left / ms).toInt(); var x = i * ms; while (x < right) { canvas.drawLine(x, top, x, bottom, if (me > 0 && i % me == 0) Mp else mp); i++; x = i * ms }
+                var j = (top / ms).toInt(); var y = j * ms; while (y < bottom) { canvas.drawLine(left, y, right, y, if (me > 0 && j % me == 0) Mp else mp); j++; y = j * ms }
             }
             else -> {}
         }
@@ -5188,7 +5784,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val wx = screenToWorldX(event.x); val wy = screenToWorldY(event.y)
                     val HR = 80f
                     val hitDim = actions.filterIsInstance<DimensionItem>().firstOrNull { d ->
-                        if (layers.find { it.id == d.layerId }?.visible == false) return@firstOrNull false
                         kotlin.math.hypot((event.x - d.handleP1sx), (event.y - d.handleP1sy)) < HR ||
                         kotlin.math.hypot((event.x - d.handleP2sx), (event.y - d.handleP2sy)) < HR ||
                         kotlin.math.hypot((event.x - d.handleMidsx), (event.y - d.handleMidsy)) < HR
@@ -5512,13 +6107,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // the touch), flush any in-memory-only fill edits rather than leaving them stranded
         // until some later gesture happens to trigger a flush. Scoped ONLY to this case so it
         // never affects any other tool's cancel/up behavior.
-        if (event.actionMasked == MotionEvent.ACTION_CANCEL && currentTool == Tool.ERASER) { flushDirtyFillItems(); flushEraseSessionBitmaps(); return }
+        if (event.actionMasked == MotionEvent.ACTION_CANCEL && currentTool == Tool.ERASER) { flushDirtyFillItems(); flushDirtyImageItems(); flushEraseSessionBitmaps(); return }
         hoverX = event.x; hoverY = event.y
         var wx = screenToWorldX(event.x); var wy = screenToWorldY(event.y)
         if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH || SHAPE_TOOLS.contains(currentTool)) {
             val (cx, cy) = clampToPage(wx, wy); wx = cx; wy = cy
         }
-        val pressure = event.pressure.coerceIn(0.3f, 1.5f)
+        // Pressure only means anything for a genuine stylus. Most touchscreens don't report a
+        // real, comparable pressure value for a finger — getPressure() for finger touches is
+        // typically pinned near a fixed value (or reflects contact-area size) regardless of how
+        // hard you're actually pressing, while a calibrated stylus digitizer reports meaningfully
+        // lower values for a normal-force touch. Applying the same multiplier to both is why
+        // finger strokes came out systematically thicker than stylus strokes at the same
+        // configured width — not because you pressed harder, but because of how each input
+        // method happens to report "pressure".
+        val isStylusInput = event.getToolType(0).let { it == MotionEvent.TOOL_TYPE_STYLUS || it == MotionEvent.TOOL_TYPE_ERASER }
+        val pressure = if (isStylusInput) event.pressure.coerceIn(0.3f, 1.5f) else 1f
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 if (currentTool == Tool.ERASER) { eraserLastX = wx; eraserLastY = wy; eraseAt(wx, wy); invalidate(); return }
@@ -5539,11 +6143,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), effectiveColor(), effectiveStrokeWidth(), fillShapes, lineType = effectiveLineType())
                     else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), effectiveColor(), effectiveStrokeWidth() * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = brushOpacity, lineType = effectiveLineType(), calligraphySlantThickness = currentCalligraphySlant)
                 }
-                if (currentTool == Tool.PEN && currentPenStyle == PenStyle.FOUNTAIN) data.widths.add(currentStrokeWidth)
-                if (currentTool == Tool.PEN && currentPenStyle == PenStyle.PENCIL) data.widths.add(1f)
                 if (currentTool == Tool.BRUSH && (currentBrushStyle == BrushStyle.INK || currentBrushStyle == BrushStyle.ROUND)) data.widths.add(brushThickness * pressure)
                 lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
                 currentItem = StrokeItem(data, data.buildPath(), data.toPaint()); invalidate()
+                livePathRebuildPointCount = 1; livePathRebuildTime = event.eventTime
+                resetLiveFlush()
                 onDrawingStarted?.invoke()
             }
             MotionEvent.ACTION_MOVE -> {
@@ -5639,44 +6243,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     snapResult = null; snapAwarenessResults = emptyList()
                 }
                 val item = currentItem ?: return
+                var pointAdded = false
                 if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH) {
+                    // A held-still (or barely-jittering) stylus still delivers a steady stream of
+                    // ACTION_MOVE samples at virtually the same spot. Without this floor, every one
+                    // of those samples was recorded as a brand-new point AND a brand-new (near-max,
+                    // since speed≈0) width sample — so ink kept visibly "firing"/growing for as long
+                    // as the pen sat still, and the resulting near-zero-length segments fed garbage
+                    // direction vectors into the ribbon offset math right at pauses and sharp turns
+                    // (a real hand naturally decelerates at a corner), which is what caused the
+                    // visible notches/gaps there. A real pen just leaves a small pooled dot and stops.
+                    val minPointDist = (1.1f / scaleFactor).coerceAtLeast(0.12f)
                     // Process all historically batched points first for smooth, unbroken strokes
                     for (h in 0 until event.historySize) {
                         val hx = screenToWorldX(event.getHistoricalX(h)); val hy = screenToWorldY(event.getHistoricalY(h))
+                        val lpx = item.data.points[item.data.points.size - 2]; val lpy = item.data.points[item.data.points.size - 1]
+                        if (distance(hx, hy, lpx, lpy) < minPointDist) continue
                         item.data.points.add(hx); item.data.points.add(hy)
-                        if (currentTool == Tool.PEN && (currentPenStyle == PenStyle.FOUNTAIN || currentPenStyle == PenStyle.PENCIL)) {
-                            val dt = (event.getHistoricalEventTime(h) - lastMoveTime).coerceAtLeast(1L)
-                            val dist = distance(hx, hy, lastMoveX, lastMoveY)
-                            val speed = dist / dt * 1000f
-                            if (currentPenStyle == PenStyle.FOUNTAIN) {
-                                // Was 0.55 + (1-speedNorm)*0.9 with speedNorm capped at 0.7 — that
-                                // formula only ever produced widths between ~0.82x-1.45x, well
-                                // short of the 0.4x-1.8x range it was supposedly clamped to. This
-                                // spans that full range directly, so slow strokes actually pool
-                                // thick and fast strokes actually go thin, not just mildly vary.
-                                val speedNorm = (speed / 2200f).coerceIn(0f, 1f)
-                                val rawTarget = (currentStrokeWidth * (0.4f + (1f - speedNorm) * 1.4f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
-                                val prevWidth = item.data.widths.lastOrNull() ?: currentStrokeWidth
-                                // Rate-limit: cap how much the target can differ from the last
-                                // width in a single sample. A sharp turn/cusp forces the pen to
-                                // momentarily decelerate to change direction — without this cap,
-                                // that single-sample deceleration blip reads as "slowed down to
-                                // pool more ink" and balloons into a visible blob right at the
-                                // turn, even though the hand never actually paused there.
-                                val maxDelta = currentStrokeWidth * 0.10f
-                                val targetWidth = rawTarget.coerceIn(prevWidth - maxDelta, prevWidth + maxDelta)
-                                // Was 0.8/0.2 — so heavily damped that a normal-speed signature
-                                // finished before the width ever caught up to how fast the pen
-                                // was actually moving, reading as flat/unfluid instead of a
-                                // nib that responds to your hand. 0.45/0.55 still smooths raw
-                                // per-sample jitter but lets the ink weight actually track speed.
-                                item.data.widths.add(prevWidth * 0.45f + targetWidth * 0.55f)
-                            } else {
-                                val targetIntensity = (1f - (speed / 1800f).coerceIn(0f, 0.75f)).coerceIn(0.25f, 1f)
-                                item.data.widths.add((item.data.widths.lastOrNull() ?: 1f) * 0.7f + targetIntensity * 0.3f)
-                            }
-                            lastMoveTime = event.getHistoricalEventTime(h); lastMoveX = hx; lastMoveY = hy
-                        }
+                        pointAdded = true
                         if (currentTool == Tool.BRUSH && (currentBrushStyle == BrushStyle.INK || currentBrushStyle == BrushStyle.ROUND)) {
                             val dt = (event.getHistoricalEventTime(h) - lastMoveTime).coerceAtLeast(1L)
                             val dist = distance(hx, hy, lastMoveX, lastMoveY)
@@ -5686,26 +6270,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             lastMoveTime = event.getHistoricalEventTime(h); lastMoveX = hx; lastMoveY = hy
                         }
                     }
+                    val lpx2 = item.data.points[item.data.points.size - 2]; val lpy2 = item.data.points[item.data.points.size - 1]
+                    if (distance(wx, wy, lpx2, lpy2) >= minPointDist) {
                     item.data.points.add(wx); item.data.points.add(wy)
-                    if (currentTool == Tool.PEN && (currentPenStyle == PenStyle.FOUNTAIN || currentPenStyle == PenStyle.PENCIL)) {
-                        val dt = (event.eventTime - lastMoveTime).coerceAtLeast(1L)
-                        val dist = distance(wx, wy, lastMoveX, lastMoveY)
-                        val speed = dist / dt * 1000f
-                        if (currentPenStyle == PenStyle.FOUNTAIN) {
-                            val speedNorm = (speed / 2200f).coerceIn(0f, 1f)
-                            val rawTarget = (currentStrokeWidth * (0.4f + (1f - speedNorm) * 1.4f)).coerceIn(currentStrokeWidth * 0.4f, currentStrokeWidth * 1.8f)
-                            val prevWidth = item.data.widths.lastOrNull() ?: currentStrokeWidth
-                            val maxDelta = currentStrokeWidth * 0.10f
-                            val targetWidth = rawTarget.coerceIn(prevWidth - maxDelta, prevWidth + maxDelta)
-                            // 0.45/0.55: still smooths raw jitter but tracks actual pen speed
-                            // closely enough to read as fluent rather than lagging behind it.
-                            item.data.widths.add(prevWidth * 0.45f + targetWidth * 0.55f)
-                        } else {
-                            val targetIntensity = (1f - (speed / 1800f).coerceIn(0f, 0.75f)).coerceIn(0.25f, 1f)
-                            item.data.widths.add((item.data.widths.lastOrNull() ?: 1f) * 0.7f + targetIntensity * 0.3f)
-                        }
-                        lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
-                    }
+                    pointAdded = true
                     if (currentTool == Tool.BRUSH && currentBrushStyle == BrushStyle.INK) {
                         val dt = (event.eventTime - lastMoveTime).coerceAtLeast(1L)
                         val dist = distance(wx, wy, lastMoveX, lastMoveY)
@@ -5722,12 +6290,38 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         item.data.widths.add((item.data.widths.lastOrNull() ?: brushThickness) * 0.8f + targetWidth * 0.2f)
                         lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime
                     }
+                    }
                 }
                 else if (SHAPE_TOOLS.contains(currentTool)) { item.data.points[2] = wx; item.data.points[3] = wy }
-                item.path = item.data.buildPath(); invalidate()
+                if (currentTool == Tool.PEN || currentTool == Tool.HIGHLIGHTER || currentTool == Tool.BRUSH) {
+                    if (!pointAdded) return
+                    val pointCount = item.data.points.size / 2
+                    val now = event.eventTime
+                    val dueForFullRebuild = (pointCount - livePathRebuildPointCount) >= LIVE_PATH_REBUILD_POINT_INTERVAL ||
+                        (now - livePathRebuildTime) >= LIVE_PATH_REBUILD_TIME_INTERVAL_MS
+                    if (dueForFullRebuild) {
+                        item.path = item.data.buildPath()
+                        livePathRebuildPointCount = pointCount; livePathRebuildTime = now
+                    } else {
+                        // Cheap live extension: draw straight to the newest raw point so the
+                        // stroke keeps following the stylus with no lag. buildPath() always ends
+                        // on the exact last raw point (see buildPath()'s final lineTo), so this
+                        // connects up cleanly. Never the final result — the next throttled
+                        // rebuild, or the guaranteed one on ACTION_UP, re-smooths this tail.
+                        item.path.lineTo(wx, wy)
+                    }
+                    val usesFlushCache = currentTool == Tool.HIGHLIGHTER || currentTool == Tool.PEN
+                    if (usesFlushCache && pointCount - liveFlushedPairIndex >= LIVE_FLUSH_POINT_INTERVAL) {
+                        flushLivePath(item)
+                    }
+                } else {
+                    item.path = item.data.buildPath()
+                }
+                invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                if (currentTool == Tool.ERASER) { flushDirtyFillItems(); flushEraseSessionBitmaps(); eraserLastX = Float.NaN; eraserLastY = Float.NaN }
+                resetLiveFlush()
+                if (currentTool == Tool.ERASER) { flushDirtyFillItems(); flushDirtyImageItems(); flushEraseSessionBitmaps(); eraserLastX = Float.NaN; eraserLastY = Float.NaN }
                 // Snap end point to nearest existing endpoint if snap is enabled
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
                     val pts0 = currentItem?.data?.points
@@ -5760,6 +6354,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val tooShort = isShapeTool && item.data.points.size >= 4 &&
                         distance(item.data.points[0], item.data.points[1], item.data.points[2], item.data.points[3]) < (8f / scaleFactor)
                     if (!tooShort) {
+                    // The live-draw throttle above may have left item.path as just a cheap raw
+                    // extension on the very last move sample — always do one final proper rebuild
+                    // at commit time so the saved stroke is fully smoothed, same as before.
+                    if (item.data.type == Tool.PEN || item.data.type == Tool.HIGHLIGHTER || item.data.type == Tool.BRUSH) {
+                        // Forces one authoritative full 5-pass smoothing + straight-line-snap
+                        // recompute — smoothedPoints() otherwise took the cheaper incremental
+                        // path meant for live drawing, which skips the snap check and only keeps
+                        // a settled prefix from earlier, not the full-precision final geometry
+                        // that should actually get saved. Only PEN strokes actually consult
+                        // smoothedPoints() at all (Highlighter/Brush render straight lineTo
+                        // segments over the raw points), so this is scoped to just PEN.
+                        if (item.data.type == Tool.PEN) item.data.finalizeSmoothing()
+                        item.path = item.data.buildPath()
+                    }
                     // Downsample overly dense PEN strokes (>6000 pts) to keep serialization and
                     // PathMeasure sampling fast. Visual difference is imperceptible.
                     if (item.data.type == Tool.PEN && item.data.points.size > 6000) {
@@ -5793,9 +6401,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val path = data.buildPath()
         val measure = android.graphics.PathMeasure(path, false)
         val allPts = mutableListOf<Float>()
-        val allDist = mutableListOf<Float>()  // parallel to allPts: along-path distance to each sampled point
         val pos = FloatArray(2)
-        var baseDist = 0f  // accumulates across multiple contours (measure.nextContour())
         do {
             val len = measure.length
             if (len <= 0f) continue
@@ -5808,19 +6414,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             while (dist <= len) {
                 measure.getPosTan(dist, pos, null)
                 allPts.add(pos[0]); allPts.add(pos[1])
-                allDist.add(baseDist + dist)
                 dist += step
             }
-            baseDist += len
         } while (measure.nextContour())
         if (allPts.size < 4) return emptyList()
 
         val segs = mutableListOf<MutableList<Float>>(); var cur = mutableListOf<Float>()
-        val segDists = mutableListOf<Float>(); var curDist = mutableListOf<Float>()
-        fun flush() { if (cur.size >= 4) { segs.add(cur); segDists.add(curDist.firstOrNull() ?: 0f) }; cur = mutableListOf(); curDist = mutableListOf() }
+        fun flush() { if (cur.size >= 4) segs.add(cur); cur = mutableListOf() }
         var i = 0
         var prevIn = distance(ex, ey, allPts[0], allPts[1]) <= r
-        if (!prevIn) { cur.add(allPts[0]); cur.add(allPts[1]); curDist.add(allDist[0]) }
+        if (!prevIn) { cur.add(allPts[0]); cur.add(allPts[1]) }
         while (i + 3 < allPts.size) {
             val x1 = allPts[i]; val y1 = allPts[i + 1]; val x2 = allPts[i + 2]; val y2 = allPts[i + 3]
             val segDist = distToSeg(ex, ey, x1, y1, x2, y2)
@@ -5828,20 +6431,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (curIn != prevIn) {
                 val cut = findCircleSegIntersection(ex, ey, r, x1, y1, x2, y2)
                 if (cut != null) {
-                    // Cut points are interpolated (not directly sampled), so their exact distance
-                    // isn't tracked — the nearest sample's distance is a fine approximation here,
-                    // since this only needs to keep the dash pattern visually stable, not be
-                    // pixel-perfect.
-                    if (!prevIn) { cur.add(cut.first); cur.add(cut.second); curDist.add(allDist[i / 2]); flush() }
-                    else { cur.add(cut.first); cur.add(cut.second); curDist.add(allDist[i / 2]) }
+                    if (!prevIn) { cur.add(cut.first); cur.add(cut.second); flush() }
+                    else { cur.add(cut.first); cur.add(cut.second) }
                 } else flush()
             }
-            if (!curIn) { cur.add(x2); cur.add(y2); curDist.add(allDist[i / 2 + 1]) }
+            if (!curIn) { cur.add(x2); cur.add(y2) }
             prevIn = curIn
             i += 2
         }
         flush()
-        return segs.mapIndexed { idx, sp ->
+        return segs.map { sp ->
             // isPolyline = true is the critical part here: without it, Tool.PEN's default
             // render path runs every stroke through quadratic-bezier smoothing to remove hand
             // tremor (see the comment on StrokeData.isPolyline above). That's correct for actual
@@ -5851,11 +6450,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // this same reconstruction on the now-already-curved path, the distortion compounds
             // worse with every erase. Marking it a polyline keeps the straight-line render path,
             // preserving the shape's actual geometry exactly as sampled.
-            // dashPhase = parent's own phase (0 for a never-erased shape, but non-zero if this
-            // shape is ITSELF already a fragment from an earlier erase) plus this fragment's own
-            // offset — chains correctly back to the true original shape's start no matter how
-            // many times it's been re-split.
-            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.FOUNTAIN, opacity = data.opacity, lineType = data.lineType, isPolyline = true, dashPhase = data.dashPhase + segDists[idx], eraseFragment = true)
+            val d = StrokeData(Tool.PEN, sp, data.color, data.strokeWidth, false, penStyle = PenStyle.BALL, opacity = data.opacity, lineType = data.lineType, isPolyline = true)
             StrokeItem(d, d.buildPath(), d.toPaint())
         }
     }
@@ -5880,18 +6475,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     toRemove.add(a)
                 }
             }
-            if (toRemove.isNotEmpty()) { actions.removeAll(toRemove); markSpatialDirty() }
+            if (toRemove.isNotEmpty()) {
+                actions.removeAll(toRemove)
+                for (rem in toRemove) removeFromSpatialIndex(rem)
+                snapMarkersActionCount = -1
+            }
         } else {
-            val candidates = itemsNear(x, y, r * 3f).toHashSet()
-            val newActions = mutableListOf<Any>()
+            val candidates = itemsNear(x, y, r * 3f)
             var changed = false
-            for (a in actions) {
-                // Items far from eraser pass through unchanged — no processing needed
-                if (a !in candidates) { newActions.add(a); continue }
+            for (a in candidates) {
+                val idx = actions.indexOf(a)
+                if (idx < 0) continue  // no longer present (shouldn't normally happen, but be safe)
                 when (a) {
                     is StrokeItem -> {
                         if (a.data.isLocked) {
-                            newActions.add(a)
+                            // locked — leave untouched
                         } else if (a.data.type == Tool.PEN || a.data.type == Tool.ERASER || a.data.type == Tool.ARC || a.data.type == Tool.HIGHLIGHTER || a.data.type == Tool.BRUSH) {
                             // Cheap hit-test first: itemsNear() casts a wide net (r*3), so a
                             // stroke can be "nearby" for several touch-move samples before the
@@ -5900,19 +6498,38 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             // regardless of whether anything was actually erased — which threw
                             // away its cached render bitmap and forced a full re-render.
                             if (strokeHitTest(a.data, x, y, r)) {
-                                if (a.data.type == Tool.BRUSH && CACHED_BRUSH_STYLES.contains(a.data.brushStyle) && ensureEraseSessionBitmap(a)) {
-                                    // Expensive particle styles (Spray, Dry Brush, Grass, Fire):
-                                    // frozen to a bitmap once, then every further sample just
-                                    // clears pixels directly from it — O(eraser-circle-pixels),
-                                    // not O(total-particles), and never touches the particle
-                                    // generator again for the rest of this drag.
+                                // Only freeze Pen/Highlighter to a raster bitmap once the stroke
+                                // is actually long enough for that to matter — the slowness (and
+                                // the "readjusting" wobble) only ever showed up on a genuinely
+                                // long single stroke. A normal-length stroke stays on the vector
+                                // split path below, so it keeps its full editability (resize/
+                                // move/select) instead of becoming a fixed image the moment any
+                                // part of it is erased at all.
+                                val isLongPenOrHighlighter = (a.data.type == Tool.PEN || a.data.type == Tool.HIGHLIGHTER) &&
+                                    (a.data.points.size / 2) > LONG_STROKE_FREEZE_THRESHOLD
+                                val useFreezeBitmap = (a.data.type == Tool.BRUSH && CACHED_BRUSH_STYLES.contains(a.data.brushStyle)) ||
+                                    isLongPenOrHighlighter
+                                if (useFreezeBitmap && ensureEraseSessionBitmap(a)) {
+                                    // Freehand ink (Pen/Highlighter) and expensive particle brush
+                                    // styles (Spray, Dry Brush, Grass, Fire): frozen to a bitmap
+                                    // once, then every further sample just clears pixels directly
+                                    // from it — O(eraser-circle-pixels), not O(stroke's total
+                                    // point count), and the stroke's actual geometry (points,
+                                    // widths, smoothing) is never touched again for the rest of
+                                    // this drag. Same item stays at idx — nothing to replace.
                                     eraseFromSessionBitmap(a, x, y, r)
-                                    newActions.add(a)
                                 } else {
-                                    newActions.addAll(splitStrokeAroundEraser(a.data, x, y, r)); changed = true
+                                    // Same effectiveR strokeHitTest used to decide this was a hit —
+                                    // without it, the split geometry below only clips the bare
+                                    // centerline within radius r, so a thick stroke keeps a visible
+                                    // strip of ink on both sides even though the eraser circle
+                                    // visually covers it (only a tiny sliver of centerline gets cut).
+                                    val effR = r + (a.data.strokeWidth / 2f).coerceAtMost(r * 2f)
+                                    val frags = splitStrokeAroundEraser(a.data, x, y, effR)
+                                    actions.removeAt(idx); actions.addAll(idx, frags)
+                                    removeFromSpatialIndex(a); for (f in frags) addToSpatialIndex(f)
+                                    changed = true
                                 }
-                            } else {
-                                newActions.add(a)
                             }
                         } else if (CLOSED_SHAPES.contains(a.data.type)) {
                             // Convert to component lines at erase time.
@@ -5921,39 +6538,53 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             // UNROTATED outline, which caused wrong-edge erasure on rotated shapes.
                             if (strokeHitTestRotated(a.data, x, y, r)) {
                                 val components = convertShapeToComponents(a.data)
+                                val replacement = mutableListOf<StrokeItem>()
                                 for (comp in components) {
                                     if (strokeHitTest(comp.data, x, y, r)) {
-                                        newActions.addAll(splitStrokeAroundEraser(comp.data, x, y, r))
+                                        val effR = r + (comp.data.strokeWidth / 2f).coerceAtMost(r * 2f)
+                                        replacement.addAll(splitStrokeAroundEraser(comp.data, x, y, effR))
                                     } else {
-                                        newActions.add(comp)
+                                        replacement.add(comp)
                                     }
                                 }
+                                actions.removeAt(idx); actions.addAll(idx, replacement)
+                                removeFromSpatialIndex(a); for (it in replacement) addToSpatialIndex(it)
                                 changed = true
-                            } else {
-                                newActions.add(a)
                             }
                         } else {
                             // Open shapes (LINE, ARROW): split into fragments
-                            if (strokeHitTest(a.data, x, y, r)) { newActions.addAll(splitShapeAroundEraser(a.data, x, y, r)); changed = true }
-                            else newActions.add(a)
+                            if (strokeHitTest(a.data, x, y, r)) {
+                                val effR = r + (a.data.strokeWidth / 2f)
+                                val frags = splitShapeAroundEraser(a.data, x, y, effR)
+                                actions.removeAt(idx); actions.addAll(idx, frags)
+                                removeFromSpatialIndex(a); for (f in frags) addToSpatialIndex(f)
+                                changed = true
+                            }
                         }
                     }
-                    is TextItem -> { if (distance(x, y, a.x, a.y) > r + a.size) newActions.add(a) else changed = true }
-                    is ImageItem -> { if (distance(x, y, a.x + a.w / 2f, a.y + a.h / 2f) > r + maxOf(a.w, a.h) / 2f) newActions.add(a) else changed = true }
+                    is TextItem -> {
+                        if (distance(x, y, a.x, a.y) <= r + a.size) {
+                            actions.removeAt(idx); removeFromSpatialIndex(a); changed = true
+                        }
+                    }
+                    is ImageItem -> { eraseImageItemRegion(a, x, y, r); changed = true }  // mutated in place, stays at idx
                     is FillItem -> {
                         if (eraserMode == EraserMode.AREA && eraserAffectsFill) {
                             // Erase only the pixels the eraser circle touches in the fill bitmap
                             val erased = eraseFillItemRegion(a, x, y, r)
-                            if (erased != null) newActions.add(erased) // null = fully erased
+                            if (erased != null) {
+                                if (erased !== a) { actions.removeAt(idx); actions.add(idx, erased); removeFromSpatialIndex(a); addToSpatialIndex(erased) }
+                                // else same reference, already in place at idx — nothing to replace
+                            } else {
+                                actions.removeAt(idx); removeFromSpatialIndex(a)
+                            }
                             changed = true
-                        } else {
-                            newActions.add(a)
                         }
                     }
-                    else -> newActions.add(a)
+                    else -> {}
                 }
             }
-            if (changed) { actions.clear(); actions.addAll(newActions); markSpatialDirty() }
+            if (changed) snapMarkersActionCount = -1
         }
     }
 
@@ -6006,6 +6637,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val cv = Canvas(bmp)
         val p = _fillErasePaint
         cv.drawOval(RectF((bex - brx).toFloat(), (bey - bry).toFloat(), (bex + brx).toFloat(), (bey + bry).toFloat()), p)
+        // The mask (bitmap) just changed, but the actual rendered hatch pattern is a SEPARATE,
+        // pre-computed bitmap derived from it (see FillItem.hatchRenderCache) — without
+        // invalidating it too, the stale already-masked pattern keeps showing untouched even
+        // though the mask underneath it was correctly erased.
+        item.hatchRenderCache = null
         return item
     }
 
@@ -6029,167 +6665,90 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (removedAny) markSpatialDirty()
         invalidate()
     }
+
+    // Area-erase for ImageItem: clears only the pixels actually under the eraser circle,
+    // exactly the same technique already used for FillItem above — a mutable bitmap copy made
+    // once per gesture (tracked via dirtyImageItems), drawn into directly on every subsequent
+    // sample, with the full-transparency check and disk write both deferred to
+    // flushDirtyImageItems() at ACTION_UP rather than done on every touch tick.
+    private fun eraseImageItemRegion(item: ImageItem, ex: Float, ey: Float, r: Float): ImageItem {
+        val cached = item.bitmap ?: return item  // not loaded yet — nothing to erase from yet
+        val bw = cached.width; val bh = cached.height
+        val scaleX = bw / item.w; val scaleY = bh / item.h
+        val bex = ((ex - item.x) * scaleX).toInt(); val bey = ((ey - item.y) * scaleY).toInt()
+        val brx = (r * scaleX).toInt().coerceAtLeast(1); val bry = (r * scaleY).toInt().coerceAtLeast(1)
+
+        val rx0 = (bex - brx).coerceAtLeast(0); val ry0 = (bey - bry).coerceAtLeast(0)
+        val rx1 = (bex + brx).coerceAtMost(bw - 1); val ry1 = (bey + bry).coerceAtMost(bh - 1)
+        if (rx1 < rx0 || ry1 < ry0) return item
+        val rw = rx1 - rx0 + 1; val rh = ry1 - ry0 + 1
+        val region = IntArray(rw * rh)
+        cached.getPixels(region, 0, rw, rx0, ry0, rw, rh)
+        var anyOpaqueHit = false
+        outer@ for (yy in 0 until rh) {
+            val py = ry0 + yy
+            val ny = (py - bey).toFloat() / bry.coerceAtLeast(1)
+            for (xx in 0 until rw) {
+                val px = rx0 + xx
+                val nx = (px - bex).toFloat() / brx.coerceAtLeast(1)
+                if (nx*nx + ny*ny > 1f) continue
+                if ((region[yy * rw + xx] ushr 24) != 0) { anyOpaqueHit = true; break@outer }
+            }
+        }
+        if (!anyOpaqueHit) return item
+
+        val bmp: Bitmap
+        if (dirtyImageItems.contains(item)) {
+            bmp = item.bitmap ?: cached.copy(Bitmap.Config.ARGB_8888, true).also { item.bitmap = it }
+        } else {
+            bmp = cached.copy(Bitmap.Config.ARGB_8888, true)
+            item.bitmap = bmp
+            dirtyImageItems.add(item)
+        }
+        val cv = Canvas(bmp)
+        cv.drawOval(RectF((bex - brx).toFloat(), (bey - bry).toFloat(), (bex + brx).toFloat(), (bey + bry).toFloat()), _fillErasePaint)
+        return item
+    }
+
+    // Flushes all in-memory-only image edits from the current erase gesture: removes any image
+    // that ended up fully transparent, writes the rest to disk exactly once. Called on ACTION_UP
+    // for the eraser, never during ACTION_MOVE — same reasoning as flushDirtyFillItems().
+    private fun flushDirtyImageItems() {
+        if (dirtyImageItems.isEmpty()) return
+        var removedAny = false
+        for (item in dirtyImageItems) {
+            val bmp = item.bitmap ?: continue
+            val bw = bmp.width; val bh = bmp.height
+            val pixels = IntArray(bw * bh); bmp.getPixels(pixels, 0, bw, 0, 0, bw, bh)
+            if (pixels.all { (it ushr 24) == 0 }) {
+                actions.remove(item); removedAny = true; continue
+            }
+            try { FileOutputStream(item.path).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) } } catch (e: Exception) { }
+            synchronized(bitmapCache) { bitmapCache.remove(item.path) }
+        }
+        dirtyImageItems.clear()
+        if (removedAny) markSpatialDirty()
+        invalidate()
+    }
     // sample-point distance), so erasing is accurate to what's visually under the eraser circle
     // regardless of how sparse the stroke's recorded points are.
-    // Finds how far (in world units) a point is along an original polyline, by walking its
-    // segments and finding the closest match. Used to compute an erased fragment's correct dash-
-    // phase anchor after the fact, rather than threading distance-tracking through the crossing
-    // detection above — same reasoning as splitShapeAroundEraser's dash-phase fix.
-    private fun cumulativeDistAlongPolyline(pts: List<Float>, targetX: Float, targetY: Float): Float {
-        var acc = 0f; var best = Float.MAX_VALUE; var bestAcc = 0f
-        var i = 0
-        while (i + 3 < pts.size) {
-            val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
-            val segLen = distance(x1, y1, x2, y2)
-            val d = distToSeg(targetX, targetY, x1, y1, x2, y2)
-            if (d < best) {
-                best = d
-                // Project onto the segment to get the exact point within it, not just its start.
-                val segLenSq = segLen * segLen
-                val t = if (segLenSq > 0.0001f) (((targetX - x1) * (x2 - x1) + (targetY - y1) * (y2 - y1)) / segLenSq).coerceIn(0f, 1f) else 0f
-                bestAcc = acc + t * segLen
-            }
-            acc += segLen
-            i += 2
-        }
-        return bestAcc
-    }
-
-    // Ramer-Douglas-Peucker line simplification: recursively keeps only the points that deviate
-    // from a straight chord by more than epsilon, discarding near-collinear points in between.
-    // Used by regenerateErasedShapes() to shrink a dense erase-fragment's point list down to just
-    // the points that actually matter for its shape, before handing it back to the normal smooth
-    // Tool.PEN curve renderer.
-    // Returns the simplified points AND, in parallel, which of them were kept specifically
-    // because they deviate from a straight chord (true curve points, by RDP's own definition —
-    // that's exactly why RDP keeps a point instead of discarding it) versus points that are just
-    // the endpoints of an already-straight run. This is what regenerateErasedShapes() uses to
-    // decide where to smooth vs. stay sharp — a principled signal straight from RDP's own
-    // decision-making, rather than an indirect segment-length heuristic (which broke on shapes
-    // where the curved region ends up being the MAJORITY of retained points, dragging the
-    // "typical" segment length down to roughly the curve's own spacing — comparing curve
-    // segments against a threshold based mostly on themselves never classified them as short).
-    private fun simplifyRDP(points: List<Float>, epsilon: Float): Pair<MutableList<Float>, MutableList<Boolean>> {
-        val n = points.size / 2
-        if (n < 3) return Pair(points.toMutableList(), MutableList(n) { false })
-        val keptIsCurve = HashMap<Int, Boolean>()
-        fun rdp(startIdx: Int, endIdx: Int) {
-            if (endIdx - startIdx < 2) return
-            val ax = points[startIdx * 2]; val ay = points[startIdx * 2 + 1]
-            val bx = points[endIdx * 2]; val by = points[endIdx * 2 + 1]
-            var maxDist = 0f; var maxIdx = -1
-            for (i in startIdx + 1 until endIdx) {
-                val d = distToSeg(points[i * 2], points[i * 2 + 1], ax, ay, bx, by)
-                if (d > maxDist) { maxDist = d; maxIdx = i }
-            }
-            if (maxDist > epsilon && maxIdx > 0) {
-                keptIsCurve[maxIdx] = true
-                rdp(startIdx, maxIdx)
-                rdp(maxIdx, endIdx)
-            }
-        }
-        keptIsCurve[0] = false; keptIsCurve[n - 1] = false
-        rdp(0, n - 1)
-        val sortedIndices = keptIsCurve.keys.sorted()
-        val outPts = mutableListOf<Float>(); val outCurve = mutableListOf<Boolean>()
-        for (idx in sortedIndices) { outPts.add(points[idx * 2]); outPts.add(points[idx * 2 + 1]); outCurve.add(keptIsCurve[idx] == true) }
-        return Pair(outPts, outCurve)
-    }
-
-    // AutoCAD-inspired "Regen": a deliberate, on-demand whole-page cleanup pass rather than
-    // something that runs automatically after every erase (simplification has a real, if small,
-    // cost, and most erases don't need it dealt with immediately). Simplifies every erase-created
-    // shape fragment's point list and hands rendering back to the normal smooth Tool.PEN curve
-    // path — cutting point count (and so RAM/file size) while fixing the faceted look that shows
-    // up at high zoom or after enlarging an erased shape.
-    //
-    // Deliberately does NOT try to detect and restore the shape's original type (circle/rect/
-    // etc.) — after erasing, the surviving boundary usually isn't expressible as one of those
-    // anymore anyway (multiple islands, irregular notches from the eraser's circular shape), so a
-    // general curve simplification handles every case uniformly instead of needing shape-specific
-    // fitting logic that would only help the narrowest cases and still need this same fallback
-    // for everything else.
-    fun regenerateErasedShapes(): Int {
-        var count = 0
-        for (action in actions) {
-            if (action !is StrokeItem) continue
-            val d = action.data
-            if (!d.eraseFragment) continue
-            if (d.points.size < 8) { d.eraseFragment = false; continue }  // too few points to be worth simplifying
-            val epsilon = maxOf(1.5f, d.strokeWidth * 0.3f)
-            val (simplifiedPts, curveFlags) = simplifyRDP(d.points, epsilon)
-            d.points.clear(); d.points.addAll(simplifiedPts)
-            d.curvePointFlags.clear(); d.curvePointFlags.addAll(curveFlags)
-            // Genuinely round shapes (circle/ellipse) get handed to the standard smooth Bezier
-            // renderer, uniformly — there's no "straight part" to protect. Everything else uses
-            // the adaptive per-segment smoother instead: it keeps real straight edges sharp AND
-            // smooths a rounded corner within the SAME stroke, rather than the earlier all-or-
-            // nothing choice (whole shape stays straight → faceted corners; whole shape gets
-            // smoothed → destroys straight sides, which was the previous bug).
-            if (d.eraseFragmentCurved) d.isPolyline = false else d.regenSmoothCorners = true
-            d.eraseFragment = false  // regenerated — a future erase re-splits it as whatever it now is, not a jagged dense fragment
-            action.path = d.buildPath()
-            action.invalidateCache()
-            count++
-        }
-        if (count > 0) { markSpatialDirty(); invalidate() }
-        return count
-    }
-
-    // Scales every item's position AND size-related properties (stroke width, font size, image
-    // dimensions, table cell sizes, dimension line/arrow/font sizes) by a uniform factor — used
-    // when switching canvas mode or paper size, since pageWidthPx()/pageHeightPx() mean something
-    // completely different in each mode (Convenient: view.width * 0.82; Fixed/Paginated: a fixed
-    // size from paperSize alone) and nothing was adjusting existing content to match a newly
-    // selected page, which is what let content drift out of alignment with the new page boundary
-    // after switching. Uniform (same factor for x/y) rather than separately for width/height,
-    // so nothing gets visually stretched or squished — proportions are preserved, only overall
-    // size changes.
-    fun rescaleAllContent(scale: Float) {
-        if (scale == 1f || !scale.isFinite() || scale <= 0f) return
-        for (action in actions) {
-            when (action) {
-                is StrokeItem -> {
-                    val d = action.data
-                    for (i in d.points.indices) d.points[i] = d.points[i] * scale
-                    d.strokeWidth *= scale
-                    for (i in d.widths.indices) d.widths[i] = d.widths[i] * scale
-                    for (hole in d.clipHoles) { hole[0] *= scale; hole[1] *= scale; hole[2] *= scale }
-                    d.dashPhase *= scale
-                    action.path = d.buildPath()
-                    action.invalidateCache()
-                }
-                is TextItem -> {
-                    action.x *= scale; action.y *= scale; action.size *= scale
-                    if (action.maxWidth > 0f) action.maxWidth *= scale
-                }
-                is ImageItem -> { action.x *= scale; action.y *= scale; action.w *= scale; action.h *= scale }
-                is FillItem -> { action.x *= scale; action.y *= scale; action.w *= scale; action.h *= scale; action.hatchScale *= scale }
-                is DimensionItem -> {
-                    action.x1 *= scale; action.y1 *= scale; action.x2 *= scale; action.y2 *= scale
-                    action.offset *= scale; action.strokeW *= scale; action.fontSize *= scale; action.arrowSize *= scale
-                }
-                is TableItem -> {
-                    action.x *= scale; action.y *= scale
-                    for (i in action.rowHeights.indices) action.rowHeights[i] = action.rowHeights[i] * scale
-                    for (i in action.colWidths.indices) action.colWidths[i] = action.colWidths[i] * scale
-                    action.headerTextSize *= scale
-                    for (r in 0 until action.rows) for (c in 0 until action.cols) {
-                        val cell = action.getCellPublic(r, c)
-                        cell.textSize *= scale; cell.borderWidth *= scale
-                    }
-                }
-                // AudioItem isn't in this file this session — its position won't be rescaled here.
-                // Flagging this explicitly rather than silently skipping it without a note.
-                else -> {}
-            }
-        }
-        markSpatialDirty(); invalidate()
-    }
-
     private fun splitStrokeAroundEraser(data: StrokeData, ex: Float, ey: Float, r: Float): List<StrokeItem> {
         val pts = data.points
         if (pts.size < 4) { if (pts.size >= 2 && distance(ex, ey, pts[0], pts[1]) <= r) return emptyList(); return listOf(StrokeItem(data, data.buildPath(), data.toPaint())) }
+
+        // Fountain/Pencil strokes carry a per-point `widths` sample alongside `points` (thickness/
+        // intensity that varies along the stroke). Without tracking it through the split below,
+        // every surviving fragment came out with an empty widths list — which silently fails the
+        // `widths.size >= 2` check used to decide whether to render as a Fountain/Pencil stroke at
+        // all, so an erased Fountain stroke suddenly rendered as a flat, thin, uniform line instead
+        // of keeping its actual nib thickness. curW/segsW mirror cur/segs exactly, one width value
+        // per point, interpolated at circle-crossing points the same way position is.
+        val hasWidths = data.widths.size >= 2
+        fun widthAt(idx: Int): Float { val w = data.widths; return if (idx >= 0 && idx < w.size) w[idx] else data.strokeWidth }
+        fun widthAtT(segStart: Int, t: Float): Float {
+            val w1 = widthAt(segStart); val w2 = widthAt(segStart + 1)
+            return w1 + (w2 - w1) * t
+        }
 
         // Walk each segment and find EXACT circle-crossing parameters along it (0, 1, or 2
         // crossings), rather than classifying the whole segment as one in/out unit based on its
@@ -6198,44 +6757,77 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // the nearest-point distance small for the ENTIRE segment, deleting all of it instead of
         // only the portion actually under the eraser.
         val segs = mutableListOf<MutableList<Float>>(); var cur = mutableListOf<Float>()
-        fun flush() { if (cur.size >= 4) segs.add(cur); cur = mutableListOf() }
+        val segsW = mutableListOf<MutableList<Float>>(); var curW = mutableListOf<Float>()
+        fun flush() { if (cur.size >= 4) { segs.add(cur); segsW.add(curW) }; cur = mutableListOf(); curW = mutableListOf() }
         fun ptIn(x: Float, y: Float) = distance(ex, ey, x, y) <= r
 
         var prevIn = ptIn(pts[0], pts[1])
-        if (!prevIn) { cur.add(pts[0]); cur.add(pts[1]) }
+        if (!prevIn) { cur.add(pts[0]); cur.add(pts[1]); curW.add(widthAt(0)) }
+
+        val chunks = data.chunkBounds()
+        val chunkOverlaps = BooleanArray(chunks.size) { c ->
+            val ch = chunks[c]
+            !(ex + r < ch[2] || ex - r > ch[4] || ey + r < ch[3] || ey - r > ch[5])
+        }
+        var chunkIdx = 0
 
         var i = 0
         while (i + 3 < pts.size) {
+            val vIdx = i / 2
+            while (chunkIdx < chunks.size - 1 && vIdx >= chunks[chunkIdx][1].toInt()) chunkIdx++
+            val chunkEndPair = chunks[chunkIdx][1].toInt()
+            // Segment fully inside this one chunk (doesn't straddle into the next), and that
+            // chunk's bbox doesn't reach the eraser circle at all — both endpoints, and every
+            // point between them (convexity: the whole segment lies within the chunk's own
+            // bbox), are guaranteed outside it. No crossing is possible, so skip straight to the
+            // "stayed outside" bookkeeping without the exact intersection math. A segment that
+            // straddles a chunk boundary always falls through to the precise check below —
+            // its own extent isn't bounded by either single chunk's box alone.
+            if ((vIdx + 1) < chunkEndPair && !chunkOverlaps[chunkIdx]) {
+                if (!prevIn) { cur.add(pts[i + 2]); cur.add(pts[i + 3]); curW.add(widthAt(vIdx + 1)) }
+                prevIn = false
+                i += 2
+                continue
+            }
             val x1 = pts[i]; val y1 = pts[i + 1]; val x2 = pts[i + 2]; val y2 = pts[i + 3]
             val endIn = ptIn(x2, y2)
             val crossings = findAllCircleSegIntersections(ex, ey, r, x1, y1, x2, y2)
 
             if (crossings.isEmpty()) {
                 // No boundary crossing on this segment — it shares prevIn's state throughout.
-                if (!prevIn) { cur.add(x2); cur.add(y2) }
+                if (!prevIn) { cur.add(x2); cur.add(y2); curW.add(widthAt(vIdx + 1)) }
             } else {
                 var state = prevIn
                 for (t in crossings) {
                     val cx2 = x1 + t * (x2 - x1); val cy2 = y1 + t * (y2 - y1)
                     if (!state) {
                         // Was outside, entering the erased zone: this crossing ends the surviving fragment.
-                        if (cur.isEmpty()) { cur.add(x1); cur.add(y1) }
-                        cur.add(cx2); cur.add(cy2); flush()
+                        if (cur.isEmpty()) { cur.add(x1); cur.add(y1); curW.add(widthAt(vIdx)) }
+                        cur.add(cx2); cur.add(cy2); curW.add(widthAtT(vIdx, t)); flush()
                     } else {
                         // Was inside the erased zone, exiting: this crossing starts a new fragment.
-                        cur.add(cx2); cur.add(cy2)
+                        cur.add(cx2); cur.add(cy2); curW.add(widthAtT(vIdx, t))
                     }
                     state = !state
                 }
                 if (!endIn) {
-                    if (cur.isEmpty()) { val lastT = crossings.last(); cur.add(x1 + lastT * (x2 - x1)); cur.add(y1 + lastT * (y2 - y1)) }
-                    cur.add(x2); cur.add(y2)
+                    if (cur.isEmpty()) { val lastT = crossings.last(); cur.add(x1 + lastT * (x2 - x1)); cur.add(y1 + lastT * (y2 - y1)); curW.add(widthAtT(vIdx, lastT)) }
+                    cur.add(x2); cur.add(y2); curW.add(widthAt(vIdx + 1))
                 }
             }
             prevIn = endIn
             i += 2
         }
         flush()
+
+        fun buildFragment(sp: MutableList<Float>, spw: MutableList<Float>): StrokeItem {
+            val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline)
+            if (hasWidths) { d.widths.clear(); d.widths.addAll(spw) }
+            d.taperStart = data.taperStart && distance(sp[0], sp[1], pts[0], pts[1]) < 0.01f
+            d.taperEnd = data.taperEnd && distance(sp[sp.size - 2], sp[sp.size - 1], pts[pts.size - 2], pts[pts.size - 1]) < 0.01f
+            val path = if (hasWidths && data.type == Tool.PEN && data.penStyle == PenStyle.FOUNTAIN) d.buildFountainRibbonPath() else d.buildPath()
+            return StrokeItem(d, path, d.toPaint())
+        }
 
         // If the original stroke was a CLOSED loop (first point == last point, as produced by
         // convertShapeToComponents for closed shapes), the "first" and "last" surviving
@@ -6253,14 +6845,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val merged = mutableListOf<Float>()
                     merged.addAll(lastFrag)
                     merged.addAll(firstFrag.subList(2, firstFrag.size)) // skip duplicate seam point
+                    val firstFragW = segsW[segs.indexOf(firstFrag)]; val lastFragW = segsW[segs.indexOf(lastFrag)]
+                    val mergedW = mutableListOf<Float>()
+                    mergedW.addAll(lastFragW)
+                    mergedW.addAll(firstFragW.subList(1, firstFragW.size))
                     val newSegs = mutableListOf<MutableList<Float>>()
                     newSegs.addAll(segs.subList(1, segs.size - 1))
                     newSegs.add(merged)
-                    return newSegs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1]), eraseFragment = data.eraseFragment || data.regenSmoothCorners, eraseFragmentCurved = data.eraseFragmentCurved); StrokeItem(d, d.buildPath(), d.toPaint()) }
+                    val newSegsW = mutableListOf<MutableList<Float>>()
+                    newSegsW.addAll(segsW.subList(1, segsW.size - 1))
+                    newSegsW.add(mergedW)
+                    return newSegs.indices.map { idx -> buildFragment(newSegs[idx], newSegsW[idx]) }
                 }
             }
         }
-        return segs.map { sp -> val d = StrokeData(data.type, sp, data.color, data.strokeWidth, data.fill, penStyle = data.penStyle, opacity = data.opacity, brushStyle = data.brushStyle, lineType = data.lineType, isPolyline = data.isPolyline, dashPhase = data.dashPhase + cumulativeDistAlongPolyline(pts, sp[0], sp[1]), eraseFragment = data.eraseFragment || data.regenSmoothCorners, eraseFragmentCurved = data.eraseFragmentCurved); StrokeItem(d, d.buildPath(), d.toPaint()) }
+        return segs.indices.map { idx -> buildFragment(segs[idx], segsW[idx]) }
     }
 
     // Finds ALL points (as sorted t-values in [0,1]) where a segment crosses the eraser circle
@@ -6617,7 +7216,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // highlighter strokes where the painted area extends well past the recorded points.
             val effectiveR = r + (data.strokeWidth / 2f).coerceAtMost(r * 2f)
             if (data.points.size == 2) return distance(x, y, data.points[0], data.points[1]) <= effectiveR
-            var i = 0; while (i + 3 < data.points.size) { if (distToSeg(x, y, data.points[i], data.points[i + 1], data.points[i + 2], data.points[i + 3]) <= effectiveR) return true; i += 2 }; return false
+            // Chunk pre-check: a chunk whose padded bbox doesn't reach (x,y) can't possibly
+            // contain a hit, so skip straight past every segment in it — for a long stroke where
+            // the eraser is only actually near a small part of it, this turns an O(all segments)
+            // scan into effectively O(nearby segments).
+            for (chunk in data.chunkBounds()) {
+                if (x + effectiveR < chunk[2] || x - effectiveR > chunk[4] || y + effectiveR < chunk[3] || y - effectiveR > chunk[5]) continue
+                var i = chunk[0].toInt() * 2
+                val end = (chunk[1].toInt() * 2).coerceAtMost(data.points.size - 2)
+                while (i <= end && i + 3 < data.points.size) {
+                    if (distToSeg(x, y, data.points[i], data.points[i + 1], data.points[i + 2], data.points[i + 3]) <= effectiveR) return true
+                    i += 2
+                    if (i > end) break
+                }
+            }
+            return false
         } else {
             // Shapes: test against the actual outline, not an inflated bounding box, so the
             // eraser only triggers when it genuinely touches the drawn line - this is what makes
@@ -7012,11 +7625,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // That compounding was the actual cause of a circle/ellipse's shape visibly
                 // changing after being erased more than once.
                 val d = StrokeData(Tool.PEN, segPts, data.color, data.strokeWidth, false,
-                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true, eraseFragment = true,
-                    // ROUNDED_RECT shares this sampling branch with CIRCLE/ELLIPSE (all three need
-                    // dense curve sampling to erase correctly) but must NOT be marked curved here —
-                    // it has real straight sides that regenerateErasedShapes() must never smooth.
-                    eraseFragmentCurved = data.type == Tool.CIRCLE || data.type == Tool.ELLIPSE)
+                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true)
                 listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
             }
             else -> {
@@ -7053,7 +7662,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             }
                             if (segPts.size >= 4) {
                                 val d = StrokeData(Tool.PEN, segPts, data.color, data.strokeWidth, false,
-                                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true, eraseFragment = true)
+                                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true)
                                 result.add(StrokeItem(d, d.buildPath(), d.toPaint()))
                             }
                         }
@@ -7072,7 +7681,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 for ((vx, vy) in verts) { plinePts.add(vx); plinePts.add(vy) }
                 if (closed && verts.isNotEmpty()) { plinePts.add(verts[0].first); plinePts.add(verts[0].second) }
                 val d = StrokeData(Tool.PEN, plinePts, data.color, data.strokeWidth, false,
-                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true, eraseFragment = true)
+                    lineType = data.lineType, penStyle = data.penStyle, opacity = data.opacity, isPolyline = true)
                 listOf(StrokeItem(d, d.buildPath(), d.toPaint()))
             }
         }
@@ -7113,23 +7722,105 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     /** Renders only pen strokes currently visible on screen — used for inline handwriting OCR */
-    fun renderVisibleStrokesOnly(): Bitmap? {
-        if (width == 0 || height == 0) return null
-        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val cv = Canvas(bmp); cv.drawColor(Color.WHITE)
-        cv.save(); cv.translate(translateX, translateY); cv.scale(scaleFactor, scaleFactor)
-        for (a in actions) {
-            if (a is StrokeItem && a.data.type == Tool.PEN) cv.drawPath(a.path, a.paint)
+    // Returns the rendered bitmap AND the exact stroke items it contains, so the caller can
+    // remove precisely those strokes after a successful conversion — not every pen stroke on the
+    // whole page (which is what this used to do, a separate bug: converting one word could
+    // silently delete unrelated handwriting elsewhere on the same page).
+    //
+    // Renders a tight bounding box around just the actual strokes, not the entire viewport — a
+    // mostly-blank image (which the old whole-viewport render usually was) gives a document-OCR
+    // engine far less to work with and more blank space to misinterpret. Rendered at a fixed,
+    // generous scale independent of the current on-screen zoom, so strokes aren't tiny/blurry in
+    // the image just because the user happened to be zoomed out at the time.
+    fun renderVisibleStrokesOnly(): Pair<Bitmap, List<StrokeItem>>? {
+        val penStrokes = actions.filterIsInstance<StrokeItem>().filter { it.data.type == Tool.PEN }
+        if (penStrokes.isEmpty()) return null
+        var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+        for (s in penStrokes) {
+            val b = getBounds(s) ?: continue
+            if (b[0] < minX) minX = b[0]; if (b[1] < minY) minY = b[1]
+            if (b[2] > maxX) maxX = b[2]; if (b[3] > maxY) maxY = b[3]
         }
+        if (minX >= maxX || minY >= maxY) return null
+        val pad = 24f
+        minX -= pad; minY -= pad; maxX += pad; maxY += pad
+        val renderScale = 3f
+        val bmpW = ((maxX - minX) * renderScale).toInt().coerceIn(1, 4000)
+        val bmpH = ((maxY - minY) * renderScale).toInt().coerceIn(1, 4000)
+        val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+        val cv = Canvas(bmp); cv.drawColor(Color.WHITE)
+        cv.save(); cv.translate(-minX * renderScale, -minY * renderScale); cv.scale(renderScale, renderScale)
+        for (s in penStrokes) cv.drawPath(s.path, s.paint)
         cv.restore()
-        return bmp
+        return Pair(bmp, penStrokes)
     }
 
-    /** Removes all pen strokes from actions — called after handwriting OCR converts them to text */
-    fun clearRecentPenStrokes() {
-        actions.removeAll { it is StrokeItem && it.data.type == Tool.PEN }
-        redoStack.clear(); invalidate()
-    }    fun sendToBack(item: Any) {
+    // Builds an ML Kit Ink object from the currently selected pen strokes (via lasso/rect
+    // select) — falls back to all pen strokes on the page if nothing is explicitly selected,
+    // for convenience, but selecting first is strongly preferable: recognition accuracy depends
+    // on the ink containing only the intended word/phrase, not unrelated strokes elsewhere.
+    // Timestamps are synthesized (incrementing per point) since StrokeData only stores geometry,
+    // not real per-point timing — ML Kit's own docs note recognition still works well without
+    // real timestamps, since they're used as a velocity/ordering cue, not a hard requirement.
+    fun buildInkFromSelection(): com.google.mlkit.vision.digitalink.Ink? {
+        val chosen = if (selectedItems.isNotEmpty()) selectedItems.filterIsInstance<StrokeItem>()
+            else actions.filterIsInstance<StrokeItem>()
+        val strokes = chosen.filter { it.data.type == Tool.PEN }
+        if (strokes.isEmpty()) return null
+        val inkBuilder = com.google.mlkit.vision.digitalink.Ink.builder()
+        var t = 0L
+        for (s in strokes) {
+            val pts = s.data.points
+            if (pts.size < 4) continue
+            val strokeBuilder = com.google.mlkit.vision.digitalink.Ink.Stroke.builder()
+            var i = 0
+            while (i + 1 < pts.size) {
+                strokeBuilder.addPoint(com.google.mlkit.vision.digitalink.Ink.Point.create(pts[i], pts[i + 1], t))
+                t += 8 // ~8ms between points — a plausible fast-writing pace, not measured
+                i += 2
+            }
+            inkBuilder.addStroke(strokeBuilder.build())
+        }
+        return inkBuilder.build()
+    }
+
+    // Bounding box of whatever buildInkFromSelection() would use — for positioning the
+    // recognized text relative to the actual strokes it came from, the same way OCR positions
+    // its result relative to the image it read.
+    fun selectionBoundsForInk(): FloatArray? {
+        val chosen = if (selectedItems.isNotEmpty()) selectedItems.filterIsInstance<StrokeItem>()
+            else actions.filterIsInstance<StrokeItem>()
+        val strokes = chosen.filter { it.data.type == Tool.PEN }
+        if (strokes.isEmpty()) return null
+        var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+        for (s in strokes) {
+            val b = getBounds(s) ?: continue
+            if (b[0] < minX) minX = b[0]; if (b[1] < minY) minY = b[1]
+            if (b[2] > maxX) maxX = b[2]; if (b[3] > maxY) maxY = b[3]
+        }
+        if (minX >= maxX || minY >= maxY) return null
+        return floatArrayOf(minX, minY, maxX, maxY)
+    }
+
+    // Removes exactly the strokes buildInkFromSelection() used — called after a successful
+    // recognition, so converting one selection doesn't touch unrelated pen strokes elsewhere.
+    fun removeInkSourceStrokes() {
+        val chosen = if (selectedItems.isNotEmpty()) selectedItems.filterIsInstance<StrokeItem>()
+            else actions.filterIsInstance<StrokeItem>()
+        val strokes = chosen.filter { it.data.type == Tool.PEN }
+        removeStrokes(strokes)
+        selectedItems.clear(); selectedItem = null
+    }
+
+    // Removes exactly the given strokes — used instead of the old "remove every pen stroke on
+    // the page" behavior, so converting one word doesn't silently delete unrelated handwriting.
+    fun removeStrokes(strokes: List<StrokeItem>) {
+        actions.removeAll(strokes.toSet())
+        redoStack.clear(); markSpatialDirty(); invalidate()
+    }
+
+
+    fun sendToBack(item: Any) {
         if (actions.remove(item)) { actions.add(0, item); redoStack.clear(); invalidate() }
     }
     fun bringForward(item: Any) {
@@ -7369,7 +8060,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // ── Serialize / Deserialize ─────────────────────────────────────
 
     fun serialize(): String {
-        flushDirtyFillItems()  // safety net: never save with fill edits still only in memory
+        flushDirtyFillItems(); flushDirtyImageItems()  // safety net: never save with fill/image edits still only in memory
         flushEraseSessionBitmaps()  // safety net: never save with a bitmap-erased stroke still unfinalized
         val sb = StringBuilder()
         sb.append("META\u0001${paperType.name}\u0001${canvasMode.name}\u0001${paperSize.name}\u0001${pageOrientation.name}\u0001$paperColor\n")
@@ -7381,7 +8072,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         sb.append("\n")
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
-            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}|${a.data.dashPhase}|${a.data.eraseFragment}|${a.data.eraseFragmentCurved}|${a.data.regenSmoothCorners}|${a.data.curvePointFlags.joinToString(",")}\n")
+            is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\u0001${a.layerId}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\u0001${a.layerId}\u0001${a.flippedH}\u0001${a.flippedV}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.customHatchPath ?: ""}\u0001${a.hatchPattern?.name ?: ""}\u0001${a.hatchColor}\u0001${a.hatchScale}\u0001${a.layerId}\n")
@@ -7405,6 +8096,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val p = line.split("\u0001")
                         try { if (p.size > 1) paperType = PaperType.valueOf(p[1]) } catch (e: Exception) {}
                         try { if (p.size > 2) canvasMode = CanvasMode.valueOf(p[2]) } catch (e: Exception) {}
+                        // Print Layout (Paginated) no longer exists as a distinct mode — its
+                        // page-size behavior has been folded into Convenient's adjustable paper
+                        // size. Treat any note saved before this change as Convenient going
+                        // forward, rather than leaving it in a mode the UI no longer offers.
+                        if (canvasMode == CanvasMode.PAGINATED) canvasMode = CanvasMode.CONVENIENT
                         try { if (p.size > 3) paperSize = PaperSizeOption.valueOf(p[3]) } catch (e: Exception) {}
                         try { if (p.size > 4) pageOrientation = Orientation.valueOf(p[4]) } catch (e: Exception) {}
                         try { if (p.size > 5) paperColor = p[5].toInt() } catch (e: Exception) {}
@@ -7497,7 +8193,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val rot = p[4].toFloat()
                                 val pts = if (p[5].isBlank()) mutableListOf() else p[5].split(",").map { it.toFloat() }.toMutableList()
                                 val fcv = if (p.size >= 7) p[6].toIntOrNull() ?: color else color
-                                val pStyle = if (p.size >= 8) try { PenStyle.valueOf(p[7]) } catch (e: Exception) { PenStyle.FOUNTAIN } else PenStyle.FOUNTAIN
+                                val pStyle = if (p.size >= 8) try { PenStyle.valueOf(p[7]) } catch (e: Exception) { PenStyle.BALL } else PenStyle.BALL
                                 val opac = if (p.size >= 9) p[8].toIntOrNull() ?: 255 else 255
                                 val bStyle = if (p.size >= 10) try { BrushStyle.valueOf(p[9]) } catch (e: Exception) { BrushStyle.ROUND } else BrushStyle.ROUND
                                 val wArr = if (p.size >= 11 && p[10].isNotBlank()) p[10].split(",").mapNotNull { it.toFloatOrNull() }.toMutableList() else mutableListOf()
@@ -7508,12 +8204,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val slant = if (p.size >= 15) p[14].toFloatOrNull() ?: 0.65f else 0.65f
                                 val isPoly = if (p.size >= 16) p[15] == "true" else false
                                 val lid = if (p.size >= 17) p[16].toIntOrNull() ?: 0 else 0
-                                val dPhase = if (p.size >= 18) p[17].toFloatOrNull() ?: 0f else 0f
-                                val eFrag = if (p.size >= 19) p[18] == "true" else false
-                                val eFragCurved = if (p.size >= 20) p[19] == "true" else false
-                                val regenSmooth = if (p.size >= 21) p[20] == "true" else false
-                                val curveFlags = if (p.size >= 22 && p[21].isNotEmpty()) p[21].split(",").map { it == "true" }.toMutableList() else mutableListOf()
-                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly, dashPhase = dPhase, eraseFragment = eFrag, eraseFragmentCurved = eFragCurved, regenSmoothCorners = regenSmooth, curvePointFlags = curveFlags); val si = StrokeItem(d, d.buildPath(), d.toPaint()); si.layerId = lid; actions.add(si)
+                                val d = StrokeData(type, pts, color, sw, fill, rot, fcv, pStyle, opac, bStyle, wArr, lType, locked, slant, holes, isPoly); val si = StrokeItem(d, d.buildPath(), d.toPaint()); si.layerId = lid; actions.add(si)
                             } else {
                                 val pts = if (p[4].isBlank()) mutableListOf() else p[4].split(",").map { it.toFloat() }.toMutableList()
                                 val d = StrokeData(type, pts, color, sw, fill); actions.add(StrokeItem(d, d.buildPath(), d.toPaint()))

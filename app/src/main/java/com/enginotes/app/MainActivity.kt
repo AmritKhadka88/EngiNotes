@@ -53,6 +53,7 @@ class MainActivity : AppCompatActivity() {
     private var isConvenientLayout = true
 
     private val driveManager by lazy { DriveManager(this) }
+    private val security by lazy { SecurityManager(this) }
 
     private val shapeEntries: List<Pair<Int, Tool>> = listOf(
         R.drawable.ic_shape_line to Tool.LINE,
@@ -125,6 +126,10 @@ class MainActivity : AppCompatActivity() {
     internal var editWorldX = 0f; internal var editWorldY = 0f; internal var editTopAnchorY = 0f
     internal var editRotation = 0f; internal var editColor = Color.BLACK
     internal var editSize = 12f * 1.333f
+    // Set by the in-editor resize handle when actually dragged; left null otherwise so
+    // closeInlineEditor knows not to touch the item's existing width at all if the person never
+    // touched this handle during the session.
+    internal var editMaxWidth: Float? = null
     internal var editOpacity = 255
     internal var pendingBold = false; internal var pendingItalic = false
     internal var pendingUnderline = false; internal var pendingHighlight: Int? = null
@@ -156,7 +161,7 @@ class MainActivity : AppCompatActivity() {
                 android.graphics.Typeface.create(family, android.graphics.Typeface.NORMAL)
         } catch (e: Exception) { android.graphics.Typeface.DEFAULT }
     }
-    private val recentPenStyles = mutableListOf(PenStyle.FOUNTAIN, PenStyle.BALL, PenStyle.PENCIL)
+    private val recentPenStyles = mutableListOf(PenStyle.BALL, PenStyle.PENCIL, PenStyle.CALLIGRAPHY)
     private val recentBrushStyles = mutableListOf(BrushStyle.ROUND, BrushStyle.SPRAY, BrushStyle.WATERCOLOR)
     private var cameraImageFile: File? = null
     private var activeToolbarButton: ImageButton? = null
@@ -164,6 +169,10 @@ class MainActivity : AppCompatActivity() {
     internal var isSwitchingTextEditor = false
     private var exportWindowBitmap: Bitmap? = null
     private var pendingExportBitmap: Bitmap? = null
+    // Set instead of pendingExportBitmap specifically for "Export as PDF" on the whole note —
+    // one bitmap per app-page, so savePdfLauncher can give each one its own real PDF page
+    // instead of merging everything into a single tall page.
+    private var pendingExportBitmaps: List<Bitmap>? = null
     private var pendingExportFormat: String = "png"
     private var shapesPickerOverlay: LinearLayout? = null
 
@@ -404,17 +413,62 @@ class MainActivity : AppCompatActivity() {
     private val savePdfLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
         uri ?: return@registerForActivityResult
         try {
-            val bmp = pendingExportBitmap ?: return@registerForActivityResult
             val maxDim = 3000
-            val scale = if (bmp.width > maxDim || bmp.height > maxDim) minOf(maxDim.toFloat()/bmp.width, maxDim.toFloat()/bmp.height) else 1f
-            val pw = (bmp.width*scale).toInt().coerceAtLeast(1); val ph = (bmp.height*scale).toInt().coerceAtLeast(1)
-            val sb = if (scale < 1f) Bitmap.createScaledBitmap(bmp,pw,ph,true) else bmp
-            val doc = PdfDocument(); val pi = PdfDocument.PageInfo.Builder(pw,ph,1).create()
-            val page = doc.startPage(pi); page.canvas.drawBitmap(sb,0f,0f,Paint()); doc.finishPage(page)
+            val doc = PdfDocument()
+            // PdfDocument.PageInfo.Builder's width/height are in PostScript points (1/72 inch),
+            // NOT pixels — passing the bitmap's raw pixel count directly (the previous bug) made
+            // every page roughly 2x too large in each dimension, since e.g. 150 pixels-per-inch
+            // was silently being treated as 150 points-per-inch. exportAllPagesAsBitmaps() always
+            // renders at 150 DPI, so converting is exact: points = pixels * 72 / 150.
+            //
+            // Calibration is expressed directly as "what does your printed page actually measure,
+            // in mm" rather than an abstract percentage — much easier to reason about than
+            // guessing a percentage. Compares that stored mm value against the paper size's true
+            // mm dimensions to get a ratio, applied to width/height independently since a
+            // miscalibrated printer can scale unevenly.
+            val exportDpi = 150f
+            val trueWmm = if (drawingView.pageOrientation == Orientation.PORTRAIT) drawingView.paperSize.widthMM else drawingView.paperSize.heightMM
+            val trueHmm = if (drawingView.pageOrientation == Orientation.PORTRAIT) drawingView.paperSize.heightMM else drawingView.paperSize.widthMM
+            val calibWmm = getPrefs().getFloat("pdf_calib_w_mm", trueWmm)
+            val calibHmm = getPrefs().getFloat("pdf_calib_h_mm", trueHmm)
+            val calibW = if (trueWmm > 0f) calibWmm / trueWmm else 1f
+            val calibH = if (trueHmm > 0f) calibHmm / trueHmm else 1f
+            val multiPage = pendingExportBitmaps
+            if (multiPage != null) {
+                // Whole-note export: one real PDF page per app-page, instead of the old approach
+                // of drawing everything onto a single tall page (which is what let two adjacent
+                // pages' content end up merged together with no actual page break between them).
+                for (bmp in multiPage) {
+                    // Points are computed from the ORIGINAL bitmap's pixel size at the known
+                    // export DPI — this is the page's true physical size and must not change
+                    // just because the image gets downscaled for file-size reasons below.
+                    val ptsW = (bmp.width * 72f / exportDpi * calibW).toInt().coerceAtLeast(1)
+                    val ptsH = (bmp.height * 72f / exportDpi * calibH).toInt().coerceAtLeast(1)
+                    val scale = if (bmp.width > maxDim || bmp.height > maxDim) minOf(maxDim.toFloat()/bmp.width, maxDim.toFloat()/bmp.height) else 1f
+                    val pw = (bmp.width*scale).toInt().coerceAtLeast(1); val ph = (bmp.height*scale).toInt().coerceAtLeast(1)
+                    val sb = if (scale < 1f) Bitmap.createScaledBitmap(bmp,pw,ph,true) else bmp
+                    val pi = PdfDocument.PageInfo.Builder(ptsW, ptsH, doc.pages.size + 1).create()
+                    val page = doc.startPage(pi)
+                    // RectF-based overload scales the source bitmap to exactly fill the
+                    // destination rect — needed because the bitmap's own pixel dimensions (even
+                    // after maxDim downscaling) no longer match the page's point dimensions;
+                    // drawing at 1:1 pixel scale would draw it far too large (or clipped) against
+                    // a canvas whose coordinate space is now in points, not pixels.
+                    page.canvas.drawBitmap(sb, null, android.graphics.RectF(0f, 0f, ptsW.toFloat(), ptsH.toFloat()), Paint())
+                    doc.finishPage(page)
+                }
+            } else {
+                val bmp = pendingExportBitmap ?: return@registerForActivityResult
+                val scale = if (bmp.width > maxDim || bmp.height > maxDim) minOf(maxDim.toFloat()/bmp.width, maxDim.toFloat()/bmp.height) else 1f
+                val pw = (bmp.width*scale).toInt().coerceAtLeast(1); val ph = (bmp.height*scale).toInt().coerceAtLeast(1)
+                val sb = if (scale < 1f) Bitmap.createScaledBitmap(bmp,pw,ph,true) else bmp
+                val pi = PdfDocument.PageInfo.Builder(pw,ph,1).create()
+                val page = doc.startPage(pi); page.canvas.drawBitmap(sb,0f,0f,Paint()); doc.finishPage(page)
+            }
             contentResolver.openOutputStream(uri)?.use { doc.writeTo(it) }; doc.close()
             Toast.makeText(this,"PDF saved!",Toast.LENGTH_SHORT).show()
         } catch(e:Exception){ Toast.makeText(this,"PDF failed: ${e.message}",Toast.LENGTH_LONG).show() }
-        finally { pendingExportBitmap = null }
+        finally { pendingExportBitmap = null; pendingExportBitmaps = null }
     }
 
     private val saveImageLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("image/*")) { uri ->
@@ -459,8 +513,50 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Crash reporter — installed first, before anything else has a chance to crash. Catches
+        // BOTH Exception and Error subtypes (StackOverflowError, OutOfMemoryError, etc. are Error,
+        // not Exception — a "catch (e: Exception)" elsewhere in the app structurally cannot catch
+        // these, since Error and Exception are siblings under Throwable, not one a subtype of the
+        // other). Writes the full stack trace to a file, then hands off to Android's own default
+        // handler so the crash still proceeds normally. Checked and shown below, right after this
+        // block, on the next launch.
+        try {
+            val crashFile = java.io.File(filesDir, "last_crash.txt")
+            val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+            Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+                try {
+                    val sw = java.io.StringWriter()
+                    throwable.printStackTrace(java.io.PrintWriter(sw))
+                    crashFile.writeText("Crash at ${java.util.Date()}\nThread: ${thread.name}\nType: ${throwable.javaClass.name}\n\n$sw")
+                } catch (e: Exception) { /* must never throw from inside a crash handler */ }
+                defaultHandler?.uncaughtException(thread, throwable)
+            }
+        } catch (e: Exception) { }
+
         setContentView(R.layout.activity_main)
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+
+        // Show any crash captured on a previous run, so it can be copied/screenshotted without
+        // needing Android Studio or adb — the file only exists if a crash actually happened.
+        try {
+            val crashFile = java.io.File(filesDir, "last_crash.txt")
+            if (crashFile.exists()) {
+                val content = crashFile.readText()
+                if (content.isNotBlank()) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Previous crash log")
+                        .setMessage(content)
+                        .setPositiveButton("Copy") { _, _ ->
+                            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("crash log", content))
+                            Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
+                            crashFile.delete()
+                        }
+                        .setNegativeButton("Dismiss") { _, _ -> crashFile.delete() }
+                        .show()
+                }
+            }
+        } catch (e: Exception) { }
 
         drawingView     = findViewById(R.id.drawingView)
         drawingView.inputMode = try { InputMode.valueOf(getPrefs().getString("input_mode", "AUTO") ?: "AUTO") } catch (e: Exception) { InputMode.AUTO }
@@ -486,17 +582,15 @@ class MainActivity : AppCompatActivity() {
         tvTitle.setOnClickListener { showRenameDialog() }
         btnLayoutToggle = findViewById(R.id.btnLayoutToggle)
 
-        // Keep the bottom toolbar dock above the keyboard. This is separate from the floating
-        // per-edit toolbar handled elsewhere - it's pinned in activity_main.xml and was getting
-        // covered by the IME since adjustNothing doesn't resize/pan the layout for it.
-        // Uses bottomMargin (not translationY) so the FrameLayout actually reflows.
-        //
-        // Adjusts bottomToolbarDock itself, NOT the two bars nested inside it
-        // (primaryToolbarScroll/toolbarScroll) — those used to be independent top-level views
-        // each needing their own margin, but since they were merged into one shell (bottomToolbarDock),
-        // they're now LinearLayout children whose own bottomMargin only affects spacing WITHIN the
-        // dock. The dock itself is the direct FrameLayout child that actually needs to move above
-        // the keyboard; adjusting the inner bars instead left the dock never repositioned at all.
+        // Keep the static bottom toolbars (context row + primary tool dock) above the keyboard.
+        // These are separate from the floating per-edit toolbar handled elsewhere - they're
+        // pinned in activity_main.xml and were getting covered by the IME since adjustNothing
+        // doesn't resize/pan the layout for them.
+        // Uses bottomMargin (not translationY) on the last child so the LinearLayout actually
+        // Keep the bottom toolbar dock and any open floating panel above the keyboard. This is
+        // separate from the inline per-edit toolbar handled elsewhere - both are pinned via
+        // Gravity.BOTTOM and get covered by the IME since adjustNothing doesn't resize/pan the
+        // layout for them.
         run {
             val dock = findViewById<View?>(R.id.bottomToolbarDock)
             // The dock's own starting bottomMargin, captured once before any keyboard adjustment.
@@ -516,6 +610,21 @@ class MainActivity : AppCompatActivity() {
                 if (lp != null && lp.bottomMargin != target) {
                     lp.bottomMargin = target
                     dock.layoutParams = lp
+                }
+                // textOptionsPanel (the font-family/size/color panel) is a separate view, added
+                // independently with plain Gravity.BOTTOM and no keyboard awareness of its own —
+                // without this, it anchors to the bottom of the full screen height (behind the
+                // keyboard, since adjustNothing means nothing resizes automatically), and being
+                // a tall, multi-row panel, its top portion ends up pinned high on screen with the
+                // rest hidden behind the keyboard, which is what "hiding whole screen" looked like.
+                val panel = textOptionsPanel
+                val panelLp = panel?.layoutParams as? FrameLayout.LayoutParams
+                // Base margin is always at least the nav bar inset so the panel clears the system
+                // bar even when the keyboard is closed (extraForKeyboard alone would be 0 then).
+                val panelTarget = navBarBottom + extraForKeyboard
+                if (panel != null && panelLp != null && panelLp.bottomMargin != panelTarget) {
+                    panelLp.bottomMargin = panelTarget
+                    panel.layoutParams = panelLp
                 }
                 onImeBottomChanged?.invoke(imeBottom)  // notify inline editor keyboard listener
                 insets
@@ -565,13 +674,21 @@ class MainActivity : AppCompatActivity() {
         if (fileName != null) {
             currentFileName = fileName; tvTitle.text = fileName
             val file = File(getDrawingsFolder(),"$fileName.eng")
-            if (file.exists()) drawingView.loadFromString(file.readText())
+            if (file.exists()) drawingView.loadFromString(security.readNoteFile(file))
         } else { tvTitle.text = "New Note" }
 
         drawingView.migrateOldNotes(filesDir)
         lastSavedContent = drawingView.serialize()
         driveManager.trySilentSignIn { }
         drawingView.arcDivisions = prefs.getInt("arc_divisions",3)
+        drawingView.canvasBackgroundColor = currentThemeBackgroundColor()
+        drawingView.lineSpacingPref = prefs.getFloat("paper_line_spacing", 40f)
+        drawingView.gridSpacingPref = prefs.getFloat("paper_grid_spacing", 40f)
+        drawingView.dotSpacingPref = prefs.getFloat("paper_dot_spacing", 40f)
+        drawingView.gridMajorDivision = prefs.getInt("paper_grid_major", 5)
+        drawingView.linedDoubleMargin = prefs.getBoolean("paper_lined_double_margin", false)
+        drawingView.engineeringSpacingPref = prefs.getFloat("paper_engineering_spacing", 20f)
+        drawingView.engineeringMajorDivision = prefs.getInt("paper_engineering_major", 5)
         drawingView.defaultDimFontSize = prefs.getFloat("dim_font_size", 11f)
         drawingView.defaultDimArrowSize = prefs.getFloat("dim_arrow_size", 9f)
         // Apply bottom toolbar visibility preference
@@ -645,7 +762,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val scroll = HorizontalScrollView(this).apply {
                     isHorizontalScrollBarEnabled = false
-                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(18).toFloat() }
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(18).toFloat() }
                     elevation = dp(5).toFloat()
                     layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).also {
                         it.gravity = Gravity.TOP or Gravity.END; it.topMargin = dp(56); it.rightMargin = dp(8)
@@ -661,9 +778,9 @@ class MainActivity : AppCompatActivity() {
                 fun iconBtn(glyph: String, action: () -> Unit): TextView {
                     val v = TextView(this).apply {
                         text = glyph; textSize = 13f; gravity = Gravity.CENTER
-                        setTextColor(Color.parseColor("#2A2A2A"))
+                        setTextColor(Color.WHITE)
                         layoutParams = LinearLayout.LayoutParams(iconSize, iconSize).also { it.setMargins(dp(1), dp(5), dp(1), dp(5)) }
-                        background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(Color.parseColor("#F2F2F2")) }
+                        background = themedButtonDrawable(this@MainActivity, currentAppTheme(), currentThemeSpec().button, oval = true)
                         setOnClickListener { action() }
                     }
                     tb.addView(v); return v
@@ -927,51 +1044,43 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyConvenientLayout() {
-        // No rescale here — Convenient's page-width formula (view.width * 0.82, raw device
-        // pixels) and Fixed/Paginated's (paperSize.widthMM * 3.7795, a DPI-based conversion) are
-        // different unit systems entirely, not two sizes of the same thing. Comparing them
-        // produced a scale factor reflecting nothing but that mismatch — which is what shrank
-        // font sizes and moved content on a switch, instead of keeping everything's position and
-        // size exactly as it was.
         isConvenientLayout = true
         drawingView.canvasMode = CanvasMode.CONVENIENT
-        drawingView.invalidate()
-    }
-
-    private fun applyPrintLayout() {
-        isConvenientLayout = false
-        drawingView.canvasMode = CanvasMode.PAGINATED
-        drawingView.paperSize = PaperSizeOption.A4
+        drawingView.clampTranslation()
         drawingView.invalidate()
     }
 
     private fun applyInfiniteLayout() {
         isConvenientLayout = false
         drawingView.canvasMode = CanvasMode.INFINITE
+        drawingView.clampTranslation()
         drawingView.invalidate()
     }
 
+    // Print Layout no longer exists as a separate mode — paper size is now just a property of
+    // Convenient mode, adjustable independently of it. Picking a size here switches to Convenient
+    // (if not already there, since paper size has no meaning in Infinite) and always rewraps text
+    // to fit the new width — there's no separate "keep as is" choice anymore.
+    private fun showPaperSizeMenu(anchor: View) {
+        val names = PaperSizeOption.values().map { it.name }
+        showThemedDropdown(anchor, names) { label ->
+            val selected = try { PaperSizeOption.valueOf(label) } catch (e: Exception) { return@showThemedDropdown }
+            applyConvenientLayout()
+            drawingView.paperSize = selected
+            drawingView.rewrapTextToPage()
+            drawingView.clampTranslation()
+            drawingView.invalidate()
+        }
+    }
+
     private fun showLayoutMenu(anchor: View) {
-        val popup = PopupMenu(this, anchor)
-        popup.menu.add("Convenient")
-        popup.menu.add("Print (A4)")
-        popup.menu.add("Infinite Canvas")
-        popup.setOnMenuItemClickListener { item ->
-            when (item.title) {
+        showThemedDropdown(anchor, listOf("Convenient", "Paper Size...", "Infinite Canvas")) { label ->
+            when (label) {
                 "Convenient" -> applyConvenientLayout()
-                "Print (A4)" -> {
-                    AlertDialog.Builder(this)
-                        .setTitle("Switch to Print Layout")
-                        .setMessage("Print layout uses real A4 size. How should existing text be handled?")
-                        .setPositiveButton("Rearrange (wrap to fit)") { _, _ -> applyPrintLayout(); drawingView.rearrangeTextForPrint() }
-                        .setNegativeButton("Keep as is") { _, _ -> applyPrintLayout(); drawingView.keepTextAsIs() }
-                        .setNeutralButton("Cancel", null).show()
-                }
+                "Paper Size..." -> showPaperSizeMenu(anchor)
                 "Infinite Canvas" -> applyInfiniteLayout()
             }
-            true
         }
-        popup.show()
     }
 
     internal fun setActiveTool(btn: ImageButton?, tool: Tool) {
@@ -1532,7 +1641,7 @@ class MainActivity : AppCompatActivity() {
                 val popup = android.widget.PopupWindow(this)
                 val pLayout = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14))
-                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat() }
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
                 }
                 val sliderView = object : android.view.View(this) {
                     val trackH = dp(14).toFloat()
@@ -1587,7 +1696,7 @@ class MainActivity : AppCompatActivity() {
                 val popup = android.widget.PopupWindow(this)
                 val pLayout = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
-                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat() }
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
                 }
                 // Editable custom-value box at the top
                 val customRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(14), dp(12), dp(14), dp(8)) }
@@ -1645,7 +1754,7 @@ class MainActivity : AppCompatActivity() {
                 val popup = android.widget.PopupWindow(this)
                 val pLayout = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14))
-                    background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat() }
+                    background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
                 }
                 val sliderView = object : android.view.View(this) {
                     val trackH = dp(14).toFloat()
@@ -1710,7 +1819,7 @@ class MainActivity : AppCompatActivity() {
             })
         }
 
-        val allPenTypes = listOf("Fountain" to PenStyle.FOUNTAIN, "Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
+        val allPenTypes = listOf("Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
         val allBrushTypes = listOf("Round" to BrushStyle.ROUND, "Ink" to BrushStyle.INK, "Watercolor" to BrushStyle.WATERCOLOR, "Crayon" to BrushStyle.CRAYON, "Charcoal" to BrushStyle.CHARCOAL, "Neon" to BrushStyle.NEON, "Dry Brush" to BrushStyle.DRY_BRUSH, "Spray" to BrushStyle.SPRAY, "Fire" to BrushStyle.FIRE, "Grass" to BrushStyle.GRASS)
         val allFontFamilies = listOf(
             "Default" to "sans-serif", "Serif" to "serif", "Monospace" to "monospace",
@@ -1885,20 +1994,21 @@ class MainActivity : AppCompatActivity() {
                             mode.drawIcon(c, p, r)
                         }
                     }
-                    val col = LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
-                        // This column holds an icon AND a text label stacked vertically — it
-                        // needs more room than a plain icon button, so it can't just inherit
-                        // BAR_H's tight minimum (30dp), which is why the label was clipping at
-                        // the Small/Medium bar-size presets.
-                        val lp = LinearLayout.LayoutParams(dp(50), BAR_H.coerceAtLeast(dp(46))); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp
+                    val row2 = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+                        // Icon beside its label instead of stacked above it — fits the row's
+                        // normal tight height (BAR_H) instead of needing extra room for two
+                        // stacked elements, at the cost of somewhat more width, which is fine
+                        // since this sits in a horizontally scrolling row.
+                        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, BAR_H); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp
+                        setPadding(dp(8), 0, dp(10), 0)
                         background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(14).toFloat(); setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")) }
                         setOnClickListener { setActiveTool(null, mode.tool) }
                     }
-                    val iconSz = (BAR_H * 0.55f).toInt().coerceIn(dp(20), dp(34))
-                    col.addView(iconView, LinearLayout.LayoutParams(iconSz, iconSz).also { it.gravity = Gravity.CENTER_HORIZONTAL })
-                    col.addView(TextView(this).apply { text = mode.label; textSize = 8f; gravity = Gravity.CENTER; setTextColor(if (active) Color.WHITE else Color.parseColor("#5C5856")) })
-                    row.addView(col)
+                    val iconSz = (BAR_H * 0.55f).toInt().coerceIn(dp(18), dp(28))
+                    row2.addView(iconView, LinearLayout.LayoutParams(iconSz, iconSz).also { it.gravity = Gravity.CENTER_VERTICAL; it.marginEnd = dp(6) })
+                    row2.addView(TextView(this).apply { text = mode.label; textSize = 12f; gravity = Gravity.CENTER; setTextColor(if (active) Color.WHITE else Color.parseColor("#5C5856")) })
+                    row.addView(row2)
                 }
             }
             else -> {
@@ -1952,6 +2062,18 @@ class MainActivity : AppCompatActivity() {
         val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
         insetsController.hide(androidx.core.view.WindowInsetsCompat.Type.statusBars())
         insetsController.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        // On a notched/punch-hole phone, hiding the status bar isn't enough by itself — the
+        // system still reserves that strip as solid black unless the window explicitly says
+        // it's safe to draw content under the cutout. Without this, "fullscreen" still shows a
+        // plain black bar where the status bar used to be, just with its clock/icons gone.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R)
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                else
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         if (fullscreenRestoreBtn != null) return
         val btn = TextView(this).apply {
             text = "⛶"; textSize = 16f; gravity = Gravity.CENTER
@@ -1968,6 +2090,10 @@ class MainActivity : AppCompatActivity() {
         lp.topMargin = dp(14); lp.rightMargin = dp(14)
         canvasContainer.addView(btn, lp)
         fullscreenRestoreBtn = btn
+        window.decorView.post {
+            androidx.core.view.ViewCompat.requestApplyInsets(window.decorView)
+            findViewById<View?>(android.R.id.content)?.requestLayout()
+        }
     }
     private fun exitFullscreen() {
         findViewById<View?>(R.id.topBarContainer)?.visibility = View.VISIBLE
@@ -1977,11 +2103,87 @@ class MainActivity : AppCompatActivity() {
         }
         androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, true)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+            }
+        }
         fullscreenRestoreBtn?.let { canvasContainer.removeView(it) }
         fullscreenRestoreBtn = null
+        // Force a fresh WindowInsets dispatch — the bottomToolbarDock/textOptionsPanel margin
+        // listener registered in onCreate() reacts to insets callbacks, but toggling
+        // setDecorFitsSystemWindows/status-bar visibility back doesn't reliably re-trigger that
+        // callback at the right moment on every device, which is exactly the misalignment that
+        // only "fixes itself" by closing and reopening the note (a fresh onCreate + layout pass
+        // re-establishes everything correctly). Requesting it explicitly here removes the
+        // dependency on that implicit timing.
+        window.decorView.post {
+            androidx.core.view.ViewCompat.requestApplyInsets(window.decorView)
+            findViewById<View?>(android.R.id.content)?.requestLayout()
+        }
     }
 
     internal fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
+
+    // Reads the same "app_color_theme" preference BooksActivity's theme picker writes to,
+    // reusing its THEMES table directly rather than duplicating the color list here — one theme
+    // choice stays consistent across both activities instead of each maintaining its own copy.
+    // Deliberately a DIFFERENT key from "app_theme" (used elsewhere in this file for the
+    // separate Original/Transparent/Glass Appearance setting) — they used to collide on the same
+    // key, silently overwriting each other every time either setting changed.
+    private fun currentThemeSpec(): ThemeSpec {
+        val name = getPrefs().getString("app_color_theme", "Classic") ?: "Classic"
+        return BooksActivity.THEMES[name] ?: BooksActivity.THEMES["Classic"]!!
+    }
+    internal fun currentThemeBackgroundColor(): Int = Color.parseColor(currentThemeSpec().bg)
+    internal fun currentThemeToolbarColor(): Int = Color.parseColor(currentThemeSpec().toolbar)
+    internal fun currentThemeButtonColor(): Int = Color.parseColor(currentThemeSpec().button)
+    internal fun currentThemeIsGradient(): Boolean = currentThemeSpec().isGradient
+
+    // Current bottom navigation-bar inset (0 on gesture-nav devices where the system bar is a
+    // thin overlay, several dp on devices with a classic 3-button bar). Bottom-anchored panels
+    // (Gravity.BOTTOM inside canvasContainer) sit at the raw bottom of the screen since
+    // setDecorFitsSystemWindows(false) means nothing pads for system bars automatically —
+    // without this, their lowest content/buttons render underneath the nav bar.
+    internal fun navBarBottomInset(): Int {
+        val insets = androidx.core.view.ViewCompat.getRootWindowInsets(window.decorView)
+        return insets?.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
+    }
+
+    // Small themed replacement for Android's stock PopupMenu. PopupMenu draws from the app's
+    // base Android theme (styles.xml) — it has no idea about the custom Classic/Ocean/Forest/
+    // Sunset/Minimal Mono/Gradient color system below, so switching that theme never changed
+    // these dropdowns; whatever tint they showed was just the base theme's default accent color,
+    // not any chosen theme. This builds a plain themed panel instead, same pattern as the other
+    // hand-rolled panels in this file (Highlighter/Eraser/Pen options etc).
+    private fun showThemedDropdown(anchor: View, items: List<String>, onSelect: (String) -> Unit) {
+        val spec = currentThemeSpec()
+        val bg = Color.parseColor(spec.bg)
+        val accent = Color.parseColor(spec.toolbar)
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(bg); cornerRadius = dp(10).toFloat(); setStroke(dp(1), Color.parseColor("#22000000"))
+            }
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+        }
+        val popupWindow = android.widget.PopupWindow(
+            container, LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT, true
+        ).apply {
+            isOutsideTouchable = true
+            elevation = dp(10).toFloat()
+        }
+        for (label in items) {
+            container.addView(TextView(this).apply {
+                text = label; textSize = 14f; setTextColor(accent)
+                setPadding(dp(18), dp(12), dp(18), dp(12))
+                isClickable = true
+                background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.TRANSPARENT); cornerRadius = dp(6).toFloat() }
+                setOnClickListener { popupWindow.dismiss(); onSelect(label) }
+            })
+        }
+        popupWindow.showAsDropDown(anchor)
+    }
 
     private fun showOffsetDialog(item: StrokeItem) {
         val container = LinearLayout(this).apply {
@@ -2041,24 +2243,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showEraserModePopup(anchor: View) {
-        val popup = PopupMenu(this, anchor)
-        popup.menu.add("Object Eraser")
-        popup.menu.add("Area Eraser")
-        popup.setOnMenuItemClickListener { item ->
-            drawingView.eraserMode = if (item.title == "Object Eraser") EraserMode.OBJECT else EraserMode.AREA
-            Toast.makeText(this, item.title, Toast.LENGTH_SHORT).show()
-            true
+        showThemedDropdown(anchor, listOf("Object Eraser", "Area Eraser")) { label ->
+            drawingView.eraserMode = if (label == "Object Eraser") EraserMode.OBJECT else EraserMode.AREA
+            Toast.makeText(this, label, Toast.LENGTH_SHORT).show()
         }
-        popup.show()
     }
 
     private fun showSelectModePopup(anchor: View) {
-        val popup = PopupMenu(this, anchor)
-        popup.menu.add("Select (default)")
-        popup.menu.add("Box Select (drag a rectangle)")
-        popup.menu.add("Lasso (freeform loop)")
-        popup.setOnMenuItemClickListener { item ->
-            when (item.title) {
+        showThemedDropdown(anchor, listOf("Select (default)", "Box Select (drag a rectangle)", "Lasso (freeform loop)")) { label ->
+            when (label) {
                 "Select (default)" -> setActiveTool(null, Tool.SELECT)
                 "Box Select (drag a rectangle)" -> {
                     setActiveTool(null, Tool.AUTOSELECT)
@@ -2069,23 +2262,17 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, "Trace a loop around items to select them", Toast.LENGTH_SHORT).show()
                 }
             }
-            true
         }
-        popup.show()
     }
 
     private fun showFillModePopup(anchor: View) {
-        val popup = PopupMenu(this, anchor)
-        popup.menu.add("Pick Fill Color")
-        popup.menu.add(if (drawingView.fillShapes) "Auto-fill: On" else "Auto-fill: Off")
-        popup.setOnMenuItemClickListener { item ->
+        val autoFillLabel = if (drawingView.fillShapes) "Auto-fill: On" else "Auto-fill: Off"
+        showThemedDropdown(anchor, listOf("Pick Fill Color", autoFillLabel)) { label ->
             when {
-                item.title == "Pick Fill Color" -> showColorGridDialog { c -> drawingView.fillColor = c }
-                item.title.toString().startsWith("Auto-fill") -> { drawingView.fillShapes = !drawingView.fillShapes; Toast.makeText(this, if (drawingView.fillShapes) "Auto-fill: On" else "Auto-fill: Off", Toast.LENGTH_SHORT).show() }
+                label == "Pick Fill Color" -> showColorGridDialog { c -> drawingView.fillColor = c }
+                label.startsWith("Auto-fill") -> { drawingView.fillShapes = !drawingView.fillShapes; Toast.makeText(this, if (drawingView.fillShapes) "Auto-fill: On" else "Auto-fill: Off", Toast.LENGTH_SHORT).show() }
             }
-            true
         }
-        popup.show()
     }
 
     private var layersToggleBtn: ImageButton? = null
@@ -2383,54 +2570,68 @@ class MainActivity : AppCompatActivity() {
 
     fun onMenuClick(v: View) {
         closeInlineEditor(true)
-        val popup = PopupMenu(this, v)
-        popup.menu.add("Note: ${currentFileName ?: "Untitled"}")
-        listOf("Save","Save As","Export","Export Window","Regen","Clear Canvas").forEach { popup.menu.add(it) }
-        if (currentFileName != null) popup.menu.add("Delete This Note")
-        popup.menu.add("Add to Book")
-        popup.menu.add("Layers")
-        popup.menu.add("Back Up to Drive")
-        listOf("Open PDF","Chart Builder","Handwriting to Text","Ask Gemini about Drawing","Settings","Exit").forEach { popup.menu.add(it) }
-        popup.setOnMenuItemClickListener { item ->
-            when {
-                item.title.toString().startsWith("Note:") -> showRenameDialog()
-                item.title == "Save" -> saveCurrent()
-                item.title == "Save As" -> saveAsNew()
-                item.title == "Export" -> showExportDialog()
-                item.title == "Export Window" -> {
-                    if(drawingView.canvasMode == CanvasMode.INFINITE || drawingView.canvasMode == CanvasMode.CONVENIENT) {
-                        Toast.makeText(this,"Draw a rectangle to select export area",Toast.LENGTH_SHORT).show()
-                        setActiveTool(null, Tool.EXPORT_WINDOW)
-                    } else Toast.makeText(this,"Switch to Infinite/Convenient canvas for window export",Toast.LENGTH_SHORT).show()
-                }
-                item.title == "Clear Canvas" -> confirmThenClear()
-                item.title == "Regen" -> {
-                    val n = drawingView.regenerateErasedShapes()
-                    Toast.makeText(this, if (n > 0) "Regenerated $n shape${if (n == 1) "" else "s"}" else "Nothing to regenerate — no erased shapes need cleanup", Toast.LENGTH_SHORT).show()
-                }
-                item.title == "Delete This Note" -> deleteCurrentNote()
-                item.title == "Add to Book" -> showAddToBookDialog()
-                item.title == "Layers" -> showLayersPanel()
-                item.title == "Open PDF" -> pickPdfLauncher.launch("application/pdf")
-                item.title == "Chart Builder" -> chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java))
-                item.title == "Handwriting to Text" -> convertHandwritingInPlace()
-                item.title == "Ask Gemini about Drawing" -> {
-                    Toast.makeText(this,"Drag a box around the area to ask about",Toast.LENGTH_SHORT).show()
-                    setActiveTool(null, Tool.OCR_SNIP)
-                }
-                item.title == "Settings" -> showSettingsDialog()
-                item.title == "Exit" -> confirmThenExit()
-                item.title == "Back Up to Drive" -> {
-                    if (!driveManager.isSignedIn()) {
-                        Toast.makeText(this, "Sign in with Google from the home screen first", Toast.LENGTH_SHORT).show()
-                    } else {
-                        currentFileName?.let { backUpNoteToDrive(it, silent = false) }
-                    }
+        val items = mutableListOf("Note: ${currentFileName ?: "Untitled"}")
+        items.addAll(listOf("Save","Save As","Export","Export Window","Clear Canvas"))
+        if (currentFileName != null) items.add("Delete This Note")
+        items.addAll(listOf("Add to Book","Layers","Back Up to Drive","Open PDF","Chart Builder",
+            "Text Recognition (printed letters)","Handwriting Recognition (cursive)","Ask Gemini about Drawing","Settings","Exit"))
+
+        val bg = currentThemeBackgroundColor()
+        val isDark = Color.red(bg) * 0.299 + Color.green(bg) * 0.587 + Color.blue(bg) * 0.114 < 140
+        val textColor = if (isDark) Color.parseColor("#E8E8E8") else Color.parseColor("#1C1C1E")
+        val dividerColor = if (isDark) Color.parseColor("#3A3A55") else Color.parseColor("#E0E0E0")
+
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
+        var dlg: AlertDialog? = null
+        for ((i, label) in items.withIndex()) {
+            val row = TextView(this).apply {
+                text = label; textSize = 16f; setTextColor(textColor)
+                setPadding(dp(20), dp(14), dp(20), dp(14))
+                setOnClickListener { dlg?.dismiss(); handleMenuAction(label) }
+            }
+            container.addView(row)
+            if (i < items.size - 1) container.addView(View(this).apply {
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1)
+                setBackgroundColor(dividerColor)
+            })
+        }
+        dlg = AlertDialog.Builder(this).setView(ScrollView(this).apply { addView(container) }).show()
+    }
+
+    private fun handleMenuAction(title: String) {
+        when {
+            title.startsWith("Note:") -> showRenameDialog()
+            title == "Save" -> saveCurrent()
+            title == "Save As" -> saveAsNew()
+            title == "Export" -> showExportDialog()
+            title == "Export Window" -> {
+                if(drawingView.canvasMode == CanvasMode.INFINITE || drawingView.canvasMode == CanvasMode.CONVENIENT) {
+                    Toast.makeText(this,"Draw a rectangle to select export area",Toast.LENGTH_SHORT).show()
+                    setActiveTool(null, Tool.EXPORT_WINDOW)
+                } else Toast.makeText(this,"Switch to Infinite/Convenient canvas for window export",Toast.LENGTH_SHORT).show()
+            }
+            title == "Clear Canvas" -> confirmThenClear()
+            title == "Delete This Note" -> deleteCurrentNote()
+            title == "Add to Book" -> showAddToBookDialog()
+            title == "Layers" -> showLayersPanel()
+            title == "Open PDF" -> pickPdfLauncher.launch("application/pdf")
+            title == "Chart Builder" -> chartLauncher.launch(android.content.Intent(this, ChartActivity::class.java))
+            title == "Text Recognition (printed letters)" -> convertHandwritingInPlace()
+            title == "Handwriting Recognition (cursive)" -> recognizeHandwriting()
+            title == "Ask Gemini about Drawing" -> {
+                Toast.makeText(this,"Drag a box around the area to ask about",Toast.LENGTH_SHORT).show()
+                setActiveTool(null, Tool.OCR_SNIP)
+            }
+            title == "Settings" -> showSettingsDialog()
+            title == "Exit" -> confirmThenExit()
+            title == "Back Up to Drive" -> {
+                if (!driveManager.isSignedIn()) {
+                    Toast.makeText(this, "Sign in with Google from the home screen first", Toast.LENGTH_SHORT).show()
+                } else {
+                    currentFileName?.let { backUpNoteToDrive(it, silent = false) }
                 }
             }
-            true
         }
-        popup.show()
     }
 
     // ---- Drive backup: the note's own .eng file plus every image/audio/custom-font it references ----
@@ -2472,7 +2673,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         if (!silent) Toast.makeText(this, "Backing up to Drive…", Toast.LENGTH_SHORT).show()
-        val assetPaths = extractAssetPaths(engFile.readText())
+        val assetPaths = extractAssetPaths(security.readNoteFile(engFile))
         uploadAssetsThenNote(assetPaths, 0, engFile, name, silent)
     }
 
@@ -2526,7 +2727,7 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Restoring…", Toast.LENGTH_SHORT).show()
         driveManager.downloadFile(driveFile.name, localFile) { success, error ->
             if (!success) { Toast.makeText(this, "Restore failed: $error", Toast.LENGTH_SHORT).show(); return@downloadFile }
-            val content = localFile.readText()
+            val content = security.readNoteFile(localFile)
             val assetPaths = extractAssetPaths(content)
             restoreAssets(assetPaths, 0) {
                 Toast.makeText(this, "Restored! Open the note to view it.", Toast.LENGTH_SHORT).show()
@@ -2551,24 +2752,111 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun convertHandwritingInPlace() {
-        // Render only the pen strokes visible on screen to a bitmap, run ML Kit OCR,
-        // then place the recognised text as a TextItem at the strokes' centroid and remove the strokes.
-        val bmp = drawingView.renderVisibleStrokesOnly()
-        if (bmp == null) { Toast.makeText(this, "No strokes visible", Toast.LENGTH_SHORT).show(); return }
+        // This is genuinely OCR (ML Kit Text Recognition, built for printed/typed text in
+        // photos of documents) — not true handwriting recognition, which would require a
+        // completely different API (ML Kit Digital Ink Recognition) operating on the actual
+        // pen-stroke coordinates as they're drawn, not a rendered image.
+        //
+        // Image-only: works exclusively on a selected image (a photo/screenshot pasted into the
+        // note) — that's the case this API is actually built for and reliable at. No longer
+        // falls back to rendering pen strokes at all, since that's a much less reliable use of a
+        // printed-text OCR engine (works on clear block letters, not cursive) and was producing
+        // confusing results when nothing was actually selected.
+        drawingView.getSelectedImageBitmap { imgBmp, imgItem ->
+            if (imgBmp == null || imgItem == null) { Toast.makeText(this, "Select an image first, then try again", Toast.LENGTH_LONG).show(); return@getSelectedImageBitmap }
+            runTextRecognition(imgBmp) { text ->
+                // Deliberately does NOT delete the image afterward — a photo/screenshot is
+                // something the user almost certainly wants to keep.
+                //
+                // Positioned just below the image it was actually read from, left-aligned to the
+                // image's own left edge — not an unrelated screen-center position. TextItem.y is
+                // the BOTTOM of the text (established convention elsewhere in this codebase), so
+                // this creates the item with a provisional y first, then corrects it using the
+                // item's own measured height once it exists — the text's height isn't known
+                // until after it's actually created.
+                val gap = 12f
+                val topY = imgItem.y + imgItem.h + gap
+                val newItem = drawingView.addText(text, imgItem.x, topY, 14f, 0f, Color.BLACK)
+                if (newItem != null) newItem.y = topY + drawingView.textItemHeight(newItem)
+                Toast.makeText(this, "Converted!", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun runTextRecognition(bmp: Bitmap, onText: (String) -> Unit) {
         val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bmp, 0)
         val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
         recognizer.process(image)
             .addOnSuccessListener { result ->
                 val text = result.text.trim()
-                if (text.isEmpty()) { Toast.makeText(this, "No text recognised", Toast.LENGTH_SHORT).show(); return@addOnSuccessListener }
-                // Place text at centre of screen in world coords
-                val wx = drawingView.screenCenterWorldX(); val wy = drawingView.screenCenterWorldY()
-                drawingView.addText(text, wx, wy, drawingView.defaultTextSize, 0f, Color.BLACK)
-                drawingView.clearRecentPenStrokes()
-                Toast.makeText(this, "Converted!", Toast.LENGTH_SHORT).show()
+                if (text.isEmpty()) { Toast.makeText(this, "No text recognised — works best on clear printed letters, not cursive", Toast.LENGTH_LONG).show(); return@addOnSuccessListener }
+                onText(text)
             }
-            .addOnFailureListener { Toast.makeText(this, "OCR failed: ${it.message}", Toast.LENGTH_SHORT).show() }
+            .addOnFailureListener { Toast.makeText(this, "Recognition failed: ${it.message}", Toast.LENGTH_SHORT).show() }
     }
+
+    // ═══════════════════════════ Handwriting (cursive) recognition ═══════════════════════════
+    // ML Kit Digital Ink Recognition — genuinely different from the OCR path above: this reads
+    // the actual pen-stroke coordinates as drawn (via drawingView.buildInkFromSelection()), not
+    // a rendered bitmap, so it can handle cursive/joined-up handwriting that a printed-text OCR
+    // engine fundamentally can't. The one real cost: unlike Text Recognition (fully bundled in
+    // the APK), this needs a one-time model download per language before first use.
+    private var inkRecognizer: com.google.mlkit.vision.digitalink.DigitalInkRecognizer? = null
+    private var inkModel: com.google.mlkit.vision.digitalink.DigitalInkRecognitionModel? = null
+
+    private fun ensureInkModelReady(onReady: (Boolean) -> Unit) {
+        if (inkRecognizer != null) { onReady(true); return }
+        try {
+            val id = com.google.mlkit.vision.digitalink.DigitalInkRecognitionModelIdentifier.fromLanguageTag("en-US")
+            if (id == null) { onReady(false); return }
+            val model = com.google.mlkit.vision.digitalink.DigitalInkRecognitionModel.builder(id).build()
+            inkModel = model
+            val manager = com.google.mlkit.common.model.RemoteModelManager.getInstance()
+            manager.isModelDownloaded(model).addOnSuccessListener { downloaded ->
+                if (downloaded) {
+                    inkRecognizer = com.google.mlkit.vision.digitalink.DigitalInkRecognition.getClient(
+                        com.google.mlkit.vision.digitalink.DigitalInkRecognizerOptions.builder(model).build())
+                    onReady(true)
+                } else {
+                    Toast.makeText(this, "Downloading handwriting model (one-time, needs network)…", Toast.LENGTH_LONG).show()
+                    manager.download(model, com.google.mlkit.common.model.DownloadConditions.Builder().build())
+                        .addOnSuccessListener {
+                            inkRecognizer = com.google.mlkit.vision.digitalink.DigitalInkRecognition.getClient(
+                                com.google.mlkit.vision.digitalink.DigitalInkRecognizerOptions.builder(model).build())
+                            Toast.makeText(this, "Handwriting model ready", Toast.LENGTH_SHORT).show()
+                            onReady(true)
+                        }
+                        .addOnFailureListener { Toast.makeText(this, "Model download failed: ${it.message}", Toast.LENGTH_LONG).show(); onReady(false) }
+                }
+            }.addOnFailureListener { Toast.makeText(this, "Recognition setup failed: ${it.message}", Toast.LENGTH_LONG).show(); onReady(false) }
+        } catch (e: Exception) { Toast.makeText(this, "Recognition setup failed: ${e.message}", Toast.LENGTH_LONG).show(); onReady(false) }
+    }
+
+    private fun recognizeHandwriting() {
+        val ink = drawingView.buildInkFromSelection()
+        if (ink == null) { Toast.makeText(this, "Select some pen strokes first (Lasso/Rect select), then try again", Toast.LENGTH_LONG).show(); return }
+        val bounds = drawingView.selectionBoundsForInk()
+        ensureInkModelReady { ready ->
+            if (!ready) return@ensureInkModelReady
+            val recognizer = inkRecognizer ?: return@ensureInkModelReady
+            recognizer.recognize(ink)
+                .addOnSuccessListener { result ->
+                    val text = result.candidates.firstOrNull()?.text?.trim().orEmpty()
+                    if (text.isEmpty()) { Toast.makeText(this, "No text recognised", Toast.LENGTH_SHORT).show(); return@addOnSuccessListener }
+                    // Positioned just below the strokes it was actually read from, same
+                    // left-aligned-below convention as the image-OCR path.
+                    val gap = 12f
+                    val x = bounds?.get(0) ?: drawingView.screenCenterWorldX()
+                    val topY = (bounds?.get(3) ?: drawingView.screenCenterWorldY()) + gap
+                    val newItem = drawingView.addText(text, x, topY, 14f, 0f, Color.BLACK)
+                    if (newItem != null) newItem.y = topY + drawingView.textItemHeight(newItem)
+                    drawingView.removeInkSourceStrokes()
+                    Toast.makeText(this, "Converted!", Toast.LENGTH_SHORT).show()
+                }
+                .addOnFailureListener { Toast.makeText(this, "Recognition failed: ${it.message}", Toast.LENGTH_SHORT).show() }
+        }
+    }
+
 
     // ═══════════════════════════ Ask Gemini ═══════════════════════════
     // Bring-your-own-API-key: each student pastes their OWN free key from Google AI Studio
@@ -2678,7 +2966,9 @@ class MainActivity : AppCompatActivity() {
                     "assistant replies in a chat window. No greetings, no \"Sure, here is...\", no meta-commentary " +
                     "about being an AI, no bullet points or headers unless the question itself is a literal list " +
                     "request, and no closing offer of further help. Just the direct, cohesive substance a student " +
-                    "would actually want written down.\n\nQuestion: $prompt"))
+                    "would actually want written down. If the question states a specific word count or length " +
+                    "(e.g. \"in 500 words\"), treat that as a real requirement and write to within a close margin " +
+                    "of it, not a rough underestimate.\n\nQuestion: $prompt"))
                 if (imageBytes != null) {
                     val b64 = android.util.Base64.encodeToString(imageBytes, android.util.Base64.NO_WRAP)
                     parts.put(org.json.JSONObject().put("inline_data", org.json.JSONObject().apply {
@@ -2689,12 +2979,11 @@ class MainActivity : AppCompatActivity() {
                     .put("contents", org.json.JSONArray().put(org.json.JSONObject().put("parts", parts)))
                     .put("generationConfig", org.json.JSONObject()
                         .put("thinkingConfig", org.json.JSONObject().put("thinkingLevel", "low"))
-                        // Was 400 — too tight in practice. Thinking tokens draw from this same
-                        // budget even at "low", so a chunk of it was being spent before any
-                        // visible answer text even started, leaving genuinely normal questions
-                        // (e.g. "what is photosynthesis") cut off mid-sentence instead of just
-                        // guarding against a runaway-long response, which was the actual intent.
-                        .put("maxOutputTokens", 800))
+                        // Was 800 — still cut off a genuine essay-length answer (exactly the kind
+                        // of request this feature is meant to handle) partway through. Thinking
+                        // tokens draw from this same budget even at "low", so raising this is the
+                        // actual fix, not just a band-aid on the truncation-notice message.
+                        .put("maxOutputTokens", 4096))
                 conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
 
                 val code = conn.responseCode
@@ -2744,6 +3033,34 @@ class MainActivity : AppCompatActivity() {
     // Handles the whole "select something -> get an answer inserted below it" flow: places a
     // placeholder, then grows it live as text streams in, rather than waiting for the whole
     // answer and dropping it in all at once.
+    private var geminiPlacementBanner: View? = null
+
+    // Persistent top banner for "tap where you'd like the answer placed" — deliberately not a
+    // Toast, since a Toast disappears on its own fixed timer regardless of whether the person
+    // has actually tapped yet. This stays up until dismissGeminiPlacementBanner() is explicitly
+    // called, which only happens the moment the placement tap fires.
+    private fun showGeminiPlacementBanner(message: String) {
+        dismissGeminiPlacementBanner()
+        val tv = TextView(this).apply {
+            text = message
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            setPadding(dp(18), dp(10), dp(18), dp(10))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#E61C1C1E")); cornerRadius = dp(20).toFloat()
+            }
+        }
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+        lp.topMargin = dp(90)
+        canvasContainer.addView(tv, lp)
+        geminiPlacementBanner = tv
+    }
+
+    private fun dismissGeminiPlacementBanner() {
+        geminiPlacementBanner?.let { canvasContainer.removeView(it) }
+        geminiPlacementBanner = null
+    }
+
     internal fun runGeminiQuery(prompt: String, imageBytes: ByteArray?, worldX: Float, worldY: Float) {
         if (geminiApiKey().isBlank()) { showGeminiSetupDialog { runGeminiQuery(prompt, imageBytes, worldX, worldY) }; return }
         // worldY is meant to be the desired TOP of the answer (just below the question) — but
@@ -2754,57 +3071,119 @@ class MainActivity : AppCompatActivity() {
         // height above it every time a new chunk arrives — that's the actual "text goes up /
         // out of bounds" bug. Fix: after every change, explicitly reposition using the real
         // current height so the TOP stays where it should and the bottom is what moves.
-        val desiredTopY = worldY
-        val placeholder = drawingView.addText("✨", worldX, worldY, drawingView.defaultTextSize, 0f, Color.GRAY) ?: return
-        drawingView.repositionTextItemTop(placeholder, desiredTopY)
+        //
+        // wrapWidth is set explicitly here rather than left at the addText() default of 0
+        // (unbounded) — an unbounded answer renders as one continuous line far wider than the
+        // page, which is also the actual root cause of "I can't resize the text box": the
+        // corner/middle resize handles for wrapped text already exist and work fine, there was
+        // just never a real wrap box to apply them to.
+        val wrapWidth = (drawingView.pageWidthPx() * 0.6f).coerceAtLeast(300f)
+        var topY = worldY
+        var placeholder: TextItem? = null
         val accumulated = StringBuilder()
+        var finished = false
+        var doneCode = 0; var doneFinishReason: String? = null; var doneErrorDetail: String? = null
+
+        val loadingHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        var loadingActive = true
+        var dotCount = 0
+        val loadingRunnable = object : Runnable {
+            override fun run() {
+                if (!loadingActive) return
+                dotCount = (dotCount % 3) + 1
+                placeholder?.let { p -> p.text = "Thinking" + ".".repeat(dotCount); drawingView.repositionTextItemTop(p, topY); drawingView.invalidate() }
+                loadingHandler.postDelayed(this, 400)
+            }
+        }
+        loadingHandler.postDelayed(loadingRunnable, 400)
+
+        fun applyDoneState(p: TextItem) {
+            if (doneCode == 0 && accumulated.isNotEmpty()) {
+                var finalText = accumulated.toString()
+                // finishReason other than STOP means the model was cut off before it
+                // actually finished — most often "SAFETY" for sensitive topics (even
+                // legitimate historical/factual ones). Without this note, a response like
+                // that just looks like the app broke mid-sentence for no reason.
+                if (doneFinishReason != null && doneFinishReason != "STOP") {
+                    val why = when (doneFinishReason) {
+                        "SAFETY", "PROHIBITED_CONTENT" -> "Gemini's content filter"
+                        "RECITATION" -> "a copyright/citation check"
+                        "MAX_TOKENS" -> "the response length limit"
+                        else -> "Gemini ($doneFinishReason)"
+                    }
+                    finalText += "\n\n[Cut short by $why — try rephrasing the question if you need the full answer.]"
+                }
+                insertGeminiAnswer(p, finalText)
+                drawingView.repositionTextItemTop(p, topY)
+            } else if (doneCode != 0) {
+                val baseMsg = when (doneCode) {
+                    2 -> "⚠️ Gemini model not found — it may have been renamed. Open Settings > AI Assistant and tap \"Check for Update\", or update the model name manually."
+                    4 -> "⚠️ Your API key isn't working. Open Settings > AI Assistant and check or replace it."
+                    5 -> "⚠️ You've used up today's free Gemini limit. It resets at midnight Pacific time — try again after that."
+                    6 -> "⚠️ Got a response from Gemini but couldn't read it — Google may have changed something. Open Settings > AI Assistant and tap \"Check for Update\"."
+                    else -> "⚠️ Couldn't reach Gemini. Check your connection and try again."
+                }
+                // If any text HAD already streamed in before things failed, keep it instead
+                // of silently throwing it away — the old behavior replaced whatever was
+                // showing with just the error, which looked like the answer never existed
+                // even when part of it genuinely did arrive.
+                val preserved = if (accumulated.isNotEmpty()) "\n\n---\n${accumulated}" else ""
+                // Real exception detail appended (small, at the end) instead of only a
+                // guessed category — makes a repeat failure actually diagnosable.
+                val detail = if (!doneErrorDetail.isNullOrBlank()) "\n(${doneErrorDetail})" else ""
+                p.text = baseMsg + detail + preserved
+                p.color = Color.parseColor("#C62828")
+                drawingView.repositionTextItemTop(p, topY)
+            }
+            drawingView.invalidate()
+        }
+
+        fun createPlaceholderAt(px: Float, py: Float) {
+            topY = py
+            val p = drawingView.addText("Thinking.", px, py, drawingView.defaultTextSize, 0f, Color.GRAY) ?: return
+            p.maxWidth = wrapWidth
+            p.widthExplicitlySet = true
+            drawingView.repositionTextItemTop(p, topY)
+            placeholder = p
+            when {
+                finished -> { loadingActive = false; loadingHandler.removeCallbacks(loadingRunnable); applyDoneState(p) }
+                accumulated.isNotEmpty() -> {
+                    loadingActive = false; loadingHandler.removeCallbacks(loadingRunnable)
+                    p.text = accumulated.toString(); p.color = Color.BLACK
+                    drawingView.repositionTextItemTop(p, topY)
+                }
+            }
+            drawingView.invalidate()
+        }
+
+        // Rough footprint estimate for the conflict check — the real final height depends on
+        // how long the answer turns out to be, but this is generous enough to catch the common
+        // case of dropping a new answer right on top of existing notes.
+        if (drawingView.hasContentNear(worldX, worldY, wrapWidth, 260f)) {
+            showGeminiPlacementBanner("Tap where you'd like the answer placed")
+            drawingView.pendingPlacementTap = { tapWx, tapWy ->
+                dismissGeminiPlacementBanner()
+                createPlaceholderAt(tapWx, tapWy)
+            }
+        } else {
+            createPlaceholderAt(worldX, worldY)
+        }
+
         askGeminiStreaming(prompt, imageBytes,
             onChunk = { piece ->
+                if (loadingActive) { loadingActive = false; loadingHandler.removeCallbacks(loadingRunnable) }
                 accumulated.append(piece)
-                placeholder.text = accumulated.toString()
-                placeholder.color = Color.BLACK
-                drawingView.repositionTextItemTop(placeholder, desiredTopY)
-                drawingView.invalidate()
-            },
-            onDone = { code, finishReason, errorDetail ->
-                if (code == 0 && accumulated.isNotEmpty()) {
-                    var finalText = accumulated.toString()
-                    // finishReason other than STOP means the model was cut off before it
-                    // actually finished — most often "SAFETY" for sensitive topics (even
-                    // legitimate historical/factual ones). Without this note, a response like
-                    // that just looks like the app broke mid-sentence for no reason.
-                    if (finishReason != null && finishReason != "STOP") {
-                        val why = when (finishReason) {
-                            "SAFETY", "PROHIBITED_CONTENT" -> "Gemini's content filter"
-                            "RECITATION" -> "a copyright/citation check"
-                            "MAX_TOKENS" -> "the response length limit"
-                            else -> "Gemini ($finishReason)"
-                        }
-                        finalText += "\n\n[Cut short by $why — try rephrasing the question if you need the full answer.]"
-                    }
-                    insertGeminiAnswer(placeholder, finalText)
-                    drawingView.repositionTextItemTop(placeholder, desiredTopY)
-                } else if (code != 0) {
-                    val baseMsg = when (code) {
-                        2 -> "⚠️ Gemini model not found — it may have been renamed. Open Settings > AI Assistant and tap \"Check for Update\", or update the model name manually."
-                        4 -> "⚠️ Your API key isn't working. Open Settings > AI Assistant and check or replace it."
-                        5 -> "⚠️ You've used up today's free Gemini limit. It resets at midnight Pacific time — try again after that."
-                        6 -> "⚠️ Got a response from Gemini but couldn't read it — Google may have changed something. Open Settings > AI Assistant and tap \"Check for Update\"."
-                        else -> "⚠️ Couldn't reach Gemini. Check your connection and try again."
-                    }
-                    // If any text HAD already streamed in before things failed, keep it instead
-                    // of silently throwing it away — the old behavior replaced whatever was
-                    // showing with just the error, which looked like the answer never existed
-                    // even when part of it genuinely did arrive.
-                    val preserved = if (accumulated.isNotEmpty()) "\n\n---\n${accumulated}" else ""
-                    // Real exception detail appended (small, at the end) instead of only a
-                    // guessed category — makes a repeat failure actually diagnosable.
-                    val detail = if (!errorDetail.isNullOrBlank()) "\n($errorDetail)" else ""
-                    placeholder.text = baseMsg + detail + preserved
-                    placeholder.color = Color.parseColor("#C62828")
-                    drawingView.repositionTextItemTop(placeholder, desiredTopY)
+                placeholder?.let { p ->
+                    p.text = accumulated.toString()
+                    p.color = Color.BLACK
+                    drawingView.repositionTextItemTop(p, topY)
                     drawingView.invalidate()
                 }
+            },
+            onDone = { code, finishReason, errorDetail ->
+                loadingActive = false; loadingHandler.removeCallbacks(loadingRunnable)
+                doneCode = code; doneFinishReason = finishReason; doneErrorDetail = errorDetail; finished = true
+                placeholder?.let { applyDoneState(it) }
             }
         )
     }
@@ -2903,7 +3282,7 @@ class MainActivity : AppCompatActivity() {
                 val name = currentFileName ?: nextAutoName()
                 currentFileName = name; tvTitle.text = name
                 val targetFolder = File(File(filesDir,"books"), targetBook).also { it.mkdirs() }
-                File(targetFolder,"$name.eng").writeText(drawingView.serialize())
+                security.writeNoteFile(File(targetFolder,"$name.eng"), drawingView.serialize())
                 lastSavedContent = drawingView.serialize()
                 Toast.makeText(this,"Added to $targetBook",Toast.LENGTH_SHORT).show()
             }.setNegativeButton("Cancel",null).show()
@@ -3160,7 +3539,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showDimensionStylePanel(dim: DimensionItem) {
         dismissAllFloatingPanels()
-        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE); elevation = dp(10).toFloat(); setPadding(dp(16),dp(12),dp(16),dp(20)) }
+        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(currentThemeBackgroundColor()); elevation = dp(10).toFloat(); setPadding(dp(16),dp(12),dp(16),dp(20)) }
 
         fun lbl(t: String) = TextView(this).apply { text=t; textSize=12f; setTextColor(Color.parseColor("#8A8580")); setPadding(0,dp(10),0,dp(4)) }
         fun seekRow(label: String, max: Int, current: Int, onChange: (Int)->Unit) {
@@ -3234,6 +3613,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this).apply { addView(panel) }
         scrollRef[0] = scroll
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(scroll, lp)
     }
 
@@ -3248,10 +3628,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun showSettingsDialog() {
         val prefs = getPrefs()
-        val accent = Color.parseColor("#7B61FF")
+        val accent = currentThemeButtonColor()
+        val accentTint = android.content.res.ColorStateList.valueOf(accent)
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(14), dp(22), dp(14))
-            background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(20).toFloat() }
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(20).toFloat() }
         }
         // Section header: was 11f with no visual weight — genuinely easy to miss scrolling past.
         // Bumped up, bolder, small colored accent bar on the left for a bit of "premium" polish
@@ -3267,16 +3648,17 @@ class MainActivity : AppCompatActivity() {
         fun div() { container.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).also { it.setMargins(0, dp(14), 0, 0) }; setBackgroundColor(Color.parseColor("#EDEAE4")) }) }
 
         div(); hdr("LOCK BEHAVIOUR")
-        val lockEraseCb = CheckBox(this).apply { text="Locked items: prevent erasing"; isChecked=prefs.getBoolean("lock_prevent_erase",true); setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_erase",on).apply() } }; container.addView(lockEraseCb)
-        val lockMoveCb = CheckBox(this).apply { text="Locked items: prevent moving/resizing"; isChecked=prefs.getBoolean("lock_prevent_move",true); setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_move",on).apply() } }; container.addView(lockMoveCb)
-        val lockColorCb = CheckBox(this).apply { text="Locked items: prevent colour changes"; isChecked=prefs.getBoolean("lock_prevent_color",true); setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_color",on).apply() } }; container.addView(lockColorCb)
+        val lockEraseCb = CheckBox(this).apply { text="Locked items: prevent erasing"; isChecked=prefs.getBoolean("lock_prevent_erase",true); buttonTintList = accentTint; setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_erase",on).apply() } }; container.addView(lockEraseCb)
+        val lockMoveCb = CheckBox(this).apply { text="Locked items: prevent moving/resizing"; isChecked=prefs.getBoolean("lock_prevent_move",true); buttonTintList = accentTint; setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_move",on).apply() } }; container.addView(lockMoveCb)
+        val lockColorCb = CheckBox(this).apply { text="Locked items: prevent colour changes"; isChecked=prefs.getBoolean("lock_prevent_color",true); buttonTintList = accentTint; setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_color",on).apply() } }; container.addView(lockColorCb)
 
         div(); hdr("GENERAL")
-        val confirmCb = CheckBox(this).apply{ text="Confirm before exit or clear canvas"; isChecked=prefs.getBoolean("confirm_exit_clear",true) }; container.addView(confirmCb)
-        val autosaveCb = CheckBox(this).apply{ text="Autosave every 10 seconds"; isChecked=prefs.getBoolean("autosave",true) }; container.addView(autosaveCb)
+        val confirmCb = CheckBox(this).apply{ text="Confirm before exit or clear canvas"; isChecked=prefs.getBoolean("confirm_exit_clear",true); buttonTintList = accentTint }; container.addView(confirmCb)
+        val autosaveCb = CheckBox(this).apply{ text="Autosave every 10 seconds"; isChecked=prefs.getBoolean("autosave",true); buttonTintList = accentTint }; container.addView(autosaveCb)
         val layersBtnCb = CheckBox(this).apply {
             text = "Always show Layers button in toolbar"
             isChecked = prefs.getBoolean("layers_button_always_visible", false)
+            buttonTintList = accentTint
             setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("layers_button_always_visible", on).apply(); updateLayersButtonVisibility() }
         }; container.addView(layersBtnCb)
         container.addView(TextView(this).apply {
@@ -3296,10 +3678,10 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener {
                     setAppTheme(key)
                     themeButtons.forEach { tb -> tb.setBackgroundColor(Color.parseColor("#F0EBE0")); tb.setTextColor(Color.parseColor("#4A4A4A")) }
-                    setBackgroundColor(Color.parseColor("#7B61FF")); setTextColor(Color.WHITE)
+                    setBackgroundColor(accent); setTextColor(Color.WHITE)
                 }
             }
-            if (key == currentAppTheme()) { b.setBackgroundColor(Color.parseColor("#7B61FF")); b.setTextColor(Color.WHITE) }
+            if (key == currentAppTheme()) { b.setBackgroundColor(accent); b.setTextColor(Color.WHITE) }
             else { b.setBackgroundColor(Color.parseColor("#F0EBE0")); b.setTextColor(Color.parseColor("#4A4A4A")) }
             themeButtons.add(b); themeRow.addView(b)
         }
@@ -3322,10 +3704,10 @@ class MainActivity : AppCompatActivity() {
                     drawingView.inputMode = mode
                     prefs.edit().putString("input_mode", mode.name).apply()
                     inputButtons.forEach { tb -> tb.setBackgroundColor(Color.parseColor("#F0EBE0")); tb.setTextColor(Color.parseColor("#4A4A4A")) }
-                    setBackgroundColor(Color.parseColor("#7B61FF")); setTextColor(Color.WHITE)
+                    setBackgroundColor(accent); setTextColor(Color.WHITE)
                 }
             }
-            if (mode == drawingView.inputMode) { b.setBackgroundColor(Color.parseColor("#7B61FF")); b.setTextColor(Color.WHITE) }
+            if (mode == drawingView.inputMode) { b.setBackgroundColor(accent); b.setTextColor(Color.WHITE) }
             else { b.setBackgroundColor(Color.parseColor("#F0EBE0")); b.setTextColor(Color.parseColor("#4A4A4A")) }
             inputButtons.add(b); inputRow.addView(b)
         }
@@ -3340,7 +3722,7 @@ class MainActivity : AppCompatActivity() {
         val paperValues = arrayOf("BLANK","LINED","GRID","DOTS","ENGINEERING","BLANK_COLORED")
         var selPaper = prefs.getString("default_paper","LINED") ?: "LINED"
         var selPaperColor = prefs.getInt("paper_color", drawingView.paperColor)
-        val paperLbl = TextView(this).apply{ textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(8),0,dp(8)) }
+        val paperLbl = TextView(this).apply{ textSize=15f; setTextColor(accent); setPadding(0,dp(8),0,dp(8)) }
         fun refP(){ paperLbl.text = "Default: ${paperLabels[paperValues.indexOf(selPaper).coerceAtLeast(0)]}  (tap)" }
         refP(); container.addView(paperLbl)
 
@@ -3362,9 +3744,61 @@ class MainActivity : AppCompatActivity() {
         refPaperColorRow()
         container.addView(paperColorRow)
 
+        // Per-paper-type customization — was fixed per-mode constants with no way to adjust at
+        // all. Each row only shows for the paper type it applies to, same visibility pattern as
+        // paperColorRow above.
+        var lineSpacing = prefs.getFloat("paper_line_spacing", 40f)
+        var gridSpacing = prefs.getFloat("paper_grid_spacing", 40f)
+        var dotSpacing = prefs.getFloat("paper_dot_spacing", 40f)
+        var gridMajor = prefs.getInt("paper_grid_major", 5)
+        var linedDoubleMargin = prefs.getBoolean("paper_lined_double_margin", false)
+        var engSpacing = prefs.getFloat("paper_engineering_spacing", 20f)
+        var engMajor = prefs.getInt("paper_engineering_major", 5)
+
+        fun numberRow(label: String, initial: String, onChange: (String) -> Unit): Pair<LinearLayout, EditText> {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(4)) }
+            val lbl = TextView(this).apply { text = label; textSize = 14f; setTextColor(Color.parseColor("#4A4A4A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
+            val input = EditText(this).apply {
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+                setText(initial); layoutParams = LinearLayout.LayoutParams(dp(60), LinearLayout.LayoutParams.WRAP_CONTENT); gravity = Gravity.CENTER
+                addTextChangedListener(object : android.text.TextWatcher {
+                    override fun afterTextChanged(s: android.text.Editable?) { onChange(s.toString()) }
+                    override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                    override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                })
+            }
+            row.addView(lbl); row.addView(input); container.addView(row)
+            return Pair(row, input)
+        }
+
+        val (lineSpacingRow, _) = numberRow("Line spacing (px)", lineSpacing.toInt().toString()) { lineSpacing = it.toFloatOrNull() ?: lineSpacing }
+        val (marginRow, _) = Pair(LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(8)) }, null)
+        val marginLbl = TextView(this).apply { text = "Double margin line (left)"; textSize = 14f; setTextColor(Color.parseColor("#4A4A4A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
+        val marginCb = android.widget.CheckBox(this).apply { isChecked = linedDoubleMargin; buttonTintList = accentTint; setOnCheckedChangeListener { _, v -> linedDoubleMargin = v } }
+        marginRow.addView(marginLbl); marginRow.addView(marginCb); container.addView(marginRow)
+
+        val (gridSpacingRow, _) = numberRow("Grid spacing (px)", gridSpacing.toInt().toString()) { gridSpacing = it.toFloatOrNull() ?: gridSpacing }
+        val (gridMajorRow, _) = numberRow("Bold line every N squares", gridMajor.toString()) { gridMajor = it.toIntOrNull() ?: gridMajor }
+
+        val (dotSpacingRow, _) = numberRow("Dot spacing (px)", dotSpacing.toInt().toString()) { dotSpacing = it.toFloatOrNull() ?: dotSpacing }
+
+        val (engSpacingRow, _) = numberRow("Engineering spacing (px)", engSpacing.toInt().toString()) { engSpacing = it.toFloatOrNull() ?: engSpacing }
+        val (engMajorRow, _) = numberRow("Bold line every N squares", engMajor.toString()) { engMajor = it.toIntOrNull() ?: engMajor }
+
+        fun refPaperStyleRows() {
+            lineSpacingRow.visibility = if (selPaper == "LINED") View.VISIBLE else View.GONE
+            marginRow.visibility = lineSpacingRow.visibility
+            gridSpacingRow.visibility = if (selPaper == "GRID") View.VISIBLE else View.GONE
+            gridMajorRow.visibility = gridSpacingRow.visibility
+            dotSpacingRow.visibility = if (selPaper == "DOTS") View.VISIBLE else View.GONE
+            engSpacingRow.visibility = if (selPaper == "ENGINEERING") View.VISIBLE else View.GONE
+            engMajorRow.visibility = engSpacingRow.visibility
+        }
+        refPaperStyleRows()
+
         paperLbl.setOnClickListener{
             AlertDialog.Builder(this).setTitle("Default Paper").setItems(paperLabels){ _,i->
-                selPaper=paperValues[i]; refP(); refPaperColorRow()
+                selPaper=paperValues[i]; refP(); refPaperColorRow(); refPaperStyleRows()
                 // Picking "Coloured" with nothing chosen yet should immediately prompt for a
                 // colour rather than silently falling back to whatever the old fixed default was.
                 if (selPaper == "BLANK_COLORED") showColorGridDialog { c -> selPaperColor = c; refPaperColorRow() }
@@ -3384,13 +3818,33 @@ class MainActivity : AppCompatActivity() {
             modeLbl.text = if(isConvenientLayout) "Layout: Convenient  (use icon in top bar)" else "Layout: ${drawingView.canvasMode}  (use icon in top bar)"
             sizeLbl.text = "Size: ${drawingView.paperSize.name}  (tap)"
             orientLbl.text = "Orientation: ${if(drawingView.pageOrientation==Orientation.PORTRAIT)"Portrait" else "Landscape"}  (tap)"
-            sizeLbl.visibility = if(!isConvenientLayout) View.VISIBLE else View.GONE
+            // Was "!isConvenientLayout" — stale since Convenient mode gained its own adjustable
+            // paper size; only Infinite has no paper-size concept at all now.
+            sizeLbl.visibility = if(drawingView.canvasMode != CanvasMode.INFINITE) View.VISIBLE else View.GONE
             orientLbl.visibility = sizeLbl.visibility
         }
         refPage()
-        for(lbl in listOf(modeLbl,sizeLbl,orientLbl)){ lbl.textSize=15f; lbl.setTextColor(Color.parseColor("#1565C0")); lbl.setPadding(0,dp(8),0,dp(8)); container.addView(lbl) }
-        sizeLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Paper Size").setItems(PaperSizeOption.values().map{it.name}.toTypedArray()){ _,i-> drawingView.paperSize=PaperSizeOption.values()[i]; drawingView.invalidate(); refPage() }.show() }
-        orientLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Orientation").setItems(arrayOf("Portrait","Landscape")){ _,i-> drawingView.pageOrientation=if(i==0)Orientation.PORTRAIT else Orientation.LANDSCAPE; drawingView.invalidate(); refPage() }.show() }
+        for(lbl in listOf(modeLbl,sizeLbl,orientLbl)){ lbl.textSize=15f; lbl.setTextColor(accent); lbl.setPadding(0,dp(8),0,dp(8)); container.addView(lbl) }
+        sizeLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Paper Size").setItems(PaperSizeOption.values().map{it.name}.toTypedArray()){ _,i-> drawingView.paperSize=PaperSizeOption.values()[i]; drawingView.rewrapTextToPage(); drawingView.clampTranslation(); drawingView.invalidate(); refPage() }.show() }
+        orientLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Orientation").setItems(arrayOf("Portrait","Landscape")){ _,i-> drawingView.pageOrientation=if(i==0)Orientation.PORTRAIT else Orientation.LANDSCAPE; drawingView.rewrapTextToPage(); drawingView.clampTranslation(); drawingView.invalidate(); refPage() }.show() }
+
+        div(); hdr("PDF EXPORT")
+        // Points-per-pixel conversion in savePdfLauncher is exact math (72/150 at the known
+        // export DPI), verified to produce true-to-life A4/Letter/etc. dimensions. These fields
+        // are a safety net for the rare case a specific printer or PDF viewer still renders
+        // slightly off true size, not a fix for a known inaccuracy — asking directly "what does
+        // your printed page actually measure" is far more intuitive than an abstract percentage.
+        val trueWmmSettings = if (drawingView.pageOrientation == Orientation.PORTRAIT) drawingView.paperSize.widthMM else drawingView.paperSize.heightMM
+        val trueHmmSettings = if (drawingView.pageOrientation == Orientation.PORTRAIT) drawingView.paperSize.heightMM else drawingView.paperSize.widthMM
+        fun fmtMm(v: Float) = if (v == v.toInt().toFloat()) v.toInt().toString() else v.toString()
+        val calibRow = LinearLayout(this).apply{ orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(0,dp(8),0,dp(4)) }
+        val calibLbl = TextView(this).apply{ text="Printed page measures (mm)"; textSize=15f; layoutParams=LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f) }
+        val calibWInput = EditText(this).apply{ inputType=android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(fmtMm(prefs.getFloat("pdf_calib_w_mm", trueWmmSettings))); layoutParams=LinearLayout.LayoutParams(dp(65),LinearLayout.LayoutParams.WRAP_CONTENT); gravity=Gravity.CENTER }
+        val calibX = TextView(this).apply { text = " × "; textSize = 15f; setPadding(dp(4),0,dp(4),0) }
+        val calibHInput = EditText(this).apply{ inputType=android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL; setText(fmtMm(prefs.getFloat("pdf_calib_h_mm", trueHmmSettings))); layoutParams=LinearLayout.LayoutParams(dp(65),LinearLayout.LayoutParams.WRAP_CONTENT); gravity=Gravity.CENTER }
+        calibRow.addView(calibLbl); calibRow.addView(calibWInput); calibRow.addView(calibX); calibRow.addView(calibHInput); container.addView(calibRow)
+        val calibHint = TextView(this).apply { text = "Should be ${fmtMm(trueWmmSettings)} × ${fmtMm(trueHmmSettings)} for the currently selected paper size. If your printed output measures differently, enter what it actually measures here to compensate."; textSize = 12f; setTextColor(Color.parseColor("#8A8580")); setPadding(0,0,0,dp(8)) }
+        container.addView(calibHint)
 
         div(); hdr("HATCHING")
         // hatchScale is a spacing MULTIPLIER (see `s = 8f * hatchScale` in drawHatchPattern),
@@ -3400,7 +3854,7 @@ class MainActivity : AppCompatActivity() {
         val hatchLabels = arrayOf("Extra Fine", "Fine", "Normal", "Medium", "Coarse", "Extra Coarse", "Broad", "Ultra Broad")
         val hatchValues = arrayOf(0.25f, 0.5f, 1f, 1.5f, 2f, 3f, 5f, 8f)
         var selHatchScale = prefs.getFloat("hatch_scale", 1f)
-        val hatchLbl = TextView(this).apply { textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(8),0,dp(8)) }
+        val hatchLbl = TextView(this).apply { textSize=15f; setTextColor(accent); setPadding(0,dp(8),0,dp(8)) }
         fun closestHatchIndex() = hatchValues.indices.minByOrNull { kotlin.math.abs(hatchValues[it] - selHatchScale) } ?: 1
         fun refHatch() { hatchLbl.text = "Density: ${hatchLabels[closestHatchIndex()]}  (tap)" }
         refHatch()
@@ -3425,7 +3879,7 @@ class MainActivity : AppCompatActivity() {
             text = "Bring your own free Gemini API key — nothing is shared between students, nothing costs you anything."
             textSize = 12f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0,0,0,dp(6))
         })
-        val keyLbl = TextView(this).apply { textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(6),0,dp(4)) }
+        val keyLbl = TextView(this).apply { textSize=15f; setTextColor(accent); setPadding(0,dp(6),0,dp(4)) }
         fun refKeyLbl() { keyLbl.text = if (geminiApiKey().isBlank()) "API Key: not set  (tap)" else "API Key: •••• saved  (tap to change)" }
         refKeyLbl()
         keyLbl.setOnClickListener { showGeminiSetupDialog { refKeyLbl() } }
@@ -3439,7 +3893,7 @@ class MainActivity : AppCompatActivity() {
             text = "If \"Ask Gemini\" stops working after a Google update, this is usually why — check aistudio.google.com/models for the current free model name and paste it above."
             textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0,0,0,dp(4))
         })
-        val updateLbl = TextView(this).apply { text = "Check for Update"; textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(6),0,dp(4)) }
+        val updateLbl = TextView(this).apply { text = "Check for Update"; textSize=15f; setTextColor(accent); setPadding(0,dp(6),0,dp(4)) }
         updateLbl.setOnClickListener {
             updateLbl.text = "Checking..."
             refreshGeminiConfigFromRemote { success, message ->
@@ -3458,7 +3912,7 @@ class MainActivity : AppCompatActivity() {
         val barSizeLabels = arrayOf("Small (36dp)", "Medium (40dp)", "Large (44dp)", "Extra Large (52dp)")
         val barSizeValues = arrayOf(36, 40, 44, 52)
         var selBarSize = prefs.getInt("bar_icon_size", 44)
-        val barSizeLbl = TextView(this).apply { textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(8),0,dp(8)) }
+        val barSizeLbl = TextView(this).apply { textSize=15f; setTextColor(accent); setPadding(0,dp(8),0,dp(8)) }
         fun refBarSize() { barSizeLbl.text = "Icon size: ${barSizeLabels[barSizeValues.indexOf(selBarSize).coerceAtLeast(0)]}  (tap)" }
         refBarSize()
         barSizeLbl.setOnClickListener {
@@ -3510,11 +3964,27 @@ class MainActivity : AppCompatActivity() {
                     .putFloat("hatch_scale", selHatchScale)
                     .putString("gemini_model", modelInput.text.toString().trim().ifBlank { "gemini-flash-latest" })
                     .putInt("arc_divisions",(arcInput.text.toString().toIntOrNull()?:3).coerceIn(2,12))
+                    .putFloat("pdf_calib_w_mm", calibWInput.text.toString().toFloatOrNull()?.coerceIn(10f, 2000f) ?: trueWmmSettings)
+                    .putFloat("pdf_calib_h_mm", calibHInput.text.toString().toFloatOrNull()?.coerceIn(10f, 2000f) ?: trueHmmSettings)
+                    .putFloat("paper_line_spacing", lineSpacing)
+                    .putFloat("paper_grid_spacing", gridSpacing)
+                    .putFloat("paper_dot_spacing", dotSpacing)
+                    .putInt("paper_grid_major", gridMajor)
+                    .putBoolean("paper_lined_double_margin", linedDoubleMargin)
+                    .putFloat("paper_engineering_spacing", engSpacing)
+                    .putInt("paper_engineering_major", engMajor)
                     .putInt("bar_icon_size", selBarSize)
                     .putFloat("dim_font_size", dimFontSz)
                     .putFloat("dim_arrow_size", dimArrowSz)
                     .apply()
                 drawingView.arcDivisions = prefs.getInt("arc_divisions",3)
+                drawingView.lineSpacingPref = lineSpacing
+                drawingView.gridSpacingPref = gridSpacing
+                drawingView.dotSpacingPref = dotSpacing
+                drawingView.gridMajorDivision = gridMajor
+                drawingView.linedDoubleMargin = linedDoubleMargin
+                drawingView.engineeringSpacingPref = engSpacing
+                drawingView.engineeringMajorDivision = engMajor
                 drawingView.defaultDimFontSize = dimFontSz
                 drawingView.defaultDimArrowSize = dimArrowSz
                 drawingView.pendingHatchScale = selHatchScale
@@ -3611,7 +4081,13 @@ class MainActivity : AppCompatActivity() {
         val name = (currentFileName ?: "EngiNote_${System.currentTimeMillis()}").replace(" ","_")
         AlertDialog.Builder(this).setTitle("Export as...")
             .setItems(arrayOf("PDF","JPG","PNG","BMP","TXT","DOCX")) { _,i ->
-                pendingExportBitmap = drawingView.exportBitmap()
+                if (i == 0) {
+                    // PDF specifically gets one real page per app-page (see exportAllPagesAsBitmaps),
+                    // not the single on-screen-viewport screenshot the other formats use.
+                    pendingExportBitmaps = drawingView.exportAllPagesAsBitmaps()
+                } else {
+                    pendingExportBitmap = drawingView.exportBitmap()
+                }
                 when(i){ 0->savePdfLauncher.launch("$name.pdf"); 1->{ pendingExportFormat="jpg"; saveImageLauncher.launch("$name.jpg") }; 2->{ pendingExportFormat="png"; saveImageLauncher.launch("$name.png") }; 3->{ pendingExportFormat="bmp"; saveImageLauncher.launch("$name.bmp") }; 4->saveTxtLauncher.launch("$name.txt"); 5->saveDocxLauncher.launch("$name.docx") }
             }.show()
     }
@@ -3640,9 +4116,9 @@ class MainActivity : AppCompatActivity() {
         }
         if (polylineBar != null) return
         val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE)
+            orientation = LinearLayout.HORIZONTAL; setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(8).toFloat(); setPadding(dp(8),dp(6),dp(8),dp(6))
-            background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(20).toFloat(); setStroke(1, Color.parseColor("#E0E0E0")) }
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(20).toFloat(); setStroke(1, Color.parseColor("#E0E0E0")) }
         }
         bar.addView(TextView(this).apply {
             text = "Close"; setTextColor(Color.parseColor("#2196F3")); textSize = 14f; setPadding(dp(12),dp(6),dp(12),dp(6))
@@ -3740,7 +4216,9 @@ class MainActivity : AppCompatActivity() {
 
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            // Reads the same "app_color_theme" preference BooksActivity's theme picker writes
+            // to, so both activities reflect one consistent theme choice.
+            setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(10).toFloat()
             setPadding(dp(16), dp(12), dp(16), dp(16))
         }
@@ -3856,6 +4334,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this)
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(scroll, lp)
         textOptionsPanel = scroll
         animatePanelIn(scroll)
@@ -3913,11 +4392,11 @@ class MainActivity : AppCompatActivity() {
         dismissSnapOptionsPanel()
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(12).toFloat()
             setPadding(dp(14), dp(10), dp(14), dp(10))
             background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.WHITE); cornerRadius = dp(10).toFloat()
+                setColor(currentThemeBackgroundColor()); cornerRadius = dp(10).toFloat()
                 setStroke(1, Color.parseColor("#E0E0E0"))
             }
         }
@@ -4031,7 +4510,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this)
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(10).toFloat()
             setPadding(dp(16), dp(12), dp(16), dp(12))
         }
@@ -4112,6 +4591,7 @@ class MainActivity : AppCompatActivity() {
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         lp.gravity = android.view.Gravity.BOTTOM
+        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(scroll, lp)
         shapeOptionsPanel = scroll
         animatePanelIn(scroll)
@@ -4150,7 +4630,7 @@ class MainActivity : AppCompatActivity() {
             val container = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 background = android.graphics.drawable.GradientDrawable().apply {
-                    setColor(Color.WHITE); cornerRadius = dp(6).toFloat()
+                    setColor(currentThemeBackgroundColor()); cornerRadius = dp(6).toFloat()
                     setStroke(dp(1), Color.parseColor("#E0E0E0"))
                 }
                 elevation = dp(8).toFloat()
@@ -4242,10 +4722,10 @@ class MainActivity : AppCompatActivity() {
         dimScalePanel?.let { canvasContainer.removeView(it) }
         val scroll = ScrollView(this)
         val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE)
+            orientation = LinearLayout.VERTICAL; setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(12).toFloat(); setPadding(dp(16), dp(12), dp(16), dp(16))
             background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.WHITE); cornerRadius = dp(10).toFloat()
+                setColor(currentThemeBackgroundColor()); cornerRadius = dp(10).toFloat()
                 setStroke(1, Color.parseColor("#E0E0E0"))
             }
         }
@@ -4322,7 +4802,7 @@ class MainActivity : AppCompatActivity() {
 
         scroll.addView(panel)
         val lp2 = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-        lp2.gravity = android.view.Gravity.BOTTOM; lp2.bottomMargin = dp(120)
+        lp2.gravity = android.view.Gravity.BOTTOM; lp2.bottomMargin = dp(120) + navBarBottomInset()
         lp2.leftMargin = dp(12); lp2.rightMargin = dp(12)
         canvasContainer.addView(scroll, lp2)
         dimScalePanel = scroll
@@ -4343,11 +4823,11 @@ class MainActivity : AppCompatActivity() {
         val popup = android.widget.PopupWindow(this)
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(12).toFloat()
             setPadding(0, dp(4), 0, dp(4))
             background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.WHITE); cornerRadius = dp(8).toFloat()
+                setColor(currentThemeBackgroundColor()); cornerRadius = dp(8).toFloat()
                 setStroke(1, Color.parseColor("#E0E0E0"))
             }
         }
@@ -4412,7 +4892,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this)
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(10).toFloat()
             setPadding(dp(16), dp(12), dp(16), dp(12))
         }
@@ -4428,13 +4908,13 @@ class MainActivity : AppCompatActivity() {
         })
         panel.addView(header)
 
-        // Pen type row: Fountain / Ball / Pencil / Calligraphy / Marker
+        // Pen type row: Ball / Pencil / Calligraphy / Marker
         fun sectionLabel(text: String) {
             panel.addView(TextView(this).apply { this.text = text; textSize = 13f; setTextColor(Color.parseColor("#8D6E63")); setPadding(0, dp(14), 0, dp(6)) })
         }
         sectionLabel("Pen Type")
         val typeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val penTypes = listOf("Fountain" to PenStyle.FOUNTAIN, "Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
+        val penTypes = listOf("Ball" to PenStyle.BALL, "Pencil" to PenStyle.PENCIL, "Calligraphy" to PenStyle.CALLIGRAPHY, "Marker" to PenStyle.MARKER)
         val typeButtons = mutableListOf<TextView>()
         for ((label, style) in penTypes) {
             val b = TextView(this).apply {
@@ -4515,6 +4995,7 @@ class MainActivity : AppCompatActivity() {
 
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(scroll, lp)
         penOptionsPanel = scroll
         animatePanelIn(scroll)
@@ -4527,7 +5008,7 @@ class MainActivity : AppCompatActivity() {
 
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(10).toFloat()
             setPadding(dp(16), dp(12), dp(16), dp(12))
         }
@@ -4621,6 +5102,7 @@ class MainActivity : AppCompatActivity() {
         panel.addView(clearBtn)
 
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(panel, lp)
         eraserOptionsPanel = panel
         animatePanelIn(panel)
@@ -4637,7 +5119,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this)
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(10).toFloat()
             setPadding(dp(16), dp(12), dp(16), dp(12))
         }
@@ -4705,6 +5187,7 @@ class MainActivity : AppCompatActivity() {
 
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(scroll, lp)
         highlighterOptionsPanel = scroll
         animatePanelIn(scroll)
@@ -4721,7 +5204,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this)
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(currentThemeBackgroundColor())
             elevation = dp(10).toFloat()
             setPadding(dp(16), dp(12), dp(16), dp(12))
         }
@@ -4813,6 +5296,7 @@ class MainActivity : AppCompatActivity() {
 
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
+        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(scroll, lp)
         brushOptionsPanel = scroll
         animatePanelIn(scroll)
@@ -4911,7 +5395,7 @@ class MainActivity : AppCompatActivity() {
         // caused the visible blink (and the extra memory churn from rebuilding a fresh dialog
         // hierarchy each time). Now "rebuild to reflect new state" just re-runs this function to
         // repopulate the same kind of panel, which fades/slides instead of flashing.
-        val container=LinearLayout(this).apply{ orientation=LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE); elevation = dp(10).toFloat(); setPadding(dp(16),dp(12),dp(16),dp(16)) }
+        val container=LinearLayout(this).apply{ orientation=LinearLayout.VERTICAL; setBackgroundColor(currentThemeBackgroundColor()); elevation = dp(10).toFloat(); setPadding(dp(16),dp(12),dp(16),dp(16)) }
         fun lbl(t:String){ container.addView(TextView(this).apply{ text=t;textSize=13f;setTextColor(Color.parseColor("#8A8580"));setPadding(0,dp(10),0,dp(4)) }) }
 
         // Title + close, matching the Text panel's header row
@@ -5046,6 +5530,7 @@ class MainActivity : AppCompatActivity() {
         // above it the way Text/Eraser/Highlighter panels do.
         val maxPanelHeight = (canvasContainer.height * 0.55f).toInt().coerceAtLeast(dp(280))
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, maxPanelHeight, Gravity.BOTTOM)
+        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(scroll, lp)
         tablePropertiesPanel = scroll
         animatePanelIn(scroll)
@@ -5119,7 +5604,7 @@ class MainActivity : AppCompatActivity() {
         val cell = table.getCellPublic(row, col)
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(Color.WHITE); elevation = dp(8).toFloat(); setPadding(dp(10), dp(6), dp(10), dp(6))
+            setBackgroundColor(currentThemeBackgroundColor()); elevation = dp(8).toFloat(); setPadding(dp(10), dp(6), dp(10), dp(6))
         }
         bar.addView(TextView(this).apply {
             text = "fx"; textSize = 14f; setTypeface(null, Typeface.ITALIC); setTextColor(Color.parseColor("#4527A0")); setPadding(0, 0, dp(10), 0)
@@ -5282,7 +5767,7 @@ class MainActivity : AppCompatActivity() {
         showFormulaBarFor(table, row, col)
 
         // Floating actions strip, positioned just above the whole TABLE (not the cell)
-        val actionsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(6).toFloat(); setPadding(dp(4),dp(4),dp(4),dp(4)) }
+        val actionsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(currentThemeBackgroundColor()); elevation = dp(6).toFloat(); setPadding(dp(4),dp(4),dp(4),dp(4)) }
         lateinit var refreshToolbar: () -> Unit
         fun actionBtn(label: String, pressed: Boolean = false, action: () -> Unit): TextView {
             val normalBg = if (pressed) Color.parseColor("#8D6E63") else Color.parseColor("#F0EBE0")
@@ -5321,7 +5806,7 @@ class MainActivity : AppCompatActivity() {
             val popup = android.widget.PopupWindow(this)
             val pLayout = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat() }
+                background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
             }
             val customRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(14), dp(12), dp(14), dp(8)) }
             val customEdit = EditText(this).apply {
@@ -5456,7 +5941,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun writeCurrentFile() {
         val name=currentFileName?:return
-        File(getDrawingsFolder(),"$name.eng").writeText(drawingView.serialize())
+        security.writeNoteFile(File(getDrawingsFolder(),"$name.eng"), drawingView.serialize())
         lastSavedContent=drawingView.serialize()
         if (getPrefs().getBoolean("auto_backup_drive", false) && driveManager.isSignedIn()) {
             backUpNoteToDrive(name, silent = true)
