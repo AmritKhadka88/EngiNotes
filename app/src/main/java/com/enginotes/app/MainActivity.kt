@@ -126,6 +126,10 @@ class MainActivity : AppCompatActivity() {
     internal var editWorldX = 0f; internal var editWorldY = 0f; internal var editTopAnchorY = 0f
     internal var editRotation = 0f; internal var editColor = Color.BLACK
     internal var editSize = 12f * 1.333f
+    // Set by the in-editor resize handle when actually dragged; left null otherwise so
+    // closeInlineEditor knows not to touch the item's existing width at all if the person never
+    // touched this handle during the session.
+    internal var editMaxWidth: Float? = null
     internal var editOpacity = 255
     internal var pendingBold = false; internal var pendingItalic = false
     internal var pendingUnderline = false; internal var pendingHighlight: Int? = null

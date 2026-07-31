@@ -552,6 +552,7 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
         // ignored whatever size you'd actually picked via the Text panel. Both now fall back to
         // their own last-used value instead, matching how pendingFontFamily already worked below.
         editingItem=item; editWorldX=item?.x?:worldX; editWorldY=item?.y?:worldY; editRotation=item?.rotation?:0f
+        editMaxWidth = null
         run {
             val layer = drawingView.layers.find { it.id == drawingView.currentLayerId }
             editColor = item?.color ?: layer?.defaultColor ?: editColor
@@ -729,6 +730,11 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                     val newWidth = (resizeStartWidth + dx).coerceIn(dp(80), maxEditorWidthPx)
                     et.maxWidth = newWidth; et.minWidth = newWidth
                     et.requestLayout()
+                    // Convert the editor's screen-pixel width back to world units — same scale
+                    // relationship et.textSize was derived from (screenSizePx / editSize) above —
+                    // and record it so closeInlineEditor can actually apply it to the item. This
+                    // handle used to only ever resize the temporary EditText widget itself.
+                    editMaxWidth = newWidth * editSize / screenSizePx
                     true
                 }
                 else -> true
@@ -1046,13 +1052,18 @@ internal fun MainActivity.closeInlineEditor(commit:Boolean, delete:Boolean=false
             // timing behaves.
             if(item!=null){
                 item.text=text;item.color=editColor;item.size=editSize;item.rotation=editRotation;item.spans=spans;item.isEditing=false;item.fontFamily=pendingFontFamily;item.opacity=editOpacity; item.x=editWorldX
+                editMaxWidth?.let { item.maxWidth = it; item.widthExplicitlySet = true }
                 item.y = editTopAnchorY + drawingView.textItemHeight(item)
                 drawingView.clampTextItemToPage(item)
             } else {
                 val newItem = drawingView.addText(text,editWorldX,editTopAnchorY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
-                if (newItem != null) newItem.y = editTopAnchorY + drawingView.textItemHeight(newItem)
+                if (newItem != null) {
+                    editMaxWidth?.let { newItem.maxWidth = it; newItem.widthExplicitlySet = true }
+                    newItem.y = editTopAnchorY + drawingView.textItemHeight(newItem)
+                }
             }
         } else { if(item!=null) drawingView.removeTextItem(item) }
+        editMaxWidth = null
         if(!isSwitchingTextEditor) drawingView.invalidate()
         // Remove keyboard scroll listener
         if (activeEditorKeyboardListener != null) {
