@@ -6445,18 +6445,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 snapMarkersActionCount = -1
             }
         } else {
-            val candidates = itemsNear(x, y, r * 3f).toHashSet()
-            val newActions = mutableListOf<Any>()
+            val candidates = itemsNear(x, y, r * 3f)
             var changed = false
-            val removedForIndex = mutableListOf<Any>()
-            val addedForIndex = mutableListOf<Any>()
-            for (a in actions) {
-                // Items far from eraser pass through unchanged — no processing needed
-                if (a !in candidates) { newActions.add(a); continue }
+            for (a in candidates) {
+                val idx = actions.indexOf(a)
+                if (idx < 0) continue  // no longer present (shouldn't normally happen, but be safe)
                 when (a) {
                     is StrokeItem -> {
                         if (a.data.isLocked) {
-                            newActions.add(a)
+                            // locked — leave untouched
                         } else if (a.data.type == Tool.PEN || a.data.type == Tool.ERASER || a.data.type == Tool.ARC || a.data.type == Tool.HIGHLIGHTER || a.data.type == Tool.BRUSH) {
                             // Cheap hit-test first: itemsNear() casts a wide net (r*3), so a
                             // stroke can be "nearby" for several touch-move samples before the
@@ -6483,9 +6480,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                     // from it — O(eraser-circle-pixels), not O(stroke's total
                                     // point count), and the stroke's actual geometry (points,
                                     // widths, smoothing) is never touched again for the rest of
-                                    // this drag.
+                                    // this drag. Same item stays at idx — nothing to replace.
                                     eraseFromSessionBitmap(a, x, y, r)
-                                    newActions.add(a)
                                 } else {
                                     // Same effectiveR strokeHitTest used to decide this was a hit —
                                     // without it, the split geometry below only clips the bare
@@ -6494,11 +6490,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                     // visually covers it (only a tiny sliver of centerline gets cut).
                                     val effR = r + (a.data.strokeWidth / 2f).coerceAtMost(r * 2f)
                                     val frags = splitStrokeAroundEraser(a.data, x, y, effR)
-                                    newActions.addAll(frags); changed = true
-                                    removedForIndex.add(a); addedForIndex.addAll(frags)
+                                    actions.removeAt(idx); actions.addAll(idx, frags)
+                                    removeFromSpatialIndex(a); for (f in frags) addToSpatialIndex(f)
+                                    changed = true
                                 }
-                            } else {
-                                newActions.add(a)
                             }
                         } else if (CLOSED_SHAPES.contains(a.data.type)) {
                             // Convert to component lines at erase time.
@@ -6507,53 +6502,53 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             // UNROTATED outline, which caused wrong-edge erasure on rotated shapes.
                             if (strokeHitTestRotated(a.data, x, y, r)) {
                                 val components = convertShapeToComponents(a.data)
+                                val replacement = mutableListOf<StrokeItem>()
                                 for (comp in components) {
                                     if (strokeHitTest(comp.data, x, y, r)) {
                                         val effR = r + (comp.data.strokeWidth / 2f).coerceAtMost(r * 2f)
-                                        val frags = splitStrokeAroundEraser(comp.data, x, y, effR)
-                                        newActions.addAll(frags); addedForIndex.addAll(frags)
+                                        replacement.addAll(splitStrokeAroundEraser(comp.data, x, y, effR))
                                     } else {
-                                        newActions.add(comp); addedForIndex.add(comp)
+                                        replacement.add(comp)
                                     }
                                 }
+                                actions.removeAt(idx); actions.addAll(idx, replacement)
+                                removeFromSpatialIndex(a); for (it in replacement) addToSpatialIndex(it)
                                 changed = true
-                                removedForIndex.add(a)
-                            } else {
-                                newActions.add(a)
                             }
                         } else {
                             // Open shapes (LINE, ARROW): split into fragments
                             if (strokeHitTest(a.data, x, y, r)) {
                                 val effR = r + (a.data.strokeWidth / 2f)
                                 val frags = splitShapeAroundEraser(a.data, x, y, effR)
-                                newActions.addAll(frags); changed = true
-                                removedForIndex.add(a); addedForIndex.addAll(frags)
+                                actions.removeAt(idx); actions.addAll(idx, frags)
+                                removeFromSpatialIndex(a); for (f in frags) addToSpatialIndex(f)
+                                changed = true
                             }
-                            else newActions.add(a)
                         }
                     }
-                    is TextItem -> { if (distance(x, y, a.x, a.y) > r + a.size) newActions.add(a) else { changed = true; removedForIndex.add(a) } }
-                    is ImageItem -> { newActions.add(eraseImageItemRegion(a, x, y, r)); changed = true }
+                    is TextItem -> {
+                        if (distance(x, y, a.x, a.y) <= r + a.size) {
+                            actions.removeAt(idx); removeFromSpatialIndex(a); changed = true
+                        }
+                    }
+                    is ImageItem -> { eraseImageItemRegion(a, x, y, r); changed = true }  // mutated in place, stays at idx
                     is FillItem -> {
                         if (eraserMode == EraserMode.AREA && eraserAffectsFill) {
                             // Erase only the pixels the eraser circle touches in the fill bitmap
                             val erased = eraseFillItemRegion(a, x, y, r)
-                            if (erased != null) { newActions.add(erased); if (erased !== a) { removedForIndex.add(a); addedForIndex.add(erased) } } // null = fully erased
-                            else removedForIndex.add(a)
+                            if (erased != null) {
+                                if (erased !== a) { actions.removeAt(idx); actions.add(idx, erased); removeFromSpatialIndex(a); addToSpatialIndex(erased) }
+                                // else same reference, already in place at idx — nothing to replace
+                            } else {
+                                actions.removeAt(idx); removeFromSpatialIndex(a)
+                            }
                             changed = true
-                        } else {
-                            newActions.add(a)
                         }
                     }
-                    else -> newActions.add(a)
+                    else -> {}
                 }
             }
-            if (changed) {
-                actions.clear(); actions.addAll(newActions)
-                for (rem in removedForIndex) removeFromSpatialIndex(rem)
-                for (add in addedForIndex) addToSpatialIndex(add)
-                snapMarkersActionCount = -1
-            }
+            if (changed) snapMarkersActionCount = -1
         }
     }
 
@@ -6606,6 +6601,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val cv = Canvas(bmp)
         val p = _fillErasePaint
         cv.drawOval(RectF((bex - brx).toFloat(), (bey - bry).toFloat(), (bex + brx).toFloat(), (bey + bry).toFloat()), p)
+        // The mask (bitmap) just changed, but the actual rendered hatch pattern is a SEPARATE,
+        // pre-computed bitmap derived from it (see FillItem.hatchRenderCache) — without
+        // invalidating it too, the stale already-masked pattern keeps showing untouched even
+        // though the mask underneath it was correctly erased.
+        item.hatchRenderCache = null
         return item
     }
 
