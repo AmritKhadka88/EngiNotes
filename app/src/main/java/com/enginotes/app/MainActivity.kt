@@ -3628,7 +3628,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun showSettingsDialog() {
         val prefs = getPrefs()
-        val accent = Color.parseColor("#7B61FF")
+        val accent = currentThemeButtonColor()
+        val accentTint = android.content.res.ColorStateList.valueOf(accent)
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(14), dp(22), dp(14))
             background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(20).toFloat() }
@@ -3647,16 +3648,17 @@ class MainActivity : AppCompatActivity() {
         fun div() { container.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).also { it.setMargins(0, dp(14), 0, 0) }; setBackgroundColor(Color.parseColor("#EDEAE4")) }) }
 
         div(); hdr("LOCK BEHAVIOUR")
-        val lockEraseCb = CheckBox(this).apply { text="Locked items: prevent erasing"; isChecked=prefs.getBoolean("lock_prevent_erase",true); setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_erase",on).apply() } }; container.addView(lockEraseCb)
-        val lockMoveCb = CheckBox(this).apply { text="Locked items: prevent moving/resizing"; isChecked=prefs.getBoolean("lock_prevent_move",true); setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_move",on).apply() } }; container.addView(lockMoveCb)
-        val lockColorCb = CheckBox(this).apply { text="Locked items: prevent colour changes"; isChecked=prefs.getBoolean("lock_prevent_color",true); setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_color",on).apply() } }; container.addView(lockColorCb)
+        val lockEraseCb = CheckBox(this).apply { text="Locked items: prevent erasing"; isChecked=prefs.getBoolean("lock_prevent_erase",true); buttonTintList = accentTint; setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_erase",on).apply() } }; container.addView(lockEraseCb)
+        val lockMoveCb = CheckBox(this).apply { text="Locked items: prevent moving/resizing"; isChecked=prefs.getBoolean("lock_prevent_move",true); buttonTintList = accentTint; setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_move",on).apply() } }; container.addView(lockMoveCb)
+        val lockColorCb = CheckBox(this).apply { text="Locked items: prevent colour changes"; isChecked=prefs.getBoolean("lock_prevent_color",true); buttonTintList = accentTint; setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_color",on).apply() } }; container.addView(lockColorCb)
 
         div(); hdr("GENERAL")
-        val confirmCb = CheckBox(this).apply{ text="Confirm before exit or clear canvas"; isChecked=prefs.getBoolean("confirm_exit_clear",true) }; container.addView(confirmCb)
-        val autosaveCb = CheckBox(this).apply{ text="Autosave every 10 seconds"; isChecked=prefs.getBoolean("autosave",true) }; container.addView(autosaveCb)
+        val confirmCb = CheckBox(this).apply{ text="Confirm before exit or clear canvas"; isChecked=prefs.getBoolean("confirm_exit_clear",true); buttonTintList = accentTint }; container.addView(confirmCb)
+        val autosaveCb = CheckBox(this).apply{ text="Autosave every 10 seconds"; isChecked=prefs.getBoolean("autosave",true); buttonTintList = accentTint }; container.addView(autosaveCb)
         val layersBtnCb = CheckBox(this).apply {
             text = "Always show Layers button in toolbar"
             isChecked = prefs.getBoolean("layers_button_always_visible", false)
+            buttonTintList = accentTint
             setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("layers_button_always_visible", on).apply(); updateLayersButtonVisibility() }
         }; container.addView(layersBtnCb)
         container.addView(TextView(this).apply {
@@ -3676,10 +3678,10 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener {
                     setAppTheme(key)
                     themeButtons.forEach { tb -> tb.setBackgroundColor(Color.parseColor("#F0EBE0")); tb.setTextColor(Color.parseColor("#4A4A4A")) }
-                    setBackgroundColor(Color.parseColor("#7B61FF")); setTextColor(Color.WHITE)
+                    setBackgroundColor(accent); setTextColor(Color.WHITE)
                 }
             }
-            if (key == currentAppTheme()) { b.setBackgroundColor(Color.parseColor("#7B61FF")); b.setTextColor(Color.WHITE) }
+            if (key == currentAppTheme()) { b.setBackgroundColor(accent); b.setTextColor(Color.WHITE) }
             else { b.setBackgroundColor(Color.parseColor("#F0EBE0")); b.setTextColor(Color.parseColor("#4A4A4A")) }
             themeButtons.add(b); themeRow.addView(b)
         }
@@ -3702,10 +3704,10 @@ class MainActivity : AppCompatActivity() {
                     drawingView.inputMode = mode
                     prefs.edit().putString("input_mode", mode.name).apply()
                     inputButtons.forEach { tb -> tb.setBackgroundColor(Color.parseColor("#F0EBE0")); tb.setTextColor(Color.parseColor("#4A4A4A")) }
-                    setBackgroundColor(Color.parseColor("#7B61FF")); setTextColor(Color.WHITE)
+                    setBackgroundColor(accent); setTextColor(Color.WHITE)
                 }
             }
-            if (mode == drawingView.inputMode) { b.setBackgroundColor(Color.parseColor("#7B61FF")); b.setTextColor(Color.WHITE) }
+            if (mode == drawingView.inputMode) { b.setBackgroundColor(accent); b.setTextColor(Color.WHITE) }
             else { b.setBackgroundColor(Color.parseColor("#F0EBE0")); b.setTextColor(Color.parseColor("#4A4A4A")) }
             inputButtons.add(b); inputRow.addView(b)
         }
@@ -3720,7 +3722,7 @@ class MainActivity : AppCompatActivity() {
         val paperValues = arrayOf("BLANK","LINED","GRID","DOTS","ENGINEERING","BLANK_COLORED")
         var selPaper = prefs.getString("default_paper","LINED") ?: "LINED"
         var selPaperColor = prefs.getInt("paper_color", drawingView.paperColor)
-        val paperLbl = TextView(this).apply{ textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(8),0,dp(8)) }
+        val paperLbl = TextView(this).apply{ textSize=15f; setTextColor(accent); setPadding(0,dp(8),0,dp(8)) }
         fun refP(){ paperLbl.text = "Default: ${paperLabels[paperValues.indexOf(selPaper).coerceAtLeast(0)]}  (tap)" }
         refP(); container.addView(paperLbl)
 
@@ -3772,7 +3774,7 @@ class MainActivity : AppCompatActivity() {
         val (lineSpacingRow, _) = numberRow("Line spacing (px)", lineSpacing.toInt().toString()) { lineSpacing = it.toFloatOrNull() ?: lineSpacing }
         val (marginRow, _) = Pair(LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(8)) }, null)
         val marginLbl = TextView(this).apply { text = "Double margin line (left)"; textSize = 14f; setTextColor(Color.parseColor("#4A4A4A")); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
-        val marginCb = android.widget.CheckBox(this).apply { isChecked = linedDoubleMargin; setOnCheckedChangeListener { _, v -> linedDoubleMargin = v } }
+        val marginCb = android.widget.CheckBox(this).apply { isChecked = linedDoubleMargin; buttonTintList = accentTint; setOnCheckedChangeListener { _, v -> linedDoubleMargin = v } }
         marginRow.addView(marginLbl); marginRow.addView(marginCb); container.addView(marginRow)
 
         val (gridSpacingRow, _) = numberRow("Grid spacing (px)", gridSpacing.toInt().toString()) { gridSpacing = it.toFloatOrNull() ?: gridSpacing }
@@ -3822,7 +3824,7 @@ class MainActivity : AppCompatActivity() {
             orientLbl.visibility = sizeLbl.visibility
         }
         refPage()
-        for(lbl in listOf(modeLbl,sizeLbl,orientLbl)){ lbl.textSize=15f; lbl.setTextColor(Color.parseColor("#1565C0")); lbl.setPadding(0,dp(8),0,dp(8)); container.addView(lbl) }
+        for(lbl in listOf(modeLbl,sizeLbl,orientLbl)){ lbl.textSize=15f; lbl.setTextColor(accent); lbl.setPadding(0,dp(8),0,dp(8)); container.addView(lbl) }
         sizeLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Paper Size").setItems(PaperSizeOption.values().map{it.name}.toTypedArray()){ _,i-> drawingView.paperSize=PaperSizeOption.values()[i]; drawingView.rewrapTextToPage(); drawingView.clampTranslation(); drawingView.invalidate(); refPage() }.show() }
         orientLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Orientation").setItems(arrayOf("Portrait","Landscape")){ _,i-> drawingView.pageOrientation=if(i==0)Orientation.PORTRAIT else Orientation.LANDSCAPE; drawingView.rewrapTextToPage(); drawingView.clampTranslation(); drawingView.invalidate(); refPage() }.show() }
 
@@ -3852,7 +3854,7 @@ class MainActivity : AppCompatActivity() {
         val hatchLabels = arrayOf("Extra Fine", "Fine", "Normal", "Medium", "Coarse", "Extra Coarse", "Broad", "Ultra Broad")
         val hatchValues = arrayOf(0.25f, 0.5f, 1f, 1.5f, 2f, 3f, 5f, 8f)
         var selHatchScale = prefs.getFloat("hatch_scale", 1f)
-        val hatchLbl = TextView(this).apply { textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(8),0,dp(8)) }
+        val hatchLbl = TextView(this).apply { textSize=15f; setTextColor(accent); setPadding(0,dp(8),0,dp(8)) }
         fun closestHatchIndex() = hatchValues.indices.minByOrNull { kotlin.math.abs(hatchValues[it] - selHatchScale) } ?: 1
         fun refHatch() { hatchLbl.text = "Density: ${hatchLabels[closestHatchIndex()]}  (tap)" }
         refHatch()
@@ -3877,7 +3879,7 @@ class MainActivity : AppCompatActivity() {
             text = "Bring your own free Gemini API key — nothing is shared between students, nothing costs you anything."
             textSize = 12f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0,0,0,dp(6))
         })
-        val keyLbl = TextView(this).apply { textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(6),0,dp(4)) }
+        val keyLbl = TextView(this).apply { textSize=15f; setTextColor(accent); setPadding(0,dp(6),0,dp(4)) }
         fun refKeyLbl() { keyLbl.text = if (geminiApiKey().isBlank()) "API Key: not set  (tap)" else "API Key: •••• saved  (tap to change)" }
         refKeyLbl()
         keyLbl.setOnClickListener { showGeminiSetupDialog { refKeyLbl() } }
@@ -3891,7 +3893,7 @@ class MainActivity : AppCompatActivity() {
             text = "If \"Ask Gemini\" stops working after a Google update, this is usually why — check aistudio.google.com/models for the current free model name and paste it above."
             textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0,0,0,dp(4))
         })
-        val updateLbl = TextView(this).apply { text = "Check for Update"; textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(6),0,dp(4)) }
+        val updateLbl = TextView(this).apply { text = "Check for Update"; textSize=15f; setTextColor(accent); setPadding(0,dp(6),0,dp(4)) }
         updateLbl.setOnClickListener {
             updateLbl.text = "Checking..."
             refreshGeminiConfigFromRemote { success, message ->
@@ -3910,7 +3912,7 @@ class MainActivity : AppCompatActivity() {
         val barSizeLabels = arrayOf("Small (36dp)", "Medium (40dp)", "Large (44dp)", "Extra Large (52dp)")
         val barSizeValues = arrayOf(36, 40, 44, 52)
         var selBarSize = prefs.getInt("bar_icon_size", 44)
-        val barSizeLbl = TextView(this).apply { textSize=15f; setTextColor(Color.parseColor("#1565C0")); setPadding(0,dp(8),0,dp(8)) }
+        val barSizeLbl = TextView(this).apply { textSize=15f; setTextColor(accent); setPadding(0,dp(8),0,dp(8)) }
         fun refBarSize() { barSizeLbl.text = "Icon size: ${barSizeLabels[barSizeValues.indexOf(selBarSize).coerceAtLeast(0)]}  (tap)" }
         refBarSize()
         barSizeLbl.setOnClickListener {

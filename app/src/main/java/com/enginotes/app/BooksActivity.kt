@@ -65,21 +65,20 @@ class BooksActivity : AppCompatActivity() {
     // color + a background color — kept simple and reliable rather than a deep per-element
     // theming system, so this can't introduce visual inconsistencies elsewhere in the app.
     companion object {
-        // Button color chosen per-theme for good contrast against that theme's background —
-        // not just reusing the toolbar color, which doesn't always pop visually against a
-        // similar-hued background. Complementary-color pairings (Ocean's blue -> amber button,
-        // Forest's green -> orange button, Sunset's orange -> teal button) are a standard color
-        // theory choice for "make this stand out," not arbitrary picks.
+        // Button color chosen to match each theme's own hue family — a lighter/brighter shade
+        // of the same color the theme is named after, rather than a complementary contrasting
+        // color (Ocean's button is blue, not amber; Forest's is green, not orange; etc.), so the
+        // whole theme reads as one consistent color rather than two different ones competing.
         val THEMES = linkedMapOf(
             "Classic" to ThemeSpec("#8D6E63", "#FAF6EF", "#6D4C41"),
-            "Ocean" to ThemeSpec("#0277BD", "#E1F5FE", "#FF8F00"),
-            "Forest" to ThemeSpec("#2E7D32", "#F1F8E9", "#EF6C00"),
-            "Sunset" to ThemeSpec("#E64A19", "#FFF3E0", "#00695C"),
-            "Minimal Mono" to ThemeSpec("#212121", "#FAFAFA", "#424242"),
+            "Ocean" to ThemeSpec("#0277BD", "#E1F5FE", "#29B6F6"),
+            "Forest" to ThemeSpec("#2E7D32", "#F1F8E9", "#7CB342"),
+            "Sunset" to ThemeSpec("#E64A19", "#FFF3E0", "#FB8C00"),
+            "Minimal Mono" to ThemeSpec("#212121", "#FAFAFA", "#000000"),
             // No hard edge between the top bar and the page below it — the top bar itself is a
             // gradient that fades from its own color down into the exact same shade as the page
             // background, so the seam disappears instead of being a visible contrast line.
-            "Gradient" to ThemeSpec("#5C6BC0", "#ECEFF1", "#FF7043", isGradient = true)
+            "Gradient" to ThemeSpec("#5C6BC0", "#ECEFF1", "#7E57C2", isGradient = true)
         )
         // Only Android's own built-in system animation resources — guaranteed to exist on every
         // API level since these ship with the framework itself, unlike custom XML anim resources
