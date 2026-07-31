@@ -1266,6 +1266,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val _holePaint = Paint().apply { style = Paint.Style.FILL; xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR); isAntiAlias = true }
     private val _fillErasePaint = Paint().apply { color = Color.TRANSPARENT; style = Paint.Style.FILL; xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR) }
     private val _cursorPaint = Paint().apply { isAntiAlias = true }
+    // Cached paints for the multiselect handle overlay (drawSelection) — this used to allocate
+    // 9 new Paint objects every single frame it was drawn (not just during a drag), which is a
+    // real, continuous GC-pressure source since it's on the main onDraw path. Colors/styles are
+    // fixed so they're set once here; strokeWidth depends on the live scaleFactor so that's set
+    // right before each use in drawSelection instead.
+    private val _msPinkStroke = Paint().apply { color = android.graphics.Color.parseColor("#E91E8C"); style = Paint.Style.STROKE; isAntiAlias = true }
+    private val _msPinkFill = Paint().apply { color = android.graphics.Color.parseColor("#E91E8C"); style = Paint.Style.FILL; isAntiAlias = true }
+    private val _msWhiteStroke = Paint().apply { color = android.graphics.Color.WHITE; style = Paint.Style.STROKE; isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
+    private val _msGreenFill = Paint().apply { color = android.graphics.Color.parseColor("#34C759"); style = Paint.Style.FILL; isAntiAlias = true }
+    private val _msRedFill = Paint().apply { color = android.graphics.Color.parseColor("#FF3B30"); style = Paint.Style.FILL; isAntiAlias = true }
+    private val _msBlueFill = Paint().apply { color = android.graphics.Color.parseColor("#2196F3"); style = Paint.Style.FILL; isAntiAlias = true }
 
     // Lock/unlock — called from MainActivity lock button
     fun lockSelectedItems() {
@@ -3447,37 +3458,33 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val gcxForRotate = (gb[0]+gb[2])/2f; val gcyForRotate = (gb[1]+gb[3])/2f
             if (rotForDraw != 0f) canvas.save().also { canvas.rotate(rotForDraw, gcxForRotate, gcyForRotate) }
             val hr = 28f / scaleFactor  // larger handles
-            val pinkP = Paint().apply { color = android.graphics.Color.parseColor("#E91E8C"); style = Paint.Style.STROKE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true }
-            canvas.drawRect(gb[0], gb[1], gb[2], gb[3], pinkP)
-            val hF = Paint().apply { style = Paint.Style.FILL; color = android.graphics.Color.parseColor("#E91E8C"); isAntiAlias = true }
-            val hS = Paint().apply { style = Paint.Style.STROKE; color = android.graphics.Color.WHITE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true }
+            _msPinkStroke.strokeWidth = 2.5f/scaleFactor
+            canvas.drawRect(gb[0], gb[1], gb[2], gb[3], _msPinkStroke)
             val gcx = (gb[0]+gb[2])/2f; val gcy = (gb[1]+gb[3])/2f
+            _msWhiteStroke.strokeWidth = 2.5f/scaleFactor
             // 8 resize handles
             for ((hx,hy) in listOf(gb[0] to gb[1], gcx to gb[1], gb[2] to gb[1], gb[0] to gcy, gb[2] to gcy, gb[0] to gb[3], gcx to gb[3], gb[2] to gb[3])) {
-                canvas.drawCircle(hx, hy, hr, hF); canvas.drawCircle(hx, hy, hr, hS)
+                canvas.drawCircle(hx, hy, hr, _msPinkFill); canvas.drawCircle(hx, hy, hr, _msWhiteStroke)
             }
             // Rotation handle (green circle with arc symbol — matches single-select design)
             val rotY = gb[1] - 90f/scaleFactor
-            val rotF = Paint().apply { style = Paint.Style.FILL; color = android.graphics.Color.parseColor("#34C759"); isAntiAlias = true }
-            canvas.drawLine(gcx, gb[1], gcx, rotY+hr, pinkP)
-            canvas.drawCircle(gcx, rotY, hr*1.2f, rotF); canvas.drawCircle(gcx, rotY, hr*1.2f, hS)
+            canvas.drawLine(gcx, gb[1], gcx, rotY+hr, _msPinkStroke)
+            canvas.drawCircle(gcx, rotY, hr*1.2f, _msGreenFill); canvas.drawCircle(gcx, rotY, hr*1.2f, _msWhiteStroke)
             // Arc symbol inside green circle
-            val arcSP = Paint().apply { style = Paint.Style.STROKE; color = android.graphics.Color.WHITE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
             val arcR = hr*0.65f
-            canvas.drawArc(android.graphics.RectF(gcx-arcR, rotY-arcR, gcx+arcR, rotY+arcR), -30f, 240f, false, arcSP)
-            canvas.drawLine(gcx+arcR*0.5f, rotY-arcR*0.85f, gcx+arcR, rotY-arcR*0.3f, arcSP)
+            canvas.drawArc(android.graphics.RectF(gcx-arcR, rotY-arcR, gcx+arcR, rotY+arcR), -30f, 240f, false, _msWhiteStroke)
+            canvas.drawLine(gcx+arcR*0.5f, rotY-arcR*0.85f, gcx+arcR, rotY-arcR*0.3f, _msWhiteStroke)
             // Delete handle (red, top-right)
             val delX = gb[2]+hr*4f; val delY = gb[1]-hr*4f
-            val delF = Paint().apply { style = Paint.Style.FILL; color = android.graphics.Color.parseColor("#FF3B30"); isAntiAlias = true }
-            val delS = Paint().apply { style = Paint.Style.STROKE; color = android.graphics.Color.WHITE; strokeWidth = 3f/scaleFactor; isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
-            canvas.drawCircle(delX, delY, hr*1.5f, delF); canvas.drawCircle(delX, delY, hr*1.5f, hS)
-            val d2 = hr*0.9f; canvas.drawLine(delX-d2,delY-d2,delX+d2,delY+d2,delS); canvas.drawLine(delX+d2,delY-d2,delX-d2,delY+d2,delS)
+            canvas.drawCircle(delX, delY, hr*1.5f, _msRedFill); canvas.drawCircle(delX, delY, hr*1.5f, _msWhiteStroke)
+            _msWhiteStroke.strokeWidth = 3f/scaleFactor
+            val d2 = hr*0.9f; canvas.drawLine(delX-d2,delY-d2,delX+d2,delY+d2,_msWhiteStroke); canvas.drawLine(delX+d2,delY-d2,delX-d2,delY+d2,_msWhiteStroke)
             // Move handle (center arrow icon)
-            val moveF = Paint().apply { style = Paint.Style.FILL; color = android.graphics.Color.parseColor("#2196F3"); isAntiAlias = true }
-            canvas.drawCircle(gcx, gcy, hr*1.2f, moveF); canvas.drawCircle(gcx, gcy, hr*1.2f, hS)
-            val ap = Paint().apply { style = Paint.Style.STROKE; color = android.graphics.Color.WHITE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
+            canvas.drawCircle(gcx, gcy, hr*1.2f, _msBlueFill)
+            _msWhiteStroke.strokeWidth = 2.5f/scaleFactor
+            canvas.drawCircle(gcx, gcy, hr*1.2f, _msWhiteStroke)
             val a = hr*0.6f
-            canvas.drawLine(gcx-a, gcy, gcx+a, gcy, ap); canvas.drawLine(gcx, gcy-a, gcx, gcy+a, ap)
+            canvas.drawLine(gcx-a, gcy, gcx+a, gcy, _msWhiteStroke); canvas.drawLine(gcx, gcy-a, gcx, gcy+a, _msWhiteStroke)
             if (rotForDraw != 0f) canvas.restore()
             // NOTE: Indiv/Group toggle is shown as a screen-space button via MainActivity
             return
