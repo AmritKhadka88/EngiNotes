@@ -3828,7 +3828,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val compactFloor = (longestWord + 24f).coerceAtLeast(60f)
                         val dx = if (handle == HandleType.MR) (wx - resizePrevWorldX) else (resizePrevWorldX - wx)
                         val current = if (item.maxWidth > 0f) item.maxWidth else textWrapWidth(item).toFloat()
-                        item.maxWidth = (current + dx * 2f).coerceIn(compactFloor, pageWidthPx())
+                        // Ceiling is how much room is actually left from the box's own left edge
+                        // to the page's right edge — NOT the full page width. The box's right
+                        // edge is item.x + maxWidth, so capping maxWidth at the full page width
+                        // let it extend well past the actual page boundary once item.x was
+                        // anything other than 0, pushing this very handle off the visible page.
+                        val maxAllowedWidth = (pageWidthPx() - item.x - 16f).coerceAtLeast(compactFloor)
+                        item.maxWidth = (current + dx * 2f).coerceIn(compactFloor, maxAllowedWidth)
                         item.widthExplicitlySet = true
                     }
                     else -> {
