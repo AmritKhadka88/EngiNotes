@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.widget.*
@@ -473,7 +474,7 @@ class BooksActivity : AppCompatActivity() {
                     // Clear any stale cached file(s) for this note (old mtime baked into the old filename)
                     thumbnailCacheDir().listFiles()?.filter { it.name.startsWith("${note.nameWithoutExtension}_") }?.forEach { it.delete() }
                     FileOutputStream(cached).use { bmp.compress(Bitmap.CompressFormat.PNG, 90, it) }
-                } catch (e: Exception) {}
+                } catch (e: Exception) { Log.w("EngiNotes", "Thumbnail cache write failed for ${note.name}", e) }
             }.start()
         }
     }
@@ -794,7 +795,7 @@ class BooksActivity : AppCompatActivity() {
             for (file in selectedNotes.toList()) {
                 if (file.parentFile?.name == destBook) continue
                 val dest = File(File(getBooksRoot(), destBook), file.name)
-                try { file.copyTo(dest, overwrite = true); file.delete(); moved++ } catch (e: Exception) {}
+                try { file.copyTo(dest, overwrite = true); file.delete(); moved++ } catch (e: Exception) { Log.w("EngiNotes", "Failed to move ${file.name} to $destBook", e) }
             }
             Toast.makeText(this, "Moved $moved note(s) to $destBook", Toast.LENGTH_SHORT).show()
             exitSelectionMode()
@@ -816,7 +817,7 @@ class BooksActivity : AppCompatActivity() {
                 // managers handle a copy-into-same-name conflict.
                 var n = 1
                 while (dest.exists()) { dest = File(destDir, "${file.nameWithoutExtension} (${n})${if (file.extension.isNotEmpty()) "." + file.extension else ""}"); n++ }
-                try { file.copyTo(dest); copied++ } catch (e: Exception) {}
+                try { file.copyTo(dest); copied++ } catch (e: Exception) { Log.w("EngiNotes", "Failed to copy ${file.name} to $destBook", e) }
             }
             Toast.makeText(this, "Copied $copied note(s) to $destBook", Toast.LENGTH_SHORT).show()
             exitSelectionMode()
@@ -828,8 +829,12 @@ class BooksActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle("Delete ${selectedNotes.size} note(s)?")
             .setMessage("This can't be undone.")
             .setPositiveButton("Delete") { _, _ ->
-                for (file in selectedNotes.toList()) { try { file.delete() } catch (e: Exception) {} }
-                Toast.makeText(this, "Deleted ${selectedNotes.size} note(s)", Toast.LENGTH_SHORT).show()
+                var deleted = 0
+                for (file in selectedNotes.toList()) {
+                    try { if (file.delete()) deleted++ } catch (e: Exception) { Log.w("EngiNotes", "Failed to delete ${file.name}", e) }
+                }
+                val msg = if (deleted == selectedNotes.size) "Deleted $deleted note(s)" else "Deleted $deleted of ${selectedNotes.size} note(s) — check storage/permissions"
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
                 exitSelectionMode()
             }.setNegativeButton("Cancel", null).show()
     }

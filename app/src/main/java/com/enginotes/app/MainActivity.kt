@@ -3346,8 +3346,9 @@ class MainActivity : AppCompatActivity() {
         if (!targetFile.exists()) { Toast.makeText(this, "Linked note no longer exists", Toast.LENGTH_SHORT).show(); return }
 
         // Autosave the current note before leaving so nothing is lost, and so a future "back"
-        // navigation can find it.
-        if (drawingView.hasContent()) autoSave()
+        // navigation can find it. Blocking: we're about to launch a different Activity for the
+        // linked note, so this has to actually be on disk first, not just queued.
+        if (drawingView.hasContent()) autoSave(blocking = true)
 
         val currentBook = intent.getStringExtra("book_name") ?: "General"
         val currentNote = currentFileName
@@ -5941,14 +5942,29 @@ class MainActivity : AppCompatActivity() {
         val f=File(File(filesDir,"books"),bookName); if(!f.exists()) f.mkdirs(); return f
     }
 
-    private fun writeCurrentFile(): Boolean {
+    // Single-thread executor so every write (periodic autosave tick, manual Save, exit-path
+    // save) goes through in strict order on a background thread — never racing each other,
+    // never blocking the caller's thread just to get in line behind a previous write.
+    private val saveExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    // Serializing the in-memory drawing model into a string is fast (pure string building, no
+    // disk/crypto work) so it stays on the caller's thread. The actual AES-GCM encryption + file
+    // write is the expensive part and always runs on saveExecutor.
+    //
+    // blocking=false (used by the repeating 10s autosave tick): fires the write in the
+    // background and returns immediately, so a periodic autosave never causes a stutter while
+    // the user is mid-stroke. blocking=true (used by exit/manual-save paths, where we need to
+    // know the write actually landed before finish()/pause proceeds): waits for it via the
+    // executor, same durability guarantee as before, just funneled through the same queue so it
+    // can never interleave with a background tick and corrupt the file.
+    private fun writeCurrentFile(blocking: Boolean = false): Boolean {
         val name = currentFileName ?: return false
-        return try {
-            security.writeNoteFile(File(getDrawingsFolder(),"$name.eng"), drawingView.serialize())
-            lastSavedContent = drawingView.serialize()
-            if (getPrefs().getBoolean("auto_backup_drive", false) && driveManager.isSignedIn()) {
-                backUpNoteToDrive(name, silent = true)
-            }
+        val content = drawingView.serialize()
+        val folder = getDrawingsFolder()
+        val backupDrive = getPrefs().getBoolean("auto_backup_drive", false) && driveManager.isSignedIn()
+
+        fun doWrite(): Boolean = try {
+            security.writeNoteFile(File(folder, "$name.eng"), content)
             true
         } catch (t: Throwable) {
             // Deliberately catching Throwable (not just Exception) here specifically — this is
@@ -5960,9 +5976,29 @@ class MainActivity : AppCompatActivity() {
             } catch (e2: Exception) { }
             false
         }
+
+        fun onDone(ok: Boolean) {
+            if (ok) {
+                lastSavedContent = content
+                if (backupDrive) backUpNoteToDrive(name, silent = true)
+            }
+        }
+
+        return if (blocking) {
+            val ok = try { saveExecutor.submit<Boolean> { doWrite() }.get() } catch (e: Exception) { false }
+            onDone(ok)
+            ok
+        } else {
+            saveExecutor.execute {
+                val ok = doWrite()
+                runOnUiThread { onDone(ok) }
+            }
+            true // optimistic — this path doesn't block on the real result, matching the old
+                 // fire-and-forget timer behavior; failures still land in last_save_error.txt
+        }
     }
 
-    private fun autoSave() {
+    private fun autoSave(blocking: Boolean = false) {
         if(!drawingView.hasContent()) return
         if(currentFileName==null){ val name=nextAutoName(); currentFileName=name; tvTitle.text=name }
         // Keep the Activity's own intent in sync with whatever filename this note now has.
@@ -5971,22 +6007,22 @@ class MainActivity : AppCompatActivity() {
         // this ensures it still resolves to the file that was actually just written to disk
         // instead of quietly treating a now-saved note as a blank "New Note" again.
         intent.putExtra("filename", currentFileName)
-        writeCurrentFile()
+        writeCurrentFile(blocking)
     }
 
     private fun saveCurrent() {
         if(currentFileName==null){
             val input=EditText(this).apply{ setText(nextAutoName()); selectAll() }
             AlertDialog.Builder(this).setTitle("Save Note").setView(input)
-                .setPositiveButton("Save"){ _,_ -> val name=input.text.toString().trim().ifEmpty{nextAutoName()}; currentFileName=name; tvTitle.text=name; val ok=writeCurrentFile(); Toast.makeText(this, if (ok) "Saved" else "Couldn't save — check available storage and try again", Toast.LENGTH_SHORT).show() }
+                .setPositiveButton("Save"){ _,_ -> val name=input.text.toString().trim().ifEmpty{nextAutoName()}; currentFileName=name; tvTitle.text=name; val ok=writeCurrentFile(blocking = true); Toast.makeText(this, if (ok) "Saved" else "Couldn't save — check available storage and try again", Toast.LENGTH_SHORT).show() }
                 .setNegativeButton("Cancel",null).show()
-        } else { val ok=writeCurrentFile(); Toast.makeText(this, if (ok) "Saved" else "Couldn't save — check available storage and try again", Toast.LENGTH_SHORT).show() }
+        } else { val ok=writeCurrentFile(blocking = true); Toast.makeText(this, if (ok) "Saved" else "Couldn't save — check available storage and try again", Toast.LENGTH_SHORT).show() }
     }
 
     private fun saveAsNew() {
         val input=EditText(this).apply{ setText(nextAutoName()); selectAll() }
         AlertDialog.Builder(this).setTitle("Save as New").setView(input)
-            .setPositiveButton("Save"){ _,_ -> val name=input.text.toString().trim().ifEmpty{nextAutoName()}; currentFileName=name; tvTitle.text=name; val ok=writeCurrentFile(); Toast.makeText(this, if (ok) "Saved as $name" else "Couldn't save — check available storage and try again", Toast.LENGTH_SHORT).show() }
+            .setPositiveButton("Save"){ _,_ -> val name=input.text.toString().trim().ifEmpty{nextAutoName()}; currentFileName=name; tvTitle.text=name; val ok=writeCurrentFile(blocking = true); Toast.makeText(this, if (ok) "Saved as $name" else "Couldn't save — check available storage and try again", Toast.LENGTH_SHORT).show() }
             .setNegativeButton("Cancel",null).show()
     }
 
@@ -6001,13 +6037,13 @@ class MainActivity : AppCompatActivity() {
         closeInlineEditor(true)
         val changed=drawingView.serialize()!=lastSavedContent&&drawingView.hasContent()
         if(!changed){ finish(); return }
-        if(getPrefs().getBoolean("autosave",true)){ autoSave(); finish(); return }
+        if(getPrefs().getBoolean("autosave",true)){ autoSave(blocking = true); finish(); return }
         if(getPrefs().getBoolean("confirm_exit_clear",true)){
             AlertDialog.Builder(this).setTitle("Unsaved Changes").setMessage("Save before leaving?")
                 .setPositiveButton("Save"){ _,_ -> saveCurrent(); finish() }
                 .setNeutralButton("Don't Save"){ _,_ -> finish() }
                 .setNegativeButton("Cancel",null).show()
-        } else { autoSave(); finish() }
+        } else { autoSave(blocking = true); finish() }
     }
 
     private fun confirmThenClear() {
@@ -6020,7 +6056,11 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         closeInlineEditor(true)
-        autoSave()
+        // Blocking here (unlike the periodic 10s timer tick) — onPause fires once per
+        // backgrounding, not repeatedly while drawing, so a brief wait here isn't felt as jank,
+        // and the process can be killed shortly after onPause returns, so this write needs to
+        // actually be on disk before that happens rather than just queued.
+        autoSave(blocking = true)
         if(isRecording){ AudioHelper.stopRecording(); isRecording=false }
         blurHandler.removeCallbacksAndMessages(null); blurUpdateScheduled = false
     }
@@ -6058,5 +6098,9 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         autosaveHandler.removeCallbacks(autosaveRunnable)
         AudioHelper.releaseAll()
+        // onPause() already blocked until any pending write landed, so nothing queued here is
+        // lost — this just releases the background thread instead of leaking it every time a
+        // note Activity is destroyed.
+        saveExecutor.shutdown()
     }
 }

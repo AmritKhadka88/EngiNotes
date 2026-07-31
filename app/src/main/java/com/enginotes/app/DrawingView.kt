@@ -2562,26 +2562,34 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // (re)allocate to cover it and bake the whole stroke-so-far once from scratch.
             val bmpW = (worldW * CACHE_SCALE).toInt().coerceIn(1, 4096)
             val bmpH = (worldH * CACHE_SCALE).toInt().coerceIn(1, 4096)
-            try {
-                liveFlushBitmap = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+            val newBitmap = try {
+                Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
             } catch (e: OutOfMemoryError) { liveFlushBitmap = null; liveFlushCanvas = null; return }
-            liveFlushCanvas = Canvas(liveFlushBitmap!!)
+            liveFlushBitmap = newBitmap
+            val canvas = Canvas(newBitmap)
+            liveFlushCanvas = canvas
             liveFlushLeft = left; liveFlushTop = top; liveFlushWorldW = worldW; liveFlushWorldH = worldH
-            liveFlushCanvas!!.save()
-            liveFlushCanvas!!.translate(-liveFlushLeft * CACHE_SCALE, -liveFlushTop * CACHE_SCALE)
-            liveFlushCanvas!!.scale(CACHE_SCALE, CACHE_SCALE)
-            renderLiveStrokeRange(liveFlushCanvas!!, item, 0)
-            liveFlushCanvas!!.restore()
+            canvas.save()
+            canvas.translate(-liveFlushLeft * CACHE_SCALE, -liveFlushTop * CACHE_SCALE)
+            canvas.scale(CACHE_SCALE, CACHE_SCALE)
+            renderLiveStrokeRange(canvas, item, 0)
+            canvas.restore()
             liveFlushedPairIndex = n
             return
         }
+        // fitsExisting (checked above) required liveFlushBitmap != null, and liveFlushBitmap /
+        // liveFlushCanvas are only ever assigned together (see the two assignment sites above and
+        // the reset in clearLiveFlush()) — so liveFlushCanvas is guaranteed non-null here. Capture
+        // it as a local instead of repeated !! so that invariant doesn't need to hold at every
+        // single use site to avoid a crash.
+        val canvas = liveFlushCanvas ?: return
         val overlapPairs = 8
         val segStart = (liveFlushedPairIndex - overlapPairs).coerceAtLeast(0)
-        liveFlushCanvas!!.save()
-        liveFlushCanvas!!.translate(-liveFlushLeft * CACHE_SCALE, -liveFlushTop * CACHE_SCALE)
-        liveFlushCanvas!!.scale(CACHE_SCALE, CACHE_SCALE)
-        renderLiveStrokeRange(liveFlushCanvas!!, item, segStart)
-        liveFlushCanvas!!.restore()
+        canvas.save()
+        canvas.translate(-liveFlushLeft * CACHE_SCALE, -liveFlushTop * CACHE_SCALE)
+        canvas.scale(CACHE_SCALE, CACHE_SCALE)
+        renderLiveStrokeRange(canvas, item, segStart)
+        canvas.restore()
         liveFlushedPairIndex = n
     }
 
@@ -5948,7 +5956,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         longPressRunnable?.let { longPressHandler.removeCallbacks(it) }; longPressRunnable = null
                         if (hit != null) {
                             val capturedHit = hit; val lx = event.x; val ly = event.y
-                            longPressRunnable = Runnable {
+                            val runnable = Runnable {
                                 longPressRunnable = null
                                 selectedItem = capturedHit; invalidate()
                                 // Post to run AFTER current touch sequence ends
@@ -5957,12 +5965,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                     onTextSelectRequest?.invoke(capturedHit, lx, ly, lx, ly)
                                 }, 50L)
                             }
-                            longPressHandler.postDelayed(longPressRunnable!!, 450L)
+                            longPressRunnable = runnable
+                            longPressHandler.postDelayed(runnable, 450L)
                         }
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        if (longPressRunnable != null && (kotlin.math.abs(event.x - textLongPressStartX) > 10f || kotlin.math.abs(event.y - textLongPressStartY) > 10f)) {
-                            longPressHandler.removeCallbacks(longPressRunnable!!); longPressRunnable = null
+                        if (kotlin.math.abs(event.x - textLongPressStartX) > 10f || kotlin.math.abs(event.y - textLongPressStartY) > 10f) {
+                            longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
                         }
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
