@@ -1796,6 +1796,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
             val wx = screenToWorldX(e.x); val wy = screenToWorldY(e.y)
+            pendingPlacementTap?.let { cb -> pendingPlacementTap = null; cb(wx, wy); return true }
             // Audio items: tapping an already-selected audio item toggles play.
             // Tapping an unselected one (in SELECT tool) selects it first so it can be moved/resized.
             for (a in actions.reversed()) {
@@ -5456,6 +5457,26 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val m = 3.7795f
         return if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
     }
+
+    // Checks whether any existing item's bounds overlap a rectangle starting at (worldX, worldY)
+    // with the given size — used to decide whether inserting a new Gemini answer there would
+    // land on top of existing content, before it's actually placed.
+    fun hasContentNear(worldX: Float, worldY: Float, w: Float, h: Float): Boolean {
+        val testL = worldX; val testT = worldY; val testR = worldX + w; val testB = worldY + h
+        val cx = worldX + w / 2f; val cy = worldY + h / 2f
+        for (a in itemsNear(cx, cy, maxOf(w, h))) {
+            val b = getBounds(a) ?: continue
+            if (b[0] < testR && b[2] > testL && b[1] < testB && b[3] > testT) return true
+        }
+        return false
+    }
+
+    // When set, the NEXT genuine single tap (not a scroll/drag — onSingleTapConfirmed only ever
+    // fires for an actual tap) is consumed here instead of its normal tool behavior, and the
+    // callback receives the tap's world coordinates. Used for "tap where you'd like the answer
+    // placed" when a Gemini response can't go where it was first requested without landing on
+    // existing content.
+    var pendingPlacementTap: ((Float, Float) -> Unit)? = null
 
     fun pageHeightPx(): Float {
         // Convenient = one screen-height page (tall, comfortable reading/writing)

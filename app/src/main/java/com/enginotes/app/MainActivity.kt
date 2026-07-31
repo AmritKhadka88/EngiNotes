@@ -2961,7 +2961,9 @@ class MainActivity : AppCompatActivity() {
                     "assistant replies in a chat window. No greetings, no \"Sure, here is...\", no meta-commentary " +
                     "about being an AI, no bullet points or headers unless the question itself is a literal list " +
                     "request, and no closing offer of further help. Just the direct, cohesive substance a student " +
-                    "would actually want written down.\n\nQuestion: $prompt"))
+                    "would actually want written down. If the question states a specific word count or length " +
+                    "(e.g. \"in 500 words\"), treat that as a real requirement and write to within a close margin " +
+                    "of it, not a rough underestimate.\n\nQuestion: $prompt"))
                 if (imageBytes != null) {
                     val b64 = android.util.Base64.encodeToString(imageBytes, android.util.Base64.NO_WRAP)
                     parts.put(org.json.JSONObject().put("inline_data", org.json.JSONObject().apply {
@@ -3036,12 +3038,19 @@ class MainActivity : AppCompatActivity() {
         // height above it every time a new chunk arrives — that's the actual "text goes up /
         // out of bounds" bug. Fix: after every change, explicitly reposition using the real
         // current height so the TOP stays where it should and the bottom is what moves.
-        val desiredTopY = worldY
-        val placeholder = drawingView.addText("✨", worldX, worldY, drawingView.defaultTextSize, 0f, Color.GRAY) ?: return
-        drawingView.repositionTextItemTop(placeholder, desiredTopY)
-        // Cycling "Thinking." / "Thinking.." / "Thinking..." animation while waiting for the
-        // first chunk to arrive — a static placeholder gives no sense that anything's actually
-        // happening, especially since generation can take a few seconds before streaming starts.
+        //
+        // wrapWidth is set explicitly here rather than left at the addText() default of 0
+        // (unbounded) — an unbounded answer renders as one continuous line far wider than the
+        // page, which is also the actual root cause of "I can't resize the text box": the
+        // corner/middle resize handles for wrapped text already exist and work fine, there was
+        // just never a real wrap box to apply them to.
+        val wrapWidth = (drawingView.pageWidthPx() * 0.6f).coerceAtLeast(300f)
+        var topY = worldY
+        var placeholder: TextItem? = null
+        val accumulated = StringBuilder()
+        var finished = false
+        var doneCode = 0; var doneFinishReason: String? = null; var doneErrorDetail: String? = null
+
         val loadingHandler = android.os.Handler(android.os.Looper.getMainLooper())
         var loadingActive = true
         var dotCount = 0
@@ -3049,63 +3058,95 @@ class MainActivity : AppCompatActivity() {
             override fun run() {
                 if (!loadingActive) return
                 dotCount = (dotCount % 3) + 1
-                placeholder.text = "Thinking" + ".".repeat(dotCount)
-                drawingView.repositionTextItemTop(placeholder, desiredTopY)
-                drawingView.invalidate()
+                placeholder?.let { p -> p.text = "Thinking" + ".".repeat(dotCount); drawingView.repositionTextItemTop(p, topY); drawingView.invalidate() }
                 loadingHandler.postDelayed(this, 400)
             }
         }
         loadingHandler.postDelayed(loadingRunnable, 400)
-        val accumulated = StringBuilder()
+
+        fun applyDoneState(p: TextItem) {
+            if (doneCode == 0 && accumulated.isNotEmpty()) {
+                var finalText = accumulated.toString()
+                // finishReason other than STOP means the model was cut off before it
+                // actually finished — most often "SAFETY" for sensitive topics (even
+                // legitimate historical/factual ones). Without this note, a response like
+                // that just looks like the app broke mid-sentence for no reason.
+                if (doneFinishReason != null && doneFinishReason != "STOP") {
+                    val why = when (doneFinishReason) {
+                        "SAFETY", "PROHIBITED_CONTENT" -> "Gemini's content filter"
+                        "RECITATION" -> "a copyright/citation check"
+                        "MAX_TOKENS" -> "the response length limit"
+                        else -> "Gemini ($doneFinishReason)"
+                    }
+                    finalText += "\n\n[Cut short by $why — try rephrasing the question if you need the full answer.]"
+                }
+                insertGeminiAnswer(p, finalText)
+                drawingView.repositionTextItemTop(p, topY)
+            } else if (doneCode != 0) {
+                val baseMsg = when (doneCode) {
+                    2 -> "⚠️ Gemini model not found — it may have been renamed. Open Settings > AI Assistant and tap \"Check for Update\", or update the model name manually."
+                    4 -> "⚠️ Your API key isn't working. Open Settings > AI Assistant and check or replace it."
+                    5 -> "⚠️ You've used up today's free Gemini limit. It resets at midnight Pacific time — try again after that."
+                    6 -> "⚠️ Got a response from Gemini but couldn't read it — Google may have changed something. Open Settings > AI Assistant and tap \"Check for Update\"."
+                    else -> "⚠️ Couldn't reach Gemini. Check your connection and try again."
+                }
+                // If any text HAD already streamed in before things failed, keep it instead
+                // of silently throwing it away — the old behavior replaced whatever was
+                // showing with just the error, which looked like the answer never existed
+                // even when part of it genuinely did arrive.
+                val preserved = if (accumulated.isNotEmpty()) "\n\n---\n${accumulated}" else ""
+                // Real exception detail appended (small, at the end) instead of only a
+                // guessed category — makes a repeat failure actually diagnosable.
+                val detail = if (!doneErrorDetail.isNullOrBlank()) "\n(${doneErrorDetail})" else ""
+                p.text = baseMsg + detail + preserved
+                p.color = Color.parseColor("#C62828")
+                drawingView.repositionTextItemTop(p, topY)
+            }
+            drawingView.invalidate()
+        }
+
+        fun createPlaceholderAt(px: Float, py: Float) {
+            topY = py
+            val p = drawingView.addText("Thinking.", px, py, drawingView.defaultTextSize, 0f, Color.GRAY) ?: return
+            p.maxWidth = wrapWidth
+            drawingView.repositionTextItemTop(p, topY)
+            placeholder = p
+            when {
+                finished -> { loadingActive = false; loadingHandler.removeCallbacks(loadingRunnable); applyDoneState(p) }
+                accumulated.isNotEmpty() -> {
+                    loadingActive = false; loadingHandler.removeCallbacks(loadingRunnable)
+                    p.text = accumulated.toString(); p.color = Color.BLACK
+                    drawingView.repositionTextItemTop(p, topY)
+                }
+            }
+            drawingView.invalidate()
+        }
+
+        // Rough footprint estimate for the conflict check — the real final height depends on
+        // how long the answer turns out to be, but this is generous enough to catch the common
+        // case of dropping a new answer right on top of existing notes.
+        if (drawingView.hasContentNear(worldX, worldY, wrapWidth, 260f)) {
+            android.widget.Toast.makeText(this, "There's already content there — tap where you'd like the answer placed", android.widget.Toast.LENGTH_LONG).show()
+            drawingView.pendingPlacementTap = { tapWx, tapWy -> createPlaceholderAt(tapWx, tapWy) }
+        } else {
+            createPlaceholderAt(worldX, worldY)
+        }
+
         askGeminiStreaming(prompt, imageBytes,
             onChunk = { piece ->
                 if (loadingActive) { loadingActive = false; loadingHandler.removeCallbacks(loadingRunnable) }
                 accumulated.append(piece)
-                placeholder.text = accumulated.toString()
-                placeholder.color = Color.BLACK
-                drawingView.repositionTextItemTop(placeholder, desiredTopY)
-                drawingView.invalidate()
+                placeholder?.let { p ->
+                    p.text = accumulated.toString()
+                    p.color = Color.BLACK
+                    drawingView.repositionTextItemTop(p, topY)
+                    drawingView.invalidate()
+                }
             },
             onDone = { code, finishReason, errorDetail ->
                 loadingActive = false; loadingHandler.removeCallbacks(loadingRunnable)
-                if (code == 0 && accumulated.isNotEmpty()) {
-                    var finalText = accumulated.toString()
-                    // finishReason other than STOP means the model was cut off before it
-                    // actually finished — most often "SAFETY" for sensitive topics (even
-                    // legitimate historical/factual ones). Without this note, a response like
-                    // that just looks like the app broke mid-sentence for no reason.
-                    if (finishReason != null && finishReason != "STOP") {
-                        val why = when (finishReason) {
-                            "SAFETY", "PROHIBITED_CONTENT" -> "Gemini's content filter"
-                            "RECITATION" -> "a copyright/citation check"
-                            "MAX_TOKENS" -> "the response length limit"
-                            else -> "Gemini ($finishReason)"
-                        }
-                        finalText += "\n\n[Cut short by $why — try rephrasing the question if you need the full answer.]"
-                    }
-                    insertGeminiAnswer(placeholder, finalText)
-                    drawingView.repositionTextItemTop(placeholder, desiredTopY)
-                } else if (code != 0) {
-                    val baseMsg = when (code) {
-                        2 -> "⚠️ Gemini model not found — it may have been renamed. Open Settings > AI Assistant and tap \"Check for Update\", or update the model name manually."
-                        4 -> "⚠️ Your API key isn't working. Open Settings > AI Assistant and check or replace it."
-                        5 -> "⚠️ You've used up today's free Gemini limit. It resets at midnight Pacific time — try again after that."
-                        6 -> "⚠️ Got a response from Gemini but couldn't read it — Google may have changed something. Open Settings > AI Assistant and tap \"Check for Update\"."
-                        else -> "⚠️ Couldn't reach Gemini. Check your connection and try again."
-                    }
-                    // If any text HAD already streamed in before things failed, keep it instead
-                    // of silently throwing it away — the old behavior replaced whatever was
-                    // showing with just the error, which looked like the answer never existed
-                    // even when part of it genuinely did arrive.
-                    val preserved = if (accumulated.isNotEmpty()) "\n\n---\n${accumulated}" else ""
-                    // Real exception detail appended (small, at the end) instead of only a
-                    // guessed category — makes a repeat failure actually diagnosable.
-                    val detail = if (!errorDetail.isNullOrBlank()) "\n($errorDetail)" else ""
-                    placeholder.text = baseMsg + detail + preserved
-                    placeholder.color = Color.parseColor("#C62828")
-                    drawingView.repositionTextItemTop(placeholder, desiredTopY)
-                    drawingView.invalidate()
-                }
+                doneCode = code; doneFinishReason = finishReason; doneErrorDetail = errorDetail; finished = true
+                placeholder?.let { applyDoneState(it) }
             }
         )
     }
