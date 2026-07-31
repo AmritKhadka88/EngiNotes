@@ -2972,12 +2972,11 @@ class MainActivity : AppCompatActivity() {
                     .put("contents", org.json.JSONArray().put(org.json.JSONObject().put("parts", parts)))
                     .put("generationConfig", org.json.JSONObject()
                         .put("thinkingConfig", org.json.JSONObject().put("thinkingLevel", "low"))
-                        // Was 400 — too tight in practice. Thinking tokens draw from this same
-                        // budget even at "low", so a chunk of it was being spent before any
-                        // visible answer text even started, leaving genuinely normal questions
-                        // (e.g. "what is photosynthesis") cut off mid-sentence instead of just
-                        // guarding against a runaway-long response, which was the actual intent.
-                        .put("maxOutputTokens", 800))
+                        // Was 800 — still cut off a genuine essay-length answer (exactly the kind
+                        // of request this feature is meant to handle) partway through. Thinking
+                        // tokens draw from this same budget even at "low", so raising this is the
+                        // actual fix, not just a band-aid on the truncation-notice message.
+                        .put("maxOutputTokens", 4096))
                 conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
 
                 val code = conn.responseCode
@@ -3040,9 +3039,27 @@ class MainActivity : AppCompatActivity() {
         val desiredTopY = worldY
         val placeholder = drawingView.addText("✨", worldX, worldY, drawingView.defaultTextSize, 0f, Color.GRAY) ?: return
         drawingView.repositionTextItemTop(placeholder, desiredTopY)
+        // Cycling "Thinking." / "Thinking.." / "Thinking..." animation while waiting for the
+        // first chunk to arrive — a static placeholder gives no sense that anything's actually
+        // happening, especially since generation can take a few seconds before streaming starts.
+        val loadingHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        var loadingActive = true
+        var dotCount = 0
+        val loadingRunnable = object : Runnable {
+            override fun run() {
+                if (!loadingActive) return
+                dotCount = (dotCount % 3) + 1
+                placeholder.text = "Thinking" + ".".repeat(dotCount)
+                drawingView.repositionTextItemTop(placeholder, desiredTopY)
+                drawingView.invalidate()
+                loadingHandler.postDelayed(this, 400)
+            }
+        }
+        loadingHandler.postDelayed(loadingRunnable, 400)
         val accumulated = StringBuilder()
         askGeminiStreaming(prompt, imageBytes,
             onChunk = { piece ->
+                if (loadingActive) { loadingActive = false; loadingHandler.removeCallbacks(loadingRunnable) }
                 accumulated.append(piece)
                 placeholder.text = accumulated.toString()
                 placeholder.color = Color.BLACK
@@ -3050,6 +3067,7 @@ class MainActivity : AppCompatActivity() {
                 drawingView.invalidate()
             },
             onDone = { code, finishReason, errorDetail ->
+                loadingActive = false; loadingHandler.removeCallbacks(loadingRunnable)
                 if (code == 0 && accumulated.isNotEmpty()) {
                     var finalText = accumulated.toString()
                     // finishReason other than STOP means the model was cut off before it
