@@ -3028,6 +3028,34 @@ class MainActivity : AppCompatActivity() {
     // Handles the whole "select something -> get an answer inserted below it" flow: places a
     // placeholder, then grows it live as text streams in, rather than waiting for the whole
     // answer and dropping it in all at once.
+    private var geminiPlacementBanner: View? = null
+
+    // Persistent top banner for "tap where you'd like the answer placed" — deliberately not a
+    // Toast, since a Toast disappears on its own fixed timer regardless of whether the person
+    // has actually tapped yet. This stays up until dismissGeminiPlacementBanner() is explicitly
+    // called, which only happens the moment the placement tap fires.
+    private fun showGeminiPlacementBanner(message: String) {
+        dismissGeminiPlacementBanner()
+        val tv = TextView(this).apply {
+            text = message
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            setPadding(dp(18), dp(10), dp(18), dp(10))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#E61C1C1E")); cornerRadius = dp(20).toFloat()
+            }
+        }
+        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+        lp.topMargin = dp(90)
+        canvasContainer.addView(tv, lp)
+        geminiPlacementBanner = tv
+    }
+
+    private fun dismissGeminiPlacementBanner() {
+        geminiPlacementBanner?.let { canvasContainer.removeView(it) }
+        geminiPlacementBanner = null
+    }
+
     internal fun runGeminiQuery(prompt: String, imageBytes: ByteArray?, worldX: Float, worldY: Float) {
         if (geminiApiKey().isBlank()) { showGeminiSetupDialog { runGeminiQuery(prompt, imageBytes, worldX, worldY) }; return }
         // worldY is meant to be the desired TOP of the answer (just below the question) — but
@@ -3109,6 +3137,7 @@ class MainActivity : AppCompatActivity() {
             topY = py
             val p = drawingView.addText("Thinking.", px, py, drawingView.defaultTextSize, 0f, Color.GRAY) ?: return
             p.maxWidth = wrapWidth
+            p.widthExplicitlySet = true
             drawingView.repositionTextItemTop(p, topY)
             placeholder = p
             when {
@@ -3126,8 +3155,11 @@ class MainActivity : AppCompatActivity() {
         // how long the answer turns out to be, but this is generous enough to catch the common
         // case of dropping a new answer right on top of existing notes.
         if (drawingView.hasContentNear(worldX, worldY, wrapWidth, 260f)) {
-            android.widget.Toast.makeText(this, "There's already content there — tap where you'd like the answer placed", android.widget.Toast.LENGTH_LONG).show()
-            drawingView.pendingPlacementTap = { tapWx, tapWy -> createPlaceholderAt(tapWx, tapWy) }
+            showGeminiPlacementBanner("Tap where you'd like the answer placed")
+            drawingView.pendingPlacementTap = { tapWx, tapWy ->
+                dismissGeminiPlacementBanner()
+                createPlaceholderAt(tapWx, tapWy)
+            }
         } else {
             createPlaceholderAt(worldX, worldY)
         }

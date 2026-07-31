@@ -207,7 +207,7 @@ internal fun MainActivity.showTextSelectionBox(item: TextItem, screenX: Float, s
         // The first line/paragraph needs to start exactly where the user dropped it, with
         // everything after it wrapping to fit the space actually available from there.
         fun settleWrapWidthAfterDrag() {
-            if (drawingView.canvasMode == CanvasMode.CONVENIENT || drawingView.canvasMode == CanvasMode.PAGINATED) {
+            if ((drawingView.canvasMode == CanvasMode.CONVENIENT || drawingView.canvasMode == CanvasMode.PAGINATED) && !item.widthExplicitlySet) {
                 // item.y is the BOTTOM (see textItemHeight/drawTextItem convention), so simply
                 // changing maxWidth and leaving item.y alone would shift the visual TOP by
                 // however much the height changed — exactly the "wrap shifts the whole

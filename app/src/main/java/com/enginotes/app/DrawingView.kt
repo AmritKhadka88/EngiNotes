@@ -987,6 +987,14 @@ class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var
     var spans: MutableList<TextSpanData> = mutableListOf()
     var isEditing: Boolean = false
     var maxWidth: Float = 0f  // 0 = unbounded (legacy); >0 = wrap to this width
+    // True once maxWidth has been deliberately set (a manual resize-handle drag, or an app
+    // feature like the Gemini answer inserting at a chosen column width) rather than left at
+    // the default auto-fit-to-remaining-page-width behavior. settleWrapWidthAfterDrag() in
+    // TextEditingExtensions.kt checks this to decide whether moving the item should re-derive
+    // its width from the new position (normal text) or leave a deliberate width alone (resized
+    // text) — without it, any explicit width got silently overwritten the moment the item was
+    // next moved, in Convenient/Paginated canvas mode specifically.
+    var widthExplicitlySet: Boolean = false
     var fontFamily: String = "sans-serif"  // system family name OR absolute path to .ttf/.otf file
     var opacity: Int = 255
     // Link target: when non-null, this text renders in blue and is tappable to navigate instead
@@ -3821,6 +3829,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val dx = if (handle == HandleType.MR) (wx - resizePrevWorldX) else (resizePrevWorldX - wx)
                         val current = if (item.maxWidth > 0f) item.maxWidth else textWrapWidth(item).toFloat()
                         item.maxWidth = (current + dx * 2f).coerceIn(compactFloor, pageWidthPx())
+                        item.widthExplicitlySet = true
                     }
                     else -> {
                         // TM/BM (vertical-only handles) don't apply to text - there's nothing
