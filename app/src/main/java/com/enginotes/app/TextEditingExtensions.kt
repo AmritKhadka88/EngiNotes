@@ -590,7 +590,18 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
         val et=EditText(this)
         val spannable=SpannableStringBuilder(item?.text?:"")
         item?.spans?.forEach{ sp-> val s=sp.start.coerceIn(0,spannable.length);val e=sp.end.coerceIn(s,spannable.length); if(s<e) when(sp.type){ 'S'->spannable.setSpan(StyleSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'C'->spannable.setSpan(ForegroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'U'->spannable.setSpan(UnderlineSpan(),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'H'->spannable.setSpan(BackgroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } }
-        val maxEditorWidthPx = (canvasContainer.width - screenX - dp(24)).toInt().coerceAtLeast(dp(140))
+        // Ceiling is the actual remaining PAGE width from this item's world x-position, converted
+        // to screen pixels the same way et's own text size is derived from editSize — not the
+        // currently visible screen viewport. The viewport version capped growth at "however much
+        // screen happens to be showing right now" rather than what the page can actually hold,
+        // which is what made the handle stop responding well short of "as wide as I want" for
+        // anything wider than the current viewport. The handle's own on-screen position is
+        // separately clamped further below so it can never scroll off and become unreachable —
+        // et itself can still grow past that point, the drag just keeps tracking past where the
+        // handle visually pins to the screen edge.
+        val worldMaxWidth = (drawingView.pageWidthPx() - editWorldX - 16f).coerceAtLeast(80f)
+        val editorScale = screenSizePx / editSize.coerceAtLeast(1f)
+        val maxEditorWidthPx = (worldMaxWidth * editorScale).toInt().coerceAtLeast(dp(140))
         et.setText(spannable,TextView.BufferType.SPANNABLE)
         et.setTextColor(editColor); et.alpha = editOpacity / 255f
         et.textSize=(screenSizePx/density).coerceAtLeast(8f)
@@ -741,7 +752,8 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                     // was lagging behind the actual drag, and once out of sync, the handle's
                     // rendered position and its real touchable position stayed permanently apart.
                     val rlp = resizeHandle.layoutParams as FrameLayout.LayoutParams
-                    rlp.leftMargin = (containerLeft() + newWidth - dp(16)).toInt()
+                    val maxLeftOnScreen = (canvasContainer.width - dp(32)).coerceAtLeast(0)
+                    rlp.leftMargin = (containerLeft() + newWidth - dp(16)).toInt().coerceIn(0, maxLeftOnScreen)
                     resizeHandle.layoutParams = rlp
                     true
                 }
@@ -811,17 +823,18 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
             // actually tap, since only leftMargin had a coerceAtLeast(0) before, not topMargin.
             val maxTop = (canvasContainer.height - dp(32)).coerceAtLeast(0)
             fun clampTop(v: Float) = v.toInt().coerceIn(0, maxTop)
+            val maxLeftOnScreen = (canvasContainer.width - dp(32)).coerceAtLeast(0)
             val mlp = moveHandle.layoutParams as FrameLayout.LayoutParams
             mlp.leftMargin = (bx - half).toInt().coerceAtLeast(0); mlp.topMargin = clampTop(by - half)
             moveHandle.layoutParams = mlp
             val rlp = resizeHandle.layoutParams as FrameLayout.LayoutParams
-            rlp.leftMargin = (bx + w - half).toInt(); rlp.topMargin = clampTop(by + h / 2f - half)
+            rlp.leftMargin = (bx + w - half).toInt().coerceIn(0, maxLeftOnScreen); rlp.topMargin = clampTop(by + h / 2f - half)
             resizeHandle.layoutParams = rlp
             val rolp = rotateHandle.layoutParams as FrameLayout.LayoutParams
-            rolp.leftMargin = (bx + w - half).toInt(); rolp.topMargin = clampTop(by + h - half)
+            rolp.leftMargin = (bx + w - half).toInt().coerceIn(0, maxLeftOnScreen); rolp.topMargin = clampTop(by + h - half)
             rotateHandle.layoutParams = rolp
             val dlp = deleteHandle.layoutParams as FrameLayout.LayoutParams
-            dlp.leftMargin = (bx + w - half).toInt(); dlp.topMargin = clampTop(by - half)
+            dlp.leftMargin = (bx + w - half).toInt().coerceIn(0, maxLeftOnScreen); dlp.topMargin = clampTop(by - half)
             deleteHandle.layoutParams = dlp
 
             // Toolbar (B/I/U/check/delete/sparkle): prefers sitting just above the box. If that
