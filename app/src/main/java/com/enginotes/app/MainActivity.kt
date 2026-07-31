@@ -1994,20 +1994,21 @@ class MainActivity : AppCompatActivity() {
                             mode.drawIcon(c, p, r)
                         }
                     }
-                    val col = LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
-                        // This column holds an icon AND a text label stacked vertically — it
-                        // needs more room than a plain icon button, so it can't just inherit
-                        // BAR_H's tight minimum (30dp), which is why the label was clipping at
-                        // the Small/Medium bar-size presets.
-                        val lp = LinearLayout.LayoutParams(dp(50), BAR_H.coerceAtLeast(dp(46))); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp
+                    val row2 = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+                        // Icon beside its label instead of stacked above it — fits the row's
+                        // normal tight height (BAR_H) instead of needing extra room for two
+                        // stacked elements, at the cost of somewhat more width, which is fine
+                        // since this sits in a horizontally scrolling row.
+                        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, BAR_H); lp.setMargins(dp(3),0,dp(3),0); layoutParams = lp
+                        setPadding(dp(8), 0, dp(10), 0)
                         background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(14).toFloat(); setColor(if (active) Color.parseColor("#1C1C1E") else Color.parseColor("#ECEAE7")) }
                         setOnClickListener { setActiveTool(null, mode.tool) }
                     }
-                    val iconSz = (BAR_H * 0.55f).toInt().coerceIn(dp(20), dp(34))
-                    col.addView(iconView, LinearLayout.LayoutParams(iconSz, iconSz).also { it.gravity = Gravity.CENTER_HORIZONTAL })
-                    col.addView(TextView(this).apply { text = mode.label; textSize = 8f; gravity = Gravity.CENTER; setTextColor(if (active) Color.WHITE else Color.parseColor("#5C5856")) })
-                    row.addView(col)
+                    val iconSz = (BAR_H * 0.55f).toInt().coerceIn(dp(18), dp(28))
+                    row2.addView(iconView, LinearLayout.LayoutParams(iconSz, iconSz).also { it.gravity = Gravity.CENTER_VERTICAL; it.marginEnd = dp(6) })
+                    row2.addView(TextView(this).apply { text = mode.label; textSize = 12f; gravity = Gravity.CENTER; setTextColor(if (active) Color.WHITE else Color.parseColor("#5C5856")) })
+                    row.addView(row2)
                 }
             }
             else -> {
