@@ -536,25 +536,17 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
 
-        // Show any crash captured on a previous run, so it can be copied/screenshotted without
-        // needing Android Studio or adb — the file only exists if a crash actually happened.
+        // If a crash happened last session, reassure the person rather than showing them a raw
+        // stack trace — there's nobody left to act on that information downstream, and a wall of
+        // technical jargon after an unexpected close reads as alarming, not helpful, especially
+        // for a finished app with no further updates planned. The log file itself is still kept
+        // (harmless, and readable later via a file manager if it's ever genuinely needed) — only
+        // what gets shown to the person changes.
         try {
             val crashFile = java.io.File(filesDir, "last_crash.txt")
-            if (crashFile.exists()) {
-                val content = crashFile.readText()
-                if (content.isNotBlank()) {
-                    AlertDialog.Builder(this)
-                        .setTitle("Previous crash log")
-                        .setMessage(content)
-                        .setPositiveButton("Copy") { _, _ ->
-                            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                            cm.setPrimaryClip(android.content.ClipData.newPlainText("crash log", content))
-                            Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
-                            crashFile.delete()
-                        }
-                        .setNegativeButton("Dismiss") { _, _ -> crashFile.delete() }
-                        .show()
-                }
+            if (crashFile.exists() && crashFile.readText().isNotBlank()) {
+                Toast.makeText(this, "EngiNotes closed unexpectedly last time — your notes are safe, autosave keeps them up to date.", Toast.LENGTH_LONG).show()
+                crashFile.delete()
             }
         } catch (e: Exception) { }
 
@@ -2673,7 +2665,10 @@ class MainActivity : AppCompatActivity() {
             return
         }
         if (!silent) Toast.makeText(this, "Backing up to Drive…", Toast.LENGTH_SHORT).show()
-        val assetPaths = extractAssetPaths(security.readNoteFile(engFile))
+        val assetPaths = try { extractAssetPaths(security.readNoteFile(engFile)) } catch (e: Exception) {
+            if (!silent) Toast.makeText(this, "Couldn't read this note's file to back it up", Toast.LENGTH_SHORT).show()
+            return
+        }
         uploadAssetsThenNote(assetPaths, 0, engFile, name, silent)
     }
 
@@ -2727,7 +2722,14 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Restoring…", Toast.LENGTH_SHORT).show()
         driveManager.downloadFile(driveFile.name, localFile) { success, error ->
             if (!success) { Toast.makeText(this, "Restore failed: $error", Toast.LENGTH_SHORT).show(); return@downloadFile }
-            val content = security.readNoteFile(localFile)
+            val content = try { security.readNoteFile(localFile) } catch (e: Exception) {
+                // A network interruption mid-download can genuinely leave a truncated/corrupted
+                // file behind — this is the one Drive path where that's a real, likely scenario
+                // rather than a hypothetical one, so it gets its own explicit message rather than
+                // crashing on whatever readNoteFile/decryption throws.
+                Toast.makeText(this, "The downloaded file looks corrupted — try restoring again.", Toast.LENGTH_LONG).show()
+                return@downloadFile
+            }
             val assetPaths = extractAssetPaths(content)
             restoreAssets(assetPaths, 0) {
                 Toast.makeText(this, "Restored! Open the note to view it.", Toast.LENGTH_SHORT).show()
@@ -5939,12 +5941,24 @@ class MainActivity : AppCompatActivity() {
         val f=File(File(filesDir,"books"),bookName); if(!f.exists()) f.mkdirs(); return f
     }
 
-    private fun writeCurrentFile() {
-        val name=currentFileName?:return
-        security.writeNoteFile(File(getDrawingsFolder(),"$name.eng"), drawingView.serialize())
-        lastSavedContent=drawingView.serialize()
-        if (getPrefs().getBoolean("auto_backup_drive", false) && driveManager.isSignedIn()) {
-            backUpNoteToDrive(name, silent = true)
+    private fun writeCurrentFile(): Boolean {
+        val name = currentFileName ?: return false
+        return try {
+            security.writeNoteFile(File(getDrawingsFolder(),"$name.eng"), drawingView.serialize())
+            lastSavedContent = drawingView.serialize()
+            if (getPrefs().getBoolean("auto_backup_drive", false) && driveManager.isSignedIn()) {
+                backUpNoteToDrive(name, silent = true)
+            }
+            true
+        } catch (t: Throwable) {
+            // Deliberately catching Throwable (not just Exception) here specifically — this is
+            // the one call site where a crash is worst-case (silent recurring timer, could loop
+            // every 10s if the cause persists), so being maximally defensive is worth it even
+            // though catching Throwable broadly is normally the wrong call.
+            try {
+                File(filesDir, "last_save_error.txt").writeText("Save failed at ${java.util.Date()}\n${t.javaClass.name}: ${t.message}")
+            } catch (e2: Exception) { }
+            false
         }
     }
 
@@ -5964,15 +5978,15 @@ class MainActivity : AppCompatActivity() {
         if(currentFileName==null){
             val input=EditText(this).apply{ setText(nextAutoName()); selectAll() }
             AlertDialog.Builder(this).setTitle("Save Note").setView(input)
-                .setPositiveButton("Save"){ _,_ -> val name=input.text.toString().trim().ifEmpty{nextAutoName()}; currentFileName=name; tvTitle.text=name; writeCurrentFile(); Toast.makeText(this,"Saved",Toast.LENGTH_SHORT).show() }
+                .setPositiveButton("Save"){ _,_ -> val name=input.text.toString().trim().ifEmpty{nextAutoName()}; currentFileName=name; tvTitle.text=name; val ok=writeCurrentFile(); Toast.makeText(this, if (ok) "Saved" else "Couldn't save — check available storage and try again", Toast.LENGTH_SHORT).show() }
                 .setNegativeButton("Cancel",null).show()
-        } else { writeCurrentFile(); Toast.makeText(this,"Saved",Toast.LENGTH_SHORT).show() }
+        } else { val ok=writeCurrentFile(); Toast.makeText(this, if (ok) "Saved" else "Couldn't save — check available storage and try again", Toast.LENGTH_SHORT).show() }
     }
 
     private fun saveAsNew() {
         val input=EditText(this).apply{ setText(nextAutoName()); selectAll() }
         AlertDialog.Builder(this).setTitle("Save as New").setView(input)
-            .setPositiveButton("Save"){ _,_ -> val name=input.text.toString().trim().ifEmpty{nextAutoName()}; currentFileName=name; tvTitle.text=name; writeCurrentFile(); Toast.makeText(this,"Saved as $name",Toast.LENGTH_SHORT).show() }
+            .setPositiveButton("Save"){ _,_ -> val name=input.text.toString().trim().ifEmpty{nextAutoName()}; currentFileName=name; tvTitle.text=name; val ok=writeCurrentFile(); Toast.makeText(this, if (ok) "Saved as $name" else "Couldn't save — check available storage and try again", Toast.LENGTH_SHORT).show() }
             .setNegativeButton("Cancel",null).show()
     }
 

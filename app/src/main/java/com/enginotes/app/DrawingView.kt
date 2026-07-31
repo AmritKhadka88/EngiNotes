@@ -1719,9 +1719,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             dv.measure(View.MeasureSpec.makeMeasureSpec(bmpW, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(bmpH, View.MeasureSpec.EXACTLY))
             dv.layout(0, 0, bmpW, bmpH)
             dv.resetViewForThumbnail(exportScale, 0f, pageIdx * ph)
-            val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
-            dv.draw(android.graphics.Canvas(bmp))
-            bitmaps.add(bmp)
+            try {
+                val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+                dv.draw(android.graphics.Canvas(bmp))
+                bitmaps.add(bmp)
+            } catch (e: OutOfMemoryError) {
+                // A large multi-page document at export resolution can genuinely exhaust memory
+                // partway through — return whatever pages rendered successfully so far instead
+                // of losing the whole export (or crashing outright).
+                break
+            }
         }
         return bitmaps
     }
@@ -7747,7 +7754,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val renderScale = 3f
         val bmpW = ((maxX - minX) * renderScale).toInt().coerceIn(1, 4000)
         val bmpH = ((maxY - minY) * renderScale).toInt().coerceIn(1, 4000)
-        val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+        val bmp = try { Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888) } catch (e: OutOfMemoryError) { return null }
         val cv = Canvas(bmp); cv.drawColor(Color.WHITE)
         cv.save(); cv.translate(-minX * renderScale, -minY * renderScale); cv.scale(renderScale, renderScale)
         for (s in penStrokes) cv.drawPath(s.path, s.paint)
@@ -7871,11 +7878,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     fun exportWindow(left: Float, top: Float, right: Float, bottom: Float): Bitmap {
-        val tmpBmp = Bitmap.createBitmap(this.width, this.height, Bitmap.Config.ARGB_8888); draw(Canvas(tmpBmp))
-        val sx = worldToScreenX(left).toInt().coerceAtLeast(0); val sy = worldToScreenY(top).toInt().coerceAtLeast(0)
-        val ex = worldToScreenX(right).toInt().coerceAtMost(this.width); val ey = worldToScreenY(bottom).toInt().coerceAtMost(this.height)
-        val cw = (ex - sx).coerceAtLeast(1); val ch = (ey - sy).coerceAtLeast(1)
-        return Bitmap.createBitmap(tmpBmp, sx, sy, cw, ch)
+        return try {
+            val tmpBmp = Bitmap.createBitmap(this.width, this.height, Bitmap.Config.ARGB_8888); draw(Canvas(tmpBmp))
+            val sx = worldToScreenX(left).toInt().coerceAtLeast(0); val sy = worldToScreenY(top).toInt().coerceAtLeast(0)
+            val ex = worldToScreenX(right).toInt().coerceAtMost(this.width); val ey = worldToScreenY(bottom).toInt().coerceAtMost(this.height)
+            val cw = (ex - sx).coerceAtLeast(1); val ch = (ey - sy).coerceAtLeast(1)
+            Bitmap.createBitmap(tmpBmp, sx, sy, cw, ch)
+        } catch (e: OutOfMemoryError) { Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888) }
     }
 
     fun undo() {
@@ -7899,13 +7908,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
     fun clearAll() { actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null; markSpatialDirty(); invalidate() }
     fun hasContent(): Boolean = actions.isNotEmpty()
-    fun exportBitmap(): Bitmap { val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888); draw(Canvas(bmp)); return bmp }
+    fun exportBitmap(): Bitmap = try {
+        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888); draw(Canvas(bmp)); bmp
+    } catch (e: OutOfMemoryError) { Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888) }
 
     fun renderStrokesOnly(scale: Float): Bitmap {
-        val w = (width * scale).toInt().coerceAtLeast(1); val h = (height * scale).toInt().coerceAtLeast(1)
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); val canvas = Canvas(bmp)
-        canvas.save(); canvas.scale(scale, scale); canvas.translate(translateX, translateY); canvas.scale(scaleFactor, scaleFactor)
-        for (a in actions) drawActionItem(canvas, a, false); canvas.restore(); return bmp
+        return try {
+            val w = (width * scale).toInt().coerceAtLeast(1); val h = (height * scale).toInt().coerceAtLeast(1)
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); val canvas = Canvas(bmp)
+            canvas.save(); canvas.scale(scale, scale); canvas.translate(translateX, translateY); canvas.scale(scaleFactor, scaleFactor)
+            for (a in actions) drawActionItem(canvas, a, false); canvas.restore(); bmp
+        } catch (e: OutOfMemoryError) { Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888) }
     }
 
     fun zoomTo(wx: Float, wy: Float, scale: Float) {
@@ -7996,8 +8009,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 post { if (clusters.isNotEmpty()) { val (cx, cy) = clusters[0]; zoomTo(screenToWorldX(cx/scale - marginX), screenToWorldY(cy/scale - marginY), (scaleFactor*2.5f).coerceAtMost(6f)) }; invalidate() }
             } else {
                 val cw = maxX - minX + 1; val ch = maxY - minY + 1
-                val fp = IntArray(cw * ch) { i -> val gx=minX+i%cw; val gy=minY+i/cw; if(visited[gy*w+gx]) fillColor else Color.TRANSPARENT }
-                val fb = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888); fb.setPixels(fp, 0, cw, 0, 0, cw, ch)
+                val fb = try {
+                    val fp = IntArray(cw * ch) { i -> val gx=minX+i%cw; val gy=minY+i/cw; if(visited[gy*w+gx]) fillColor else Color.TRANSPARENT }
+                    Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888).also { it.setPixels(fp, 0, cw, 0, 0, cw, ch) }
+                } catch (e: OutOfMemoryError) { post { invalidate() }; return@execute }
                 val folder = File(ctx.filesDir, "images"); if (!folder.exists()) folder.mkdirs()
                 val outFile = File(folder, "fill_${System.currentTimeMillis()}.png")
                 try { FileOutputStream(outFile).use { fb.compress(Bitmap.CompressFormat.PNG, 100, it) } } catch (e: Exception) { post { invalidate() }; return@execute }

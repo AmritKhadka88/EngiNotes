@@ -381,45 +381,53 @@ class BooksActivity : AppCompatActivity() {
     // tables, text, hatch fills, everything) instead of a second, simplified renderer that would
     // inevitably drift out of sync with what the note actually looks like when opened for real.
     private fun renderThumbnail(note: File, maxWidthPx: Int, maxHeightPx: Int): Bitmap? {
-        val dv = DrawingView(this)
-        dv.loadFromString(security.readNoteFile(note))
-        val convenient = dv.canvasMode == CanvasMode.CONVENIENT
-        if (convenient) {
-            // Convenient-mode notes (the default canvas mode) don't have a fixed intrinsic page
-            // size — DrawingView.onLayout defines their "page" as 82% of whatever View WIDTH and
-            // 110% of whatever View HEIGHT they're CURRENTLY shown in — always taller than one
-            // screen by design (meant to scroll), so there's no achievable "full page height" to
-            // match a thumbnail boundary to at all. Width IS boundable (82% < 100% of the view):
-            // lay out once at a fixed reference size, then crop the resulting bitmap to the
-            // page's real width — its own actual right edge, Notewise-style — and take a
-            // maxHeightPx-tall slice off the top for height, representing "the visible top
-            // portion" of a page that's inherently taller than any static preview could show.
-            dv.measure(View.MeasureSpec.makeMeasureSpec(maxWidthPx, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(maxHeightPx, View.MeasureSpec.EXACTLY))
-            dv.layout(0, 0, maxWidthPx, maxHeightPx)
-            dv.resetViewForThumbnail(1f, 0f, 0f)
-            val fullBmp = Bitmap.createBitmap(maxWidthPx, maxHeightPx, Bitmap.Config.ARGB_8888)
-            dv.draw(android.graphics.Canvas(fullBmp))
-            val cropW = dv.pageWidthPx().toInt().coerceIn(1, maxWidthPx)
-            val cropped = if (cropW < maxWidthPx) Bitmap.createBitmap(fullBmp, 0, 0, cropW, maxHeightPx) else fullBmp
-            applyEdgeFade(cropped)
-            return cropped
+        return try {
+            val dv = DrawingView(this)
+            dv.loadFromString(security.readNoteFile(note))
+            val convenient = dv.canvasMode == CanvasMode.CONVENIENT
+            if (convenient) {
+                // Convenient-mode notes (the default canvas mode) don't have a fixed intrinsic page
+                // size — DrawingView.onLayout defines their "page" as 82% of whatever View WIDTH and
+                // 110% of whatever View HEIGHT they're CURRENTLY shown in — always taller than one
+                // screen by design (meant to scroll), so there's no achievable "full page height" to
+                // match a thumbnail boundary to at all. Width IS boundable (82% < 100% of the view):
+                // lay out once at a fixed reference size, then crop the resulting bitmap to the
+                // page's real width — its own actual right edge, Notewise-style — and take a
+                // maxHeightPx-tall slice off the top for height, representing "the visible top
+                // portion" of a page that's inherently taller than any static preview could show.
+                dv.measure(View.MeasureSpec.makeMeasureSpec(maxWidthPx, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(maxHeightPx, View.MeasureSpec.EXACTLY))
+                dv.layout(0, 0, maxWidthPx, maxHeightPx)
+                dv.resetViewForThumbnail(1f, 0f, 0f)
+                val fullBmp = Bitmap.createBitmap(maxWidthPx, maxHeightPx, Bitmap.Config.ARGB_8888)
+                dv.draw(android.graphics.Canvas(fullBmp))
+                val cropW = dv.pageWidthPx().toInt().coerceIn(1, maxWidthPx)
+                val cropped = if (cropW < maxWidthPx) Bitmap.createBitmap(fullBmp, 0, 0, cropW, maxHeightPx) else fullBmp
+                applyEdgeFade(cropped)
+                return cropped
+            }
+            // Paper-size notes (Fixed/Paginated/Infinite canvas modes): page dimensions come from
+            // paperSize + orientation ALONE — no dependency on view size at all — so pageWidthPx()/
+            // pageHeightPx() are readable immediately after loadFromString(), before any layout pass,
+            // and there's a real, fixed page boundary to match the bitmap to directly.
+            val pageAspect = dv.pageWidthPx().coerceAtLeast(1f) / dv.pageHeightPx().coerceAtLeast(1f)
+            var w = maxWidthPx; var h = (w / pageAspect).toInt()
+            if (h > maxHeightPx) { h = maxHeightPx; w = (h * pageAspect).toInt() }
+            val finalW = w.coerceAtLeast(1); val finalH = h.coerceAtLeast(1)
+            dv.measure(View.MeasureSpec.makeMeasureSpec(finalW, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(finalH, View.MeasureSpec.EXACTLY))
+            dv.layout(0, 0, finalW, finalH)
+            val scale = minOf(finalW / dv.pageWidthPx(), finalH / dv.pageHeightPx())
+            dv.resetViewForThumbnail(if (scale.isFinite() && scale > 0f) scale else 1f, 0f, 0f)
+            val bmp = Bitmap.createBitmap(finalW, finalH, Bitmap.Config.ARGB_8888)
+            dv.draw(android.graphics.Canvas(bmp))
+            applyEdgeFade(bmp)
+            bmp
+        } catch (t: Throwable) {
+            // Deliberately Throwable, not just Exception — this runs once per note on the
+            // notes-list screen. A single corrupted/unreadable file, or an OOM on a very large
+            // note, must never take down the whole list; null already means "no thumbnail" to
+            // every caller of this function.
+            null
         }
-        // Paper-size notes (Fixed/Paginated/Infinite canvas modes): page dimensions come from
-        // paperSize + orientation ALONE — no dependency on view size at all — so pageWidthPx()/
-        // pageHeightPx() are readable immediately after loadFromString(), before any layout pass,
-        // and there's a real, fixed page boundary to match the bitmap to directly.
-        val pageAspect = dv.pageWidthPx().coerceAtLeast(1f) / dv.pageHeightPx().coerceAtLeast(1f)
-        var w = maxWidthPx; var h = (w / pageAspect).toInt()
-        if (h > maxHeightPx) { h = maxHeightPx; w = (h * pageAspect).toInt() }
-        val finalW = w.coerceAtLeast(1); val finalH = h.coerceAtLeast(1)
-        dv.measure(View.MeasureSpec.makeMeasureSpec(finalW, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(finalH, View.MeasureSpec.EXACTLY))
-        dv.layout(0, 0, finalW, finalH)
-        val scale = minOf(finalW / dv.pageWidthPx(), finalH / dv.pageHeightPx())
-        dv.resetViewForThumbnail(if (scale.isFinite() && scale > 0f) scale else 1f, 0f, 0f)
-        val bmp = Bitmap.createBitmap(finalW, finalH, Bitmap.Config.ARGB_8888)
-        dv.draw(android.graphics.Canvas(bmp))
-        applyEdgeFade(bmp)
-        return bmp
     }
 
     // Soft edge fade on all 4 sides (like Samsung Notes' thumbnails) — draws a thin
