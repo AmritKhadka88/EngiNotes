@@ -735,6 +735,14 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                     // and record it so closeInlineEditor can actually apply it to the item. This
                     // handle used to only ever resize the temporary EditText widget itself.
                     editMaxWidth = newWidth * editSize / screenSizePx
+                    // Move the handle itself right along with the drag, computed directly from
+                    // newWidth rather than waiting for boxContainer's own (async) layout pass to
+                    // fire its change listener and reposition it indirectly — that indirection
+                    // was lagging behind the actual drag, and once out of sync, the handle's
+                    // rendered position and its real touchable position stayed permanently apart.
+                    val rlp = resizeHandle.layoutParams as FrameLayout.LayoutParams
+                    rlp.leftMargin = (containerLeft() + newWidth - dp(16)).toInt()
+                    resizeHandle.layoutParams = rlp
                     true
                 }
                 else -> true
