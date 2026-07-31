@@ -1561,6 +1561,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // its already-cached bitmap to the live bounds instead of re-baking (a fresh allocation plus
     // full render) on every single frame of the drag.
     private var activeResizeItem: StrokeItem? = null
+    // Same idea as activeResizeItem above, but for group resize (Lasso/Rect/Multi can resize
+    // several items in one drag) — drawWithBitmapCache stretches each one's already-cached
+    // bitmap live instead of re-baking every frame.
+    private val activeGroupResizeItems = mutableSetOf<StrokeItem>()
 
     private var activeArcItem: StrokeItem? = null
     private var arcDragPointIndex = -1
@@ -2613,7 +2617,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // off-screen bitmap; every frame after that is a single drawBitmap call regardless of how
     // complex the underlying geometry was.
     private fun drawWithBitmapCache(canvas: Canvas, item: StrokeItem, pad: Float, render: (Canvas, StrokeItem) -> Unit) {
-        if (item === activeResizeItem && item.cachedBitmap != null) {
+        if ((item === activeResizeItem || activeGroupResizeItems.contains(item)) && item.cachedBitmap != null) {
             val bounds = getBounds(item)
             if (bounds != null) {
                 val dst = android.graphics.RectF(bounds[0] - pad, bounds[1] - pad, bounds[2] + pad, bounds[3] + pad)
@@ -4666,6 +4670,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             MotionEvent.ACTION_UP -> {
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
                 activeHandle = HandleType.NONE; groupActiveHandle = HandleType.NONE; groupSnapshots.clear(); pinkGroupRotation = 0f
+                finalizeGroupResize()
                 strokeResizeOrigPoints = null; strokeResizeOrigBounds = null
                 activeResizeItem?.let { it.data.invalidateGeometryCaches(); it.path = it.data.buildPath(); it.invalidateCache() }
                 activeResizeItem = null
@@ -4855,12 +4860,30 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         pts[i+1] = newOy + (snap[i+1] - oy) * sy
                         i += 2
                     }
-                    item.data.invalidateGeometryCaches()
-                    item.path = item.data.buildPath(); item.invalidateCache(); markSpatialDirty()
+                    // Deliberately not rebuilding item.path or busting the bitmap cache here —
+                    // same reasoning as Select's single-item resize: nothing shown during the
+                    // live drag needs it, and doing so every frame meant a full smoothing
+                    // recompute plus bitmap re-bake regardless of stroke size. Done once,
+                    // properly, when the group-resize gesture actually ends.
+                    activeGroupResizeItems.add(item)
                 }
             }
             else -> scaleItemInGroup(item, ox, oy, sx, sy)  // fallback for non-stroke items
         }
+    }
+
+    // Called once when a group-resize gesture ends (Lasso/Rect/Multi) — does the full, correct
+    // path rebuild + bitmap re-bake for every stroke that was live-resized, then stops tracking
+    // them. Mirrors the single-item release logic for Select's own resize.
+    private fun finalizeGroupResize() {
+        if (activeGroupResizeItems.isEmpty()) return
+        for (item in activeGroupResizeItems) {
+            item.data.invalidateGeometryCaches()
+            item.path = item.data.buildPath()
+            item.invalidateCache()
+        }
+        markSpatialDirty()
+        activeGroupResizeItems.clear()
     }
 
     private fun groupBounds(group: List<Any>): FloatArray? {
@@ -5076,7 +5099,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                groupResizeHandle = -1; groupRotating = false; groupRotateSnapshots = null; groupCurrentRotation = 0f; val group = selectedGroup; if (group != null && group.isNotEmpty()) return
+                groupResizeHandle = -1; groupRotating = false; groupRotateSnapshots = null; groupCurrentRotation = 0f
+                finalizeGroupResize()
+                val group = selectedGroup; if (group != null && group.isNotEmpty()) return
                 val rp = regionPath; val s = regionStart
                 if (rp != null && s != null) {
                     val bounds = floatArrayOf(minOf(s.first, wx), minOf(s.second, wy), maxOf(s.first, wx), maxOf(s.second, wy))
@@ -5162,7 +5187,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
-                groupResizeHandle = -1; val group = selectedGroup; if (group != null && group.isNotEmpty()) return
+                groupResizeHandle = -1
+                finalizeGroupResize()
+                val group = selectedGroup; if (group != null && group.isNotEmpty()) return
                 val rp = regionPath
                 if (rp != null) {
                     rp.close()
