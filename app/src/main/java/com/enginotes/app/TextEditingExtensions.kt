@@ -234,6 +234,15 @@ internal fun MainActivity.showTextSelectionBox(item: TextItem, screenX: Float, s
             boxW = newBoxW; boxH = newBoxH
             val slp = moveSurface.layoutParams as FrameLayout.LayoutParams
             slp.width = boxW; slp.height = boxH
+            // Also reposition moveSurface itself — item.y (and possibly item.x) just changed
+            // above to compensate for the new height, but moveSurface's topMargin/leftMargin
+            // were last set from the item's PRE-settle position and don't move on their own.
+            // Same formula used everywhere else moveSurface gets positioned (see the live-drag
+            // ACTION_MOVE branch above): screen X is item.x directly, screen Y is item.y (the
+            // BOTTOM) converted to screen space and then walked back up by the box height to
+            // get the top.
+            slp.leftMargin = drawingView.worldToScreenX(item.x).toInt()
+            slp.topMargin = (drawingView.worldToScreenY(item.y) - boxH).toInt()
             moveSurface.layoutParams = slp
             updateToolbarPos() // re-derive position from the refreshed boxH too
             drawingView.invalidate()
