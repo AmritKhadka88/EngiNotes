@@ -741,6 +741,19 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                 suppressListWatcher = true
                 val newCursor = handleListEnterKey(s, pos)
                 suppressListWatcher = false
+                // TEMPORARY diagnostic — checked IMMEDIATELY, synchronously, right after
+                // handleListEnterKey returns, before anything else runs. Compare against the
+                // delayed "DIAG Enter (delayed)" toast below: if THIS one already shows the new
+                // span missing, the add itself never stuck (or the point-query in
+                // handleListEnterKey found the wrong/no span to begin with); if this one looks
+                // right but the delayed one doesn't, something removes it afterward (a strong
+                // candidate being IME/autocorrect activity that runs right after Enter).
+                run {
+                    val spansNow0 = (et.text as? Spannable)?.getSpans(0, et.text.length, ListMarginSpan::class.java) ?: emptyArray()
+                    Toast.makeText(this@showInlineTextEditor,
+                        "DIAG Enter immediate: newCursor=$newCursor spanCount=${spansNow0.size} positions=${spansNow0.joinToString(","){ (et.text.getSpanStart(it)).toString() }}",
+                        Toast.LENGTH_LONG).show()
+                }
                 if (newCursor != -2) {
                     lastAutoformat = null
                     et.post {
@@ -756,7 +769,7 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                         val spansNow = (et.text as? Spannable)?.getSpans(0, et.text.length, ListMarginSpan::class.java) ?: emptyArray()
                         val lay = et.layout
                         Toast.makeText(this@showInlineTextEditor,
-                            "DIAG Enter: newCursor=$newCursor spanCount=${spansNow.size} " +
+                            "DIAG Enter delayed: newCursor=$newCursor spanCount=${spansNow.size} " +
                             "positions=${spansNow.joinToString(","){ (et.text.getSpanStart(it)).toString() }} " +
                             "layout=${if (lay == null) "NULL" else "ok lines=${lay.lineCount}"}",
                             Toast.LENGTH_LONG).show()

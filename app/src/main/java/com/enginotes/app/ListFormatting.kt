@@ -600,6 +600,15 @@ private fun MainActivity.applyPickedListStyle(kind: Char, styleIndex: Int, et: E
     if (et != null) {
         applyListStyle(et.text, from, to, kind, styleIndex, et.textSize)
         renumberLists(et.text)
+        // TEMPORARY diagnostic — checked IMMEDIATELY, synchronously, right after applyListStyle
+        // returns, before anything else (layout pass, IME) gets a chance to run. Compare this
+        // count against the delayed "DIAG:" toast below: if THIS one is already 0, the span was
+        // never added (or this tap was a toggle-OFF of a still-present-but-invisible span from an
+        // earlier tap); if this one is >0 but the delayed one is 0, something removes it later.
+        run {
+            val immediateCount = (et.text as? Spannable)?.getSpans(0, et.text.length, ListMarginSpan::class.java)?.size ?: -1
+            Toast.makeText(this, "DIAG immediate: spanCount=$immediateCount right after apply (kind=$kind)", Toast.LENGTH_LONG).show()
+        }
         // Posted rather than called synchronously — getLeadingMargin() affects line width, a
         // MEASURE concern, and a synchronous requestLayout() here was not reliably sticking
         // (empty lines specifically kept failing to show their glyph even with this call in
@@ -616,10 +625,10 @@ private fun MainActivity.applyPickedListStyle(kind: Char, styleIndex: Int, et: E
                 val sp = spansNow.firstOrNull()
                 val lay = et.layout
                 val msg = if (sp == null) {
-                    "DIAG: no ListMarginSpan found after apply (kind=$kind textLen=${et.text.length})"
+                    "DIAG delayed: no ListMarginSpan found after apply (kind=$kind textLen=${et.text.length})"
                 } else {
                     val start = et.text.getSpanStart(sp)
-                    "DIAG: span@$start marginPx=${sp.marginPx} etW=${et.width} etH=${et.height} padL=${et.totalPaddingLeft} " +
+                    "DIAG delayed: span@$start marginPx=${sp.marginPx} etW=${et.width} etH=${et.height} padL=${et.totalPaddingLeft} " +
                     "layout=${if (lay == null) "NULL" else "ok lines=${lay.lineCount} lineLeft0=${lay.getLineLeft(0)} lineTop0=${lay.getLineTop(0)} baseline0=${lay.getLineBaseline(0)}"}"
                 }
                 Toast.makeText(this@applyPickedListStyle, msg, Toast.LENGTH_LONG).show()
