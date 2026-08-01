@@ -3305,8 +3305,58 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             renumberLists(spannable)
         }
         val layout = StaticLayout.Builder.obtain(spannable, 0, spannable.length, tp, ww).setIncludePad(true).build()
+        // Same reasoning as ListAwareEditText's onDraw override (see ListFormatting.kt): Android's
+        // Layout.draw() does not reliably invoke a LeadingMarginSpan2's drawLeadingMargin for a
+        // genuinely empty paragraph, which is exactly the "apply a bullet/number/checklist to an
+        // empty line and nothing is drawn" case. That workaround was only ever wired up for the
+        // live-editing EditText — this static StaticLayout path (used for a committed item that
+        // isn't currently being typed into) had the same underlying bug and no fix for it.
+        // Suppressing the automatic path here and drawing the glyphs manually in drawTextItem
+        // (drawListGlyphs below) makes both rendering paths behave identically.
+        spannable.getSpans(0, spannable.length, ListMarginSpan::class.java).forEach { it.suppressAutoDraw = true }
         item.cachedLayout = layout; item.cachedLayoutKey = key
         return layout
+    }
+
+    /**
+     * Manually draws every list glyph (bullet/number/checklist mark) in [layout]'s margin column,
+     * using the layout's own line geometry directly rather than depending on
+     * LeadingMarginSpan2.drawLeadingMargin being invoked — see the comment in getOrBuildLayout
+     * above for why that can't be relied on for an empty line. Must be called with the canvas in
+     * the exact same transformed state that [layout] itself was just drawn in (translated to the
+     * item's on-screen origin, and — for the per-page split path — clipped to that page's band),
+     * since glyph positions come straight from the layout's own coordinate space.
+     */
+    private fun drawListGlyphs(canvas: Canvas, layout: StaticLayout, item: TextItem) {
+        val spanned = layout.text as? android.text.Spanned ?: return
+        val spans = spanned.getSpans(0, spanned.length, ListMarginSpan::class.java)
+        if (spans.isEmpty()) return
+        for (sp in spans) {
+            val pos = spanned.getSpanStart(sp).coerceIn(0, spanned.length)
+            val line = layout.getLineForOffset(pos)
+            // Only the paragraph's own start line gets a glyph — matches
+            // getLeadingMarginLineCount()=1 and ListAwareEditText's identical check, so a
+            // wrapped continuation line of a long list item doesn't get its own glyph too.
+            var trueLineStart = pos
+            while (trueLineStart > 0 && spanned[trueLineStart - 1] != '\n') trueLineStart--
+            if (layout.getLineStart(line) != trueLineStart) continue
+            val glyph = sp.glyphFor()
+            val gp = Paint(Paint.ANTI_ALIAS_FLAG)
+            gp.textSize = sp.textSizePx
+            gp.color = item.color
+            gp.alpha = item.opacity
+            val glyphWidth = gp.measureText(glyph)
+            val lineLeft = layout.getLineLeft(line)
+            val top = layout.getLineTop(line)
+            val bottom = layout.getLineBottom(line)
+            val baseline = layout.getLineBaseline(line)
+            // Same "right-aligned in the margin column" positioning as ListMarginSpan's own
+            // drawLeadingMargin and ListAwareEditText's onDraw, so switching between live-editing
+            // and static rendering never visibly shifts the glyph.
+            val gx = lineLeft - glyphWidth - sp.marginPx * 0.18f
+            canvas.drawText(glyph, gx, baseline.toFloat(), gp)
+            sp.lastDrawnBounds = RectF(gx, top.toFloat(), gx + glyphWidth, bottom.toFloat())
+        }
     }
 
     // Set by MainActivity's drag handler for exactly the duration of a drag on a committed text
@@ -3425,6 +3475,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 canvas.clipRect(item.x - 4f, runTop, item.x + contentW + 4f, runBottom)
                 canvas.translate(item.x, topY + extraSkip)
                 layout.draw(canvas)
+                drawListGlyphs(canvas, layout, item)
                 canvas.restore()
                 lineIdx = endLineIdx
                 if (lineIdx < layout.lineCount) extraSkip += gap + pageTopMargin  // jump over the visual gap plus top margin to the next page's text-start
@@ -3433,7 +3484,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
 
         canvas.save(); canvas.translate(item.x, topY)
-        canvas.rotate(item.rotation, contentW / 2f, contentH / 2f); layout.draw(canvas); canvas.restore()
+        canvas.rotate(item.rotation, contentW / 2f, contentH / 2f); layout.draw(canvas); drawListGlyphs(canvas, layout, item); canvas.restore()
     }
 
     private fun bboxHandlePositions(bounds: FloatArray): List<Pair<HandleType, Pair<Float, Float>>> {

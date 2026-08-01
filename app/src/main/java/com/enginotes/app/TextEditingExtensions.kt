@@ -717,10 +717,6 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                 val trigger = applyAutoformatTrigger(s, pos, et.textSize)
                 suppressListWatcher = false
                 if (trigger != null) {
-                    // TEMPORARY diagnostic — only announce actual matches now; the "no match"
-                    // case was firing on every single space keystroke regardless of context,
-                    // which was just noise once the matching logic itself was confirmed correct.
-                    Toast.makeText(this@showInlineTextEditor, "Autoformat matched: '$trigger'", Toast.LENGTH_SHORT).show()
                     val ls = pos - trigger.length  // trigger text + space were both removed; line start is stable
                     lastAutoformat = ls to trigger
                     // Posted rather than called synchronously — this runs from inside an already
@@ -745,12 +741,6 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                 suppressListWatcher = true
                 val newCursor = handleListEnterKey(s, pos)
                 suppressListWatcher = false
-                // TEMPORARY diagnostic — remove once Enter-continuation is confirmed working.
-                Toast.makeText(this@showInlineTextEditor, when {
-                    newCursor >= 0 -> "Enter: promoted in place, cursor->$newCursor"
-                    newCursor == -1 -> "Enter: continued list onto new line"
-                    else -> "Enter: that line wasn't a list line"
-                }, Toast.LENGTH_SHORT).show()
                 if (newCursor != -2) {
                     lastAutoformat = null
                     et.post {
