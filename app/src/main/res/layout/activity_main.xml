@@ -145,6 +145,16 @@
             android:contentDescription="Toggle touch/pan" />
 
         <ImageButton
+            android:id="@+id/btnReadMode"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:src="@drawable/ic_read_mode"
+            android:scaleType="centerInside"
+            android:padding="9dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Read Mode" />
+
+        <ImageButton
             android:id="@+id/btnMenu"
             android:layout_width="40dp"
             android:layout_height="40dp"
