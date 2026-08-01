@@ -235,6 +235,32 @@ class ListAwareEditText(context: android.content.Context) : android.widget.EditT
             sp.lastDrawnBounds = RectF(gx, top.toFloat(), gx + glyphWidth, bottom.toFloat())
         }
     }
+
+    // Some soft keyboards (notably parts of Gboard) delete a single character via this
+    // InputConnection API directly rather than dispatching a real KeyEvent, which would silently
+    // skip right past the setOnKeyListener-based backspace interception in TextEditingExtensions
+    // used to catch "backspace on an empty list line". Re-dispatching a synthetic KEYCODE_DEL
+    // through this EditText's own normal key-event pipeline (dispatchKeyEvent) is what makes
+    // that same registered key listener fire reliably regardless of which path the keyboard
+    // used, without duplicating its logic here. dispatchKeyEvent for KEYCODE_DEL on an EditText
+    // always ends up handled one way or another — either the custom listener consumes it as a
+    // special list action, or TextView's own default onKeyDown performs the ordinary single-
+    // character delete — so there's no case here that also needs falling through to
+    // super.deleteSurroundingText() without double-deleting.
+    override fun onCreateInputConnection(outAttrs: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? {
+        val target = super.onCreateInputConnection(outAttrs) ?: return null
+        return object : android.view.inputmethod.InputConnectionWrapper(target, true) {
+            override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+                if (beforeLength == 1 && afterLength == 0 && selectionStart == selectionEnd) {
+                    val now = android.os.SystemClock.uptimeMillis()
+                    dispatchKeyEvent(android.view.KeyEvent(now, now, android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DEL, 0))
+                    dispatchKeyEvent(android.view.KeyEvent(now, now, android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_DEL, 0))
+                    return true
+                }
+                return super.deleteSurroundingText(beforeLength, afterLength)
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
