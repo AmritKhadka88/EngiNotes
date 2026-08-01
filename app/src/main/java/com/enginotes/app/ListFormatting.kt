@@ -410,6 +410,13 @@ fun applyAutoformatTrigger(editable: Editable, spaceInsertPos: Int, textSizePx: 
  * position to restore, for the promote-in-place case, which removes the '\n' Android just placed
  * the cursor after.
  */
+// TEMPORARY diagnostic — captures a step-by-step trail from inside handleListEnterKey itself,
+// checked as close to each operation as possible (including immediately after its own setSpan
+// call, before returning). Overwritten on every call; the caller reads it right after calling
+// handleListEnterKey and displays it, so we can see exactly which step disagrees with the
+// others instead of guessing from the outside.
+var listEnterDebugLog: String = ""
+
 fun handleListEnterKey(editable: Editable, newlinePos: Int): Int {
     val prevStart = lineStart(editable, newlinePos)
     val prevText = editable.subSequence(prevStart, newlinePos).toString()
@@ -420,7 +427,11 @@ fun handleListEnterKey(editable: Editable, newlinePos: Int): Int {
     // the line; requiring the span to span all the way to newlinePos (the earlier version of
     // this check) fails the moment there's any typed content, which is why Enter stopped
     // continuing the list as soon as a line actually had text on it.
-    val existing = editable.getSpans(prevStart, prevStart, ListMarginSpan::class.java).firstOrNull() ?: return -2
+    val allAtPrevStart = editable.getSpans(prevStart, prevStart, ListMarginSpan::class.java)
+    val existing = allAtPrevStart.firstOrNull() ?: run {
+        listEnterDebugLog = "newlinePos=$newlinePos prevStart=$prevStart prevText='$prevText' NO existing span found at prevStart (editable.length=${editable.length})"
+        return -2
+    }
     if (prevText.isNotBlank()) {
         // Normal continuation onto the new line — same style/indent, fresh (unchecked, for
         // checklists) instance.
@@ -430,8 +441,18 @@ fun handleListEnterKey(editable: Editable, newlinePos: Int): Int {
             is NumberMarginSpan -> NumberMarginSpan(existing.styleIndex, existing.textSizePx, existing.indentLevel)
             is ChecklistMarginSpan -> ChecklistMarginSpan(existing.styleIndex, existing.textSizePx, existing.indentLevel, false)
         }
-        if (newPos <= editable.length) editable.setSpan(newSpan, newPos, newPos, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        val lenBefore = editable.length
+        val willSet = newPos <= lenBefore
+        if (willSet) editable.setSpan(newSpan, newPos, newPos, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        // Re-query for the exact span object we just tried to add, immediately, synchronously,
+        // within this same function call — the most immediate check possible.
+        val foundRightAfter = editable.getSpans(newPos, newPos, ListMarginSpan::class.java).any { it === newSpan }
+        val countRightAfter = editable.getSpans(0, editable.length, ListMarginSpan::class.java).size
         renumberLists(editable)
+        val countAfterRenumber = editable.getSpans(0, editable.length, ListMarginSpan::class.java).size
+        listEnterDebugLog = "newlinePos=$newlinePos prevStart=$prevStart prevText='$prevText' existingType=${existing.javaClass.simpleName} " +
+            "newPos=$newPos lenBefore=$lenBefore willSet=$willSet foundRightAfterSetSpan=$foundRightAfter " +
+            "countRightAfterSetSpan=$countRightAfter countAfterRenumber=$countAfterRenumber"
         return -1
     }
     // Empty line: promote in place instead of creating a new paragraph. Remove the '\n' this

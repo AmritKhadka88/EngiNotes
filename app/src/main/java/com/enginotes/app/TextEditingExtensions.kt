@@ -754,6 +754,7 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                         "DIAG Enter immediate: newCursor=$newCursor spanCount=${spansNow0.size} positions=${spansNow0.joinToString(","){ (et.text.getSpanStart(it)).toString() }}",
                         Toast.LENGTH_LONG).show()
                 }
+                Toast.makeText(this@showInlineTextEditor, "DIAG internal trail: $listEnterDebugLog", Toast.LENGTH_LONG).show()
                 if (newCursor != -2) {
                     lastAutoformat = null
                     et.post {
