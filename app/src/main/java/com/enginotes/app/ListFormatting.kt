@@ -301,20 +301,8 @@ fun applyListStyle(editable: Spannable, from: Int, to: Int, kind: Char, styleInd
                 LIST_SPAN_TYPE_CHECK -> ChecklistMarginSpan(styleIndex, textSizePx, checked = false)
                 else -> return
             }
-            // Zero-length, pinned to the line's start — the same invariant every other
-            // list-span creation site in this app relies on (see handleListEnterKey's and
-            // closeInlineEditor's doc comments). This used to span [ls, le+1] to "cover" the
-            // line's text, which broke that invariant two different ways: (1) a
-            // SPAN_EXCLUSIVE_EXCLUSIVE span whose covered text gets fully deleted is
-            // auto-removed by SpannableStringBuilder — which is exactly why backspacing the
-            // very last character on a list line was deleting the bullet/number/checkbox in
-            // that SAME keystroke instead of leaving it in place on the now-empty line; and
-            // (2) swallowing the trailing '\n' made the span's end coincide with the START of
-            // the very next line, so a point-query at that next line's start (e.g.
-            // handleListEnterKey's existing-span lookup) could pick up THIS line's span
-            // instead — a real cause of markers appearing to double up or list state leaking
-            // onto a line that was never actually made into a list line.
-            editable.setSpan(span, ls, ls, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            val end = if (le < editable.length) le + 1 else le  // swallow trailing \n so span doesn't bleed onto next line if text shifts
+            editable.setSpan(span, ls, end.coerceAtMost(editable.length).coerceAtLeast(ls), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
     }
 }
