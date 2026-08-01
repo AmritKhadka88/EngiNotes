@@ -748,6 +748,20 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                         et.requestLayout(); et.invalidate()
                     }
                 }
+                // TEMPORARY diagnostic — reports actual span/layout state after the Enter-key
+                // handling, posted further out than the requestLayout/invalidate above so it
+                // reads state AFTER that layout pass has run.
+                et.post {
+                    et.post {
+                        val spansNow = (et.text as? Spannable)?.getSpans(0, et.text.length, ListMarginSpan::class.java) ?: emptyArray()
+                        val lay = et.layout
+                        Toast.makeText(this@showInlineTextEditor,
+                            "DIAG Enter: newCursor=$newCursor spanCount=${spansNow.size} " +
+                            "positions=${spansNow.joinToString(","){ (et.text.getSpanStart(it)).toString() }} " +
+                            "layout=${if (lay == null) "NULL" else "ok lines=${lay.lineCount}"}",
+                            Toast.LENGTH_LONG).show()
+                    }
+                }
             }
             renumberLists(s)
             } catch (t: Throwable) {

@@ -37,6 +37,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 
 // ---------------------------------------------------------------------------------------------
@@ -605,6 +606,25 @@ private fun MainActivity.applyPickedListStyle(kind: Char, styleIndex: Int, et: E
         // place). Deferring until after the current call stack fully unwinds avoids whatever in
         // Android's own internal processing was overriding it.
         et.post { et.requestLayout(); et.invalidate() }
+        // TEMPORARY diagnostic — reports the actual runtime state right after the tap, so we can
+        // see what's really happening instead of guessing. Posted a second time, further out
+        // than the requestLayout/invalidate above, so it reads state AFTER that layout pass has
+        // actually run.
+        et.post {
+            et.post {
+                val spansNow = (et.text as? Spannable)?.getSpans(0, et.text.length, ListMarginSpan::class.java) ?: emptyArray()
+                val sp = spansNow.firstOrNull()
+                val lay = et.layout
+                val msg = if (sp == null) {
+                    "DIAG: no ListMarginSpan found after apply (kind=$kind textLen=${et.text.length})"
+                } else {
+                    val start = et.text.getSpanStart(sp)
+                    "DIAG: span@$start marginPx=${sp.marginPx} etW=${et.width} etH=${et.height} padL=${et.totalPaddingLeft} " +
+                    "layout=${if (lay == null) "NULL" else "ok lines=${lay.lineCount} lineLeft0=${lay.getLineLeft(0)} lineTop0=${lay.getLineTop(0)} baseline0=${lay.getLineBaseline(0)}"}"
+                }
+                Toast.makeText(this@applyPickedListStyle, msg, Toast.LENGTH_LONG).show()
+            }
+        }
     } else if (item != null) {
         val sb = rebuildSpannableForItem(item)
         applyListStyle(sb, 0, sb.length, kind, styleIndex, item.size)
