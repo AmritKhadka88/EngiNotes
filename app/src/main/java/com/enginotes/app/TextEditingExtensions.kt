@@ -595,9 +595,9 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
             'C'->spannable.setSpan(ForegroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             'U'->spannable.setSpan(UnderlineSpan(),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             'H'->spannable.setSpan(BackgroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            LIST_SPAN_TYPE_BULLET->spannable.setSpan(BulletMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            LIST_SPAN_TYPE_NUMBER->spannable.setSpan(NumberMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            LIST_SPAN_TYPE_CHECK->spannable.setSpan(ChecklistMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListChecked(sp.value)),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            LIST_SPAN_TYPE_BULLET->spannable.setSpan(BulletMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value)),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            LIST_SPAN_TYPE_NUMBER->spannable.setSpan(NumberMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value)),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            LIST_SPAN_TYPE_CHECK->spannable.setSpan(ChecklistMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value),decodeListChecked(sp.value)),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
         } }
         renumberLists(spannable)
         // Ceiling is the actual remaining PAGE width from this item's world x-position, converted
@@ -640,7 +640,10 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
         // in both time and position — anything that moves further than a normal tap (a drag to
         // select text, a long-press) falls through to EditText's own handling untouched. Only
         // consumes the event (blocking the normal cursor-placement tap) when the tap actually
-        // landed on a checkbox glyph; every other tap behaves exactly as before.
+        // landed on a checkbox glyph; every other tap — including anywhere else on that same
+        // checklist line's text — behaves exactly as before (places the cursor / starts a
+        // selection), which is what keeps "tap the box to toggle, tap the text to select" as two
+        // genuinely different gestures instead of one overriding the other.
         var checklistTapDownX = 0f; var checklistTapDownY = 0f; var checklistTapDownTime = 0L
         et.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
@@ -655,15 +658,64 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
             false
         }
 
-        et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
-            // A single '\n' just typed: continue the list style onto the new line (or exit the
-            // list, if the line that just ended was an empty bullet/number/checkbox) — the same
-            // Enter-key behavior every list editor has. Guarded to exactly one inserted '\n'
-            // char so a multi-line paste doesn't try to walk line-by-line here; renumberLists()
-            // below in afterTextChanged still keeps a pasted numbered block correctly ordered
-            // even without this per-keystroke continuation running for it.
-            if (count == 1 && e2.getOrNull(start) == '\n') handleListContinuation(e2, start)
+        // Reentrancy guard: applyAutoformatTrigger/handleListEnterKey/handleListBackspace all
+        // mutate et.text themselves (deleting the trigger text, removing/re-inserting the '\n'
+        // for the promote-in-place case, etc.) — each of those mutations would otherwise
+        // re-trigger this SAME TextWatcher recursively. Set around every such call so the
+        // watcher's own list-handling logic skips itself on the way back in; the pending/
+        // underline/bold span logic above doesn't need guarding since it never mutates text,
+        // only adds spans over the range Android just inserted.
+        var suppressListWatcher = false
+        // (position, originalTypedText) for the most recent autoformat conversion, valid only
+        // as long as that line stays empty — see handleListBackspace's own doc comment for why
+        // position-based matching is good enough here without a more elaborate marker.
+        var lastAutoformat: Pair<Int, String>? = null
+
+        // Backspace is handled here, at the key level, BEFORE Android's default deletion runs —
+        // not by reacting to the deletion afterward in the TextWatcher. On an empty list line,
+        // the default behavior would merge it into the previous line (deleting the separating
+        // '\n'), which is not what "come out of bullets and numbering" means here. Intercepting
+        // the key event lets this replace that default behavior outright instead of trying to
+        // detect-and-reverse it after the fact.
+        et.setOnKeyListener { _, keyCode, keyEvent ->
+            if (keyCode == android.view.KeyEvent.KEYCODE_DEL && keyEvent.action == android.view.KeyEvent.ACTION_DOWN
+                && et.selectionStart == et.selectionEnd) {
+                suppressListWatcher = true
+                val newPos = handleListBackspace(et.text, et.selectionStart, lastAutoformat)
+                suppressListWatcher = false
+                if (newPos >= 0) {
+                    lastAutoformat = null
+                    et.setSelection(newPos)
+                    return@setOnKeyListener true
+                }
+            }
+            false
+        }
+
+        et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(suppressListWatcher) return; if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
+            // A single space just typed: Word-style autoformat — "- ", "> ", or "12. " at the
+            // very start of an empty line converts it into a bullet/numbered list line.
+            if (count == 1 && end <= e2.length && e2[start] == ' ') {
+                suppressListWatcher = true
+                val trigger = applyAutoformatTrigger(e2, start, et.textSize)
+                suppressListWatcher = false
+                if (trigger != null) {
+                    val ls = start - trigger.length  // trigger text + space were both removed; line start is stable
+                    lastAutoformat = ls to trigger
+                    et.setSelection(ls)
+                }
+            }
+            // A single '\n' just typed: continue the list style onto the new line, or — if the
+            // line that just ended was empty — promote that same line one indent level deeper in
+            // place instead (see handleListEnterKey's doc comment for the full behavior).
+            else if (count == 1 && e2.getOrNull(start) == '\n') {
+                suppressListWatcher = true
+                val newCursor = handleListEnterKey(e2, start)
+                suppressListWatcher = false
+                if (newCursor >= 0) { lastAutoformat = null; et.setSelection(newCursor) }
+            }
         } }; override fun afterTextChanged(s:Editable?){
+            if (suppressListWatcher) return
             if (s != null) renumberLists(s)
             // Android moves the cursor to the end of any inserted text (a paste is one big
             // insert) and auto-scrolls EditText's OWN internal viewport to keep that cursor
@@ -1086,9 +1138,9 @@ internal fun MainActivity.closeInlineEditor(commit:Boolean, delete:Boolean=false
         val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager; imm.hideSoftInputFromWindow(et.windowToken,0)
         val text=et.text.toString(); val spans=mutableListOf<TextSpanData>(); val ed=et.text
         for(span in ed.getSpans(0,ed.length,Any::class.java)){ val s=ed.getSpanStart(span);val e=ed.getSpanEnd(span); if(s<0||e<0||s>=e) continue; when(span){ is StyleSpan->spans.add(TextSpanData(s,e,'S',span.style)); is ForegroundColorSpan->spans.add(TextSpanData(s,e,'C',span.foregroundColor)); is UnderlineSpan->spans.add(TextSpanData(s,e,'U',0)); is BackgroundColorSpan->spans.add(TextSpanData(s,e,'H',span.backgroundColor))
-            is BulletMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_BULLET,encodeListValue(span.styleIndex,false)))
-            is NumberMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_NUMBER,encodeListValue(span.styleIndex,false)))
-            is ChecklistMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_CHECK,encodeListValue(span.styleIndex,span.checked)))
+            is BulletMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_BULLET,encodeListValue(span.styleIndex,false,span.indentLevel)))
+            is NumberMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_NUMBER,encodeListValue(span.styleIndex,false,span.indentLevel)))
+            is ChecklistMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_CHECK,encodeListValue(span.styleIndex,span.checked,span.indentLevel)))
         } }
         if(box!=null) canvasContainer.removeView(box) else canvasContainer.removeView(et)
         if(tb!=null) canvasContainer.removeView(tb)

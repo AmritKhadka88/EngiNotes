@@ -3288,9 +3288,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     'C' -> spannable.setSpan(ForegroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                     'U' -> spannable.setSpan(UnderlineSpan(), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                     'H' -> spannable.setSpan(BackgroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    LIST_SPAN_TYPE_BULLET -> spannable.setSpan(BulletMarginSpan(decodeListStyleIndex(sp.value), item.size), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    LIST_SPAN_TYPE_NUMBER -> spannable.setSpan(NumberMarginSpan(decodeListStyleIndex(sp.value), item.size), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    LIST_SPAN_TYPE_CHECK -> spannable.setSpan(ChecklistMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListChecked(sp.value)), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    LIST_SPAN_TYPE_BULLET -> spannable.setSpan(BulletMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value)), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    LIST_SPAN_TYPE_NUMBER -> spannable.setSpan(NumberMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value)), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    LIST_SPAN_TYPE_CHECK -> spannable.setSpan(ChecklistMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value), decodeListChecked(sp.value)), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
             }
             renumberLists(spannable)

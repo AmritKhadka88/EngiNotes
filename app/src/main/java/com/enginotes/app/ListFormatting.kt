@@ -28,6 +28,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.text.Editable
 import android.text.Layout
 import android.text.Spannable
 import android.text.style.LeadingMarginSpan
@@ -116,11 +117,11 @@ const val LIST_SPAN_TYPE_BULLET = 'B'
 const val LIST_SPAN_TYPE_NUMBER = 'N'
 const val LIST_SPAN_TYPE_CHECK = 'K'
 
-sealed class ListMarginSpan(var styleIndex: Int, val textSizePx: Float) : LeadingMarginSpan2Compat {
-    // Margin scales with the text's own size so a 12pt list and a 48pt heading-sized list both
-    // get proportionally sensible indent/glyph-size instead of one fixed dp value looking right
-    // at only one font size.
-    val marginPx: Int = (textSizePx * 2.4f).toInt().coerceAtLeast(32)
+sealed class ListMarginSpan(var styleIndex: Int, val textSizePx: Float, var indentLevel: Int = 0) : LeadingMarginSpan2Compat {
+    // Margin scales with the text's own size (a 12pt list and a 48pt heading-sized list both get
+    // proportionally sensible indent/glyph-size) AND with indentLevel, so a double-Enter sub-item
+    // sits visibly further right than its parent, like Word's Tab-to-demote behavior.
+    val marginPx: Int get() = ((textSizePx * 2.4f).toInt().coerceAtLeast(32)) + indentLevel * (textSizePx * 1.9f).toInt().coerceAtLeast(24)
     // Bounding box of the glyph as last drawn, in the same coordinate space as MotionEvent
     // coordinates within the EditText — used only for checklist tap-to-toggle hit-testing.
     // Deliberately not persisted; it's a pure runtime draw-time cache, rebuilt every layout pass.
@@ -155,15 +156,15 @@ interface LeadingMarginSpan2Compat : android.text.style.LeadingMarginSpan.Leadin
     override fun getLeadingMarginLineCount(): Int = 1
 }
 
-class BulletMarginSpan(styleIndex: Int, textSizePx: Float) : ListMarginSpan(styleIndex, textSizePx) {
+class BulletMarginSpan(styleIndex: Int, textSizePx: Float, indentLevel: Int = 0) : ListMarginSpan(styleIndex, textSizePx, indentLevel) {
     override fun glyphFor(): String = BulletStyle.safe(styleIndex).glyph
 }
 
-class NumberMarginSpan(styleIndex: Int, textSizePx: Float, var ordinal: Int = 1) : ListMarginSpan(styleIndex, textSizePx) {
+class NumberMarginSpan(styleIndex: Int, textSizePx: Float, indentLevel: Int = 0, var ordinal: Int = 1) : ListMarginSpan(styleIndex, textSizePx, indentLevel) {
     override fun glyphFor(): String = NumberStyle.safe(styleIndex).format(ordinal)
 }
 
-class ChecklistMarginSpan(styleIndex: Int, textSizePx: Float, var checked: Boolean = false) : ListMarginSpan(styleIndex, textSizePx) {
+class ChecklistMarginSpan(styleIndex: Int, textSizePx: Float, indentLevel: Int = 0, var checked: Boolean = false) : ListMarginSpan(styleIndex, textSizePx, indentLevel) {
     override fun glyphFor(): String { val st = ChecklistStyle.safe(styleIndex); return if (checked) st.checked else st.unchecked }
 }
 
@@ -228,7 +229,7 @@ fun applyListStyle(editable: Spannable, from: Int, to: Int, kind: Char, styleInd
             val span: ListMarginSpan = when (kind) {
                 LIST_SPAN_TYPE_BULLET -> BulletMarginSpan(styleIndex, textSizePx)
                 LIST_SPAN_TYPE_NUMBER -> NumberMarginSpan(styleIndex, textSizePx)
-                LIST_SPAN_TYPE_CHECK -> ChecklistMarginSpan(styleIndex, textSizePx, false)
+                LIST_SPAN_TYPE_CHECK -> ChecklistMarginSpan(styleIndex, textSizePx, checked = false)
                 else -> return
             }
             val end = if (le < editable.length) le + 1 else le  // swallow trailing \n so span doesn't bleed onto next line if text shifts
@@ -253,13 +254,16 @@ private fun spanClassFor(kind: Char): Class<out ListMarginSpan> = when (kind) {
 fun renumberLists(editable: Spannable) {
     val spans = editable.getSpans(0, editable.length, NumberMarginSpan::class.java)
         .sortedBy { editable.getSpanStart(it) }
-    var runStyle = -1; var counter = 0; var lastLineEnd = -1
+    var runStyle = -1; var runIndent = -1; var counter = 0; var lastLineEnd = -1
     for (sp in spans) {
         val start = editable.getSpanStart(sp)
-        // A run breaks if the style changes OR there's a gap (a non-numbered line, or a blank
-        // line) between this span's line and the previous numbered line.
+        // A run breaks if the style OR indent level changes, or there's a gap (a non-numbered
+        // line, or a blank line) between this span's line and the previous numbered line — each
+        // indent level counts independently, the same way a sub-list restarts at 1 in Word.
         val contiguous = lastLineEnd >= 0 && start <= lastLineEnd + 1
-        if (sp.styleIndex != runStyle || !contiguous) { runStyle = sp.styleIndex; counter = 1 } else counter++
+        if (sp.styleIndex != runStyle || sp.indentLevel != runIndent || !contiguous) {
+            runStyle = sp.styleIndex; runIndent = sp.indentLevel; counter = 1
+        } else counter++
         sp.ordinal = counter
         lastLineEnd = editable.getSpanEnd(sp)
     }
@@ -282,30 +286,113 @@ fun toggleChecklistAt(editable: Spannable, x: Float, y: Float): Boolean {
 }
 
 /**
- * Call when a single '\n' has just been inserted at [newlinePos] (i.e. editable[newlinePos] is
- * that '\n'). If the line just ended had a list span: an empty list line (just the glyph, no
- * text — the standard "press Enter on a blank bullet to exit the list" gesture) removes that
- * span instead of continuing it; otherwise the same list style continues onto the new line, the
- * way every list-editing UI behaves. Always renumbers afterward. No-op if the ended line wasn't
- * a list line at all.
+ * Word-style autoformat: typing "- ", "> ", or "5. " (any number) at the very start of an
+ * otherwise-empty line converts it into a bullet/numbered list line, consuming the trigger text
+ * and the trailing space. Call when a single space has just been inserted at [spaceInsertPos].
+ * Returns the exact trigger text that was consumed (e.g. "-", ">", "12.") so the caller can
+ * remember it for a possible backspace-undo, or null if nothing matched.
  */
-fun handleListContinuation(editable: Spannable, newlinePos: Int) {
+fun applyAutoformatTrigger(editable: Editable, spaceInsertPos: Int, textSizePx: Float): String? {
+    val ls = lineStart(editable, spaceInsertPos)
+    if (spaceInsertPos <= ls) return null
+    val beforeSpace = editable.subSequence(ls, spaceInsertPos).toString()
+    val kind: Char; val styleIndex: Int
+    when {
+        beforeSpace == "-" -> { kind = LIST_SPAN_TYPE_BULLET; styleIndex = BulletStyle.DASH.ordinal }
+        beforeSpace == ">" -> { kind = LIST_SPAN_TYPE_BULLET; styleIndex = BulletStyle.ARROW.ordinal }
+        beforeSpace.matches(Regex("\\d+\\.")) -> { kind = LIST_SPAN_TYPE_NUMBER; styleIndex = NumberStyle.ARABIC_DOT.ordinal }
+        else -> return null
+    }
+    // Existing content on this line already, past where the trigger match starts? Can't happen —
+    // beforeSpace IS the entire line content up to the cursor, and lineStart is exactly the
+    // start of that line, so this only ever fires when the trigger text is the ONLY thing on
+    // the line so far, matching Word's own "must be at the very start of a blank line" rule.
+    editable.delete(ls, spaceInsertPos + 1) // consumes the trigger text AND the triggering space
+    editable.setSpan(
+        when (kind) { LIST_SPAN_TYPE_BULLET -> BulletMarginSpan(styleIndex, textSizePx); else -> NumberMarginSpan(styleIndex, textSizePx) },
+        ls, ls, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+    )
+    renumberLists(editable)
+    return beforeSpace
+}
+
+/**
+ * Enter-key handling for list lines, called when a single '\n' has just been inserted at
+ * [newlinePos]. Two cases:
+ *  - The line that just ended has TEXT on it → normal continuation: the new line gets the same
+ *    style/indent (the '\n' insertion is left as-is).
+ *  - The line that just ended is EMPTY (just the glyph, nothing typed) → rather than exiting the
+ *    list (which is what a plain "Enter" would conventionally do), this promotes that SAME line
+ *    one indent level deeper in place — the just-inserted '\n' is removed again (no new line
+ *    actually appears) since the intent here is "indent", not "new paragraph". A second real
+ *    Enter once there's content on that deeper line behaves as normal continuation again.
+ * Returns the cursor position to restore afterward for the promote case, or -1 if the caller
+ * doesn't need to touch the cursor (Android's own post-'\n' cursor position is already correct).
+ */
+fun handleListEnterKey(editable: Editable, newlinePos: Int): Int {
     val prevStart = lineStart(editable, newlinePos)
     val prevText = editable.subSequence(prevStart, newlinePos).toString()
     val existing = editable.getSpans(prevStart, newlinePos, ListMarginSpan::class.java)
-        .firstOrNull { editable.getSpanStart(it) <= prevStart && editable.getSpanEnd(it) >= newlinePos } ?: return
-    if (prevText.isBlank()) {
-        editable.removeSpan(existing)
-    } else {
+        .firstOrNull { editable.getSpanStart(it) <= prevStart && editable.getSpanEnd(it) >= newlinePos } ?: return -1
+    if (prevText.isNotBlank()) {
+        // Normal continuation onto the new line — same style/indent, fresh (unchecked, for
+        // checklists) instance.
         val newPos = newlinePos + 1
         val newSpan: ListMarginSpan = when (existing) {
-            is BulletMarginSpan -> BulletMarginSpan(existing.styleIndex, existing.textSizePx)
-            is NumberMarginSpan -> NumberMarginSpan(existing.styleIndex, existing.textSizePx)
-            is ChecklistMarginSpan -> ChecklistMarginSpan(existing.styleIndex, existing.textSizePx, false) // new item always starts unchecked
+            is BulletMarginSpan -> BulletMarginSpan(existing.styleIndex, existing.textSizePx, existing.indentLevel)
+            is NumberMarginSpan -> NumberMarginSpan(existing.styleIndex, existing.textSizePx, existing.indentLevel)
+            is ChecklistMarginSpan -> ChecklistMarginSpan(existing.styleIndex, existing.textSizePx, existing.indentLevel, false)
         }
         if (newPos <= editable.length) editable.setSpan(newSpan, newPos, newPos, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        renumberLists(editable)
+        return -1
     }
+    // Empty line: promote in place instead of creating a new paragraph. Remove the '\n' this
+    // same keystroke just inserted, bump this line's own indent, and leave the cursor exactly
+    // where it was (still on this one line, now one level deeper).
+    editable.removeSpan(existing)
+    editable.delete(newlinePos, newlinePos + 1)
+    val promoted: ListMarginSpan = when (existing) {
+        is BulletMarginSpan -> BulletMarginSpan(existing.styleIndex, existing.textSizePx, existing.indentLevel + 1)
+        is NumberMarginSpan -> NumberMarginSpan(existing.styleIndex, existing.textSizePx, existing.indentLevel + 1)
+        is ChecklistMarginSpan -> ChecklistMarginSpan(existing.styleIndex, existing.textSizePx, existing.indentLevel + 1, false)
+    }
+    editable.setSpan(promoted, prevStart, prevStart, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
     renumberLists(editable)
+    return prevStart
+}
+
+/**
+ * Backspace handling for list lines — meant to be called from an EditText's key listener
+ * (KEYCODE_DEL on ACTION_DOWN) BEFORE the default deletion happens, so it can fully replace
+ * Android's default "merge into previous line" behavior rather than trying to undo it
+ * afterward. Only acts when [cursorPos] sits exactly at the start of an EMPTY list line with no
+ * selection — every other backspace (mid-text, non-list-line, has a selection) is left alone by
+ * returning -1, letting the EditText's normal handling proceed untouched.
+ *
+ * [rememberedTrigger], if non-null, is (position, originalTriggerText) from the most recent
+ * [applyAutoformatTrigger] call still considered "undoable" — if it matches this exact line and
+ * the line is still empty, the original typed text ("-", ">", "12.") is restored instead of just
+ * clearing the bullet, mirroring Word's "Backspace right after autoformat brings your text back"
+ * behavior. Any other empty-list-line backspace just removes the list formatting.
+ *
+ * Returns the cursor position to restore if handled, or -1 if this wasn't a case this function
+ * handles (caller should let the normal backspace happen).
+ */
+fun handleListBackspace(editable: Editable, cursorPos: Int, rememberedTrigger: Pair<Int, String>?): Int {
+    val ls = lineStart(editable, cursorPos)
+    if (cursorPos != ls || ls == 0) return -1  // not "cursor at start of a non-first line"
+    val le = lineEnd(editable, ls)
+    if (le != ls) return -1  // line isn't empty — normal backspace should just delete a character
+    val existing = editable.getSpans(ls, ls, ListMarginSpan::class.java).firstOrNull() ?: return -1
+    editable.removeSpan(existing)
+    return if (rememberedTrigger != null && rememberedTrigger.first == ls) {
+        val text = rememberedTrigger.second
+        editable.insert(ls, text)
+        ls + text.length
+    } else {
+        ls
+    }
 }
 
 /**
@@ -323,9 +410,9 @@ private fun rebuildSpannableForItem(item: TextItem): android.text.SpannableStrin
             'C' -> sb.setSpan(android.text.style.ForegroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             'U' -> sb.setSpan(android.text.style.UnderlineSpan(), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             'H' -> sb.setSpan(android.text.style.BackgroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            LIST_SPAN_TYPE_BULLET -> sb.setSpan(BulletMarginSpan(decodeListStyleIndex(sp.value), item.size), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            LIST_SPAN_TYPE_NUMBER -> sb.setSpan(NumberMarginSpan(decodeListStyleIndex(sp.value), item.size), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            LIST_SPAN_TYPE_CHECK -> sb.setSpan(ChecklistMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListChecked(sp.value)), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            LIST_SPAN_TYPE_BULLET -> sb.setSpan(BulletMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value)), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            LIST_SPAN_TYPE_NUMBER -> sb.setSpan(NumberMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value)), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            LIST_SPAN_TYPE_CHECK -> sb.setSpan(ChecklistMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value), decodeListChecked(sp.value)), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
     }
     return sb
@@ -341,9 +428,9 @@ private fun spansFromSpannable(sb: android.text.SpannableStringBuilder): Mutable
             is android.text.style.ForegroundColorSpan -> out.add(TextSpanData(s, e, 'C', span.foregroundColor))
             is android.text.style.UnderlineSpan -> out.add(TextSpanData(s, e, 'U', 0))
             is android.text.style.BackgroundColorSpan -> out.add(TextSpanData(s, e, 'H', span.backgroundColor))
-            is BulletMarginSpan -> out.add(TextSpanData(s, e, LIST_SPAN_TYPE_BULLET, encodeListValue(span.styleIndex, false)))
-            is NumberMarginSpan -> out.add(TextSpanData(s, e, LIST_SPAN_TYPE_NUMBER, encodeListValue(span.styleIndex, false)))
-            is ChecklistMarginSpan -> out.add(TextSpanData(s, e, LIST_SPAN_TYPE_CHECK, encodeListValue(span.styleIndex, span.checked)))
+            is BulletMarginSpan -> out.add(TextSpanData(s, e, LIST_SPAN_TYPE_BULLET, encodeListValue(span.styleIndex, false, span.indentLevel)))
+            is NumberMarginSpan -> out.add(TextSpanData(s, e, LIST_SPAN_TYPE_NUMBER, encodeListValue(span.styleIndex, false, span.indentLevel)))
+            is ChecklistMarginSpan -> out.add(TextSpanData(s, e, LIST_SPAN_TYPE_CHECK, encodeListValue(span.styleIndex, span.checked, span.indentLevel)))
         }
     }
     return out
@@ -416,10 +503,16 @@ private fun MainActivity.applyPickedListStyle(kind: Char, styleIndex: Int) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Encoding list-span extra state (checked flag, style index) into TextSpanData.value, which is
-// a single Int. Ordinal is NOT encoded — it's always recomputed by renumberLists() after spans
-// are rebuilt, so edits that add/remove lines can never leave a stale/wrong number behind.
+// Encoding list-span extra state (style index, checked flag, indent level) into
+// TextSpanData.value, which is a single Int — bit-packed since there are now three independent
+// pieces of state to carry: bits 0-3 = styleIndex (0-15, covers all 10 styles per category with
+// room to grow), bit 4 = checked, bits 5-8 = indentLevel (0-15, far more than this UI exposes).
+// Ordinal (the actual "1, 2, 3..." for numbered lists) is deliberately NOT encoded here — it's
+// always recomputed by renumberLists() after spans are rebuilt, so edits that add/remove lines
+// can never leave a stale/wrong number behind.
 // ---------------------------------------------------------------------------------------------
-fun encodeListValue(styleIndex: Int, checked: Boolean): Int = styleIndex * 2 + (if (checked) 1 else 0)
-fun decodeListStyleIndex(value: Int): Int = value / 2
-fun decodeListChecked(value: Int): Boolean = value % 2 == 1
+fun encodeListValue(styleIndex: Int, checked: Boolean, indentLevel: Int = 0): Int =
+    (styleIndex and 0xF) or ((if (checked) 1 else 0) shl 4) or ((indentLevel and 0xF) shl 5)
+fun decodeListStyleIndex(value: Int): Int = value and 0xF
+fun decodeListChecked(value: Int): Boolean = (value shr 4) and 1 == 1
+fun decodeListIndent(value: Int): Int = (value shr 5) and 0xF
