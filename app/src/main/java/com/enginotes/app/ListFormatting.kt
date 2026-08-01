@@ -222,7 +222,15 @@ class ListAwareEditText(context: android.content.Context) : android.widget.EditT
             val gp = Paint(paint)
             gp.color = currentTextColor
             val glyphWidth = gp.measureText(glyph)
-            val lineLeft = layout.getLineLeft(line) + totalPaddingLeft
+            // Was: layout.getLineLeft(line) + totalPaddingLeft. getLineLeft() is supposed to
+            // equal exactly this span's own marginPx (that's what getLeadingMargin() reserved
+            // for this paragraph) — but for a genuinely empty (zero-character) line specifically,
+            // it was coming back as if no margin had been reserved at all, pushing gx (and the
+            // glyph) off to the far left, effectively invisible. marginPx is a deterministic
+            // property of the span itself (not something that needs to be re-derived from the
+            // layout), so computing directly from it avoids depending on that query being correct
+            // for a paragraph with no characters in it.
+            val lineLeft = sp.marginPx.toFloat() + totalPaddingLeft
             val top = layout.getLineTop(line) + totalPaddingTop
             val bottom = layout.getLineBottom(line) + totalPaddingTop
             val baseline = layout.getLineBaseline(line) + totalPaddingTop
