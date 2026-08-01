@@ -1931,7 +1931,14 @@ class MainActivity : AppCompatActivity() {
                         setPadding(dp(6), dp(6), dp(6), dp(6))
                         background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(8).toFloat() }
                         setColorFilter(Color.parseColor("#4A4A4A"))
-                        setOnClickListener { showListStylePicker(kind) }
+                        setOnClickListener {
+                            // Wrapped so that if something throws here, it shows up as a visible
+                            // error instead of silently doing nothing — "tap the icon, nothing
+                            // happens at all" with no crash is otherwise impossible to tell apart
+                            // from "the click isn't even reaching this handler."
+                            try { showListStylePicker(kind) }
+                            catch (t: Throwable) { Toast.makeText(this@MainActivity, "List picker error: ${t.javaClass.simpleName}: ${t.message}", Toast.LENGTH_LONG).show() }
+                        }
                     })
                 }
                 ctxListBtn(R.drawable.ic_list_bullet, LIST_SPAN_TYPE_BULLET)

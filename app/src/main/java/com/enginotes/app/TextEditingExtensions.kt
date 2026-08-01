@@ -587,7 +587,7 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
         val boxContainer = FrameLayout(this)
         boxContainer.clipChildren = false
         boxContainer.clipToPadding = false
-        val et=EditText(this)
+        val et=ListAwareEditText(this)
         val spannable=SpannableStringBuilder(item?.text?:"")
         val itemTextSizePx = (item?.size ?: editSize)
         item?.spans?.forEach{ sp-> val s=sp.start.coerceIn(0,spannable.length);val e=sp.end.coerceIn(s,spannable.length); if(s<=e) when(sp.type){
@@ -708,6 +708,7 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
         } }; override fun afterTextChanged(s:Editable?){
             if (suppressListWatcher) return
             if (s == null) return
+            try {
             // A single space was just typed: Word-style autoformat — "- ", "> ", or "12. " at
             // the very start of an empty line converts it into a bullet/numbered list line.
             if (pendingSpaceTrigger >= 0) {
@@ -715,6 +716,8 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                 suppressListWatcher = true
                 val trigger = applyAutoformatTrigger(s, pos, et.textSize)
                 suppressListWatcher = false
+                // TEMPORARY diagnostic — remove once autoformat is confirmed working end to end.
+                Toast.makeText(this@showInlineTextEditor, if (trigger != null) "Autoformat matched: '$trigger'" else "No autoformat match (pos=$pos)", Toast.LENGTH_SHORT).show()
                 if (trigger != null) {
                     val ls = pos - trigger.length  // trigger text + space were both removed; line start is stable
                     lastAutoformat = ls to trigger
@@ -730,12 +733,19 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                 suppressListWatcher = true
                 val newCursor = handleListEnterKey(s, pos)
                 suppressListWatcher = false
+                // TEMPORARY diagnostic — remove once Enter-continuation is confirmed working.
+                Toast.makeText(this@showInlineTextEditor, if (newCursor >= 0) "Enter handled, cursor->$newCursor" else "Enter: no list span found on that line", Toast.LENGTH_SHORT).show()
                 if (newCursor >= 0) {
                     lastAutoformat = null
                     et.post { et.setSelection(newCursor.coerceAtMost(et.text.length)) }
                 }
             }
             renumberLists(s)
+            } catch (t: Throwable) {
+                // TEMPORARY diagnostic — makes a silent failure in any of the above visible
+                // instead of indistinguishable from "nothing happened."
+                Toast.makeText(this@showInlineTextEditor, "List watcher error: ${t.javaClass.simpleName}: ${t.message}", Toast.LENGTH_LONG).show()
+            }
             // Android moves the cursor to the end of any inserted text (a paste is one big
             // insert) and auto-scrolls EditText's OWN internal viewport to keep that cursor
             // visible — BEFORE the box has resized to its new full WRAP_CONTENT height. That
