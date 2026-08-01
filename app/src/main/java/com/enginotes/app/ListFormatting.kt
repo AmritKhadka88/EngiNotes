@@ -127,6 +127,15 @@ sealed class ListMarginSpan(var styleIndex: Int, val textSizePx: Float, var inde
     // coordinates within the EditText — used only for checklist tap-to-toggle hit-testing.
     // Deliberately not persisted; it's a pure runtime draw-time cache, rebuilt every layout pass.
     var lastDrawnBounds: RectF? = null
+    // When true, drawLeadingMargin below does nothing — ListAwareEditText sets this once it
+    // takes over drawing a span itself. getLeadingMargin() (the margin RESERVATION that pushes
+    // paragraph text to the right) is a completely separate, much more fundamental layout-time
+    // mechanism and is NOT affected by this flag; only the actual glyph DRAWING is skipped here.
+    // See ListAwareEditText's own doc comment for why relying solely on drawLeadingMargin being
+    // invoked reliably by a live, editable DynamicLayout — especially for a genuinely empty
+    // paragraph, which is exactly the case that kept silently failing to show anything — wasn't
+    // something this could keep being built around without a way to verify it.
+    var suppressAutoDraw: Boolean = false
 
     abstract fun glyphFor(): String
 
@@ -136,6 +145,7 @@ sealed class ListMarginSpan(var styleIndex: Int, val textSizePx: Float, var inde
         canvas: Canvas, paint: Paint, x: Int, dir: Int, top: Int, baseline: Int, bottom: Int,
         text: CharSequence, start: Int, end: Int, first: Boolean, layout: Layout?
     ) {
+        if (suppressAutoDraw) return
         if (!first) { lastDrawnBounds = null; return }
         val glyph = glyphFor()
         val gp = Paint(paint)
@@ -167,6 +177,58 @@ class NumberMarginSpan(styleIndex: Int, textSizePx: Float, indentLevel: Int = 0,
 
 class ChecklistMarginSpan(styleIndex: Int, textSizePx: Float, indentLevel: Int = 0, var checked: Boolean = false) : ListMarginSpan(styleIndex, textSizePx, indentLevel) {
     override fun glyphFor(): String { val st = ChecklistStyle.safe(styleIndex); return if (checked) st.checked else st.unchecked }
+}
+
+/**
+ * A plain EditText that draws its own list glyphs after the normal text draw pass, instead of
+ * relying solely on LeadingMarginSpan2's drawLeadingMargin callback being invoked reliably by a
+ * live, editable DynamicLayout for every paragraph — in particular for a genuinely empty
+ * paragraph (no characters at all), which is exactly the case that kept silently rendering
+ * nothing: applying a bullet/number/checklist to an empty line showed no visible glyph until
+ * some other edit forced a layout rebuild for an unrelated reason.
+ *
+ * getLeadingMargin() (the RESERVATION that pushes paragraph text right, making room for the
+ * glyph) is untouched — that's a layout-time concern Layout.getDesiredWidth()/line-breaking
+ * always consults regardless of drawing, and isn't what was unreliable here. Only the actual
+ * glyph PAINTING is taken over, driven directly off this EditText's own Layout geometry
+ * (getLineTop/getLineBaseline/getLineLeft), which is guaranteed populated for every line —
+ * including an empty one — the moment layout has run, well before onDraw is ever called.
+ */
+class ListAwareEditText(context: android.content.Context) : android.widget.EditText(context) {
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val layout = layout ?: return
+        val ed = text as? Spannable ?: return
+        val spans = ed.getSpans(0, ed.length, ListMarginSpan::class.java)
+        if (spans.isEmpty()) return
+        for (sp in spans) {
+            sp.suppressAutoDraw = true  // this view owns drawing it now; see the span's own comment
+            val pos = ed.getSpanStart(sp).coerceIn(0, ed.length)
+            val line = layout.getLineForOffset(pos)
+            // Only the paragraph's own start line gets a glyph — matches the
+            // getLeadingMarginLineCount()=1 contract the LeadingMarginSpan2 path uses elsewhere,
+            // so wrapped continuation lines of a long list item don't each get their own glyph.
+            var trueLineStart = pos
+            while (trueLineStart > 0 && ed[trueLineStart - 1] != '\n') trueLineStart--
+            if (layout.getLineStart(line) != trueLineStart) continue
+
+            val glyph = sp.glyphFor()
+            val gp = Paint(paint)
+            gp.color = currentTextColor
+            val glyphWidth = gp.measureText(glyph)
+            val lineLeft = layout.getLineLeft(line) + totalPaddingLeft
+            val top = layout.getLineTop(line) + totalPaddingTop
+            val bottom = layout.getLineBottom(line) + totalPaddingTop
+            val baseline = layout.getLineBaseline(line) + totalPaddingTop
+            // Same "right-aligned in the margin column, with a little breathing room before the
+            // text starts" positioning as the drawLeadingMargin path this replaces — kept
+            // identical so switching between live-editing and static rendering doesn't visibly
+            // shift anything.
+            val gx = lineLeft - glyphWidth - sp.marginPx * 0.18f
+            canvas.drawText(glyph, gx, baseline.toFloat(), gp)
+            sp.lastDrawnBounds = RectF(gx, top.toFloat(), gx + glyphWidth, bottom.toFloat())
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
