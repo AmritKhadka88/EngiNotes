@@ -458,6 +458,19 @@ fun handleListEnterKey(editable: Editable, newlinePos: Int): Int {
         return -2
     }
     if (prevText.isNotBlank()) {
+        // Lock the just-finished line's own span down to its exact, final range now that we know
+        // it (this line is done — Enter was just pressed to leave it). It started out
+        // zero-length with SPAN_INCLUSIVE_INCLUSIVE (needed so it doesn't get silently dropped —
+        // see the flag comments in applyListStyle/applyAutoformatTrigger), but INCLUSIVE means it
+        // keeps absorbing every character typed at its own end — including, if never pinned down,
+        // the '\n' that just ended it and then everything typed on the lines AFTER that. That's
+        // exactly why later list lines were gaining extra indent and extra glyphs: earlier
+        // siblings' spans had silently grown to cover them too, so multiple spans' margins/glyphs
+        // were being applied to the same later paragraph. A non-zero-length, SPAN_EXCLUSIVE_
+        // EXCLUSIVE span is confirmed safe (that's exactly what the toolbar-button-on-existing-
+        // text case already relies on — only zero-length exclusive-exclusive spans were ever
+        // dropped), so re-pin to that now that this line's content is finalized.
+        editable.setSpan(existing, prevStart, newlinePos, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
         // Normal continuation onto the new line — same style/indent, fresh (unchecked, for
         // checklists) instance.
         val newPos = newlinePos + 1
@@ -562,10 +575,25 @@ internal fun syncTextItemSpansFromSpanned(item: TextItem, spanned: android.text.
 private fun spansFromSpannable(sb: android.text.Spanned): MutableList<TextSpanData> {
     val out = mutableListOf<TextSpanData>()
     for (span in sb.getSpans(0, sb.length, Any::class.java)) {
-        val s = sb.getSpanStart(span); val e = sb.getSpanEnd(span)
+        val s = sb.getSpanStart(span); var e = sb.getSpanEnd(span)
         // See the matching comment in TextEditingExtensions.kt's closeInlineEditor — list spans
         // are deliberately zero-length and must not be dropped here.
         if (s < 0 || e < 0 || s > e) continue
+        // Safety net: a list span is only ever supposed to cover its own single line, but being
+        // SPAN_INCLUSIVE_INCLUSIVE (needed so a freshly-created zero-length one doesn't get
+        // silently dropped) means it keeps absorbing text typed at its end, including through
+        // Enter presses, unless something explicitly re-pins it once its line is finished (which
+        // handleListEnterKey now does — but this catches anything that slipped through, e.g. the
+        // very last line of the document, which never gets an Enter press to trigger that
+        // pinning). Clamping here, once, right before this gets saved, keeps a stray over-grown
+        // span from ever reaching the saved item — which is what the static (non-editing) render
+        // path reconstructs from, so this is also what was causing markers to keep stacking up
+        // after closing the text box even once live-editing itself looked fixed.
+        if (span is ListMarginSpan) {
+            var ownLineEnd = s
+            while (ownLineEnd < sb.length && sb[ownLineEnd] != '\n') ownLineEnd++
+            e = e.coerceAtMost(ownLineEnd)
+        }
         when (span) {
             is android.text.style.StyleSpan -> out.add(TextSpanData(s, e, 'S', span.style))
             is android.text.style.ForegroundColorSpan -> out.add(TextSpanData(s, e, 'C', span.foregroundColor))

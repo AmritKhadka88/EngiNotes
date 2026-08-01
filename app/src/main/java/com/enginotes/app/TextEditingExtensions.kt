@@ -1208,14 +1208,27 @@ internal fun MainActivity.closeInlineEditor(commit:Boolean, delete:Boolean=false
         val et=activeEditText?:return; val tb=activeToolbar; val box=activeEditBox
         val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager; imm.hideSoftInputFromWindow(et.windowToken,0)
         val text=et.text.toString(); val spans=mutableListOf<TextSpanData>(); val ed=et.text
-        for(span in ed.getSpans(0,ed.length,Any::class.java)){ val s=ed.getSpanStart(span);val e=ed.getSpanEnd(span)
-            // List spans (bullet/number/checklist) are deliberately zero-length — they mark a
-            // LINE, not a text range, and never grow as text is typed after them (that's inherent
-            // to how LeadingMarginSpan works, not a bug). The old "s>=e continue" here silently
-            // dropped every one of them on save, which is why a bullet/checklist applied to a
-            // line with content would vanish the moment the note was closed and reopened — it
-            // never actually made it into item.spans in the first place. Only genuinely invalid
-            // ranges (negative, or start past end) get skipped now.
+        for(span in ed.getSpans(0,ed.length,Any::class.java)){ val s=ed.getSpanStart(span);var e=ed.getSpanEnd(span)
+            // List spans (bullet/number/checklist) mark a LINE. They start out zero-length with
+            // SPAN_INCLUSIVE_INCLUSIVE (needed so a freshly-created one doesn't get silently
+            // dropped — a zero-length SPAN_EXCLUSIVE_EXCLUSIVE one was), but that means they keep
+            // absorbing every character typed at their own end, including through Enter presses,
+            // unless explicitly pinned down once their line is finished (handleListEnterKey does
+            // this now) — the very last line of the document never gets that pinning, since
+            // there's no following Enter press to trigger it. Clamping here, once, right before
+            // saving, catches that: it's what was causing markers to keep stacking up in the
+            // static (non-editing) view even after live-editing itself got fixed, since this is
+            // what the static view reconstructs its spans from.
+            if (span is ListMarginSpan) {
+                var ownLineEnd = s
+                while (ownLineEnd < ed.length && ed[ownLineEnd] != '\n') ownLineEnd++
+                e = e.coerceAtMost(ownLineEnd)
+            }
+            // The old "s>=e continue" here silently dropped every zero-length list span on save,
+            // which is why a bullet/checklist applied to an empty line would vanish the moment
+            // the note was closed and reopened — it never actually made it into item.spans in the
+            // first place. Only genuinely invalid ranges (negative, or start past end) get
+            // skipped now.
             if(s<0||e<0||s>e) continue
             when(span){ is StyleSpan->spans.add(TextSpanData(s,e,'S',span.style)); is ForegroundColorSpan->spans.add(TextSpanData(s,e,'C',span.foregroundColor)); is UnderlineSpan->spans.add(TextSpanData(s,e,'U',0)); is BackgroundColorSpan->spans.add(TextSpanData(s,e,'H',span.backgroundColor))
             is BulletMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_BULLET,encodeListValue(span.styleIndex,false,span.indentLevel)))
