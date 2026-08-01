@@ -209,6 +209,14 @@ class ListAwareEditText(context: android.content.Context) : android.widget.EditT
         val ed = edForSuppress ?: return
         val spans = ed.getSpans(0, ed.length, ListMarginSpan::class.java)
         if (spans.isEmpty()) return
+        // Defensive: at most one glyph per visual line, full stop. Spans are supposed to map
+        // 1:1 with paragraph starts, but with markers now confirmed to persist correctly across
+        // Enter presses (unlike before), a second, previously-masked issue showed up: later list
+        // lines were each drawing one EXTRA glyph than the line before it (line 3 showing 3
+        // glyphs, not 1). Tracking which line numbers have already been drawn this pass makes
+        // that structurally impossible rather than depending on getting every span's line-match
+        // check exactly right.
+        val drawnLines = HashSet<Int>()
         for (sp in spans) {
             val pos = ed.getSpanStart(sp).coerceIn(0, ed.length)
             val line = layout.getLineForOffset(pos)
@@ -218,6 +226,7 @@ class ListAwareEditText(context: android.content.Context) : android.widget.EditT
             var trueLineStart = pos
             while (trueLineStart > 0 && ed[trueLineStart - 1] != '\n') trueLineStart--
             if (layout.getLineStart(line) != trueLineStart) continue
+            if (!drawnLines.add(line)) continue
 
             val glyph = sp.glyphFor()
             val gp = Paint(paint)
