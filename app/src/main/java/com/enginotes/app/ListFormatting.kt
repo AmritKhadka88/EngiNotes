@@ -235,32 +235,6 @@ class ListAwareEditText(context: android.content.Context) : android.widget.EditT
             sp.lastDrawnBounds = RectF(gx, top.toFloat(), gx + glyphWidth, bottom.toFloat())
         }
     }
-
-    // Some soft keyboards (notably parts of Gboard) delete a single character via this
-    // InputConnection API directly rather than dispatching a real KeyEvent, which would silently
-    // skip right past the setOnKeyListener-based backspace interception in TextEditingExtensions
-    // used to catch "backspace on an empty list line". Re-dispatching a synthetic KEYCODE_DEL
-    // through this EditText's own normal key-event pipeline (dispatchKeyEvent) is what makes
-    // that same registered key listener fire reliably regardless of which path the keyboard
-    // used, without duplicating its logic here. dispatchKeyEvent for KEYCODE_DEL on an EditText
-    // always ends up handled one way or another — either the custom listener consumes it as a
-    // special list action, or TextView's own default onKeyDown performs the ordinary single-
-    // character delete — so there's no case here that also needs falling through to
-    // super.deleteSurroundingText() without double-deleting.
-    override fun onCreateInputConnection(outAttrs: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? {
-        val target = super.onCreateInputConnection(outAttrs) ?: return null
-        return object : android.view.inputmethod.InputConnectionWrapper(target, true) {
-            override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-                if (beforeLength == 1 && afterLength == 0 && selectionStart == selectionEnd) {
-                    val now = android.os.SystemClock.uptimeMillis()
-                    dispatchKeyEvent(android.view.KeyEvent(now, now, android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DEL, 0))
-                    dispatchKeyEvent(android.view.KeyEvent(now, now, android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_DEL, 0))
-                    return true
-                }
-                return super.deleteSurroundingText(beforeLength, afterLength)
-            }
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -617,13 +591,12 @@ private fun MainActivity.applyPickedListStyle(kind: Char, styleIndex: Int, et: E
     if (et != null) {
         applyListStyle(et.text, from, to, kind, styleIndex, et.textSize)
         renumberLists(et.text)
-        // getLeadingMargin() affects each line's available width, which is a MEASURE concern —
-        // invalidate() alone only requests a redraw using whatever layout is already cached, so
-        // a brand new bullet/number/checkbox could silently not appear until some LATER edit
-        // forced a real relayout for an unrelated reason. requestLayout() is what actually gets
-        // EditText to rebuild its DynamicLayout and pick up the new margin immediately.
-        et.requestLayout()
-        et.invalidate()
+        // Posted rather than called synchronously — getLeadingMargin() affects line width, a
+        // MEASURE concern, and a synchronous requestLayout() here was not reliably sticking
+        // (empty lines specifically kept failing to show their glyph even with this call in
+        // place). Deferring until after the current call stack fully unwinds avoids whatever in
+        // Android's own internal processing was overriding it.
+        et.post { et.requestLayout(); et.invalidate() }
     } else if (item != null) {
         val sb = rebuildSpannableForItem(item)
         applyListStyle(sb, 0, sb.length, kind, styleIndex, item.size)

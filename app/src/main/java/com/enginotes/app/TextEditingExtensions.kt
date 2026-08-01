@@ -716,19 +716,24 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                 suppressListWatcher = true
                 val trigger = applyAutoformatTrigger(s, pos, et.textSize)
                 suppressListWatcher = false
-                // TEMPORARY diagnostic — remove once autoformat is confirmed working end to end.
-                Toast.makeText(this@showInlineTextEditor, if (trigger != null) "Autoformat matched: '$trigger'" else "No autoformat match (pos=$pos)", Toast.LENGTH_SHORT).show()
                 if (trigger != null) {
+                    // TEMPORARY diagnostic — only announce actual matches now; the "no match"
+                    // case was firing on every single space keystroke regardless of context,
+                    // which was just noise once the matching logic itself was confirmed correct.
+                    Toast.makeText(this@showInlineTextEditor, "Autoformat matched: '$trigger'", Toast.LENGTH_SHORT).show()
                     val ls = pos - trigger.length  // trigger text + space were both removed; line start is stable
                     lastAutoformat = ls to trigger
-                    et.post { et.setSelection(ls.coerceAtMost(et.text.length)) }
-                    // Same reasoning as the toolbar picker's requestLayout() call: getLeadingMargin()
-                    // affects line width, a MEASURE concern — TextView's own automatic relayout-on-
-                    // span-change isn't reliably triggering a full remeasure for a span added this way
-                    // (reentrantly, from within an already-in-progress text-change notification), which
-                    // is exactly why the glyph wasn't appearing after Enter-continuation despite the
-                    // span genuinely being added (confirmed by the diagnostic toast succeeding).
-                    et.requestLayout(); et.invalidate()
+                    // Posted rather than called synchronously — this runs from inside an already
+                    // reentrant afterTextChanged (itself nested inside the ORIGINAL space
+                    // keystroke's own change notification), and Android's own internal post-
+                    // insertion processing later in that same synchronous cycle may be what was
+                    // silently overriding a synchronous requestLayout() call here. Posting defers
+                    // this until that entire cycle has fully finished, so nothing later in the
+                    // same frame can clobber it.
+                    et.post {
+                        et.setSelection(ls.coerceAtMost(et.text.length))
+                        et.requestLayout(); et.invalidate()
+                    }
                 }
             }
             // A single '\n' was just typed: continue the list style onto the new line, or — if
@@ -741,19 +746,17 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                 val newCursor = handleListEnterKey(s, pos)
                 suppressListWatcher = false
                 // TEMPORARY diagnostic — remove once Enter-continuation is confirmed working.
-                // -2 = that line wasn't a list line at all (correctly a no-op). -1 = list
-                // continuation succeeded, Android's own cursor position after '\n' is already
-                // right so there's nothing to restore. >=0 = the promote-in-place case, cursor
-                // moved back onto the same (now deeper-indented) line.
                 Toast.makeText(this@showInlineTextEditor, when {
                     newCursor >= 0 -> "Enter: promoted in place, cursor->$newCursor"
                     newCursor == -1 -> "Enter: continued list onto new line"
                     else -> "Enter: that line wasn't a list line"
                 }, Toast.LENGTH_SHORT).show()
-                if (newCursor != -2) { et.requestLayout(); et.invalidate() }  // force relayout for both the continue (-1) and promote (>=0) cases — see the matching comment above
-                if (newCursor >= 0) {
+                if (newCursor != -2) {
                     lastAutoformat = null
-                    et.post { et.setSelection(newCursor.coerceAtMost(et.text.length)) }
+                    et.post {
+                        if (newCursor >= 0) et.setSelection(newCursor.coerceAtMost(et.text.length))
+                        et.requestLayout(); et.invalidate()
+                    }
                 }
             }
             renumberLists(s)
