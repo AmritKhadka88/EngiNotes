@@ -1921,6 +1921,23 @@ class MainActivity : AppCompatActivity() {
                 divider()
                 eightColors(editColor) { c -> editColor = c; activeEditText?.setTextColor(c); textSelectionItem?.let { it.color = c; drawingView.invalidate() } }
                 divider()
+                // Bullets / Numbering / Checklist — kept in their own dedicated file
+                // (ListFormatting.kt) rather than built inline here; this just wires the three
+                // toolbar buttons to the picker dialogs defined there.
+                fun ctxListBtn(iconRes: Int, kind: Char) {
+                    row.addView(ImageView(this).apply {
+                        setImageResource(iconRes); scaleType = ImageView.ScaleType.CENTER_INSIDE
+                        val lp = LinearLayout.LayoutParams(dp(34), dp(34)); lp.setMargins(dp(3), 0, dp(3), 0); layoutParams = lp
+                        setPadding(dp(6), dp(6), dp(6), dp(6))
+                        background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(8).toFloat() }
+                        setColorFilter(Color.parseColor("#4A4A4A"))
+                        setOnClickListener { showListStylePicker(kind) }
+                    })
+                }
+                ctxListBtn(R.drawable.ic_list_bullet, LIST_SPAN_TYPE_BULLET)
+                ctxListBtn(R.drawable.ic_list_number, LIST_SPAN_TYPE_NUMBER)
+                ctxListBtn(R.drawable.ic_list_check, LIST_SPAN_TYPE_CHECK)
+                divider()
                 // B / I / U / Delete / Confirm — appended to this SAME shared context bar rather
                 // than a separate floating one, since this is the bar that's actually always
                 // visible and reachable while the Text tool is active, whether you're currently

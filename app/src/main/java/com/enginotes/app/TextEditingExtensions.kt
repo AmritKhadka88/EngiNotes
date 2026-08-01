@@ -589,7 +589,17 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
         boxContainer.clipToPadding = false
         val et=EditText(this)
         val spannable=SpannableStringBuilder(item?.text?:"")
-        item?.spans?.forEach{ sp-> val s=sp.start.coerceIn(0,spannable.length);val e=sp.end.coerceIn(s,spannable.length); if(s<e) when(sp.type){ 'S'->spannable.setSpan(StyleSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'C'->spannable.setSpan(ForegroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'U'->spannable.setSpan(UnderlineSpan(),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); 'H'->spannable.setSpan(BackgroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } }
+        val itemTextSizePx = (item?.size ?: editSize)
+        item?.spans?.forEach{ sp-> val s=sp.start.coerceIn(0,spannable.length);val e=sp.end.coerceIn(s,spannable.length); if(s<e) when(sp.type){
+            'S'->spannable.setSpan(StyleSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            'C'->spannable.setSpan(ForegroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            'U'->spannable.setSpan(UnderlineSpan(),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            'H'->spannable.setSpan(BackgroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            LIST_SPAN_TYPE_BULLET->spannable.setSpan(BulletMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            LIST_SPAN_TYPE_NUMBER->spannable.setSpan(NumberMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            LIST_SPAN_TYPE_CHECK->spannable.setSpan(ChecklistMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListChecked(sp.value)),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        } }
+        renumberLists(spannable)
         // Ceiling is the actual remaining PAGE width from this item's world x-position, converted
         // to screen pixels the same way et's own text size is derived from editSize — not the
         // currently visible screen viewport. The viewport version capped growth at "however much
@@ -626,7 +636,35 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
         // of "the box." One rotation value, applied once at setup and kept in sync during drag
         // (see the rotate handle's touch listener below), removes the compounding entirely.
         boxContainer.rotation = editRotation
-        et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) } } }; override fun afterTextChanged(s:Editable?){
+        // Tap-to-toggle checklist items. A tap is ACTION_DOWN followed by an ACTION_UP close by
+        // in both time and position — anything that moves further than a normal tap (a drag to
+        // select text, a long-press) falls through to EditText's own handling untouched. Only
+        // consumes the event (blocking the normal cursor-placement tap) when the tap actually
+        // landed on a checkbox glyph; every other tap behaves exactly as before.
+        var checklistTapDownX = 0f; var checklistTapDownY = 0f; var checklistTapDownTime = 0L
+        et.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> { checklistTapDownX = ev.x; checklistTapDownY = ev.y; checklistTapDownTime = System.currentTimeMillis() }
+                android.view.MotionEvent.ACTION_UP -> {
+                    val moved = kotlin.math.hypot((ev.x - checklistTapDownX).toDouble(), (ev.y - checklistTapDownY).toDouble())
+                    if (moved < dp(12) && System.currentTimeMillis() - checklistTapDownTime < 400L) {
+                        if (toggleChecklistAt(et.text, ev.x, ev.y)) { et.invalidate(); return@setOnTouchListener true }
+                    }
+                }
+            }
+            false
+        }
+
+        et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
+            // A single '\n' just typed: continue the list style onto the new line (or exit the
+            // list, if the line that just ended was an empty bullet/number/checkbox) — the same
+            // Enter-key behavior every list editor has. Guarded to exactly one inserted '\n'
+            // char so a multi-line paste doesn't try to walk line-by-line here; renumberLists()
+            // below in afterTextChanged still keeps a pasted numbered block correctly ordered
+            // even without this per-keystroke continuation running for it.
+            if (count == 1 && e2.getOrNull(start) == '\n') handleListContinuation(e2, start)
+        } }; override fun afterTextChanged(s:Editable?){
+            if (s != null) renumberLists(s)
             // Android moves the cursor to the end of any inserted text (a paste is one big
             // insert) and auto-scrolls EditText's OWN internal viewport to keep that cursor
             // visible — BEFORE the box has resized to its new full WRAP_CONTENT height. That
@@ -1047,7 +1085,11 @@ internal fun MainActivity.closeInlineEditor(commit:Boolean, delete:Boolean=false
         val et=activeEditText?:return; val tb=activeToolbar; val box=activeEditBox
         val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager; imm.hideSoftInputFromWindow(et.windowToken,0)
         val text=et.text.toString(); val spans=mutableListOf<TextSpanData>(); val ed=et.text
-        for(span in ed.getSpans(0,ed.length,Any::class.java)){ val s=ed.getSpanStart(span);val e=ed.getSpanEnd(span); if(s<0||e<0||s>=e) continue; when(span){ is StyleSpan->spans.add(TextSpanData(s,e,'S',span.style)); is ForegroundColorSpan->spans.add(TextSpanData(s,e,'C',span.foregroundColor)); is UnderlineSpan->spans.add(TextSpanData(s,e,'U',0)); is BackgroundColorSpan->spans.add(TextSpanData(s,e,'H',span.backgroundColor)) } }
+        for(span in ed.getSpans(0,ed.length,Any::class.java)){ val s=ed.getSpanStart(span);val e=ed.getSpanEnd(span); if(s<0||e<0||s>=e) continue; when(span){ is StyleSpan->spans.add(TextSpanData(s,e,'S',span.style)); is ForegroundColorSpan->spans.add(TextSpanData(s,e,'C',span.foregroundColor)); is UnderlineSpan->spans.add(TextSpanData(s,e,'U',0)); is BackgroundColorSpan->spans.add(TextSpanData(s,e,'H',span.backgroundColor))
+            is BulletMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_BULLET,encodeListValue(span.styleIndex,false)))
+            is NumberMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_NUMBER,encodeListValue(span.styleIndex,false)))
+            is ChecklistMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_CHECK,encodeListValue(span.styleIndex,span.checked)))
+        } }
         if(box!=null) canvasContainer.removeView(box) else canvasContainer.removeView(et)
         if(tb!=null) canvasContainer.removeView(tb)
         activeEditorHandles.forEach { canvasContainer.removeView(it) }; activeEditorHandles = emptyList()

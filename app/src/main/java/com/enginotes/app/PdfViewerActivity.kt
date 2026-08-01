@@ -38,6 +38,21 @@ class PdfViewerActivity : AppCompatActivity() {
 
     private var isSnipMode = false
 
+    // PdfRenderer can only ever have ONE page open at a time — calling openPage() again before
+    // the previous Page is closed is undefined behavior. loadPage(), the snip-crop path, and the
+    // new prefetch below each used to spawn their own independent Thread touching the same
+    // pdfRenderer instance, relying on "in practice they don't overlap" rather than anything
+    // that actually guaranteed it — fast page-flipping (or a snip mid-flip) could genuinely race
+    // two of those threads against each other. Funneling all of them through one single-thread
+    // executor makes that impossible by construction instead of by convention.
+    private val pdfExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    // Bumped on every navigation; a queued render task checks this before doing any real work
+    // so flipping through several pages quickly doesn't pay the render cost for every page you
+    // passed through on the way, just the one you land on.
+    private var pageRequestGeneration = 0
+    private var prefetchedPage = -1
+    private var prefetchedBitmap: Bitmap? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -136,9 +151,9 @@ class PdfViewerActivity : AppCompatActivity() {
                     // Re-rendering just the sub-region is fast because PdfRenderer clips to the
                     // destination bitmap size — no need to render the full page at 3x.
                     setSnipMode(false, snipOverlay)
-                    Thread {
+                    pdfExecutor.execute {
                         try {
-                            val renderer = pdfRenderer ?: return@Thread
+                            val renderer = pdfRenderer ?: return@execute
                             val page = renderer.openPage(currentPage)
                             val cropScale = 3f
                             val outW = ((relRight - relLeft) * page.width * cropScale).toInt().coerceAtLeast(1)
@@ -155,7 +170,7 @@ class PdfViewerActivity : AppCompatActivity() {
                         } catch (e: Exception) {
                             runOnUiThread { Toast.makeText(this, "Snip failed: ${e.message}", Toast.LENGTH_LONG).show() }
                         }
-                    }.start()
+                    }
                 } else {
                     // Regular snip-to-canvas: use the already-rendered 2x bitmap (instant)
                     val sx = (relLeft * pageBmp.width).toInt().coerceIn(0, pageBmp.width - 1)
@@ -247,13 +262,30 @@ class PdfViewerActivity : AppCompatActivity() {
         val renderer = pdfRenderer ?: return
         val pageToLoad = currentPage
         val canvasWidth = pdfCanvas.width
-        Thread {
+        val myGeneration = ++pageRequestGeneration
+
+        // If we already prefetched exactly this page in the background while the user was
+        // looking at the previous one, show it immediately — no render, no wait. This is what
+        // makes "next page" feel instant most of the time instead of always paying the render
+        // cost on the main flip.
+        val pre = prefetchedBitmap
+        if (prefetchedPage == pageToLoad && pre != null) {
+            prefetchedBitmap = null; prefetchedPage = -1
+            pdfCanvas.setPageBitmap(pre)
+            annotationFiles[currentPage]?.let { pdfCanvas.loadAnnotations(it) } ?: pdfCanvas.clearAnnotations()
+            tvPageInfo.text = "${currentPage + 1} / $totalPages"
+            prefetchNextPage(pageToLoad, canvasWidth, myGeneration)
+            return
+        }
+
+        pdfExecutor.execute {
+            // Superseded before this task even started (user flipped past it already) — skip
+            // the render entirely instead of doing expensive work just to throw it away.
+            if (myGeneration != pageRequestGeneration) return@execute
             try {
-                // PdfRenderer is not thread-safe for concurrent page opens, but since each page
-                // turn waits for the previous render to fully finish before starting the next
-                // (page.close() happens before this thread exits), sequential background renders
-                // are safe and keep the UI thread free during the (potentially slow, for large or
-                // image-heavy pages) decode + draw work.
+                // PdfRenderer is not thread-safe for concurrent page opens — pdfExecutor being a
+                // single-thread executor is what actually guarantees no two of these (or a snip,
+                // or a prefetch) ever run at the same time, rather than relying on timing luck.
                 val page = renderer.openPage(pageToLoad)
                 val renderScale = (canvasWidth.toFloat() / page.width) * 2f  // 2x: crisp display without excessive memory
                 val bmpW = (page.width * renderScale).toInt().coerceAtLeast(1)
@@ -267,6 +299,7 @@ class PdfViewerActivity : AppCompatActivity() {
                         pdfCanvas.setPageBitmap(bmp)
                         annotationFiles[currentPage]?.let { pdfCanvas.loadAnnotations(it) } ?: pdfCanvas.clearAnnotations()
                         tvPageInfo.text = "${currentPage + 1} / $totalPages"
+                        prefetchNextPage(pageToLoad, canvasWidth, myGeneration)
                     } else {
                         // User already navigated away before this render finished - discard it.
                         bmp.recycle()
@@ -277,7 +310,39 @@ class PdfViewerActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 runOnUiThread { Toast.makeText(this, "Failed to render page: ${e.message}", Toast.LENGTH_SHORT).show() }
             }
-        }.start()
+        }
+    }
+
+    // Renders the next page in the background, on the SAME single-thread executor as everything
+    // else that touches pdfRenderer, and stashes just the one result — not a general cache, so
+    // there's no eviction/recycle-while-in-use hazard to get wrong. If the user has moved on
+    // again by the time it finishes, it's simply discarded.
+    private fun prefetchNextPage(fromPage: Int, canvasWidth: Int, myGeneration: Int) {
+        val renderer = pdfRenderer ?: return
+        val next = fromPage + 1
+        if (next >= totalPages || next == prefetchedPage) return
+        pdfExecutor.execute {
+            if (myGeneration != pageRequestGeneration) return@execute  // user already moved on
+            try {
+                val page = renderer.openPage(next)
+                val renderScale = (canvasWidth.toFloat() / page.width) * 2f
+                val bmpW = (page.width * renderScale).toInt().coerceAtLeast(1)
+                val bmpH = (page.height * renderScale).toInt().coerceAtLeast(1)
+                val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+                Canvas(bmp).drawColor(Color.WHITE)
+                page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                page.close()
+                runOnUiThread {
+                    if (myGeneration == pageRequestGeneration && next != currentPage) {
+                        prefetchedBitmap?.recycle()
+                        prefetchedBitmap = bmp
+                        prefetchedPage = next
+                    } else {
+                        bmp.recycle()
+                    }
+                }
+            } catch (e: Exception) { /* best-effort — a failed prefetch just means the next real navigation renders normally */ }
+        }
     }
 
     private fun saveCurrentAnnotations() {
@@ -307,7 +372,12 @@ class PdfViewerActivity : AppCompatActivity() {
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
-    override fun onDestroy() { super.onDestroy(); pdfRenderer?.close() }
+    override fun onDestroy() {
+        super.onDestroy()
+        prefetchedBitmap?.recycle(); prefetchedBitmap = null
+        pdfExecutor.shutdown()
+        pdfRenderer?.close()
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────
