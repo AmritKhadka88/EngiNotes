@@ -734,7 +734,15 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                 val newCursor = handleListEnterKey(s, pos)
                 suppressListWatcher = false
                 // TEMPORARY diagnostic — remove once Enter-continuation is confirmed working.
-                Toast.makeText(this@showInlineTextEditor, if (newCursor >= 0) "Enter handled, cursor->$newCursor" else "Enter: no list span found on that line", Toast.LENGTH_SHORT).show()
+                // -2 = that line wasn't a list line at all (correctly a no-op). -1 = list
+                // continuation succeeded, Android's own cursor position after '\n' is already
+                // right so there's nothing to restore. >=0 = the promote-in-place case, cursor
+                // moved back onto the same (now deeper-indented) line.
+                Toast.makeText(this@showInlineTextEditor, when {
+                    newCursor >= 0 -> "Enter: promoted in place, cursor->$newCursor"
+                    newCursor == -1 -> "Enter: continued list onto new line"
+                    else -> "Enter: that line wasn't a list line"
+                }, Toast.LENGTH_SHORT).show()
                 if (newCursor >= 0) {
                     lastAutoformat = null
                     et.post { et.setSelection(newCursor.coerceAtMost(et.text.length)) }

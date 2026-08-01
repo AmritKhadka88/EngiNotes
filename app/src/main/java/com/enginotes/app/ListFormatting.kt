@@ -389,8 +389,11 @@ fun applyAutoformatTrigger(editable: Editable, spaceInsertPos: Int, textSizePx: 
  *    one indent level deeper in place — the just-inserted '\n' is removed again (no new line
  *    actually appears) since the intent here is "indent", not "new paragraph". A second real
  *    Enter once there's content on that deeper line behaves as normal continuation again.
- * Returns the cursor position to restore afterward for the promote case, or -1 if the caller
- * doesn't need to touch the cursor (Android's own post-'\n' cursor position is already correct).
+ * Returns: -2 if the line that just ended wasn't a list line at all (nothing done). -1 if it WAS
+ * handled but the caller doesn't need to touch the cursor — this is the normal continuation
+ * case, where Android's own post-'\n' cursor position is already correct. >=0 is the cursor
+ * position to restore, for the promote-in-place case, which removes the '\n' Android just placed
+ * the cursor after.
  */
 fun handleListEnterKey(editable: Editable, newlinePos: Int): Int {
     val prevStart = lineStart(editable, newlinePos)
@@ -402,7 +405,7 @@ fun handleListEnterKey(editable: Editable, newlinePos: Int): Int {
     // the line; requiring the span to span all the way to newlinePos (the earlier version of
     // this check) fails the moment there's any typed content, which is why Enter stopped
     // continuing the list as soon as a line actually had text on it.
-    val existing = editable.getSpans(prevStart, prevStart, ListMarginSpan::class.java).firstOrNull() ?: return -1
+    val existing = editable.getSpans(prevStart, prevStart, ListMarginSpan::class.java).firstOrNull() ?: return -2
     if (prevText.isNotBlank()) {
         // Normal continuation onto the new line — same style/indent, fresh (unchecked, for
         // checklists) instance.
