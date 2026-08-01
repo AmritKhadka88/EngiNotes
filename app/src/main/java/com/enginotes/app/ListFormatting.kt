@@ -63,32 +63,38 @@ enum class NumberStyle(val label: String, val format: (Int) -> String) {
     ARABIC_PAREN("1)", { n -> "$n)" }),
     ARABIC_BRACKET("[1]", { n -> "[$n]" }),
     ARABIC_BOTH_PAREN("(1)", { n -> "($n)" }),
-    LOWER_ALPHA("a.", { n -> "${toAlpha(n, false)}." }),
-    UPPER_ALPHA("A.", { n -> "${toAlpha(n, true)}." }),
-    LOWER_ROMAN("i.", { n -> "${toRoman(n).lowercase()}." }),
-    UPPER_ROMAN("I.", { n -> "${toRoman(n)}." }),
+    LOWER_ALPHA("a.", { n -> "${numberStyleToAlpha(n, false)}." }),
+    UPPER_ALPHA("A.", { n -> "${numberStyleToAlpha(n, true)}." }),
+    LOWER_ROMAN("i.", { n -> "${numberStyleToRoman(n).lowercase()}." }),
+    UPPER_ROMAN("I.", { n -> "${numberStyleToRoman(n)}." }),
     ZERO_PADDED("01.", { n -> "${n.toString().padStart(2, '0')}." }),
     COLON("1:", { n -> "$n:" });
 
     companion object {
         fun safe(i: Int) = values()[i.coerceIn(0, values().size - 1)]
-        // a, b, c ... z, aa, ab ... — same scheme spreadsheets use for column letters, so it
-        // never "runs out" the way a fixed a-z table would past 26 items.
-        fun toAlpha(n: Int, upper: Boolean): String {
-            var num = n; val sb = StringBuilder()
-            while (num > 0) { val rem = (num - 1) % 26; sb.insert(0, ('a' + rem)); num = (num - 1) / 26 }
-            val s = if (sb.isEmpty()) "a" else sb.toString()
-            return if (upper) s.uppercase() else s
-        }
-        fun toRoman(n: Int): String {
-            if (n <= 0) return "0"
-            val vals = intArrayOf(1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1)
-            val syms = arrayOf("M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I")
-            var num = n; val sb = StringBuilder()
-            for (i in vals.indices) { while (num >= vals[i]) { sb.append(syms[i]); num -= vals[i] } }
-            return sb.toString()
-        }
     }
+}
+
+// Kotlin forbids enum entries from referencing their own companion object during entry
+// initialization (entries are constructed before the companion object exists) — that's what
+// actually broke the build here, not the functions themselves. Top-level functions have no such
+// restriction, so LOWER_ALPHA/UPPER_ALPHA/LOWER_ROMAN/UPPER_ROMAN above call these instead of a
+// companion-object version of the same logic.
+// a, b, c ... z, aa, ab ... — same scheme spreadsheets use for column letters, so it never "runs
+// out" the way a fixed a-z table would past 26 items.
+private fun numberStyleToAlpha(n: Int, upper: Boolean): String {
+    var num = n; val sb = StringBuilder()
+    while (num > 0) { val rem = (num - 1) % 26; sb.insert(0, ('a' + rem)); num = (num - 1) / 26 }
+    val s = if (sb.isEmpty()) "a" else sb.toString()
+    return if (upper) s.uppercase() else s
+}
+private fun numberStyleToRoman(n: Int): String {
+    if (n <= 0) return "0"
+    val vals = intArrayOf(1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1)
+    val syms = arrayOf("M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I")
+    var num = n; val sb = StringBuilder()
+    for (i in vals.indices) { while (num >= vals[i]) { sb.append(syms[i]); num -= vals[i] } }
+    return sb.toString()
 }
 
 enum class ChecklistStyle(val unchecked: String, val checked: String, val label: String) {
