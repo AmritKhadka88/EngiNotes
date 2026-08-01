@@ -1007,6 +1007,12 @@ class BooksActivity : AppCompatActivity() {
                 // silently only applying the next time the app happens to restart.
                 if (themeChanged) recreate()
             }.setNegativeButton("Cancel", null).show()
+            // AlertDialog's own title/chrome area is a separate region from the container we
+            // themed above — setView() only colors the body, so without this the title strip
+            // stayed the default system white no matter which theme (or how dark) was picked.
+            // Setting the WINDOW's background covers that chrome too, so the whole dialog reads
+            // as one consistent surface instead of a themed body with a white cap on top.
+            .also { dlg -> dlg.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(bgColorInt)) }
     }
 
     private fun showSecurityWarningDialog(onAcknowledged: () -> Unit) {

@@ -1677,6 +1677,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var onShapeCompleted: ((StrokeItem) -> Unit)? = null  // fired after each shape is drawn
     var fingerPanMode: Boolean = false
 
+    // Read Mode: view-only, no editing. STANDARD looks exactly like the normal editing canvas
+    // (same paper background/pattern) just with all drawing/erasing/editing blocked. PAPER_LIKE
+    // additionally reskins the canvas to feel like a physical page — darker backdrop, a soft
+    // faux drop-shadow around the page, and much fainter ruling — while still blocking editing.
+    enum class ReadMode { OFF, STANDARD, PAPER_LIKE }
+    var readMode: ReadMode = ReadMode.OFF
+        set(value) { field = value; invalidate() }
+
     fun scrollToPercent(pct: Float) {
         // Total scrollable height = number of pages × page height, minimum 2 pages
         val pageH = pageHeightPx()
@@ -2624,6 +2632,25 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
         }
         pruneFillBitmaps()
+        pruneImageBitmaps()
+    }
+
+    // Same idea as pruneFillBitmaps() below, for ImageItem. This one was missing entirely —
+    // ImageItem.bitmap held its decoded (up to 1920px, RGB_565) copy forever once loaded, with
+    // no release path, unlike FillItem which already had this exact treatment. A page with many
+    // large inserted photos would just accumulate memory as you scrolled around a session,
+    // never giving any of it back even for images long off-screen.
+    private fun pruneImageBitmaps() {
+        val images = actions.filterIsInstance<ImageItem>().filter { it.bitmap != null }
+        if (images.size <= 40) return  // small documents: no need to churn memory at all
+        val vl = -translateX / scaleFactor; val vt = -translateY / scaleFactor
+        val vr = vl + width / scaleFactor; val vb = vt + height / scaleFactor
+        val marginX = (vr - vl) * 1.5f; val marginY = (vb - vt) * 1.5f
+        for (img in images) {
+            if (img.loading) continue  // never release one mid-decode
+            val outside = img.x + img.w < vl - marginX || img.x > vr + marginX || img.y + img.h < vt - marginY || img.y > vb + marginY
+            if (outside) img.bitmap = null  // shared bitmapCache still has it, so scrolling back is a fast cache hit, not a full re-decode
+        }
     }
 
     // Releases in-memory bitmaps for FillItems well outside the current viewport, so a document
@@ -3113,6 +3140,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (polylineFingerDown) drawMagnifierLens(canvas, polylineCursorX, polylineCursorY)
         }
         canvas.restore()
+        // Paper-like Read Mode: a single cheap screen-space overlay instead of touching every
+        // stroke's own Paint — a low-alpha warm multiply nudges pure blacks/blues toward the
+        // ink-navy/charcoal a physical pen leaves on paper, without a per-item color-filter pass
+        // that would cost real time on a page with many strokes.
+        if (readMode == ReadMode.PAPER_LIKE) {
+            val warmOverlay = Paint().apply {
+                color = Color.argb(14, 255, 220, 170)
+                xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.MULTIPLY)
+            }
+            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), warmOverlay)
+        }
         drawCursor(canvas)
     }
 
@@ -5554,6 +5592,25 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun drawBackground(canvas: Canvas) {
         val vl = -translateX / scaleFactor; val vt = -translateY / scaleFactor
         val vr = vl + width / scaleFactor; val vb = vt + height / scaleFactor
+        // Paper-like Read Mode backdrop: a darker, warmer gray behind the page (instead of the
+        // normal canvas background) plus a soft faux shadow drawn just outside the page edges —
+        // together these are what make the page read as a physical sheet resting on a desk
+        // rather than filling the whole screen edge-to-edge like a normal editing canvas.
+        // Concentric fading rects instead of Paint.setShadowLayer(): shadowLayer needs a software
+        // (not hardware-accelerated) layer to render reliably, which isn't worth the extra
+        // per-frame cost or the risk of disabling hardware acceleration on this view just for
+        // Read Mode. This gets the same soft-edge look without either.
+        val paperLike = readMode == ReadMode.PAPER_LIKE
+        fun drawFauxPageShadow(pw: Float, ph: Float, topOffset: Float = 0f) {
+            if (!paperLike) return
+            val steps = 6; val maxSpread = 18f / scaleFactor
+            for (i in steps downTo 1) {
+                val spread = maxSpread * i / steps
+                val alpha = (10 * (steps - i + 1))
+                val sp = Paint().apply { color = Color.argb(alpha, 0, 0, 0) }
+                canvas.drawRect(-spread, topOffset - spread, pw + spread, topOffset + ph + spread, sp)
+            }
+        }
         when (canvasMode) {
             CanvasMode.INFINITE -> {
                 if (paperType == PaperType.BLANK_COLORED) { val p = Paint(); p.color = paperColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, p) }
@@ -5561,14 +5618,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             CanvasMode.FIXED -> {
                 val pw = pageWidthPx(); val ph = pageHeightPx()
-                val gp = Paint(); gp.color = if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                val gp = Paint(); gp.color = if (paperLike) Color.parseColor("#E8E3D5") else if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                drawFauxPageShadow(pw, ph)
                 val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else PAPER_BASE_COLOR; canvas.drawRect(0f, 0f, pw, ph, wp)
                 if (paperType != PaperType.BLANK && paperType != PaperType.BLANK_COLORED) { canvas.save(); canvas.clipRect(0f, 0f, pw, ph); drawPaperPattern(canvas, 0f, 0f, pw, ph); canvas.restore() }
                 val bp = Paint(); bp.color = Color.parseColor("#C8C0B0"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 1.5f / scaleFactor; canvas.drawRect(0f, 0f, pw, ph, bp)
             }
             CanvasMode.CONVENIENT -> {
                 val pw = pageWidthPx(); val ph = pageHeightPx(); val gap = 24f
-                val gp = Paint(); gp.color = if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                val gp = Paint(); gp.color = if (paperLike) Color.parseColor("#E8E3D5") else if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
                 val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else PAPER_BASE_COLOR
                 val sp = Paint(); sp.color = Color.parseColor("#00000022"); sp.style = Paint.Style.FILL
                 val period = ph + gap
@@ -5576,6 +5634,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val ei = kotlin.math.ceil(vb / period).toInt() + 1
                 for (i in si..ei) {
                     val top = i * period
+                    drawFauxPageShadow(pw, ph, top)
                     canvas.drawRect(2f / scaleFactor, top + 2f / scaleFactor, pw + 2f / scaleFactor, top + ph + 2f / scaleFactor, sp)
                     canvas.drawRect(0f, top, pw, top + ph, wp)
                     if (paperType != PaperType.BLANK && paperType != PaperType.BLANK_COLORED) { canvas.save(); canvas.clipRect(0f, top, pw, top + ph); drawPaperPattern(canvas, 0f, top, pw, top + ph); canvas.restore() }
@@ -5583,14 +5642,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             CanvasMode.PAGINATED -> {
                 val pw = pageWidthPx(); val ph = pageHeightPx(); val gap = 40f
-                val gp = Paint(); gp.color = if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                val gp = Paint(); gp.color = if (paperLike) Color.parseColor("#E8E3D5") else if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
                 val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else PAPER_BASE_COLOR
                 val bp = Paint(); bp.color = Color.parseColor("#C8C0B0"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 1.5f / scaleFactor
                 val period = ph + gap
                 val si = (kotlin.math.floor(vt / period).toInt() - 1).coerceAtLeast(0)
                 val ei = kotlin.math.ceil(vb / period).toInt() + 1
                 for (i in si..ei) {
-                    val top = i * period; canvas.drawRect(0f, top, pw, top + ph, wp)
+                    val top = i * period
+                    drawFauxPageShadow(pw, ph, top)
+                    canvas.drawRect(0f, top, pw, top + ph, wp)
                     if (paperType != PaperType.BLANK && paperType != PaperType.BLANK_COLORED) { canvas.save(); canvas.clipRect(0f, top, pw, top + ph); drawPaperPattern(canvas, 0f, top, pw, top + ph); canvas.restore() }
                     canvas.drawRect(0f, top, pw, top + ph, bp)
                 }
@@ -5600,34 +5661,39 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawPaperPattern(canvas: Canvas, left: Float, top: Float, right: Float, bottom: Float) {
         val ls = lineSpacingPx(); val gs = gridSpacingPx(); val ds = dotSpacingPx()
+        // Read Mode (Paper-like): dial ruling down to ~18% of its normal opacity so it stops
+        // competing with the content — a page you're reading shouldn't have the grid/rule fight
+        // for attention the way it reasonably can while actively drafting on it.
+        val ruleAlphaScale = if (readMode == ReadMode.PAPER_LIKE) 0.18f else 1f
+        fun scaled(p: Paint): Paint { if (ruleAlphaScale != 1f) p.alpha = (p.alpha * ruleAlphaScale).toInt().coerceAtLeast(1); return p }
         when (paperType) {
             PaperType.LINED -> {
-                val p = Paint(); p.color = Color.parseColor("#C8D6F0"); p.strokeWidth = 1f
+                val p = scaled(Paint().apply { color = Color.parseColor("#C8D6F0"); strokeWidth = 1f })
                 var y = (top / ls).toInt() * ls; while (y < bottom) { canvas.drawLine(left, y, right, y, p); y += ls }
                 // School-notebook-style double vertical margin line near the left edge.
                 if (linedDoubleMargin) {
-                    val mp = Paint(); mp.color = Color.parseColor("#F0A8A8"); mp.strokeWidth = 1.5f
+                    val mp = scaled(Paint().apply { color = Color.parseColor("#F0A8A8"); strokeWidth = 1.5f })
                     val marginX = left + 60f
                     canvas.drawLine(marginX, top, marginX, bottom, mp)
                     canvas.drawLine(marginX + 6f, top, marginX + 6f, bottom, mp)
                 }
             }
             PaperType.GRID -> {
-                val p = Paint(); p.color = Color.parseColor("#D0D0D0"); p.strokeWidth = 1f
-                val mp = Paint(); mp.color = Color.parseColor("#A0A0A0"); mp.strokeWidth = 1.5f
+                val p = scaled(Paint().apply { color = Color.parseColor("#D0D0D0"); strokeWidth = 1f })
+                val mp = scaled(Paint().apply { color = Color.parseColor("#A0A0A0"); strokeWidth = 1.5f })
                 var i = (left / gs).toInt(); var x = i * gs
                 while (x < right) { canvas.drawLine(x, top, x, bottom, if (gridMajorDivision > 0 && i % gridMajorDivision == 0) mp else p); i++; x = i * gs }
                 var j = (top / gs).toInt(); var y = j * gs
                 while (y < bottom) { canvas.drawLine(left, y, right, y, if (gridMajorDivision > 0 && j % gridMajorDivision == 0) mp else p); j++; y = j * gs }
             }
             PaperType.DOTS -> {
-                val p = Paint(); p.color = Color.parseColor("#B0B0B0"); p.style = Paint.Style.FILL
+                val p = scaled(Paint().apply { color = Color.parseColor("#B0B0B0"); style = Paint.Style.FILL })
                 var x = (left / ds).toInt() * ds; while (x < right) { var y = (top / ds).toInt() * ds; while (y < bottom) { canvas.drawCircle(x, y, 2.5f, p); y += ds }; x += ds }
             }
             PaperType.ENGINEERING -> {
                 val ms = engineeringSpacingPref; val me = engineeringMajorDivision
-                val mp = Paint(); mp.color = Color.parseColor("#E0E8F5"); mp.strokeWidth = 1f
-                val Mp = Paint(); Mp.color = Color.parseColor("#A8C0E8"); Mp.strokeWidth = 1.5f
+                val mp = scaled(Paint().apply { color = Color.parseColor("#E0E8F5"); strokeWidth = 1f })
+                val Mp = scaled(Paint().apply { color = Color.parseColor("#A8C0E8"); strokeWidth = 1.5f })
                 var i = (left / ms).toInt(); var x = i * ms; while (x < right) { canvas.drawLine(x, top, x, bottom, if (me > 0 && i % me == 0) Mp else mp); i++; x = i * ms }
                 var j = (top / ms).toInt(); var y = j * ms; while (y < bottom) { canvas.drawLine(left, y, right, y, if (me > 0 && j % me == 0) Mp else mp); j++; y = j * ms }
             }
@@ -5676,8 +5742,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             return true
         }
 
-        // fingerPanMode: single finger ALWAYS pans — block ALL other tools immediately
-        if (fingerPanMode && event.pointerCount == 1) {
+        // fingerPanMode: single finger ALWAYS pans — block ALL other tools immediately.
+        // Read Mode (any variant) reuses this exact same gate: view-only means single-finger
+        // touches should only ever pan, never draw/erase/select/edit, which is precisely what
+        // this path already guarantees for fingerPanMode. Two-finger pinch-zoom below is
+        // untouched by either — it was never tool-gated, so reading still zooms normally.
+        if ((fingerPanMode || readMode != ReadMode.OFF) && event.pointerCount == 1) {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     // Cancel any in-progress stroke so pan→draw switch doesn't produce a straight line

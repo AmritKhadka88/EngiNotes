@@ -924,6 +924,14 @@ class MainActivity : AppCompatActivity() {
                 .withEndAction { btnTouchToggle.animate().scaleX(1f).scaleY(1f).setDuration(80).start() }.start()
         }
 
+        // Read Mode toggle: while off, tapping shows the Standard/Paper-like picker; while
+        // already in either variant, tapping the same icon exits back to normal editing — no
+        // need to hunt for a separate "exit" control for the common case of just turning it
+        // back off the same way it was turned on.
+        findViewById<ImageButton>(R.id.btnReadMode).setOnClickListener {
+            if (drawingView.readMode != DrawingView.ReadMode.OFF) exitReadMode() else showReadModeDialog()
+        }
+
         // Page scroll thumb — touch and drag on right edge moves canvas
         val scrollThumb = findViewById<View?>(R.id.pageScrollThumb)
         scrollThumb?.let { thumb ->
@@ -2024,6 +2032,7 @@ class MainActivity : AppCompatActivity() {
     // when this is tapped stays active — this only ever touches view visibility, never
     // drawingView.currentTool, so there's nothing here that could reset it.
     private var fullscreenRestoreBtn: View? = null
+    private var readModeExitBtn: View? = null
     private fun addFullscreenToggleButton() {
         val topBar = findViewById<LinearLayout?>(R.id.topBarContainer) ?: return
         val outValue = android.util.TypedValue()
@@ -2113,6 +2122,61 @@ class MainActivity : AppCompatActivity() {
             androidx.core.view.ViewCompat.requestApplyInsets(window.decorView)
             findViewById<View?>(android.R.id.content)?.requestLayout()
         }
+    }
+
+    // Read Mode picker: Standard looks exactly like the normal editing canvas, just uneditable.
+    // Paper-like additionally reskins the canvas toward a physical page and hides the top bar
+    // for a "floating sheet" look, matching the fullscreen feature's own chrome-hiding pattern
+    // above rather than inventing a second, separate one.
+    private fun showReadModeDialog() {
+        val options = arrayOf("Standard — view only, same paper look", "Paper-like — physical paper feel")
+        AlertDialog.Builder(this).setTitle("Read Mode")
+            .setItems(options) { _, i ->
+                enterReadMode(if (i == 0) DrawingView.ReadMode.STANDARD else DrawingView.ReadMode.PAPER_LIKE)
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun enterReadMode(mode: DrawingView.ReadMode) {
+        closeInlineEditor(true)
+        drawingView.readMode = mode
+        // Neither variant allows editing, so the tool palette has nothing to actually do — hide
+        // it in both. Standard keeps the top bar visible (this same Read Mode icon is the way
+        // back out). Paper-like additionally hides the top bar for the floating-sheet look, so
+        // it needs its own small floating exit affordance instead.
+        setBottomToolbarVisible(false)
+        findViewById<View?>(R.id.toolbarScroll)?.visibility = View.GONE
+        if (mode == DrawingView.ReadMode.PAPER_LIKE) {
+            findViewById<View?>(R.id.topBarContainer)?.visibility = View.GONE
+            if (readModeExitBtn == null) {
+                val btn = TextView(this).apply {
+                    text = "📖 Exit Read Mode"; textSize = 13f; gravity = Gravity.CENTER
+                    setTextColor(Color.WHITE)
+                    setPadding(dp(16), dp(10), dp(16), dp(10))
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        setColor(Color.parseColor("#991C1C1E")); cornerRadius = dp(20).toFloat()
+                    }
+                    elevation = dp(6).toFloat()
+                    setOnClickListener { exitReadMode() }
+                }
+                val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+                lp.gravity = Gravity.TOP or Gravity.END
+                lp.topMargin = dp(14); lp.rightMargin = dp(14)
+                canvasContainer.addView(btn, lp)
+                readModeExitBtn = btn
+            }
+            readModeExitBtn?.visibility = View.VISIBLE
+        }
+        Toast.makeText(this, if (mode == DrawingView.ReadMode.STANDARD) "Read Mode: Standard" else "Read Mode: Paper-like", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun exitReadMode() {
+        drawingView.readMode = DrawingView.ReadMode.OFF
+        findViewById<View?>(R.id.topBarContainer)?.visibility = View.VISIBLE
+        if (getPrefs().getBoolean("show_bottom_toolbar", true)) setBottomToolbarVisible(true)
+        if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
+            findViewById<View?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
+        }
+        readModeExitBtn?.visibility = View.GONE
     }
 
     internal fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
@@ -3956,6 +4020,11 @@ class MainActivity : AppCompatActivity() {
         val titleView = TextView(this).apply {
             text = "Settings"; textSize = 22f; typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor("#1C1C1E")); setPadding(dp(24), dp(20), dp(24), dp(8))
+            // Container below has the theme's background baked in via its GradientDrawable, but
+            // this title TextView had none of its own — it was rendering on the dialog window's
+            // plain default (white) background, which is exactly the white strip above an
+            // otherwise-themed dialog body. Matching it here makes the two read as one surface.
+            setBackgroundColor(currentThemeBackgroundColor())
         }
         AlertDialog.Builder(this).setCustomTitle(titleView).setView(scroll)
             .setPositiveButton("Done") { _,_ ->
@@ -3997,7 +4066,7 @@ class MainActivity : AppCompatActivity() {
                 applyBarIconSize(selBarSize)
                 rebuildContextBar()
                 repositionContextBar()
-            }.show()
+            }.show().also { dlg -> dlg.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(currentThemeBackgroundColor())) }
     }
 
     private fun checkAndRecordAudio() {
