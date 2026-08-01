@@ -311,7 +311,13 @@ fun applyListStyle(editable: Spannable, from: Int, to: Int, kind: Char, styleInd
                 else -> return
             }
             val end = if (le < editable.length) le + 1 else le  // swallow trailing \n so span doesn't bleed onto next line if text shifts
-            editable.setSpan(span, ls, end.coerceAtMost(editable.length).coerceAtLeast(ls), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            // SPAN_INCLUSIVE_INCLUSIVE, not SPAN_EXCLUSIVE_EXCLUSIVE — confirmed via device
+            // diagnostics that a zero-length SPAN_EXCLUSIVE_EXCLUSIVE span (ls == end, i.e. an
+            // empty line) was being silently dropped by setSpan() and never actually added, while
+            // a non-zero-length one (a line with text) worked fine. INCLUSIVE_INCLUSIVE is the
+            // same flag type Android's own text cursor uses for its own zero-length position
+            // markers, and doesn't have this problem.
+            editable.setSpan(span, ls, end.coerceAtMost(editable.length).coerceAtLeast(ls), Spannable.SPAN_INCLUSIVE_INCLUSIVE)
         }
     }
 }
@@ -388,7 +394,7 @@ fun applyAutoformatTrigger(editable: Editable, spaceInsertPos: Int, textSizePx: 
     editable.delete(ls, spaceInsertPos + 1) // consumes the trigger text AND the triggering space
     editable.setSpan(
         when (kind) { LIST_SPAN_TYPE_BULLET -> BulletMarginSpan(styleIndex, textSizePx); else -> NumberMarginSpan(styleIndex, textSizePx) },
-        ls, ls, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+        ls, ls, Spannable.SPAN_INCLUSIVE_INCLUSIVE
     )
     renumberLists(editable)
     return beforeSpace
@@ -411,11 +417,21 @@ fun applyAutoformatTrigger(editable: Editable, spaceInsertPos: Int, textSizePx: 
  * the cursor after.
  */
 // TEMPORARY diagnostic — captures a step-by-step trail from inside handleListEnterKey itself,
-// checked as close to each operation as possible (including immediately after its own setSpan
-// call, before returning). Overwritten on every call; the caller reads it right after calling
-// handleListEnterKey and displays it, so we can see exactly which step disagrees with the
-// others instead of guessing from the outside.
+// checked as close to each operation as possible. Overwritten on every call; the caller reads it
+// right after calling handleListEnterKey and displays it.
 var listEnterDebugLog: String = ""
+
+/**
+ * Set by handleListEnterKey for the "continuation" case instead of calling setSpan() directly.
+ * Confirmed by diagnostic: setSpan() called synchronously from inside afterTextChanged — i.e.
+ * reentrantly, while the SpannableStringBuilder is still unwinding the very text-change
+ * notification that triggered this callback — was silently NOT taking effect (re-querying for
+ * the exact span object immediately afterward, in the same function call, came back empty). The
+ * caller must apply this via a posted Runnable, once that notification has fully finished, then
+ * clear it back to null.
+ */
+data class PendingListSpan(val span: ListMarginSpan, val pos: Int)
+var pendingListSpanApply: PendingListSpan? = null
 
 fun handleListEnterKey(editable: Editable, newlinePos: Int): Int {
     val prevStart = lineStart(editable, newlinePos)
@@ -443,16 +459,11 @@ fun handleListEnterKey(editable: Editable, newlinePos: Int): Int {
         }
         val lenBefore = editable.length
         val willSet = newPos <= lenBefore
-        if (willSet) editable.setSpan(newSpan, newPos, newPos, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-        // Re-query for the exact span object we just tried to add, immediately, synchronously,
-        // within this same function call — the most immediate check possible.
-        val foundRightAfter = editable.getSpans(newPos, newPos, ListMarginSpan::class.java).any { it === newSpan }
-        val countRightAfter = editable.getSpans(0, editable.length, ListMarginSpan::class.java).size
-        renumberLists(editable)
-        val countAfterRenumber = editable.getSpans(0, editable.length, ListMarginSpan::class.java).size
+        // NOT calling editable.setSpan() here anymore — see PendingListSpan's doc comment above.
+        // The caller applies it in a posted Runnable instead.
+        if (willSet) pendingListSpanApply = PendingListSpan(newSpan, newPos)
         listEnterDebugLog = "newlinePos=$newlinePos prevStart=$prevStart prevText='$prevText' existingType=${existing.javaClass.simpleName} " +
-            "newPos=$newPos lenBefore=$lenBefore willSet=$willSet foundRightAfterSetSpan=$foundRightAfter " +
-            "countRightAfterSetSpan=$countRightAfter countAfterRenumber=$countAfterRenumber"
+            "newPos=$newPos lenBefore=$lenBefore willSet=$willSet (setSpan deferred to caller's posted Runnable — see PendingListSpan)"
         return -1
     }
     // Empty line: promote in place instead of creating a new paragraph. Remove the '\n' this
@@ -465,7 +476,7 @@ fun handleListEnterKey(editable: Editable, newlinePos: Int): Int {
         is NumberMarginSpan -> NumberMarginSpan(existing.styleIndex, existing.textSizePx, existing.indentLevel + 1)
         is ChecklistMarginSpan -> ChecklistMarginSpan(existing.styleIndex, existing.textSizePx, existing.indentLevel + 1, false)
     }
-    editable.setSpan(promoted, prevStart, prevStart, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+    editable.setSpan(promoted, prevStart, prevStart, Spannable.SPAN_INCLUSIVE_INCLUSIVE)
     renumberLists(editable)
     return prevStart
 }
@@ -518,9 +529,9 @@ private fun rebuildSpannableForItem(item: TextItem): android.text.SpannableStrin
             'C' -> sb.setSpan(android.text.style.ForegroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             'U' -> sb.setSpan(android.text.style.UnderlineSpan(), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             'H' -> sb.setSpan(android.text.style.BackgroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            LIST_SPAN_TYPE_BULLET -> sb.setSpan(BulletMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value)), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            LIST_SPAN_TYPE_NUMBER -> sb.setSpan(NumberMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value)), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            LIST_SPAN_TYPE_CHECK -> sb.setSpan(ChecklistMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value), decodeListChecked(sp.value)), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            LIST_SPAN_TYPE_BULLET -> sb.setSpan(BulletMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value)), s, e, Spannable.SPAN_INCLUSIVE_INCLUSIVE)
+            LIST_SPAN_TYPE_NUMBER -> sb.setSpan(NumberMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value)), s, e, Spannable.SPAN_INCLUSIVE_INCLUSIVE)
+            LIST_SPAN_TYPE_CHECK -> sb.setSpan(ChecklistMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value), decodeListChecked(sp.value)), s, e, Spannable.SPAN_INCLUSIVE_INCLUSIVE)
         }
     }
     return sb

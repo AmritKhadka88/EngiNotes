@@ -596,9 +596,9 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
             'C'->spannable.setSpan(ForegroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             'U'->spannable.setSpan(UnderlineSpan(),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             'H'->spannable.setSpan(BackgroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            LIST_SPAN_TYPE_BULLET->spannable.setSpan(BulletMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value)),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            LIST_SPAN_TYPE_NUMBER->spannable.setSpan(NumberMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value)),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            LIST_SPAN_TYPE_CHECK->spannable.setSpan(ChecklistMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value),decodeListChecked(sp.value)),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            LIST_SPAN_TYPE_BULLET->spannable.setSpan(BulletMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value)),s,e,Spannable.SPAN_INCLUSIVE_INCLUSIVE)
+            LIST_SPAN_TYPE_NUMBER->spannable.setSpan(NumberMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value)),s,e,Spannable.SPAN_INCLUSIVE_INCLUSIVE)
+            LIST_SPAN_TYPE_CHECK->spannable.setSpan(ChecklistMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value),decodeListChecked(sp.value)),s,e,Spannable.SPAN_INCLUSIVE_INCLUSIVE)
         } }
         renumberLists(spannable)
         // Ceiling is the actual remaining PAGE width from this item's world x-position, converted
@@ -746,20 +746,33 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                 // getting missed/queued/timed-out before they could be read or screenshotted. This
                 // stays on screen until manually dismissed. Shows: (1) the immediate span count
                 // right after handleListEnterKey returns, and (2) the internal trail written from
-                // inside that function itself, checked right after its own setSpan call — the
-                // most direct look possible at whether the add is happening at all.
+                // inside that function itself.
                 val spansImmediate = (et.text as? Spannable)?.getSpans(0, et.text.length, ListMarginSpan::class.java) ?: emptyArray()
                 val immediateMsg = "newCursor=$newCursor\nspanCount=${spansImmediate.size}\npositions=${spansImmediate.joinToString(","){ (et.text.getSpanStart(it)).toString() }}\n\ninternal trail:\n$listEnterDebugLog"
                 AlertDialog.Builder(this@showInlineTextEditor).setTitle("DIAG Enter (immediate)").setMessage(immediateMsg).setPositiveButton("OK", null).show()
                 if (newCursor != -2) {
                     lastAutoformat = null
+                    // Apply the pending continuation span (if any) here, in a posted Runnable —
+                    // NOT inside afterTextChanged itself. Diagnostics showed setSpan() called
+                    // synchronously from inside afterTextChanged was being silently dropped; this
+                    // runs after that notification has fully finished. Also switched the span's
+                    // own flag from EXCLUSIVE_EXCLUSIVE to INCLUSIVE_INCLUSIVE (see
+                    // PendingListSpan's doc comment) — keeping both changes together since we
+                    // can't be certain which one actually mattered, and there's no cost to having
+                    // both.
+                    val pending = pendingListSpanApply
                     et.post {
+                        if (pending != null) {
+                            (et.text as? Spannable)?.setSpan(pending.span, pending.pos, pending.pos, Spannable.SPAN_INCLUSIVE_INCLUSIVE)
+                            renumberLists(et.text)
+                            pendingListSpanApply = null
+                        }
                         if (newCursor >= 0) et.setSelection(newCursor.coerceAtMost(et.text.length))
                         et.requestLayout(); et.invalidate()
                     }
                 }
-                // TEMPORARY diagnostic — same as above but read after the layout pass has run, so
-                // we can tell "never added" apart from "added, then lost during layout/redraw".
+                // TEMPORARY diagnostic — same as above but read after the layout pass (and the
+                // deferred setSpan above) has run, so we can confirm the fix actually worked.
                 et.post {
                     et.post {
                         val spansNow = (et.text as? Spannable)?.getSpans(0, et.text.length, ListMarginSpan::class.java) ?: emptyArray()
