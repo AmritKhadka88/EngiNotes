@@ -38,6 +38,7 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
+import androidx.appcompat.app.AlertDialog
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import java.io.File
@@ -741,20 +742,15 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                 suppressListWatcher = true
                 val newCursor = handleListEnterKey(s, pos)
                 suppressListWatcher = false
-                // TEMPORARY diagnostic — checked IMMEDIATELY, synchronously, right after
-                // handleListEnterKey returns, before anything else runs. Compare against the
-                // delayed "DIAG Enter (delayed)" toast below: if THIS one already shows the new
-                // span missing, the add itself never stuck (or the point-query in
-                // handleListEnterKey found the wrong/no span to begin with); if this one looks
-                // right but the delayed one doesn't, something removes it afterward (a strong
-                // candidate being IME/autocorrect activity that runs right after Enter).
-                run {
-                    val spansNow0 = (et.text as? Spannable)?.getSpans(0, et.text.length, ListMarginSpan::class.java) ?: emptyArray()
-                    Toast.makeText(this@showInlineTextEditor,
-                        "DIAG Enter immediate: newCursor=$newCursor spanCount=${spansNow0.size} positions=${spansNow0.joinToString(","){ (et.text.getSpanStart(it)).toString() }}",
-                        Toast.LENGTH_LONG).show()
-                }
-                Toast.makeText(this@showInlineTextEditor, "DIAG internal trail: $listEnterDebugLog", Toast.LENGTH_LONG).show()
+                // TEMPORARY diagnostic — an AlertDialog instead of a Toast because toasts were
+                // getting missed/queued/timed-out before they could be read or screenshotted. This
+                // stays on screen until manually dismissed. Shows: (1) the immediate span count
+                // right after handleListEnterKey returns, and (2) the internal trail written from
+                // inside that function itself, checked right after its own setSpan call — the
+                // most direct look possible at whether the add is happening at all.
+                val spansImmediate = (et.text as? Spannable)?.getSpans(0, et.text.length, ListMarginSpan::class.java) ?: emptyArray()
+                val immediateMsg = "newCursor=$newCursor\nspanCount=${spansImmediate.size}\npositions=${spansImmediate.joinToString(","){ (et.text.getSpanStart(it)).toString() }}\n\ninternal trail:\n$listEnterDebugLog"
+                AlertDialog.Builder(this@showInlineTextEditor).setTitle("DIAG Enter (immediate)").setMessage(immediateMsg).setPositiveButton("OK", null).show()
                 if (newCursor != -2) {
                     lastAutoformat = null
                     et.post {
@@ -762,18 +758,14 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                         et.requestLayout(); et.invalidate()
                     }
                 }
-                // TEMPORARY diagnostic — reports actual span/layout state after the Enter-key
-                // handling, posted further out than the requestLayout/invalidate above so it
-                // reads state AFTER that layout pass has run.
+                // TEMPORARY diagnostic — same as above but read after the layout pass has run, so
+                // we can tell "never added" apart from "added, then lost during layout/redraw".
                 et.post {
                     et.post {
                         val spansNow = (et.text as? Spannable)?.getSpans(0, et.text.length, ListMarginSpan::class.java) ?: emptyArray()
                         val lay = et.layout
-                        Toast.makeText(this@showInlineTextEditor,
-                            "DIAG Enter delayed: newCursor=$newCursor spanCount=${spansNow.size} " +
-                            "positions=${spansNow.joinToString(","){ (et.text.getSpanStart(it)).toString() }} " +
-                            "layout=${if (lay == null) "NULL" else "ok lines=${lay.lineCount}"}",
-                            Toast.LENGTH_LONG).show()
+                        val delayedMsg = "newCursor=$newCursor\nspanCount=${spansNow.size}\npositions=${spansNow.joinToString(","){ (et.text.getSpanStart(it)).toString() }}\nlayout=${if (lay == null) "NULL" else "ok lines=${lay.lineCount}"}"
+                        AlertDialog.Builder(this@showInlineTextEditor).setTitle("DIAG Enter (delayed)").setMessage(delayedMsg).setPositiveButton("OK", null).show()
                     }
                 }
             }

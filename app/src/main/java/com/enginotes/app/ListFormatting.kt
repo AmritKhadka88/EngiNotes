@@ -628,7 +628,7 @@ private fun MainActivity.applyPickedListStyle(kind: Char, styleIndex: Int, et: E
         // earlier tap); if this one is >0 but the delayed one is 0, something removes it later.
         run {
             val immediateCount = (et.text as? Spannable)?.getSpans(0, et.text.length, ListMarginSpan::class.java)?.size ?: -1
-            Toast.makeText(this, "DIAG immediate: spanCount=$immediateCount right after apply (kind=$kind)", Toast.LENGTH_LONG).show()
+            AlertDialog.Builder(this).setTitle("DIAG apply (immediate)").setMessage("spanCount=$immediateCount right after apply (kind=$kind)").setPositiveButton("OK", null).show()
         }
         // Posted rather than called synchronously — getLeadingMargin() affects line width, a
         // MEASURE concern, and a synchronous requestLayout() here was not reliably sticking
@@ -639,20 +639,20 @@ private fun MainActivity.applyPickedListStyle(kind: Char, styleIndex: Int, et: E
         // TEMPORARY diagnostic — reports the actual runtime state right after the tap, so we can
         // see what's really happening instead of guessing. Posted a second time, further out
         // than the requestLayout/invalidate above, so it reads state AFTER that layout pass has
-        // actually run.
+        // actually run. AlertDialog instead of Toast so it stays on screen until dismissed.
         et.post {
             et.post {
                 val spansNow = (et.text as? Spannable)?.getSpans(0, et.text.length, ListMarginSpan::class.java) ?: emptyArray()
                 val sp = spansNow.firstOrNull()
                 val lay = et.layout
                 val msg = if (sp == null) {
-                    "DIAG delayed: no ListMarginSpan found after apply (kind=$kind textLen=${et.text.length})"
+                    "no ListMarginSpan found after apply (kind=$kind textLen=${et.text.length})"
                 } else {
                     val start = et.text.getSpanStart(sp)
-                    "DIAG delayed: span@$start marginPx=${sp.marginPx} etW=${et.width} etH=${et.height} padL=${et.totalPaddingLeft} " +
+                    "span@$start marginPx=${sp.marginPx} etW=${et.width} etH=${et.height} padL=${et.totalPaddingLeft}\n" +
                     "layout=${if (lay == null) "NULL" else "ok lines=${lay.lineCount} lineLeft0=${lay.getLineLeft(0)} lineTop0=${lay.getLineTop(0)} baseline0=${lay.getLineBaseline(0)}"}"
                 }
-                Toast.makeText(this@applyPickedListStyle, msg, Toast.LENGTH_LONG).show()
+                AlertDialog.Builder(this@applyPickedListStyle).setTitle("DIAG apply (delayed)").setMessage(msg).setPositiveButton("OK", null).show()
             }
         }
     } else if (item != null) {
