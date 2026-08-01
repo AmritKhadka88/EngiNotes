@@ -196,13 +196,19 @@ class ChecklistMarginSpan(styleIndex: Int, textSizePx: Float, indentLevel: Int =
  */
 class ListAwareEditText(context: android.content.Context) : android.widget.EditText(context) {
     override fun onDraw(canvas: Canvas) {
+        // suppressAutoDraw MUST be set before super.onDraw() runs, not after — super.onDraw()
+        // is what internally invokes drawLeadingMargin (the old mechanism), so setting the flag
+        // afterward meant drawLeadingMargin still drew the glyph once via the old path on every
+        // single call, and then the code below drew it again — two glyphs, every frame, not just
+        // a one-time flicker on the first frame like the original comment here assumed.
+        val edForSuppress = text as? Spannable
+        edForSuppress?.getSpans(0, edForSuppress.length, ListMarginSpan::class.java)?.forEach { it.suppressAutoDraw = true }
         super.onDraw(canvas)
         val layout = layout ?: return
-        val ed = text as? Spannable ?: return
+        val ed = edForSuppress ?: return
         val spans = ed.getSpans(0, ed.length, ListMarginSpan::class.java)
         if (spans.isEmpty()) return
         for (sp in spans) {
-            sp.suppressAutoDraw = true  // this view owns drawing it now; see the span's own comment
             val pos = ed.getSpanStart(sp).coerceIn(0, ed.length)
             val line = layout.getLineForOffset(pos)
             // Only the paragraph's own start line gets a glyph — matches the

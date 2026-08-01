@@ -722,6 +722,13 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                     val ls = pos - trigger.length  // trigger text + space were both removed; line start is stable
                     lastAutoformat = ls to trigger
                     et.post { et.setSelection(ls.coerceAtMost(et.text.length)) }
+                    // Same reasoning as the toolbar picker's requestLayout() call: getLeadingMargin()
+                    // affects line width, a MEASURE concern — TextView's own automatic relayout-on-
+                    // span-change isn't reliably triggering a full remeasure for a span added this way
+                    // (reentrantly, from within an already-in-progress text-change notification), which
+                    // is exactly why the glyph wasn't appearing after Enter-continuation despite the
+                    // span genuinely being added (confirmed by the diagnostic toast succeeding).
+                    et.requestLayout(); et.invalidate()
                 }
             }
             // A single '\n' was just typed: continue the list style onto the new line, or — if
@@ -743,6 +750,7 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                     newCursor == -1 -> "Enter: continued list onto new line"
                     else -> "Enter: that line wasn't a list line"
                 }, Toast.LENGTH_SHORT).show()
+                if (newCursor != -2) { et.requestLayout(); et.invalidate() }  // force relayout for both the continue (-1) and promote (>=0) cases — see the matching comment above
                 if (newCursor >= 0) {
                     lastAutoformat = null
                     et.post { et.setSelection(newCursor.coerceAtMost(et.text.length)) }
