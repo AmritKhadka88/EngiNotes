@@ -590,7 +590,7 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
         val et=EditText(this)
         val spannable=SpannableStringBuilder(item?.text?:"")
         val itemTextSizePx = (item?.size ?: editSize)
-        item?.spans?.forEach{ sp-> val s=sp.start.coerceIn(0,spannable.length);val e=sp.end.coerceIn(s,spannable.length); if(s<e) when(sp.type){
+        item?.spans?.forEach{ sp-> val s=sp.start.coerceIn(0,spannable.length);val e=sp.end.coerceIn(s,spannable.length); if(s<=e) when(sp.type){
             'S'->spannable.setSpan(StyleSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             'C'->spannable.setSpan(ForegroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             'U'->spannable.setSpan(UnderlineSpan(),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
@@ -692,31 +692,50 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
             false
         }
 
+        // pendingSpaceTrigger / pendingEnterPos: onTextChanged only RECORDS what happened (it
+        // fires before Android has finished its own internal post-insertion processing, e.g.
+        // moving the cursor to the end of what was just typed) — the actual list mutation runs
+        // in afterTextChanged instead, which is the place Android's TextWatcher docs actually
+        // say it's safe to modify the Editable from. Mutating (and especially repositioning the
+        // cursor) from inside onTextChanged was racing Android's own internal cursor placement,
+        // which is what made a fresh autoformat conversion appear to silently undo itself.
+        var pendingSpaceTrigger = -1
+        var pendingEnterPos = -1
+
         et.addTextChangedListener(object:TextWatcher{ override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}; override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){ if(suppressListWatcher) return; if(count>0){ val e2=et.text;val end=start+count; if(pendingBold) e2.setSpan(StyleSpan(Typeface.BOLD),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingItalic) e2.setSpan(StyleSpan(Typeface.ITALIC),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); if(pendingUnderline) e2.setSpan(UnderlineSpan(),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE); pendingHighlight?.let{ e2.setSpan(BackgroundColorSpan(it),start,end,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
-            // A single space just typed: Word-style autoformat — "- ", "> ", or "12. " at the
-            // very start of an empty line converts it into a bullet/numbered list line.
-            if (count == 1 && end <= e2.length && e2[start] == ' ') {
-                suppressListWatcher = true
-                val trigger = applyAutoformatTrigger(e2, start, et.textSize)
-                suppressListWatcher = false
-                if (trigger != null) {
-                    val ls = start - trigger.length  // trigger text + space were both removed; line start is stable
-                    lastAutoformat = ls to trigger
-                    et.setSelection(ls)
-                }
-            }
-            // A single '\n' just typed: continue the list style onto the new line, or — if the
-            // line that just ended was empty — promote that same line one indent level deeper in
-            // place instead (see handleListEnterKey's doc comment for the full behavior).
-            else if (count == 1 && e2.getOrNull(start) == '\n') {
-                suppressListWatcher = true
-                val newCursor = handleListEnterKey(e2, start)
-                suppressListWatcher = false
-                if (newCursor >= 0) { lastAutoformat = null; et.setSelection(newCursor) }
-            }
+            if (count == 1 && end <= e2.length && e2[start] == ' ') pendingSpaceTrigger = start
+            else if (count == 1 && e2.getOrNull(start) == '\n') pendingEnterPos = start
         } }; override fun afterTextChanged(s:Editable?){
             if (suppressListWatcher) return
-            if (s != null) renumberLists(s)
+            if (s == null) return
+            // A single space was just typed: Word-style autoformat — "- ", "> ", or "12. " at
+            // the very start of an empty line converts it into a bullet/numbered list line.
+            if (pendingSpaceTrigger >= 0) {
+                val pos = pendingSpaceTrigger; pendingSpaceTrigger = -1
+                suppressListWatcher = true
+                val trigger = applyAutoformatTrigger(s, pos, et.textSize)
+                suppressListWatcher = false
+                if (trigger != null) {
+                    val ls = pos - trigger.length  // trigger text + space were both removed; line start is stable
+                    lastAutoformat = ls to trigger
+                    et.post { et.setSelection(ls.coerceAtMost(et.text.length)) }
+                }
+            }
+            // A single '\n' was just typed: continue the list style onto the new line, or — if
+            // the line that just ended was empty — promote that same line one indent level
+            // deeper in place instead (see handleListEnterKey's doc comment for the full
+            // behavior).
+            else if (pendingEnterPos >= 0) {
+                val pos = pendingEnterPos; pendingEnterPos = -1
+                suppressListWatcher = true
+                val newCursor = handleListEnterKey(s, pos)
+                suppressListWatcher = false
+                if (newCursor >= 0) {
+                    lastAutoformat = null
+                    et.post { et.setSelection(newCursor.coerceAtMost(et.text.length)) }
+                }
+            }
+            renumberLists(s)
             // Android moves the cursor to the end of any inserted text (a paste is one big
             // insert) and auto-scrolls EditText's OWN internal viewport to keep that cursor
             // visible — BEFORE the box has resized to its new full WRAP_CONTENT height. That
@@ -1137,7 +1156,16 @@ internal fun MainActivity.closeInlineEditor(commit:Boolean, delete:Boolean=false
         val et=activeEditText?:return; val tb=activeToolbar; val box=activeEditBox
         val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager; imm.hideSoftInputFromWindow(et.windowToken,0)
         val text=et.text.toString(); val spans=mutableListOf<TextSpanData>(); val ed=et.text
-        for(span in ed.getSpans(0,ed.length,Any::class.java)){ val s=ed.getSpanStart(span);val e=ed.getSpanEnd(span); if(s<0||e<0||s>=e) continue; when(span){ is StyleSpan->spans.add(TextSpanData(s,e,'S',span.style)); is ForegroundColorSpan->spans.add(TextSpanData(s,e,'C',span.foregroundColor)); is UnderlineSpan->spans.add(TextSpanData(s,e,'U',0)); is BackgroundColorSpan->spans.add(TextSpanData(s,e,'H',span.backgroundColor))
+        for(span in ed.getSpans(0,ed.length,Any::class.java)){ val s=ed.getSpanStart(span);val e=ed.getSpanEnd(span)
+            // List spans (bullet/number/checklist) are deliberately zero-length — they mark a
+            // LINE, not a text range, and never grow as text is typed after them (that's inherent
+            // to how LeadingMarginSpan works, not a bug). The old "s>=e continue" here silently
+            // dropped every one of them on save, which is why a bullet/checklist applied to a
+            // line with content would vanish the moment the note was closed and reopened — it
+            // never actually made it into item.spans in the first place. Only genuinely invalid
+            // ranges (negative, or start past end) get skipped now.
+            if(s<0||e<0||s>e) continue
+            when(span){ is StyleSpan->spans.add(TextSpanData(s,e,'S',span.style)); is ForegroundColorSpan->spans.add(TextSpanData(s,e,'C',span.foregroundColor)); is UnderlineSpan->spans.add(TextSpanData(s,e,'U',0)); is BackgroundColorSpan->spans.add(TextSpanData(s,e,'H',span.backgroundColor))
             is BulletMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_BULLET,encodeListValue(span.styleIndex,false,span.indentLevel)))
             is NumberMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_NUMBER,encodeListValue(span.styleIndex,false,span.indentLevel)))
             is ChecklistMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_CHECK,encodeListValue(span.styleIndex,span.checked,span.indentLevel)))

@@ -33,6 +33,7 @@ import android.text.Layout
 import android.text.Spannable
 import android.text.style.LeadingMarginSpan
 import android.view.Gravity
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -332,8 +333,14 @@ fun applyAutoformatTrigger(editable: Editable, spaceInsertPos: Int, textSizePx: 
 fun handleListEnterKey(editable: Editable, newlinePos: Int): Int {
     val prevStart = lineStart(editable, newlinePos)
     val prevText = editable.subSequence(prevStart, newlinePos).toString()
-    val existing = editable.getSpans(prevStart, newlinePos, ListMarginSpan::class.java)
-        .firstOrNull { editable.getSpanStart(it) <= prevStart && editable.getSpanEnd(it) >= newlinePos } ?: return -1
+    // List spans are always created zero-length, pinned to their line's start position, and
+    // (being SPAN_EXCLUSIVE_EXCLUSIVE) never grow to cover text typed after them — insertion
+    // exactly at an exclusive-exclusive span's own boundary is, by definition, excluded from it.
+    // A point-query at prevStart is what reliably finds it regardless of how much text is now on
+    // the line; requiring the span to span all the way to newlinePos (the earlier version of
+    // this check) fails the moment there's any typed content, which is why Enter stopped
+    // continuing the list as soon as a line actually had text on it.
+    val existing = editable.getSpans(prevStart, prevStart, ListMarginSpan::class.java).firstOrNull() ?: return -1
     if (prevText.isNotBlank()) {
         // Normal continuation onto the new line — same style/indent, fresh (unchecked, for
         // checklists) instance.
@@ -405,7 +412,7 @@ private fun rebuildSpannableForItem(item: TextItem): android.text.SpannableStrin
     val sb = android.text.SpannableStringBuilder(item.text)
     for (sp in item.spans) {
         val s = sp.start.coerceIn(0, sb.length); val e = sp.end.coerceIn(s, sb.length)
-        if (s < e) when (sp.type) {
+        if (s <= e) when (sp.type) {
             'S' -> sb.setSpan(android.text.style.StyleSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             'C' -> sb.setSpan(android.text.style.ForegroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             'U' -> sb.setSpan(android.text.style.UnderlineSpan(), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
@@ -418,11 +425,26 @@ private fun rebuildSpannableForItem(item: TextItem): android.text.SpannableStrin
     return sb
 }
 
-/** Reverse of the above: reads a SpannableStringBuilder's spans back into TextItem.spans form. */
-private fun spansFromSpannable(sb: android.text.SpannableStringBuilder): MutableList<TextSpanData> {
+/**
+ * Re-derives item.spans from [spanned] and writes them back onto [item] — used after mutating a
+ * span's own property in place (e.g. toggling a ChecklistMarginSpan's checked state) rather than
+ * through the normal editor-close save path, so that mutation actually persists instead of only
+ * existing in the cached StaticLayout's in-memory copy until the next cache invalidation quietly
+ * reverts it back to whatever item.spans still says.
+ */
+internal fun syncTextItemSpansFromSpanned(item: TextItem, spanned: android.text.Spanned) {
+    item.spans = spansFromSpannable(spanned)
+}
+
+/** Reads any Spanned's spans back into TextItem.spans form (read-only — works for a live
+ *  SpannableStringBuilder being edited, or a SpannableString used for static rendering alike). */
+private fun spansFromSpannable(sb: android.text.Spanned): MutableList<TextSpanData> {
     val out = mutableListOf<TextSpanData>()
     for (span in sb.getSpans(0, sb.length, Any::class.java)) {
-        val s = sb.getSpanStart(span); val e = sb.getSpanEnd(span); if (s < 0 || e < 0 || s >= e) continue
+        val s = sb.getSpanStart(span); val e = sb.getSpanEnd(span)
+        // See the matching comment in TextEditingExtensions.kt's closeInlineEditor — list spans
+        // are deliberately zero-length and must not be dropped here.
+        if (s < 0 || e < 0 || s > e) continue
         when (span) {
             is android.text.style.StyleSpan -> out.add(TextSpanData(s, e, 'S', span.style))
             is android.text.style.ForegroundColorSpan -> out.add(TextSpanData(s, e, 'C', span.foregroundColor))
@@ -445,6 +467,18 @@ private fun spansFromSpannable(sb: android.text.SpannableStringBuilder): Mutable
  * same two-state handling a few lines below where these buttons are wired in).
  */
 internal fun MainActivity.showListStylePicker(kind: Char) {
+    // Captured NOW, before the dialog opens — a dialog taking window focus can shift things
+    // (soft keyboard visibility, etc.), so re-reading activeEditText/selection at the moment a
+    // style is actually tapped risked acting on stale/cleared state. Whatever was focused when
+    // the toolbar button itself was pressed is what the picked style should apply to.
+    val targetEt = activeEditText
+    val targetFrom: Int; val targetTo: Int
+    if (targetEt != null) {
+        val s = targetEt.selectionStart; val e = targetEt.selectionEnd
+        targetFrom = if (s == e) s else minOf(s, e); targetTo = if (s == e) s else maxOf(s, e)
+    } else { targetFrom = 0; targetTo = 0 }
+    val targetItem = textSelectionItem
+
     val bg = currentThemeBackgroundColor(); val accent = currentThemeToolbarColor()
     val isDark = Color.red(bg) * 0.299 + Color.green(bg) * 0.587 + Color.blue(bg) * 0.114 < 140
     val textColor = if (isDark) Color.parseColor("#E8E8E8") else Color.parseColor("#2A2A2A")
@@ -478,27 +512,29 @@ internal fun MainActivity.showListStylePicker(kind: Char) {
     dlg.show()
     dlg.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(bg))
     for (i in 0 until container.childCount) (container.getChildAt(i) as LinearLayout).setOnClickListener {
-        applyPickedListStyle(kind, i); dlg.dismiss()
+        applyPickedListStyle(kind, i, targetEt, targetFrom, targetTo, targetItem); dlg.dismiss()
     }
 }
 
-private fun MainActivity.applyPickedListStyle(kind: Char, styleIndex: Int) {
-    val et = activeEditText
+private fun MainActivity.applyPickedListStyle(kind: Char, styleIndex: Int, et: EditText?, from: Int, to: Int, item: TextItem?) {
     if (et != null) {
-        val s = et.selectionStart; val e = et.selectionEnd
-        val from = if (s == e) s else minOf(s, e); val to = if (s == e) s else maxOf(s, e)
         applyListStyle(et.text, from, to, kind, styleIndex, et.textSize)
         renumberLists(et.text)
+        // getLeadingMargin() affects each line's available width, which is a MEASURE concern —
+        // invalidate() alone only requests a redraw using whatever layout is already cached, so
+        // a brand new bullet/number/checkbox could silently not appear until some LATER edit
+        // forced a real relayout for an unrelated reason. requestLayout() is what actually gets
+        // EditText to rebuild its DynamicLayout and pick up the new margin immediately.
+        et.requestLayout()
         et.invalidate()
-    } else {
-        textSelectionItem?.let { item ->
-            val sb = rebuildSpannableForItem(item)
-            applyListStyle(sb, 0, sb.length, kind, styleIndex, item.size)
-            renumberLists(sb)
-            item.spans = spansFromSpannable(sb)
-            item.text = sb.toString()
-            drawingView.invalidate()
-        }
+    } else if (item != null) {
+        val sb = rebuildSpannableForItem(item)
+        applyListStyle(sb, 0, sb.length, kind, styleIndex, item.size)
+        renumberLists(sb)
+        item.spans = spansFromSpannable(sb)
+        item.text = sb.toString()
+        item.cachedLayout = null  // same reasoning as et.requestLayout() above — force a rebuild rather than reusing a layout computed before this item had a margin span
+        drawingView.invalidate()
     }
 }
 

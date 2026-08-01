@@ -1848,6 +1848,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 Tool.TEXT -> {
                     val hit = findTextItemAt(wx, wy)
                     if (hit != null) {
+                        // A tap landing exactly on a checkbox glyph toggles it directly instead
+                        // of opening the move/resize selection overlay — "tap the box to check
+                        // it" and "tap the text to select/edit it" need to be two genuinely
+                        // different gestures, not one always winning over the other.
+                        if (toggleChecklistInItem(hit, wx, wy)) return true
                         // Deliberately NOT switching currentTool to SELECT here anymore. The
                         // move/rotate selection overlay (moveSurface, opened via
                         // onTextSelectRequest below) is a separate overlay view that works
@@ -1884,6 +1889,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 Tool.SELECT -> {
                     val hit = findTextItemAt(wx, wy)
                     if (hit != null && hit.linkTarget == null) {
+                        if (toggleChecklistInItem(hit, wx, wy)) return true
                         // Single tap on normal text: show selection box
                         selectedItem = hit
                         onTextSelectRequest?.invoke(hit, e.x, e.y, e.rawX, e.rawY)
@@ -3283,7 +3289,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         } else {
             for (sp in item.spans) {
                 val s = sp.start.coerceIn(0, item.text.length); val e = sp.end.coerceIn(s, item.text.length)
-                if (s < e) when (sp.type) {
+                // s == e is valid and expected for list spans (see closeInlineEditor's comment
+                // on why they're deliberately zero-length) — only a genuinely reversed range
+                // (shouldn't happen, but coerceIn above guarantees s<=e regardless) is skipped.
+                if (s <= e) when (sp.type) {
                     'S' -> spannable.setSpan(StyleSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                     'C' -> spannable.setSpan(ForegroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                     'U' -> spannable.setSpan(UnderlineSpan(), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
@@ -3347,6 +3356,27 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (lineIdx < layout.lineCount) extraSkip += gap + pageTopMargin
         }
         return contentH + extraSkip
+    }
+
+    // Checklist tap-to-toggle for a NOT-currently-being-edited item — e.g. tapping a checkbox on
+    // a committed note without first entering the live text editor. getOrBuildLayout's resulting
+    // StaticLayout keeps a direct reference to the exact Spanned it was built from (Layout.text),
+    // so the same ChecklistMarginSpan instances — with lastDrawnBounds populated by the most
+    // recent actual draw pass — are recoverable straight from the cached layout, without needing
+    // to separately track or rebuild a live Spannable for items that aren't being edited.
+    // Rotated items are skipped (rotation==0 check) — matches the same simplification already
+    // made for paginated text splitting a little above, for the same reason: correct enough for
+    // the overwhelming common case, and not worth the extra transform math for an edge case.
+    fun toggleChecklistInItem(item: TextItem, worldX: Float, worldY: Float): Boolean {
+        if (item.rotation != 0f || item.linkTarget != null) return false
+        val layout = getOrBuildLayout(item)
+        val spanned = layout.text as? Spannable ?: return false
+        val topY = item.y - layout.height.toFloat()
+        val localX = worldX - item.x
+        val localY = worldY - topY
+        val toggled = toggleChecklistAt(spanned, localX, localY)
+        if (toggled) { syncTextItemSpansFromSpanned(item, spanned); invalidate() }
+        return toggled
     }
 
     private fun drawTextItem(canvas: Canvas, item: TextItem) {
