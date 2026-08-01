@@ -3308,35 +3308,36 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // Same reasoning as ListAwareEditText's onDraw override (see ListFormatting.kt): Android's
         // Layout.draw() does not reliably invoke a LeadingMarginSpan2's drawLeadingMargin for a
         // genuinely empty paragraph, which is exactly the "apply a bullet/number/checklist to an
-        // empty line and nothing is drawn" case. That workaround was only ever wired up for the
-        // live-editing EditText — this static StaticLayout path (used for a committed item that
-        // isn't currently being typed into) had the same underlying bug and no fix for it.
-        // Suppressing the automatic path here and drawing the glyphs manually in drawTextItem
-        // (drawListGlyphs below) makes both rendering paths behave identically.
-        spannable.getSpans(0, spannable.length, ListMarginSpan::class.java).forEach { it.suppressAutoDraw = true }
+        // empty line and nothing is drawn" case. Every OTHER line already draws correctly through
+        // the normal path (that's the "A. hello world" case that was always working) — so only
+        // the spans that actually sit on an empty line get taken over here; everything else is
+        // left alone so as not to risk the already-working common case. drawListGlyphs (below)
+        // only ever draws the spans marked here.
+        spannable.getSpans(0, spannable.length, ListMarginSpan::class.java).forEach { sp ->
+            val pos = spannable.getSpanStart(sp).coerceIn(0, spannable.length)
+            val lineIsEmpty = pos >= spannable.length || spannable[pos] == '\n'
+            if (lineIsEmpty) sp.suppressAutoDraw = true
+        }
         item.cachedLayout = layout; item.cachedLayoutKey = key
         return layout
     }
 
     /**
-     * Manually draws every list glyph (bullet/number/checklist mark) in [layout]'s margin column,
-     * using the layout's own line geometry directly rather than depending on
-     * LeadingMarginSpan2.drawLeadingMargin being invoked — see the comment in getOrBuildLayout
-     * above for why that can't be relied on for an empty line. Must be called with the canvas in
-     * the exact same transformed state that [layout] itself was just drawn in (translated to the
-     * item's on-screen origin, and — for the per-page split path — clipped to that page's band),
-     * since glyph positions come straight from the layout's own coordinate space.
+     * Manually draws the glyph for any list span that had [ListMarginSpan.suppressAutoDraw] set
+     * in getOrBuildLayout above (i.e. only spans sitting on a genuinely empty line, where Android
+     * won't reliably invoke drawLeadingMargin on its own) — every other list glyph is already
+     * drawn by the normal layout.draw(canvas) call this runs right after, and is deliberately
+     * left alone here so the two drawing paths never overlap. Must be called with the canvas in
+     * the exact same transformed state [layout] itself was just drawn in.
      */
     private fun drawListGlyphs(canvas: Canvas, layout: StaticLayout, item: TextItem) {
         val spanned = layout.text as? android.text.Spanned ?: return
         val spans = spanned.getSpans(0, spanned.length, ListMarginSpan::class.java)
         if (spans.isEmpty()) return
         for (sp in spans) {
+            if (!sp.suppressAutoDraw) continue
             val pos = spanned.getSpanStart(sp).coerceIn(0, spanned.length)
             val line = layout.getLineForOffset(pos)
-            // Only the paragraph's own start line gets a glyph — matches
-            // getLeadingMarginLineCount()=1 and ListAwareEditText's identical check, so a
-            // wrapped continuation line of a long list item doesn't get its own glyph too.
             var trueLineStart = pos
             while (trueLineStart > 0 && spanned[trueLineStart - 1] != '\n') trueLineStart--
             if (layout.getLineStart(line) != trueLineStart) continue
@@ -3350,9 +3351,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val top = layout.getLineTop(line)
             val bottom = layout.getLineBottom(line)
             val baseline = layout.getLineBaseline(line)
-            // Same "right-aligned in the margin column" positioning as ListMarginSpan's own
-            // drawLeadingMargin and ListAwareEditText's onDraw, so switching between live-editing
-            // and static rendering never visibly shifts the glyph.
             val gx = lineLeft - glyphWidth - sp.marginPx * 0.18f
             canvas.drawText(glyph, gx, baseline.toFloat(), gp)
             sp.lastDrawnBounds = RectF(gx, top.toFloat(), gx + glyphWidth, bottom.toFloat())
