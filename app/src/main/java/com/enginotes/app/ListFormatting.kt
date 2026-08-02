@@ -61,17 +61,31 @@ enum class BulletStyle(val glyph: String, val label: String) {
     companion object { fun safe(i: Int) = values()[i.coerceIn(0, values().size - 1)] }
 }
 
-enum class NumberStyle(val label: String, val format: (Int) -> String) {
-    ARABIC_DOT("1.", { n -> "$n." }),
-    ARABIC_PAREN("1)", { n -> "$n)" }),
-    ARABIC_BRACKET("[1]", { n -> "[$n]" }),
-    ARABIC_BOTH_PAREN("(1)", { n -> "($n)" }),
-    LOWER_ALPHA("a.", { n -> "${numberStyleToAlpha(n, false)}." }),
-    UPPER_ALPHA("A.", { n -> "${numberStyleToAlpha(n, true)}." }),
-    LOWER_ROMAN("i.", { n -> "${numberStyleToRoman(n).lowercase()}." }),
-    UPPER_ROMAN("I.", { n -> "${numberStyleToRoman(n)}." }),
-    ZERO_PADDED("01.", { n -> "${n.toString().padStart(2, '0')}." }),
-    COLON("1:", { n -> "$n:" });
+enum class NumberStyle(val label: String, val numeral: (Int) -> String, private val wrap: (String) -> String) {
+    ARABIC_DOT("1.", { n -> "$n" }, { s -> "$s." }),
+    ARABIC_PAREN("1)", { n -> "$n" }, { s -> "$s)" }),
+    ARABIC_BRACKET("[1]", { n -> "$n" }, { s -> "[$s]" }),
+    ARABIC_BOTH_PAREN("(1)", { n -> "$n" }, { s -> "($s)" }),
+    LOWER_ALPHA("a.", { n -> numberStyleToAlpha(n, false) }, { s -> "$s." }),
+    UPPER_ALPHA("A.", { n -> numberStyleToAlpha(n, true) }, { s -> "$s." }),
+    LOWER_ROMAN("i.", { n -> numberStyleToRoman(n).lowercase() }, { s -> "$s." }),
+    UPPER_ROMAN("I.", { n -> numberStyleToRoman(n) }, { s -> "$s." }),
+    ZERO_PADDED("01.", { n -> n.toString().padStart(2, '0') }, { s -> "$s." }),
+    COLON("1:", { n -> "$n" }, { s -> "$s:" });
+
+    /** A single top-level number, styled — unchanged behavior from before this was split into
+     * numeral+wrap (still what the style picker's own preview uses, and still what a
+     * single-level, unindented list item renders with). */
+    fun format(n: Int): String = wrap(numeral(n))
+
+    /** A full outline path (e.g. [2, 1] for the 1st sub-item under the 2nd top-level item),
+     * joined with dots and styled only once at the end — "2.1" for ARABIC_DOT, "(2.1)" for
+     * ARABIC_BOTH_PAREN, etc. Each level's own number always uses this style's numeral form
+     * (so UPPER_ROMAN nesting looks like "II.I", not "II.1"), which keeps a nested item visually
+     * consistent with its parent even though there's no single natural convention here to match
+     * against — most word processors don't support mixing numeral kinds by depth in one style.
+     */
+    fun formatPath(path: List<Int>): String = wrap(path.joinToString(".") { numeral(it) })
 
     companion object {
         fun safe(i: Int) = values()[i.coerceIn(0, values().size - 1)]
@@ -172,8 +186,8 @@ class BulletMarginSpan(styleIndex: Int, textSizePx: Float, indentLevel: Int = 0)
     override fun glyphFor(): String = BulletStyle.safe(styleIndex).glyph
 }
 
-class NumberMarginSpan(styleIndex: Int, textSizePx: Float, indentLevel: Int = 0, var ordinal: Int = 1) : ListMarginSpan(styleIndex, textSizePx, indentLevel) {
-    override fun glyphFor(): String = NumberStyle.safe(styleIndex).format(ordinal)
+class NumberMarginSpan(styleIndex: Int, textSizePx: Float, indentLevel: Int = 0, var ordinal: Int = 1, var path: List<Int> = listOf(1)) : ListMarginSpan(styleIndex, textSizePx, indentLevel) {
+    override fun glyphFor(): String = NumberStyle.safe(styleIndex).formatPath(path)
 }
 
 class ChecklistMarginSpan(styleIndex: Int, textSizePx: Float, indentLevel: Int = 0, var checked: Boolean = false) : ListMarginSpan(styleIndex, textSizePx, indentLevel) {
@@ -347,17 +361,28 @@ private fun spanClassFor(kind: Char): Class<out ListMarginSpan> = when (kind) {
 fun renumberLists(editable: Spannable) {
     val spans = editable.getSpans(0, editable.length, NumberMarginSpan::class.java)
         .sortedBy { editable.getSpanStart(it) }
-    var runStyle = -1; var runIndent = -1; var counter = 0; var lastLineEnd = -1
+    // path[i] is the current counter at outline depth i (0 = top level). Going back to a
+    // shallower depth (or the same depth again) drops anything deeper and bumps that depth's own
+    // counter; going deeper pads up with fresh counters starting at 1 — the same way a
+    // multi-level list restarts its sub-numbering under each new parent item in Word/Docs. A
+    // style change or a gap (non-numbered/blank line breaking the run) clears the whole path and
+    // starts over, same as the old flat version did per indent level.
+    val path = mutableListOf<Int>()
+    var runStyle = -1; var lastLineEnd = -1
     for (sp in spans) {
         val start = editable.getSpanStart(sp)
-        // A run breaks if the style OR indent level changes, or there's a gap (a non-numbered
-        // line, or a blank line) between this span's line and the previous numbered line — each
-        // indent level counts independently, the same way a sub-list restarts at 1 in Word.
         val contiguous = lastLineEnd >= 0 && start <= lastLineEnd + 1
-        if (sp.styleIndex != runStyle || sp.indentLevel != runIndent || !contiguous) {
-            runStyle = sp.styleIndex; runIndent = sp.indentLevel; counter = 1
-        } else counter++
-        sp.ordinal = counter
+        if (!contiguous || sp.styleIndex != runStyle) { path.clear(); runStyle = sp.styleIndex }
+        val indent = sp.indentLevel
+        if (indent < path.size) {
+            while (path.size > indent + 1) path.removeAt(path.size - 1)
+            path[indent] = path[indent] + 1
+        } else {
+            while (path.size < indent) path.add(1)
+            path.add(1)
+        }
+        sp.path = path.toList()
+        sp.ordinal = path.last()
         lastLineEnd = editable.getSpanEnd(sp)
     }
 }
@@ -498,8 +523,13 @@ fun handleListEnterKey(editable: Editable, newlinePos: Int): Int {
         is NumberMarginSpan -> NumberMarginSpan(existing.styleIndex, existing.textSizePx, existing.indentLevel + 1)
         is ChecklistMarginSpan -> ChecklistMarginSpan(existing.styleIndex, existing.textSizePx, existing.indentLevel + 1, false)
     }
-    editable.setSpan(promoted, prevStart, prevStart, Spannable.SPAN_INCLUSIVE_INCLUSIVE)
-    renumberLists(editable)
+    // Deferred the same way as the continuation case above and for the same confirmed reason:
+    // setSpan() called synchronously from inside afterTextChanged was being silently dropped.
+    // This branch used to call it directly, which is very likely why promoting a line in place
+    // (double-Enter on an empty continuation line, to start a "2.1" sub-item) wasn't reliably
+    // sticking either — the caller applies this and calls renumberLists() together, in its
+    // posted Runnable, whenever pendingListSpanApply is non-null.
+    pendingListSpanApply = PendingListSpan(promoted, prevStart)
     return prevStart
 }
 
