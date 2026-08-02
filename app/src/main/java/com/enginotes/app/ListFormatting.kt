@@ -138,6 +138,11 @@ sealed class ListMarginSpan(var styleIndex: Int, val textSizePx: Float, var inde
     // proportionally sensible indent/glyph-size) AND with indentLevel, so a double-Enter sub-item
     // sits visibly further right than its parent, like Word's Tab-to-demote behavior.
     val marginPx: Int get() = ((textSizePx * 2.4f).toInt().coerceAtLeast(32)) + indentLevel * (textSizePx * 1.9f).toInt().coerceAtLeast(24)
+    // A number or checkbox glyph is legible at full text size, but a solid bullet dot/square at
+    // full text height reads as oversized next to the text it's labeling — real bullet points sit
+    // noticeably smaller than the cap-height of the text beside them. BulletMarginSpan overrides
+    // this down to 0.7; number/checklist glyphs stay at their natural 1.0.
+    open val glyphSizeScale: Float = 1.0f
     // Bounding box of the glyph as last drawn, in the same coordinate space as MotionEvent
     // coordinates within the EditText — used only for checklist tap-to-toggle hit-testing.
     // Deliberately not persisted; it's a pure runtime draw-time cache, rebuilt every layout pass.
@@ -164,6 +169,7 @@ sealed class ListMarginSpan(var styleIndex: Int, val textSizePx: Float, var inde
         if (!first) { lastDrawnBounds = null; return }
         val glyph = glyphFor()
         val gp = Paint(paint)
+        gp.textSize = paint.textSize * glyphSizeScale
         val glyphWidth = gp.measureText(glyph)
         // Right-align the glyph within its margin column (with a little breathing room before
         // the text starts) rather than left-jammed against the page edge — this is what makes a
@@ -183,6 +189,7 @@ interface LeadingMarginSpan2Compat : android.text.style.LeadingMarginSpan.Leadin
 }
 
 class BulletMarginSpan(styleIndex: Int, textSizePx: Float, indentLevel: Int = 0) : ListMarginSpan(styleIndex, textSizePx, indentLevel) {
+    override val glyphSizeScale: Float = 0.7f
     override fun glyphFor(): String = BulletStyle.safe(styleIndex).glyph
 }
 
@@ -245,6 +252,7 @@ class ListAwareEditText(context: android.content.Context) : android.widget.EditT
             val glyph = sp.glyphFor()
             val gp = Paint(paint)
             gp.color = currentTextColor
+            gp.textSize = paint.textSize * sp.glyphSizeScale
             val glyphWidth = gp.measureText(glyph)
             // Was: layout.getLineLeft(line) + totalPaddingLeft. getLineLeft() is supposed to
             // equal exactly this span's own marginPx (that's what getLeadingMargin() reserved
@@ -450,11 +458,6 @@ fun applyAutoformatTrigger(editable: Editable, spaceInsertPos: Int, textSizePx: 
  * position to restore, for the promote-in-place case, which removes the '\n' Android just placed
  * the cursor after.
  */
-// TEMPORARY diagnostic — captures a step-by-step trail from inside handleListEnterKey itself,
-// checked as close to each operation as possible. Overwritten on every call; the caller reads it
-// right after calling handleListEnterKey and displays it.
-var listEnterDebugLog: String = ""
-
 /**
  * Set by handleListEnterKey for the "continuation" case instead of calling setSpan() directly.
  * Confirmed by diagnostic: setSpan() called synchronously from inside afterTextChanged — i.e.
@@ -478,10 +481,7 @@ fun handleListEnterKey(editable: Editable, newlinePos: Int): Int {
     // this check) fails the moment there's any typed content, which is why Enter stopped
     // continuing the list as soon as a line actually had text on it.
     val allAtPrevStart = editable.getSpans(prevStart, prevStart, ListMarginSpan::class.java)
-    val existing = allAtPrevStart.firstOrNull() ?: run {
-        listEnterDebugLog = "newlinePos=$newlinePos prevStart=$prevStart prevText='$prevText' NO existing span found at prevStart (editable.length=${editable.length})"
-        return -2
-    }
+    val existing = allAtPrevStart.firstOrNull() ?: return -2
     if (prevText.isNotBlank()) {
         // Lock the just-finished line's own span down to its exact, final range now that we know
         // it (this line is done — Enter was just pressed to leave it). It started out
@@ -509,8 +509,6 @@ fun handleListEnterKey(editable: Editable, newlinePos: Int): Int {
         // NOT calling editable.setSpan() here anymore — see PendingListSpan's doc comment above.
         // The caller applies it in a posted Runnable instead.
         if (willSet) pendingListSpanApply = PendingListSpan(newSpan, newPos)
-        listEnterDebugLog = "newlinePos=$newlinePos prevStart=$prevStart prevText='$prevText' existingType=${existing.javaClass.simpleName} " +
-            "newPos=$newPos lenBefore=$lenBefore willSet=$willSet (setSpan deferred to caller's posted Runnable — see PendingListSpan)"
         return -1
     }
     // Empty line: promote in place instead of creating a new paragraph. Remove the '\n' this
@@ -732,40 +730,12 @@ internal fun MainActivity.applyPickedListStyle(kind: Char, styleIndex: Int, et: 
     if (et != null) {
         applyListStyle(et.text, from, to, kind, styleIndex, et.textSize)
         renumberLists(et.text)
-        // TEMPORARY diagnostic — checked IMMEDIATELY, synchronously, right after applyListStyle
-        // returns, before anything else (layout pass, IME) gets a chance to run. Compare this
-        // count against the delayed "DIAG:" toast below: if THIS one is already 0, the span was
-        // never added (or this tap was a toggle-OFF of a still-present-but-invisible span from an
-        // earlier tap); if this one is >0 but the delayed one is 0, something removes it later.
-        run {
-            val immediateCount = (et.text as? Spannable)?.getSpans(0, et.text.length, ListMarginSpan::class.java)?.size ?: -1
-            AlertDialog.Builder(this).setTitle("DIAG apply (immediate)").setMessage("spanCount=$immediateCount right after apply (kind=$kind)").setPositiveButton("OK", null).show()
-        }
         // Posted rather than called synchronously — getLeadingMargin() affects line width, a
         // MEASURE concern, and a synchronous requestLayout() here was not reliably sticking
         // (empty lines specifically kept failing to show their glyph even with this call in
         // place). Deferring until after the current call stack fully unwinds avoids whatever in
         // Android's own internal processing was overriding it.
         et.post { et.requestLayout(); et.invalidate() }
-        // TEMPORARY diagnostic — reports the actual runtime state right after the tap, so we can
-        // see what's really happening instead of guessing. Posted a second time, further out
-        // than the requestLayout/invalidate above, so it reads state AFTER that layout pass has
-        // actually run. AlertDialog instead of Toast so it stays on screen until dismissed.
-        et.post {
-            et.post {
-                val spansNow = (et.text as? Spannable)?.getSpans(0, et.text.length, ListMarginSpan::class.java) ?: emptyArray()
-                val sp = spansNow.firstOrNull()
-                val lay = et.layout
-                val msg = if (sp == null) {
-                    "no ListMarginSpan found after apply (kind=$kind textLen=${et.text.length})"
-                } else {
-                    val start = et.text.getSpanStart(sp)
-                    "span@$start marginPx=${sp.marginPx} etW=${et.width} etH=${et.height} padL=${et.totalPaddingLeft}\n" +
-                    "layout=${if (lay == null) "NULL" else "ok lines=${lay.lineCount} lineLeft0=${lay.getLineLeft(0)} lineTop0=${lay.getLineTop(0)} baseline0=${lay.getLineBaseline(0)}"}"
-                }
-                AlertDialog.Builder(this@applyPickedListStyle).setTitle("DIAG apply (delayed)").setMessage(msg).setPositiveButton("OK", null).show()
-            }
-        }
     } else if (item != null) {
         val sb = rebuildSpannableForItem(item)
         applyListStyle(sb, 0, sb.length, kind, styleIndex, item.size)

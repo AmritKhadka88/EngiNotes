@@ -742,24 +742,11 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                 suppressListWatcher = true
                 val newCursor = handleListEnterKey(s, pos)
                 suppressListWatcher = false
-                // TEMPORARY diagnostic — an AlertDialog instead of a Toast because toasts were
-                // getting missed/queued/timed-out before they could be read or screenshotted. This
-                // stays on screen until manually dismissed. Shows: (1) the immediate span count
-                // right after handleListEnterKey returns, and (2) the internal trail written from
-                // inside that function itself.
-                val spansImmediate = (et.text as? Spannable)?.getSpans(0, et.text.length, ListMarginSpan::class.java) ?: emptyArray()
-                val immediateMsg = "newCursor=$newCursor\nspanCount=${spansImmediate.size}\npositions=${spansImmediate.joinToString(","){ (et.text.getSpanStart(it)).toString() }}\n\ninternal trail:\n$listEnterDebugLog"
-                AlertDialog.Builder(this@showInlineTextEditor).setTitle("DIAG Enter (immediate)").setMessage(immediateMsg).setPositiveButton("OK", null).show()
                 if (newCursor != -2) {
                     lastAutoformat = null
-                    // Apply the pending continuation span (if any) here, in a posted Runnable —
-                    // NOT inside afterTextChanged itself. Diagnostics showed setSpan() called
-                    // synchronously from inside afterTextChanged was being silently dropped; this
-                    // runs after that notification has fully finished. Also switched the span's
-                    // own flag from EXCLUSIVE_EXCLUSIVE to INCLUSIVE_INCLUSIVE (see
-                    // PendingListSpan's doc comment) — keeping both changes together since we
-                    // can't be certain which one actually mattered, and there's no cost to having
-                    // both.
+                    // Applied here, in a posted Runnable, NOT inside afterTextChanged itself —
+                    // setSpan() called synchronously from inside afterTextChanged was confirmed to
+                    // be silently dropped; this runs after that notification has fully finished.
                     val pending = pendingListSpanApply
                     et.post {
                         if (pending != null) {
@@ -769,16 +756,6 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                         }
                         if (newCursor >= 0) et.setSelection(newCursor.coerceAtMost(et.text.length))
                         et.requestLayout(); et.invalidate()
-                    }
-                }
-                // TEMPORARY diagnostic — same as above but read after the layout pass (and the
-                // deferred setSpan above) has run, so we can confirm the fix actually worked.
-                et.post {
-                    et.post {
-                        val spansNow = (et.text as? Spannable)?.getSpans(0, et.text.length, ListMarginSpan::class.java) ?: emptyArray()
-                        val lay = et.layout
-                        val delayedMsg = "newCursor=$newCursor\nspanCount=${spansNow.size}\npositions=${spansNow.joinToString(","){ (et.text.getSpanStart(it)).toString() }}\nlayout=${if (lay == null) "NULL" else "ok lines=${lay.lineCount}"}"
-                        AlertDialog.Builder(this@showInlineTextEditor).setTitle("DIAG Enter (delayed)").setMessage(delayedMsg).setPositiveButton("OK", null).show()
                     }
                 }
             }
