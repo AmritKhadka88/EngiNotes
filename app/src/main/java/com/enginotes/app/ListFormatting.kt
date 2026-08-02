@@ -522,7 +522,15 @@ fun handleListEnterKey(editable: Editable, newlinePos: Int): Int {
  */
 fun handleListBackspace(editable: Editable, cursorPos: Int, rememberedTrigger: Pair<Int, String>?): Int {
     val ls = lineStart(editable, cursorPos)
-    if (cursorPos != ls || ls == 0) return -1  // not "cursor at start of a non-first line"
+    // Used to also bail out (return -1, i.e. "let normal backspace handle it") whenever
+    // ls == 0 — the very first line of the document. But normal backspace at position 0 is
+    // itself always a no-op (there's nothing before the start of the document to merge with),
+    // so that combination meant backspacing an empty FIRST list line did nothing whatsoever:
+    // no marker removed, no character deleted, completely inert. The ls == 0 exclusion was
+    // never actually needed for correctness here — removeSpan() below doesn't touch any text
+    // and doesn't care whether there's a previous line to merge into, so the very first line
+    // works the exact same way as any other empty list line.
+    if (cursorPos != ls) return -1  // not "cursor at start of a line"
     val le = lineEnd(editable, ls)
     if (le != ls) return -1  // line isn't empty — normal backspace should just delete a character
     val existing = editable.getSpans(ls, ls, ListMarginSpan::class.java).firstOrNull() ?: return -1
@@ -661,11 +669,36 @@ internal fun MainActivity.showListStylePicker(kind: Char) {
     dlg.show()
     dlg.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(bg))
     for (i in 0 until container.childCount) (container.getChildAt(i) as LinearLayout).setOnClickListener {
+        rememberListStyleIndex(kind, i)
         applyPickedListStyle(kind, i, targetEt, targetFrom, targetTo, targetItem); dlg.dismiss()
     }
 }
 
-private fun MainActivity.applyPickedListStyle(kind: Char, styleIndex: Int, et: EditText?, from: Int, to: Int, item: TextItem?) {
+/** Persists which style index was picked last for each kind (bullet/number/checklist), so a
+ * plain tap on the toolbar button (as opposed to opening the picker) can apply "whatever you
+ * used last" instead of always defaulting back to style 0. */
+private const val LIST_STYLE_PREFS = "enginotes_list_prefs"
+internal fun MainActivity.lastListStyleIndex(kind: Char): Int =
+    getSharedPreferences(LIST_STYLE_PREFS, android.content.Context.MODE_PRIVATE).getInt("last_style_$kind", 0)
+internal fun MainActivity.rememberListStyleIndex(kind: Char, index: Int) {
+    getSharedPreferences(LIST_STYLE_PREFS, android.content.Context.MODE_PRIVATE).edit().putInt("last_style_$kind", index).apply()
+}
+
+/** Whether the line/selection a toolbar tap would target is already marked as [kind] — used to
+ * decide whether a tap should apply the remembered style directly or open the picker (a second
+ * tap on an already-active kind is what opens it, matching how B/I/U-style toggle buttons work
+ * elsewhere in this toolbar). */
+internal fun MainActivity.currentLineIsKind(et: EditText?, item: TextItem?, from: Int, kind: Char): Boolean {
+    val cls = spanClassFor(kind)
+    if (et != null) {
+        val ls = lineStart(et.text, from)
+        return et.text.getSpans(ls, ls, ListMarginSpan::class.java).any { it.javaClass == cls }
+    }
+    if (item != null) return item.spans.any { it.type == kind }
+    return false
+}
+
+internal fun MainActivity.applyPickedListStyle(kind: Char, styleIndex: Int, et: EditText?, from: Int, to: Int, item: TextItem?) {
     if (et != null) {
         applyListStyle(et.text, from, to, kind, styleIndex, et.textSize)
         renumberLists(et.text)

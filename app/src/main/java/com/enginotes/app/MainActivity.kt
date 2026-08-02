@@ -1936,7 +1936,24 @@ class MainActivity : AppCompatActivity() {
                             // error instead of silently doing nothing — "tap the icon, nothing
                             // happens at all" with no crash is otherwise impossible to tell apart
                             // from "the click isn't even reaching this handler."
-                            try { showListStylePicker(kind) }
+                            try {
+                                // Matches how the B/I/U toggle buttons elsewhere in this same
+                                // toolbar behave: a plain tap applies directly (here: whatever
+                                // style was picked last for this kind, defaulting to the first
+                                // one), and it's only a SECOND tap — on a line that's already
+                                // this kind — that opens the picker, since at that point "apply
+                                // the same thing again" isn't a useful action and "let me choose
+                                // a different style" is what a second tap on an active toggle
+                                // means everywhere else in this app.
+                                val et = activeEditText; val item = textSelectionItem
+                                val from = if (et != null) { val s = et.selectionStart; val e = et.selectionEnd; if (s == e) s else minOf(s, e) } else 0
+                                val to = if (et != null) { val s = et.selectionStart; val e = et.selectionEnd; if (s == e) s else maxOf(s, e) } else 0
+                                if (currentLineIsKind(et, item, from, kind)) {
+                                    showListStylePicker(kind)
+                                } else {
+                                    applyPickedListStyle(kind, lastListStyleIndex(kind), et, from, to, item)
+                                }
+                            }
                             catch (t: Throwable) { Toast.makeText(this@MainActivity, "List picker error: ${t.javaClass.simpleName}: ${t.message}", Toast.LENGTH_LONG).show() }
                         }
                     })
