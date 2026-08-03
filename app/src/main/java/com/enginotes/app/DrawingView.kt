@@ -3146,17 +3146,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (polylineFingerDown) drawMagnifierLens(canvas, polylineCursorX, polylineCursorY)
         }
         canvas.restore()
-        // Paper-like Read Mode: a single cheap screen-space overlay instead of touching every
-        // stroke's own Paint — a low-alpha warm multiply nudges pure blacks/blues toward the
-        // ink-navy/charcoal a physical pen leaves on paper, without a per-item color-filter pass
-        // that would cost real time on a page with many strokes.
-        if (readMode == ReadMode.PAPER_LIKE) {
-            val warmOverlay = Paint().apply {
-                color = Color.argb(14, 255, 220, 170)
-                xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.MULTIPLY)
-            }
-            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), warmOverlay)
-        }
+        // Paper-like Read Mode used to apply a low-alpha warm multiply overlay across the whole
+        // canvas here to nudge stroke colors toward an ink-on-paper feel. Removed: it touched
+        // every stroke's rendered appearance, not just the background/paper texture the mode is
+        // meant to restyle, and made content read as faded/washed-out rather than just sitting on
+        // a different-colored page. The background color and dimmed rule lines in drawBackground/
+        // drawPaperPattern above are the only visual changes Paper-like should make now.
         drawCursor(canvas)
     }
 
@@ -5893,7 +5888,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (inputMode == InputMode.STYLUS_ONLY && isFinger) return true
         if (inputMode == InputMode.FINGER_ONLY && isStylus) return true
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { if (isStylus) { isStylusDown = true; drawingPointerId = event.getPointerId(0) } else { if (isStylusDown) return true; drawingPointerId = event.getPointerId(0) } }
+            MotionEvent.ACTION_DOWN -> {
+                if (isStylus) {
+                    isStylusDown = true; drawingPointerId = event.getPointerId(0)
+                    // Stylus-down with no drawing tool deliberately chosen (still on the default
+                    // Select tool) starts drawing with Ball pen right away — no icon tap needed.
+                    // Only applies coming from Select; a tool the user actually picked (Eraser,
+                    // Highlighter, a shape, etc.) is left alone regardless of stylus vs finger, so
+                    // this can't override a deliberate choice mid-use.
+                    if (currentTool == Tool.SELECT) { currentTool = Tool.PEN; currentPenStyle = PenStyle.BALL }
+                } else { if (isStylusDown) return true; drawingPointerId = event.getPointerId(0) }
+            }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { if (isStylus) isStylusDown = false; drawingPointerId = -1 }
             MotionEvent.ACTION_MOVE -> { if (isStylusDown && isFinger) return true }
         }

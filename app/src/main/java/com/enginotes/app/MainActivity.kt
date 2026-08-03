@@ -2220,32 +2220,30 @@ class MainActivity : AppCompatActivity() {
         closeInlineEditor(true)
         drawingView.readMode = mode
         // Neither variant allows editing, so the tool palette has nothing to actually do — hide
-        // it in both. Standard keeps the top bar visible (this same Read Mode icon is the way
-        // back out). Paper-like additionally hides the top bar for the floating-sheet look, so
-        // it needs its own small floating exit affordance instead.
+        // it, and the top bar, in both. The distinction between the two modes is only the paper
+        // reskin/dimmed ruling (handled in DrawingView), not chrome visibility — both need the
+        // same floating exit affordance since both hide the top bar's own Read Mode icon.
         setBottomToolbarVisible(false)
         findViewById<View?>(R.id.toolbarScroll)?.visibility = View.GONE
-        if (mode == DrawingView.ReadMode.PAPER_LIKE) {
-            findViewById<View?>(R.id.topBarContainer)?.visibility = View.GONE
-            if (readModeExitBtn == null) {
-                val btn = TextView(this).apply {
-                    text = "📖 Exit Read Mode"; textSize = 13f; gravity = Gravity.CENTER
-                    setTextColor(Color.WHITE)
-                    setPadding(dp(16), dp(10), dp(16), dp(10))
-                    background = android.graphics.drawable.GradientDrawable().apply {
-                        setColor(Color.parseColor("#991C1C1E")); cornerRadius = dp(20).toFloat()
-                    }
-                    elevation = dp(6).toFloat()
-                    setOnClickListener { exitReadMode() }
+        findViewById<View?>(R.id.topBarContainer)?.visibility = View.GONE
+        if (readModeExitBtn == null) {
+            val btn = TextView(this).apply {
+                text = "📖 Exit Read Mode"; textSize = 13f; gravity = Gravity.CENTER
+                setTextColor(Color.WHITE)
+                setPadding(dp(16), dp(10), dp(16), dp(10))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(Color.parseColor("#991C1C1E")); cornerRadius = dp(20).toFloat()
                 }
-                val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
-                lp.gravity = Gravity.TOP or Gravity.END
-                lp.topMargin = dp(14); lp.rightMargin = dp(14)
-                canvasContainer.addView(btn, lp)
-                readModeExitBtn = btn
+                elevation = dp(6).toFloat()
+                setOnClickListener { exitReadMode() }
             }
-            readModeExitBtn?.visibility = View.VISIBLE
+            val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+            lp.gravity = Gravity.TOP or Gravity.END
+            lp.topMargin = dp(14); lp.rightMargin = dp(14)
+            canvasContainer.addView(btn, lp)
+            readModeExitBtn = btn
         }
+        readModeExitBtn?.visibility = View.VISIBLE
         Toast.makeText(this, if (mode == DrawingView.ReadMode.STANDARD) "Read Mode: Standard" else "Read Mode: Paper-like", Toast.LENGTH_SHORT).show()
     }
 
