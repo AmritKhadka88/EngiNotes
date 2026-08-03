@@ -3832,6 +3832,16 @@ class MainActivity : AppCompatActivity() {
         val lockColorCb = CheckBox(this).apply { text="Locked items: prevent colour changes"; isChecked=prefs.getBoolean("lock_prevent_color",true); buttonTintList = accentTint; setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_color",on).apply() } }; container.addView(lockColorCb)
 
         div(); hdr("GENERAL")
+        val fullscreenCb = CheckBox(this).apply {
+            text = "Always use fullscreen (hide status bar)"
+            isChecked = isAlwaysFullscreenEnabled()
+            buttonTintList = accentTint
+            setOnCheckedChangeListener { _, on -> setAlwaysFullscreenEnabled(on); applyStatusBarFullscreenPreference() }
+        }; container.addView(fullscreenCb)
+        container.addView(TextView(this).apply {
+            text = "Applies everywhere in the app — the notes list as well as inside a note — not just this screen."
+            textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(2), 0, dp(4))
+        })
         val confirmCb = CheckBox(this).apply{ text="Confirm before exit or clear canvas"; isChecked=prefs.getBoolean("confirm_exit_clear",true); buttonTintList = accentTint }; container.addView(confirmCb)
         val autosaveCb = CheckBox(this).apply{ text="Autosave every 10 seconds"; isChecked=prefs.getBoolean("autosave",true); buttonTintList = accentTint }; container.addView(autosaveCb)
         val layersBtnCb = CheckBox(this).apply {
@@ -6254,6 +6264,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        applyStatusBarFullscreenPreference()
         if (currentAppTheme() == "GLASS") scheduleBlurUpdate()
         // updateSnapOptionsButton() previously only ran reactively from inside the two Snap
         // switches themselves — so the "Snap ⚙" pill's visibility could drift out of sync with

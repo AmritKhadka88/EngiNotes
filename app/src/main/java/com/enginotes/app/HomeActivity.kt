@@ -456,7 +456,7 @@ class HomeActivity : AppCompatActivity() {
             .also { dlg -> dlg.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(bgColorInt)) }
     }
 
-    override fun onResume() { super.onResume(); refreshPages() }
+    override fun onResume() { super.onResume(); applyStatusBarFullscreenPreference(); refreshPages() }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 }

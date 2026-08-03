@@ -32,6 +32,7 @@ data class DataSeries(
 data class PinnedLabel(val label: String, val value: Float, val x: Float, val y: Float)
 
 class ChartActivity : AppCompatActivity() {
+    override fun onResume() { super.onResume(); applyStatusBarFullscreenPreference() }
 
     private lateinit var chartView: ChartView
     private val seriesList = mutableListOf<DataSeries>()

@@ -340,6 +340,7 @@ class BooksActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        applyStatusBarFullscreenPreference()
         refresh()
     }
 

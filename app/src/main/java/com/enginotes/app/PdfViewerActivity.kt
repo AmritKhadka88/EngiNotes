@@ -27,6 +27,7 @@ import java.io.File
 import java.io.FileOutputStream
 
 class PdfViewerActivity : AppCompatActivity() {
+    override fun onResume() { super.onResume(); applyStatusBarFullscreenPreference() }
 
     private lateinit var pdfCanvas: PdfAnnotationView
     private lateinit var tvPageInfo: TextView
