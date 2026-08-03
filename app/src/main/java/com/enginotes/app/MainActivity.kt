@@ -585,9 +585,16 @@ class MainActivity : AppCompatActivity() {
         // layout for them.
         run {
             val dock = findViewById<View?>(R.id.bottomToolbarDock)
+            val topBar = findViewById<View?>(R.id.topBarContainer)
             // The dock's own starting bottomMargin, captured once before any keyboard adjustment.
             // Every subsequent update sets margin = baseline + keyboardHeight.
             val baseMargin = (dock?.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.bottomMargin ?: 0
+            // topBarContainer's own original padding (10dp/10dp/6dp/6dp from the XML) — captured
+            // once so the status-bar inset below can be ADDED on top of it, not replace it.
+            val topBarBasePadTop = topBar?.paddingTop ?: 0
+            val topBarBasePadBottom = topBar?.paddingBottom ?: 0
+            val topBarBasePadLeft = topBar?.paddingLeft ?: 0
+            val topBarBasePadRight = topBar?.paddingRight ?: 0
             androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { _, insets ->
                 val imeBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
                 val navBarBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars()).bottom
@@ -602,6 +609,21 @@ class MainActivity : AppCompatActivity() {
                 if (lp != null && lp.bottomMargin != target) {
                     lp.bottomMargin = target
                     dock.layoutParams = lp
+                }
+                // The root layout used to have android:fitsSystemWindows="true", which padded the
+                // WHOLE screen down by the status bar height unconditionally — including while
+                // fullscreen mode has that bar hidden, since that's a separate, older View-level
+                // mechanism that setDecorFitsSystemWindows()/WindowInsetsController don't override.
+                // That's what left a persistent blank strip at the top even with the status bar
+                // itself successfully hidden. Applying just to topBarContainer, and reading the
+                // REAL current inset here instead, means this correctly collapses to 0 the moment
+                // the status bar is actually hidden, and restores properly when it's shown again.
+                if (topBar != null) {
+                    val statusBarTop = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.statusBars()).top
+                    val newPadTop = topBarBasePadTop + statusBarTop
+                    if (topBar.paddingTop != newPadTop) {
+                        topBar.setPadding(topBarBasePadLeft, newPadTop, topBarBasePadRight, topBarBasePadBottom)
+                    }
                 }
                 // textOptionsPanel (the font-family/size/color panel) is a separate view, added
                 // independently with plain Gravity.BOTTOM and no keyboard awareness of its own —
