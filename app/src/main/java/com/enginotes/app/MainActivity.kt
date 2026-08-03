@@ -1670,7 +1670,7 @@ class MainActivity : AppCompatActivity() {
             }
             btn.addView(preview, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             btn.setOnClickListener { v ->
-                val popup = android.widget.PopupWindow(this)
+                val popup = android.widget.PopupWindow(this).apply { setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)) }
                 val pLayout = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14))
                     background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
@@ -1725,7 +1725,7 @@ class MainActivity : AppCompatActivity() {
                 background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(11).toFloat() }
             }
             btn.setOnClickListener { v ->
-                val popup = android.widget.PopupWindow(this)
+                val popup = android.widget.PopupWindow(this).apply { setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)) }
                 val pLayout = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
                     background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
@@ -1790,7 +1790,7 @@ class MainActivity : AppCompatActivity() {
                 background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(11).toFloat() }
             }
             btn.setOnClickListener { v ->
-                val popup = android.widget.PopupWindow(this)
+                val popup = android.widget.PopupWindow(this).apply { setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)) }
                 val pLayout = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14))
                     background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
@@ -2284,6 +2284,33 @@ class MainActivity : AppCompatActivity() {
     internal fun navBarBottomInset(): Int {
         val insets = androidx.core.view.ViewCompat.getRootWindowInsets(window.decorView)
         return insets?.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
+    }
+
+    /** Caps [scroll]'s height (via [lp], the FrameLayout.LayoutParams it's about to be attached
+     * with) to whatever vertical space is actually free between the top bar and the bottom
+     * toolbar — every bottom-sheet-style tool options panel (Text, Highlighter, Shape Options,
+     * Pen options, etc.) was using WRAP_CONTENT with no upper bound, so a panel with enough
+     * content (several sections of font/size/opacity/color, say) could grow tall enough to
+     * overlap the TOP bar as well as the bottom toolbar it's meant to sit just above — visible as
+     * the panel's own title overlapping the app's real top bar. Leaves WRAP_CONTENT alone (so
+     * short panels still hug their own content, not stretch to fill all available space) unless
+     * the content actually would overflow, in which case the panel gets a fixed height instead and
+     * relies on its own ScrollView to make the rest reachable by scrolling.
+     */
+    internal fun capPanelHeight(scroll: ScrollView, lp: FrameLayout.LayoutParams) {
+        val topH = findViewById<View?>(R.id.topBarContainer)?.height ?: 0
+        var bottomToolbarH = 0
+        for (id in listOf(R.id.primaryToolbarScroll, R.id.toolbarScroll)) {
+            val v = findViewById<View?>(id)
+            if (v != null && v.visibility == View.VISIBLE) bottomToolbarH += v.height
+        }
+        val screenH = resources.displayMetrics.heightPixels
+        val available = (screenH - topH - bottomToolbarH - navBarBottomInset() - dp(16)).coerceAtLeast(dp(150))
+        scroll.measure(
+            View.MeasureSpec.makeMeasureSpec(resources.displayMetrics.widthPixels, View.MeasureSpec.AT_MOST),
+            View.MeasureSpec.makeMeasureSpec(Int.MAX_VALUE and 0x00FFFFFF, View.MeasureSpec.AT_MOST)
+        )
+        if (scroll.measuredHeight > available) lp.height = available
     }
 
     // Small themed replacement for Android's stock PopupMenu. PopupMenu draws from the app's
@@ -3761,6 +3788,7 @@ class MainActivity : AppCompatActivity() {
         scrollRef[0] = scroll
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
         lp.bottomMargin = navBarBottomInset()
+        capPanelHeight(scroll, lp)
         canvasContainer.addView(scroll, lp)
     }
 
@@ -4487,6 +4515,7 @@ class MainActivity : AppCompatActivity() {
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
         lp.bottomMargin = navBarBottomInset()
+        capPanelHeight(scroll, lp)
         canvasContainer.addView(scroll, lp)
         textOptionsPanel = scroll
         animatePanelIn(scroll)
@@ -4744,6 +4773,7 @@ class MainActivity : AppCompatActivity() {
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         lp.gravity = android.view.Gravity.BOTTOM
         lp.bottomMargin = navBarBottomInset()
+        capPanelHeight(scroll, lp)
         canvasContainer.addView(scroll, lp)
         shapeOptionsPanel = scroll
         animatePanelIn(scroll)
@@ -4972,7 +5002,7 @@ class MainActivity : AppCompatActivity() {
             20f to "1:20", 50f to "1:50", 100f to "1:100",
             200f to "1:200", 500f to "1:500", 1000f to "1:1000"
         )
-        val popup = android.widget.PopupWindow(this)
+        val popup = android.widget.PopupWindow(this).apply { setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)) }
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(currentThemeBackgroundColor())
@@ -5148,6 +5178,7 @@ class MainActivity : AppCompatActivity() {
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
         lp.bottomMargin = navBarBottomInset()
+        capPanelHeight(scroll, lp)
         canvasContainer.addView(scroll, lp)
         penOptionsPanel = scroll
         animatePanelIn(scroll)
@@ -5340,6 +5371,7 @@ class MainActivity : AppCompatActivity() {
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
         lp.bottomMargin = navBarBottomInset()
+        capPanelHeight(scroll, lp)
         canvasContainer.addView(scroll, lp)
         highlighterOptionsPanel = scroll
         animatePanelIn(scroll)
@@ -5449,6 +5481,7 @@ class MainActivity : AppCompatActivity() {
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
         lp.bottomMargin = navBarBottomInset()
+        capPanelHeight(scroll, lp)
         canvasContainer.addView(scroll, lp)
         brushOptionsPanel = scroll
         animatePanelIn(scroll)
@@ -5683,6 +5716,7 @@ class MainActivity : AppCompatActivity() {
         val maxPanelHeight = (canvasContainer.height * 0.55f).toInt().coerceAtLeast(dp(280))
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, maxPanelHeight, Gravity.BOTTOM)
         lp.bottomMargin = navBarBottomInset()
+        capPanelHeight(scroll, lp)
         canvasContainer.addView(scroll, lp)
         tablePropertiesPanel = scroll
         animatePanelIn(scroll)
@@ -5955,7 +5989,7 @@ class MainActivity : AppCompatActivity() {
         }
         fun openSizePicker(anchor: View) {
             val standardPoints = listOf(6f,7f,8f,9f,10f,10.5f,11f,12f,13f,14f,16f,18f,20f,22f,24f,26f,28f,32f,36f,40f,44f,48f,54f,60f,66f,72f,80f,88f,96f,108f,120f,132f,144f,160f)
-            val popup = android.widget.PopupWindow(this)
+            val popup = android.widget.PopupWindow(this).apply { setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)) }
             val pLayout = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
