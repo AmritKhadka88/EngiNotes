@@ -1716,20 +1716,23 @@ class MainActivity : AppCompatActivity() {
                 pLayout.addView(customRow)
                 pLayout.addView(View(this).apply { setBackgroundColor(Color.parseColor("#E5E1DC")); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)) })
                 // Scrollable list of standard sizes — at least 30 entries, matching the familiar
-                // reference points from MS Word's own font-size dropdown.
-                val scroll = android.widget.ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(140), dp(280)) }
+                // reference points from MS Word's own font-size dropdown. Sized to show 10+ rows
+                // at once (was only showing 2-3, which made a simple "pick a size" action feel
+                // like it needed a lot of scrolling) and narrowed, since a 2-3 digit number never
+                // needed dp(140) of width in the first place.
+                val scroll = android.widget.ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(100), dp(420)) }
                 val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
                 val currentPts = currentSizePx / PT_TO_PX
                 for (pt in standardPoints) {
                     list.addView(TextView(this).apply {
                         text = ptLabel(pt)
-                        textSize = 16f; setPadding(dp(16), dp(10), dp(16), dp(10))
+                        textSize = 16f; setPadding(dp(12), dp(7), dp(12), dp(7))
                         if (kotlin.math.abs(pt - currentPts) < 0.01f) { setBackgroundColor(Color.parseColor("#E3EEFB")); setTextColor(Color.parseColor("#1565C0")) } else setTextColor(Color.parseColor("#1C1C1E"))
                         setOnClickListener { onChange(pt * PT_TO_PX); btn.text = ptLabel(pt); popup.dismiss() }
                     })
                 }
                 scroll.addView(list); pLayout.addView(scroll)
-                popup.contentView = pLayout; popup.width = dp(180); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+                popup.contentView = pLayout; popup.width = dp(140); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
                 popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
                 popup.showAsDropDown(v, -dp(60), -dp(90))
             }
@@ -5937,19 +5940,19 @@ class MainActivity : AppCompatActivity() {
             customRow.addView(customEdit); customRow.addView(setBtn)
             pLayout.addView(customRow)
             pLayout.addView(View(this).apply { setBackgroundColor(Color.parseColor("#E5E1DC")); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)) })
-            val scroll = ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(140), dp(280)) }
+            val scroll = ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(100), dp(420)) }
             val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             val currentPts = cell.textSize / PT_TO_PX
             for (pt in standardPoints) {
                 list.addView(TextView(this).apply {
                     text = ptLabel(pt)
-                    textSize = 16f; setPadding(dp(16), dp(10), dp(16), dp(10))
+                    textSize = 16f; setPadding(dp(12), dp(7), dp(12), dp(7))
                     if (kotlin.math.abs(pt - currentPts) < 0.01f) { setBackgroundColor(Color.parseColor("#E3EEFB")); setTextColor(Color.parseColor("#1565C0")) } else setTextColor(Color.parseColor("#1C1C1E"))
                     setOnClickListener { applySizeChangePx(pt * PT_TO_PX); popup.dismiss() }
                 })
             }
             scroll.addView(list); pLayout.addView(scroll)
-            popup.contentView = pLayout; popup.width = dp(180); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+            popup.contentView = pLayout; popup.width = dp(140); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
             popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
             popup.showAsDropDown(anchor, -dp(60), -dp(300))
         }
