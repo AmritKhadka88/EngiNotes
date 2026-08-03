@@ -1695,7 +1695,7 @@ class MainActivity : AppCompatActivity() {
                 sliderView.layoutParams = LinearLayout.LayoutParams(dp(220), dp(40))
                 pLayout.addView(sliderView)
                 popup.contentView = pLayout; popup.width = dp(256); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-                popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
+                popup.isOutsideTouchable = true; popup.isFocusable = false; popup.elevation = dp(8).toFloat()
                 popup.showAsDropDown(v, -dp(100), -dp(90))
             }
             row.addView(btn)
@@ -1769,7 +1769,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 scroll.addView(list); pLayout.addView(scroll)
                 popup.contentView = pLayout; popup.width = dp(140); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-                popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
+                popup.isOutsideTouchable = true; popup.isFocusable = false; popup.elevation = dp(8).toFloat()
                 showPopupAboveAnchor(v, popup, pLayout, -dp(60))
             }
             row.addView(btn)
@@ -1818,7 +1818,7 @@ class MainActivity : AppCompatActivity() {
                 sliderView.layoutParams = LinearLayout.LayoutParams(dp(220), dp(40))
                 pLayout.addView(sliderView)
                 popup.contentView = pLayout; popup.width = dp(256); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-                popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
+                popup.isOutsideTouchable = true; popup.isFocusable = false; popup.elevation = dp(8).toFloat()
                 popup.showAsDropDown(v, -dp(100), -dp(90))
             }
             row.addView(btn)
@@ -2286,31 +2286,36 @@ class MainActivity : AppCompatActivity() {
         return insets?.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
     }
 
-    /** Caps [scroll]'s height (via [lp], the FrameLayout.LayoutParams it's about to be attached
-     * with) to whatever vertical space is actually free between the top bar and the bottom
-     * toolbar — every bottom-sheet-style tool options panel (Text, Highlighter, Shape Options,
-     * Pen options, etc.) was using WRAP_CONTENT with no upper bound, so a panel with enough
-     * content (several sections of font/size/opacity/color, say) could grow tall enough to
-     * overlap the TOP bar as well as the bottom toolbar it's meant to sit just above — visible as
-     * the panel's own title overlapping the app's real top bar. Leaves WRAP_CONTENT alone (so
-     * short panels still hug their own content, not stretch to fill all available space) unless
-     * the content actually would overflow, in which case the panel gets a fixed height instead and
-     * relies on its own ScrollView to make the rest reachable by scrolling.
+    /** Attaches [scroll] to canvasContainer via [lp] (a bottom-gravity FrameLayout.LayoutParams,
+     * not yet given a bottomMargin), then fixes up its position and height once the layout pass
+     * has caught up with whatever visibility changes this panel's caller just made (every one of
+     * these panels hides the toolbarScroll row right before building itself).
+     *
+     * Two real bugs here, not one:
+     * 1. bottomMargin was being set to navBarBottomInset() alone — the system nav bar's own
+     *    inset, not the app's own bottomToolbarDock (the actual toolbar row(s) with the tool
+     *    icons) sitting above it. That dock is far taller than the nav bar inset, so every one of
+     *    these panels was landing with its bottom portion hidden behind — not above — the real
+     *    toolbar, however tall its content was.
+     * 2. Reading heights synchronously, in the same call that just toggled toolbarScroll's
+     *    visibility, can still see the pre-change layout — Android hasn't necessarily re-measured
+     *    yet. Deferring one frame via post() reads the real, current heights.
      */
-    internal fun capPanelHeight(scroll: ScrollView, lp: FrameLayout.LayoutParams) {
-        val topH = findViewById<View?>(R.id.topBarContainer)?.height ?: 0
-        var bottomToolbarH = 0
-        for (id in listOf(R.id.primaryToolbarScroll, R.id.toolbarScroll)) {
-            val v = findViewById<View?>(id)
-            if (v != null && v.visibility == View.VISIBLE) bottomToolbarH += v.height
+    internal fun attachBottomPanel(scroll: ScrollView, lp: FrameLayout.LayoutParams) {
+        canvasContainer.addView(scroll, lp)
+        canvasContainer.post {
+            val dockH = findViewById<View?>(R.id.bottomToolbarDock)?.height ?: 0
+            val topH = findViewById<View?>(R.id.topBarContainer)?.height ?: 0
+            val screenH = resources.displayMetrics.heightPixels
+            lp.bottomMargin = navBarBottomInset() + dockH
+            val available = (screenH - topH - dockH - navBarBottomInset() - dp(16)).coerceAtLeast(dp(150))
+            scroll.measure(
+                View.MeasureSpec.makeMeasureSpec(resources.displayMetrics.widthPixels, View.MeasureSpec.AT_MOST),
+                View.MeasureSpec.makeMeasureSpec(Int.MAX_VALUE and 0x00FFFFFF, View.MeasureSpec.AT_MOST)
+            )
+            if (scroll.measuredHeight > available) lp.height = available
+            scroll.layoutParams = lp
         }
-        val screenH = resources.displayMetrics.heightPixels
-        val available = (screenH - topH - bottomToolbarH - navBarBottomInset() - dp(16)).coerceAtLeast(dp(150))
-        scroll.measure(
-            View.MeasureSpec.makeMeasureSpec(resources.displayMetrics.widthPixels, View.MeasureSpec.AT_MOST),
-            View.MeasureSpec.makeMeasureSpec(Int.MAX_VALUE and 0x00FFFFFF, View.MeasureSpec.AT_MOST)
-        )
-        if (scroll.measuredHeight > available) lp.height = available
     }
 
     // Small themed replacement for Android's stock PopupMenu. PopupMenu draws from the app's
@@ -3787,9 +3792,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this).apply { addView(panel) }
         scrollRef[0] = scroll
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
-        lp.bottomMargin = navBarBottomInset()
-        capPanelHeight(scroll, lp)
-        canvasContainer.addView(scroll, lp)
+        attachBottomPanel(scroll, lp)
     }
 
     // customHatchDir, listCustomHatches, addCustomHatchFromUri, applyCustomHatch, startHatchSnip,
@@ -4514,9 +4517,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this)
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
-        lp.bottomMargin = navBarBottomInset()
-        capPanelHeight(scroll, lp)
-        canvasContainer.addView(scroll, lp)
+        attachBottomPanel(scroll, lp)
         textOptionsPanel = scroll
         animatePanelIn(scroll)
     }
@@ -4772,9 +4773,7 @@ class MainActivity : AppCompatActivity() {
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         lp.gravity = android.view.Gravity.BOTTOM
-        lp.bottomMargin = navBarBottomInset()
-        capPanelHeight(scroll, lp)
-        canvasContainer.addView(scroll, lp)
+        attachBottomPanel(scroll, lp)
         shapeOptionsPanel = scroll
         animatePanelIn(scroll)
     }
@@ -5177,9 +5176,7 @@ class MainActivity : AppCompatActivity() {
 
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
-        lp.bottomMargin = navBarBottomInset()
-        capPanelHeight(scroll, lp)
-        canvasContainer.addView(scroll, lp)
+        attachBottomPanel(scroll, lp)
         penOptionsPanel = scroll
         animatePanelIn(scroll)
     }
@@ -5285,8 +5282,8 @@ class MainActivity : AppCompatActivity() {
         panel.addView(clearBtn)
 
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
-        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(panel, lp)
+        canvasContainer.post { lp.bottomMargin = navBarBottomInset() + (findViewById<View?>(R.id.bottomToolbarDock)?.height ?: 0); panel.layoutParams = lp }
         eraserOptionsPanel = panel
         animatePanelIn(panel)
     }
@@ -5370,9 +5367,7 @@ class MainActivity : AppCompatActivity() {
 
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
-        lp.bottomMargin = navBarBottomInset()
-        capPanelHeight(scroll, lp)
-        canvasContainer.addView(scroll, lp)
+        attachBottomPanel(scroll, lp)
         highlighterOptionsPanel = scroll
         animatePanelIn(scroll)
     }
@@ -5480,9 +5475,7 @@ class MainActivity : AppCompatActivity() {
 
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
-        lp.bottomMargin = navBarBottomInset()
-        capPanelHeight(scroll, lp)
-        canvasContainer.addView(scroll, lp)
+        attachBottomPanel(scroll, lp)
         brushOptionsPanel = scroll
         animatePanelIn(scroll)
     }
@@ -5715,9 +5708,7 @@ class MainActivity : AppCompatActivity() {
         // above it the way Text/Eraser/Highlighter panels do.
         val maxPanelHeight = (canvasContainer.height * 0.55f).toInt().coerceAtLeast(dp(280))
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, maxPanelHeight, Gravity.BOTTOM)
-        lp.bottomMargin = navBarBottomInset()
-        capPanelHeight(scroll, lp)
-        canvasContainer.addView(scroll, lp)
+        attachBottomPanel(scroll, lp)
         tablePropertiesPanel = scroll
         animatePanelIn(scroll)
     }
@@ -6024,7 +6015,7 @@ class MainActivity : AppCompatActivity() {
             }
             scroll.addView(list); pLayout.addView(scroll)
             popup.contentView = pLayout; popup.width = dp(140); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-            popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
+            popup.isOutsideTouchable = true; popup.isFocusable = false; popup.elevation = dp(8).toFloat()
             showPopupAboveAnchor(anchor, popup, pLayout, -dp(60))
         }
         fun buildToolbar() {
