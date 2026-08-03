@@ -457,6 +457,7 @@ class HomeActivity : AppCompatActivity() {
     }
 
     override fun onResume() { super.onResume(); applyStatusBarFullscreenPreference(); refreshPages() }
+    override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) applyStatusBarFullscreenPreference() }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 }

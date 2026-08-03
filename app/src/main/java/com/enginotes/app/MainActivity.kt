@@ -6303,6 +6303,15 @@ class MainActivity : AppCompatActivity() {
         updateGroupModeToggle(drawingView.selectedItems.isNotEmpty())
     }
 
+    // The system can silently re-assert the status bar right around when the window itself
+    // regains focus (switching back from another app, dismissing a dialog, the keyboard closing,
+    // etc.) — a well-documented reliability gap in Android's immersive-mode APIs where onResume
+    // alone doesn't reliably catch every case. This is the standard extra hook recommended for it.
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) applyStatusBarFullscreenPreference()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         autosaveHandler.removeCallbacks(autosaveRunnable)

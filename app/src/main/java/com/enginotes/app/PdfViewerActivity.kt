@@ -28,6 +28,7 @@ import java.io.FileOutputStream
 
 class PdfViewerActivity : AppCompatActivity() {
     override fun onResume() { super.onResume(); applyStatusBarFullscreenPreference() }
+    override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) applyStatusBarFullscreenPreference() }
 
     private lateinit var pdfCanvas: PdfAnnotationView
     private lateinit var tvPageInfo: TextView

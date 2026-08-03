@@ -344,6 +344,11 @@ class BooksActivity : AppCompatActivity() {
         refresh()
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) applyStatusBarFullscreenPreference()
+    }
+
     private fun getBooksRoot(): File {
         val f = File(filesDir, "books"); if (!f.exists()) f.mkdirs(); return f
     }

@@ -36,6 +36,8 @@ fun Activity.applyStatusBarFullscreenPreference() {
     if (hide) {
         controller.hide(WindowInsetsCompat.Type.statusBars())
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        @Suppress("DEPRECATION")
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
         // Same reasoning as the existing manual fullscreen button: without this, a notched/punch-
         // hole phone still reserves the status bar's strip as solid black even once its icons are
         // hidden, instead of letting content extend up under the cutout.
