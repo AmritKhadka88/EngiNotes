@@ -3061,6 +3061,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (++drawCount % 60 == 0) pruneBrushCache()
+        // Book-style page-turn navigation (Paper-like Read Mode + Paginated canvas) renders
+        // completely differently — one page at a time, fit to the screen, with a second page
+        // sliding in during a drag — so it's dispatched to its own renderer instead of trying to
+        // wedge that into the normal continuous-scroll path below.
+        if (bookPageTurnActive()) { drawBookPageTurn(canvas); return }
+        drawCanvasContent(canvas)
+    }
+
+    private fun drawCanvasContent(canvas: Canvas) {
         canvas.drawColor(if (isExportRender) Color.WHITE else canvasBackgroundColor)
         canvas.save()
         canvas.translate(translateX, translateY)
@@ -3153,6 +3162,142 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // a different-colored page. The background color and dimmed rule lines in drawBackground/
         // drawPaperPattern above are the only visual changes Paper-like should make now.
         drawCursor(canvas)
+    }
+
+    // ── Book-style page-turn navigation (Paper-like Read Mode) ─────────────────────────
+    // Only kicks in for Paginated notes — "turning a page" doesn't have a well-defined meaning
+    // for Infinite/Convenient canvases, which don't have discrete page boundaries the same way.
+    var readPageIndex: Int = 0
+    private var pageTurnDragPx: Float = 0f
+    private var pageTurnDragging = false
+    private var pageTurnStartX = 0f
+    private var pageTurnAnimator: android.animation.ValueAnimator? = null
+
+    private fun bookPageTurnActive(): Boolean = readMode == ReadMode.PAPER_LIKE && canvasMode == CanvasMode.PAGINATED
+
+    /** Called once when entering Paper-like Read Mode on a Paginated note, so the page-turn view
+     * opens on whichever page you were actually scrolled to instead of always restarting at 1. */
+    fun syncReadPageIndexToScroll() {
+        val ph = pageHeightPx(); val gap = 40f
+        val approx = ((-translateY / scaleFactor) / (ph + gap)).toInt()
+        readPageIndex = approx.coerceIn(0, (estimatePageCount() - 1).coerceAtLeast(0))
+    }
+
+    private fun handlePageTurnGesture(event: MotionEvent) {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                pageTurnAnimator?.cancel()
+                pageTurnDragging = true
+                pageTurnStartX = event.x
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!pageTurnDragging) return
+                val pageCount = estimatePageCount().coerceAtLeast(1)
+                val atFirst = readPageIndex <= 0
+                val atLast = readPageIndex >= pageCount - 1
+                var dx = event.x - pageTurnStartX
+                // Soft rubber-band resistance past the first/last page, instead of either a hard
+                // stop (feels broken) or letting it drag as if there were a page there (misleading).
+                if (dx < 0f && atLast) dx *= 0.25f
+                if (dx > 0f && atFirst) dx *= 0.25f
+                pageTurnDragPx = dx.coerceIn(-width.toFloat(), width.toFloat())
+                invalidate()
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                pageTurnDragging = false
+                val pageCount = estimatePageCount().coerceAtLeast(1)
+                val threshold = width * 0.25f
+                val target = when {
+                    pageTurnDragPx <= -threshold && readPageIndex < pageCount - 1 -> readPageIndex + 1
+                    pageTurnDragPx >= threshold && readPageIndex > 0 -> readPageIndex - 1
+                    else -> readPageIndex
+                }
+                settlePageTurn(target)
+            }
+        }
+    }
+
+    private fun settlePageTurn(targetPageIndex: Int) {
+        val start = pageTurnDragPx
+        val goingForward = targetPageIndex > readPageIndex
+        val end = if (targetPageIndex != readPageIndex) (if (goingForward) -width.toFloat() else width.toFloat()) else 0f
+        pageTurnAnimator?.cancel()
+        pageTurnAnimator = android.animation.ValueAnimator.ofFloat(start, end).apply {
+            duration = 240
+            interpolator = android.view.animation.DecelerateInterpolator(1.5f)
+            addUpdateListener { pageTurnDragPx = it.animatedValue as Float; invalidate() }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    readPageIndex = targetPageIndex
+                    pageTurnDragPx = 0f
+                    invalidate()
+                }
+            })
+            start()
+        }
+    }
+
+    /** Renders exactly one page, fit to the screen, at horizontal screen-space offset [xOffset] —
+     * used both for the page currently in view and, mid-drag or mid-animation, the adjacent page
+     * sliding in behind/ahead of it. [edgeShadowAlpha] draws a soft gradient along the page's
+     * leading edge (the side facing the direction it's moving), standing in for the shadow a real
+     * page casts as it lifts off the page beneath it — not a physically-modeled curl, just enough
+     * depth cue to read as one page passing over another rather than a flat slide. */
+    private fun drawBookPage(canvas: Canvas, pageIdx: Int, baseLeft: Float, baseTop: Float, pageScreenW: Float, pageScreenH: Float, fitScale: Float, xOffset: Float, edgeShadowAlpha: Int) {
+        val pageCount = estimatePageCount().coerceAtLeast(1)
+        if (pageIdx < 0 || pageIdx >= pageCount) return
+        val left = baseLeft + xOffset
+        canvas.save()
+        canvas.clipRect(left, baseTop, left + pageScreenW, baseTop + pageScreenH)
+        // Kindle-style warm off-white page — flat color, no grain/texture, matching an e-ink
+        // Paperwhite screen rather than the tan/parchment "physical desk" look Paper-like used
+        // to have (that backdrop-plus-shadow treatment made sense for a single scrollable sheet;
+        // it doesn't for a book you're paging through).
+        val bg = Paint().apply { color = Color.parseColor("#F6F3E9") }
+        canvas.drawRect(left, baseTop, left + pageScreenW, baseTop + pageScreenH, bg)
+        val savedTX = translateX; val savedTY = translateY; val savedScale = scaleFactor
+        translateX = left; translateY = baseTop - pageIdx * (pageHeightPx() + 40f) * fitScale
+        scaleFactor = fitScale
+        drawCanvasContent(canvas)
+        translateX = savedTX; translateY = savedTY; scaleFactor = savedScale
+        canvas.restore()
+        if (edgeShadowAlpha > 0) {
+            val gradW = dp(26).toFloat()
+            val onRightEdge = xOffset <= 0f
+            val x0 = if (onRightEdge) left + pageScreenW - gradW else left
+            val x1 = if (onRightEdge) left + pageScreenW else left + gradW
+            val colors = if (onRightEdge) intArrayOf(0, Color.argb(edgeShadowAlpha, 0, 0, 0)) else intArrayOf(Color.argb(edgeShadowAlpha, 0, 0, 0), 0)
+            val shader = android.graphics.LinearGradient(x0, 0f, x1, 0f, colors, null, android.graphics.Shader.TileMode.CLAMP)
+            canvas.drawRect(x0, baseTop, x1, baseTop + pageScreenH, Paint().apply { this.shader = shader })
+        }
+    }
+
+    private fun drawBookPageTurn(canvas: Canvas) {
+        val w = width.toFloat(); val h = height.toFloat()
+        // Kindle-like neutral warm-gray surround behind the page (a real Kindle has no "desk"
+        // backdrop/floating-sheet shadow the way the old Paper-like treatment did — just a flat
+        // bezel color around the reading area).
+        canvas.drawColor(Color.parseColor("#DEDBCF"))
+        val marginPx = dp(18).toFloat()
+        val ph = pageHeightPx(); val pw = pageWidthPx()
+        val fitScale = kotlin.math.min((w - marginPx * 2f) / pw, (h - marginPx * 2f) / ph)
+        val pageScreenW = pw * fitScale; val pageScreenH = ph * fitScale
+        val baseLeft = (w - pageScreenW) / 2f
+        val baseTop = (h - pageScreenH) / 2f
+        val dragPx = pageTurnDragPx
+        val progress = (kotlin.math.abs(dragPx) / w).coerceIn(0f, 1f)
+        val shadowAlpha = (progress * 90).toInt()
+        when {
+            kotlin.math.abs(dragPx) < 0.5f -> drawBookPage(canvas, readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, 0f, 0)
+            dragPx < 0f -> {
+                drawBookPage(canvas, readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, dragPx, shadowAlpha)
+                drawBookPage(canvas, readPageIndex + 1, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, dragPx + w, 0)
+            }
+            else -> {
+                drawBookPage(canvas, readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, dragPx, shadowAlpha)
+                drawBookPage(canvas, readPageIndex - 1, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, dragPx - w, 0)
+            }
+        }
     }
 
     private var hasInitialLayout = false
@@ -5777,6 +5922,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // this path already guarantees for fingerPanMode. Two-finger pinch-zoom below is
         // untouched by either — it was never tool-gated, so reading still zooms normally.
         if ((fingerPanMode || readMode != ReadMode.OFF) && event.pointerCount == 1) {
+            if (bookPageTurnActive()) { handlePageTurnGesture(event); return true }
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     // Cancel any in-progress stroke so pan→draw switch doesn't produce a straight line

@@ -2219,6 +2219,7 @@ class MainActivity : AppCompatActivity() {
     private fun enterReadMode(mode: DrawingView.ReadMode) {
         closeInlineEditor(true)
         drawingView.readMode = mode
+        if (mode == DrawingView.ReadMode.PAPER_LIKE) drawingView.syncReadPageIndexToScroll()
         // Neither variant allows editing, so the tool palette has nothing to actually do — hide
         // it, and the top bar, in both. The distinction between the two modes is only the paper
         // reskin/dimmed ruling (handled in DrawingView), not chrome visibility — both need the
@@ -2245,6 +2246,7 @@ class MainActivity : AppCompatActivity() {
         }
         readModeExitBtn?.visibility = View.VISIBLE
         Toast.makeText(this, if (mode == DrawingView.ReadMode.STANDARD) "Read Mode: Standard" else "Read Mode: Paper-like", Toast.LENGTH_SHORT).show()
+        drawingView.invalidate()
     }
 
     private fun exitReadMode() {
@@ -2255,6 +2257,7 @@ class MainActivity : AppCompatActivity() {
             findViewById<View?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
         }
         readModeExitBtn?.visibility = View.GONE
+        drawingView.invalidate()
     }
 
     internal fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
