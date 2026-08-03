@@ -1109,6 +1109,38 @@ class MainActivity : AppCompatActivity() {
     }
     internal fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
+    /** How much vertical space is actually free above [anchor] on screen right now, minus
+     * [headerReservePx] for whatever fixed-height content (a custom-value row, a divider, etc.)
+     * sits above a scrollable list in the same popup — i.e. what's left over for that list. Used
+     * instead of a fixed dp value so a popup anchored low on screen (like a bottom-toolbar
+     * button, right next to the keyboard) sizes itself to what will actually fit, rather than
+     * assuming a generous, unconditionally-available amount of space that isn't there. */
+    internal fun popupMaxHeightAbove(anchor: View, headerReservePx: Int): Int {
+        val loc = IntArray(2); anchor.getLocationOnScreen(loc)
+        return loc[1] - dp(24) - headerReservePx
+    }
+
+    /** Shows [popup] positioned with [content]'s bottom edge just above [anchor], clamped so it
+     * never runs off the top of the screen — PopupWindow.showAsDropDown's own positioning (what
+     * this replaces at both call sites) doesn't reposition or resize itself to stay on screen, it
+     * just gets silently clipped by whatever edge it runs past, which is exactly what kept
+     * happening for popups anchored in the bottom toolbar. [xOffsetPx] shifts horizontally from
+     * the anchor's own left edge, same meaning as showAsDropDown's xoff parameter. */
+    internal fun showPopupAboveAnchor(anchor: View, popup: android.widget.PopupWindow, content: View, xOffsetPx: Int) {
+        content.measure(
+            View.MeasureSpec.makeMeasureSpec(resources.displayMetrics.widthPixels, View.MeasureSpec.AT_MOST),
+            View.MeasureSpec.makeMeasureSpec(resources.displayMetrics.heightPixels, View.MeasureSpec.AT_MOST)
+        )
+        val contentW = content.measuredWidth; val contentH = content.measuredHeight
+        val loc = IntArray(2); anchor.getLocationOnScreen(loc)
+        val screenW = resources.displayMetrics.widthPixels
+        var x = loc[0] + xOffsetPx
+        if (x + contentW > screenW - dp(8)) x = screenW - contentW - dp(8)
+        if (x < dp(8)) x = dp(8)
+        val y = (loc[1] - contentH - dp(8)).coerceAtLeast(dp(24))
+        popup.showAtLocation(anchor, Gravity.NO_GRAVITY, x, y)
+    }
+
     // No longer does anything — kept so existing call sites don't need to change. Previously
     // this dynamically computed a bottomMargin to keep the context bar glued just above the
     // primary toolbar, since they were two independently-positioned floating views (a fixed
@@ -1716,11 +1748,15 @@ class MainActivity : AppCompatActivity() {
                 pLayout.addView(customRow)
                 pLayout.addView(View(this).apply { setBackgroundColor(Color.parseColor("#E5E1DC")); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)) })
                 // Scrollable list of standard sizes — at least 30 entries, matching the familiar
-                // reference points from MS Word's own font-size dropdown. Sized to show 10+ rows
-                // at once (was only showing 2-3, which made a simple "pick a size" action feel
-                // like it needed a lot of scrolling) and narrowed, since a 2-3 digit number never
-                // needed dp(140) of width in the first place.
-                val scroll = android.widget.ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(100), dp(420)) }
+                // reference points from MS Word's own font-size dropdown. Sized to fill whatever
+                // room is actually available ABOVE this button (it lives in the bottom toolbar,
+                // right next to the keyboard, so that's usually a modest, screen-dependent amount
+                // — a fixed dp(420) here was just as wrong as the original dp(280): making it
+                // taller than what fits doesn't show more rows, it just clips more of it off the
+                // bottom of the screen, since PopupWindow doesn't auto-shrink or reposition itself
+                // to stay on screen the way some other Android popups do).
+                val scrollH = popupMaxHeightAbove(v, dp(90)).coerceIn(dp(120), dp(420))
+                val scroll = android.widget.ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(100), scrollH) }
                 val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
                 val currentPts = currentSizePx / PT_TO_PX
                 for (pt in standardPoints) {
@@ -1734,7 +1770,7 @@ class MainActivity : AppCompatActivity() {
                 scroll.addView(list); pLayout.addView(scroll)
                 popup.contentView = pLayout; popup.width = dp(140); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
                 popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
-                popup.showAsDropDown(v, -dp(60), -dp(90))
+                showPopupAboveAnchor(v, popup, pLayout, -dp(60))
             }
             row.addView(btn)
         }
@@ -5940,7 +5976,8 @@ class MainActivity : AppCompatActivity() {
             customRow.addView(customEdit); customRow.addView(setBtn)
             pLayout.addView(customRow)
             pLayout.addView(View(this).apply { setBackgroundColor(Color.parseColor("#E5E1DC")); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)) })
-            val scroll = ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(100), dp(420)) }
+            val scrollH = popupMaxHeightAbove(anchor, dp(90)).coerceIn(dp(120), dp(420))
+            val scroll = ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(100), scrollH) }
             val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             val currentPts = cell.textSize / PT_TO_PX
             for (pt in standardPoints) {
@@ -5954,7 +5991,7 @@ class MainActivity : AppCompatActivity() {
             scroll.addView(list); pLayout.addView(scroll)
             popup.contentView = pLayout; popup.width = dp(140); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
             popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
-            popup.showAsDropDown(anchor, -dp(60), -dp(300))
+            showPopupAboveAnchor(anchor, popup, pLayout, -dp(60))
         }
         fun buildToolbar() {
             actionsRow.removeAllViews()
