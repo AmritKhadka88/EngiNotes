@@ -2050,7 +2050,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val minTy = height - ph2 - margin; val maxTy = margin
             translateY = translateY.coerceIn(minTy.coerceAtMost(maxTy), maxTy)
         } else if (canvasMode == CanvasMode.CONVENIENT || canvasMode == CanvasMode.PAGINATED) {
-            translateY = translateY.coerceAtMost(topChromeHeightPx)
+            // The chrome-height cushion alone assumes nothing was ever drawn above the note's
+            // nominal y=0 start — but a stroke CAN end up there (drawn while already scrolled to
+            // the limit, for instance), and a flat cushion has no way to know that happened. When
+            // it does, this was capping translateY below what's actually needed to reveal it,
+            // permanently trapping that content behind the top bar with no way to scroll to it —
+            // the reported "content stuck behind the toolbar, page won't scroll there" bug.
+            var minContentY = 0f
+            for (a in actions) {
+                val b = getBounds(a)
+                if (b != null && b[1] < minContentY) minContentY = b[1]
+            }
+            val extraForContent = (-minContentY * scaleFactor).coerceAtLeast(0f)
+            translateY = translateY.coerceAtMost(topChromeHeightPx + extraForContent)
         }
     }
 
