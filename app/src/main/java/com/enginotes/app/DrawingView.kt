@@ -1683,6 +1683,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // faux drop-shadow around the page, and much fainter ruling — while still blocking editing.
     enum class ReadMode { OFF, STANDARD, PAPER_LIKE }
     var readMode: ReadMode = ReadMode.OFF
+        set(value) {
+            if (field != value) recyclePageCurlBitmap()
+            field = value
+        }
         set(value) { field = value; invalidate() }
 
     fun scrollToPercent(pct: Float) {
@@ -3287,10 +3291,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     /** Renders exactly one page, fit to the screen, at horizontal screen-space offset [xOffset] —
      * used both for the page currently in view and, mid-drag or mid-animation, the adjacent page
-     * sliding in behind/ahead of it. [edgeShadowAlpha] draws a soft gradient along the page's
-     * leading edge (the side facing the direction it's moving), standing in for the shadow a real
-     * page casts as it lifts off the page beneath it — not a physically-modeled curl, just enough
-     * depth cue to read as one page passing over another rather than a flat slide. */
+     * sliding in behind/ahead of it (the page BENEATH the curl — the curling page itself is now
+     * rendered by drawCurlingPage()/drawBookPageTurn() below instead of through here). */
     private fun drawBookPage(canvas: Canvas, pageIdx: Int, baseLeft: Float, baseTop: Float, pageScreenW: Float, pageScreenH: Float, fitScale: Float, xOffset: Float, edgeShadowAlpha: Int) {
         val pageCount = estimatePageCount().coerceAtLeast(1)
         if (pageIdx < 0 || pageIdx >= pageCount) return
@@ -3320,6 +3322,130 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
 
+    // Offscreen render of the page currently being curled, cached across an entire drag/settle
+    // gesture — content is static during a turn, so this renders drawCanvasContent() into a
+    // Bitmap exactly ONCE per (pageIndex, size) and every subsequent frame just re-warps that
+    // same bitmap via drawBitmapMesh, instead of re-running the full canvas draw through a mesh
+    // every frame (which drawCanvasContent isn't built for and would be far too slow for a
+    // 60fps-ish drag anyway).
+    private var pageCurlBitmap: Bitmap? = null
+    private var pageCurlBitmapForIndex: Int = -1
+
+    /** Releases the cached curl bitmap — called whenever readMode changes (leaving Paper-like
+     * Read Mode, or the note closing while it's still recycling the View) so a page-sized bitmap
+     * isn't held in memory once it's no longer relevant. */
+    private fun recyclePageCurlBitmap() {
+        pageCurlBitmap?.let { if (!it.isRecycled) it.recycle() }
+        pageCurlBitmap = null
+        pageCurlBitmapForIndex = -1
+    }
+
+    private fun getOrRenderPageCurlBitmap(pageIdx: Int, pageScreenW: Float, pageScreenH: Float, fitScale: Float): Bitmap? {
+        val w = pageScreenW.toInt().coerceAtLeast(1)
+        val h = pageScreenH.toInt().coerceAtLeast(1)
+        val cached = pageCurlBitmap
+        if (cached != null && pageCurlBitmapForIndex == pageIdx && !cached.isRecycled &&
+            cached.width == w && cached.height == h) return cached
+        val pageCount = estimatePageCount().coerceAtLeast(1)
+        if (pageIdx < 0 || pageIdx >= pageCount) return null
+        return try {
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val bmpCanvas = Canvas(bmp)
+            bmpCanvas.drawColor(Color.parseColor("#F6F3E9"))
+            val savedTX = translateX; val savedTY = translateY; val savedScale = scaleFactor
+            translateX = 0f; translateY = -pageIdx * (pageHeightPx() + 40f) * fitScale
+            scaleFactor = fitScale
+            drawCanvasContent(bmpCanvas)
+            translateX = savedTX; translateY = savedTY; scaleFactor = savedScale
+            pageCurlBitmap?.let { if (it !== bmp && !it.isRecycled) it.recycle() }
+            pageCurlBitmap = bmp
+            pageCurlBitmapForIndex = pageIdx
+            bmp
+        } catch (e: OutOfMemoryError) { null }
+    }
+
+    /** The actual page-curl: warps [bitmap] (one full page, rendered flat) via a cylindrical-roll
+     * mesh anchored at the edge being turned, following [dragAmountRaw] continuously rather than
+     * playing a canned animation — a genuine roll rather than the old flat horizontal slide. Model:
+     * columns further than [dragAmountRaw] from the turning edge are untouched (still flat, not
+     * yet reached by the turn); columns within that distance get mapped onto an arc of radius R,
+     * so as a column's distance-into-the-roll passes R (theta = 90°) it's at the curl's outermost
+     * point, and as it continues toward theta = 180° it swings back down almost to the fold —
+     * exactly what a real sheet does as it rolls up and over itself, including the sheet's back
+     * becoming visible past the 90° point (approximated by fading in a flat paper-back tint,
+     * rather than a true second mirrored mesh, since a real book page's back is blank/near-blank
+     * anyway — the tint alone reads correctly without the extra cost of a second full mesh pass).
+     * A per-column darken (peaking at theta = 90°, the part most edge-on to the viewer) sells the
+     * roundness that a flat mesh warp alone doesn't convey. Returns 0..1 curl progress so the
+     * caller can scale the shadow it casts onto the page beneath accordingly. */
+    private fun drawCurlingPage(canvas: Canvas, bitmap: Bitmap, baseLeft: Float, baseTop: Float, pageScreenW: Float, pageScreenH: Float, dragAmountRaw: Float, fromRightEdge: Boolean): Float {
+        val dragAmount = dragAmountRaw.coerceIn(0f, pageScreenW)
+        if (dragAmount < 1f) {
+            canvas.save(); canvas.clipRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH)
+            canvas.drawBitmap(bitmap, baseLeft, baseTop, null)
+            canvas.restore()
+            return 0f
+        }
+        val curlRadius = kotlin.math.min(dp(90).toFloat(), pageScreenW * 0.22f)
+        val foldFromEdge = dragAmount
+        val cols = 48
+        // 2 rows (top, bottom) — the curl bends only horizontally, uniform down the page height,
+        // consistent with the existing gesture tracking being 1D (horizontal drag only, no
+        // per-Y finger position). A true corner-peel that also bends with vertical finger
+        // position would need the gesture handler itself tracking Y, which it doesn't right now.
+        val verts = FloatArray((cols + 1) * 2 * 2)
+        val shadeAtCol = FloatArray(cols + 1)
+        val backAlphaAtCol = FloatArray(cols + 1)
+        var vi = 0
+        for (row in 0..1) {
+            val py = baseTop + pageScreenH * row
+            for (col in 0..cols) {
+                val srcXFrac = col.toFloat() / cols
+                val localXFromEdge = if (fromRightEdge) pageScreenW * (1f - srcXFrac) else pageScreenW * srcXFrac
+                val screenX: Float
+                if (localXFromEdge >= foldFromEdge) {
+                    screenX = if (fromRightEdge) baseLeft + pageScreenW - localXFromEdge else baseLeft + localXFromEdge
+                    if (row == 0) { shadeAtCol[col] = 1f; backAlphaAtCol[col] = 0f }
+                } else {
+                    val distIntoRoll = foldFromEdge - localXFromEdge
+                    val theta = (distIntoRoll / curlRadius).coerceAtMost(Math.PI.toFloat())
+                    val arcX = curlRadius * kotlin.math.sin(theta)
+                    val newXFromEdge = foldFromEdge - arcX
+                    screenX = if (fromRightEdge) baseLeft + pageScreenW - newXFromEdge else baseLeft + newXFromEdge
+                    if (row == 0) {
+                        shadeAtCol[col] = 1f - 0.45f * kotlin.math.sin(theta)
+                        backAlphaAtCol[col] = ((theta - Math.PI.toFloat() / 2f) / (Math.PI.toFloat() / 2f)).coerceIn(0f, 1f)
+                    }
+                }
+                verts[vi] = screenX; verts[vi + 1] = py
+                vi += 2
+            }
+        }
+        canvas.save()
+        canvas.clipRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH)
+        canvas.drawBitmapMesh(bitmap, cols, 1, verts, 0, null, 0, null)
+        val overlayPaint = Paint()
+        for (col in 0 until cols) {
+            val x0 = verts[col * 2]; val x1 = verts[(col + 1) * 2]
+            val left = kotlin.math.min(x0, x1) - 1f; val right = kotlin.math.max(x0, x1) + 1f
+            val shade = (shadeAtCol[col] + shadeAtCol[col + 1]) / 2f
+            if (shade < 0.999f) {
+                overlayPaint.color = Color.argb(((1f - shade) * 140).toInt(), 0, 0, 0)
+                canvas.drawRect(left, baseTop, right, baseTop + pageScreenH, overlayPaint)
+            }
+            val backAlpha = (backAlphaAtCol[col] + backAlphaAtCol[col + 1]) / 2f
+            if (backAlpha > 0.001f) {
+                // Blank/near-blank paper-back tint, fading in as the fold swings past 90° — this
+                // is what actually sells "you're now looking at the underside of the sheet"
+                // rather than the front content simply bending.
+                overlayPaint.color = Color.argb((backAlpha * 235).toInt(), 0xED, 0xE7, 0xD5)
+                canvas.drawRect(left, baseTop, right, baseTop + pageScreenH, overlayPaint)
+            }
+        }
+        canvas.restore()
+        return (foldFromEdge / pageScreenW).coerceIn(0f, 1f)
+    }
+
     private fun drawBookPageTurn(canvas: Canvas) {
         val w = width.toFloat(); val h = height.toFloat()
         // Kindle-like neutral warm-gray surround behind the page (a real Kindle has no "desk"
@@ -3333,18 +3459,40 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val baseLeft = (w - pageScreenW) / 2f
         val baseTop = (h - pageScreenH) / 2f
         val dragPx = pageTurnDragPx
-        val progress = (kotlin.math.abs(dragPx) / w).coerceIn(0f, 1f)
-        val shadowAlpha = (progress * 90).toInt()
-        when {
-            kotlin.math.abs(dragPx) < 0.5f -> drawBookPage(canvas, readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, 0f, 0)
-            dragPx < 0f -> {
-                drawBookPage(canvas, readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, dragPx, shadowAlpha)
-                drawBookPage(canvas, readPageIndex + 1, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, dragPx + w, 0)
-            }
-            else -> {
-                drawBookPage(canvas, readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, dragPx, shadowAlpha)
-                drawBookPage(canvas, readPageIndex - 1, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, dragPx - w, 0)
-            }
+        if (kotlin.math.abs(dragPx) < 0.5f) {
+            drawBookPage(canvas, readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, 0f, 0)
+            return
+        }
+        val fromRightEdge = dragPx < 0f  // dragging left = turning forward = curl rises from the right edge
+        val nextPageIdx = if (fromRightEdge) readPageIndex + 1 else readPageIndex - 1
+        // Page beneath the curl (drawn flat, full-size, no offset — it's simply revealed as the
+        // curl above it recedes, not slid in from off-screen the way the old flat-slide did).
+        drawBookPage(canvas, nextPageIdx, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, 0f, 0)
+        val bitmap = getOrRenderPageCurlBitmap(readPageIndex, pageScreenW, pageScreenH, fitScale)
+        val curlProgress = if (bitmap != null) {
+            drawCurlingPage(canvas, bitmap, baseLeft, baseTop, pageScreenW, pageScreenH, kotlin.math.abs(dragPx), fromRightEdge)
+        } else {
+            // Bitmap allocation failed (very low memory) — fall back to the old flat slide rather
+            // than showing nothing.
+            drawBookPage(canvas, readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, dragPx, (kotlin.math.abs(dragPx) / w * 90).toInt())
+            0f
+        }
+        // Soft shadow the lifted curl casts onto the page beneath, right at the fold — width and
+        // opacity both scale with how far the page has curled, same as a real sheet casting a
+        // deeper shadow the higher it lifts off the page below.
+        if (curlProgress > 0.001f) {
+            val shadowW = dp(34).toFloat() * curlProgress.coerceAtMost(1f)
+            val foldScreenX = if (fromRightEdge) baseLeft + pageScreenW - curlProgress * pageScreenW
+                               else baseLeft + curlProgress * pageScreenW
+            val x0 = if (fromRightEdge) foldScreenX - shadowW else foldScreenX
+            val x1 = if (fromRightEdge) foldScreenX else foldScreenX + shadowW
+            val alpha = (curlProgress * 100).toInt().coerceIn(0, 100)
+            val colors = if (fromRightEdge) intArrayOf(0, Color.argb(alpha, 0, 0, 0)) else intArrayOf(Color.argb(alpha, 0, 0, 0), 0)
+            val shader = android.graphics.LinearGradient(x0, 0f, x1, 0f, colors, null, android.graphics.Shader.TileMode.CLAMP)
+            canvas.save()
+            canvas.clipRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH)
+            canvas.drawRect(x0, baseTop, x1, baseTop + pageScreenH, Paint().apply { this.shader = shader })
+            canvas.restore()
         }
     }
 
