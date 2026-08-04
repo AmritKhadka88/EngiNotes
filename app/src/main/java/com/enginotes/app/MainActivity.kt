@@ -2363,10 +2363,21 @@ class MainActivity : AppCompatActivity() {
      * assuming any particular bar layout or screen width.
      */
     private var topBarSpacerOriginalWidth: Int? = null
-    private fun applyCutoutGapToTopBar() {
+    private fun applyCutoutGapToTopBar(attempt: Int = 0) {
         val topBar = findViewById<LinearLayout?>(R.id.topBarContainer) ?: return
-        val cutout = androidx.core.view.ViewCompat.getRootWindowInsets(window.decorView)?.displayCutout ?: return
-        val rect = cutout.boundingRects.firstOrNull() ?: return
+        val cutout = androidx.core.view.ViewCompat.getRootWindowInsets(window.decorView)?.displayCutout
+        if (cutout == null || cutout.boundingRects.isEmpty()) {
+            // Right when "Always fullscreen" is toggled, layoutInDisplayCutoutMode has just been
+            // flipped to ALWAYS but the system hasn't necessarily finished a relayout pass yet, so
+            // getRootWindowInsets() can still report no cutout for a frame or two even on a device
+            // that has one — silently giving up here (the old behavior) is what let the icon
+            // dodge never engage for this path. A few short retries catches it once the mode
+            // change has actually taken effect, without retrying forever on devices that truly
+            // have no cutout.
+            if (attempt < 5) topBar.postDelayed({ applyCutoutGapToTopBar(attempt + 1) }, 80L * (attempt + 1))
+            return
+        }
+        val rect = cutout.boundingRects.first()
         var spacer: View? = null
         for (i in 0 until topBar.childCount) {
             val child = topBar.getChildAt(i)
@@ -6451,7 +6462,7 @@ class MainActivity : AppCompatActivity() {
     // alone doesn't reliably catch every case. This is the standard extra hook recommended for it.
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) applyStatusBarFullscreenPreference(manageOwnInsets = true)
+        if (hasFocus) { applyStatusBarFullscreenPreference(manageOwnInsets = true); applyCutoutGapToTopBar() }
     }
 
     override fun onDestroy() {
