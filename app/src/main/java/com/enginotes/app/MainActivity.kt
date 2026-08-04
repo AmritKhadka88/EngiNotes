@@ -2192,6 +2192,25 @@ class MainActivity : AppCompatActivity() {
             }
         }
         syncTopChromeHeight()
+        // TEMPORARY diagnostic — shows the actual runtime state a moment after entering
+        // fullscreen (deferred so layout/insets have settled), instead of continuing to guess at
+        // what's actually happening on the real device.
+        window.decorView.postDelayed({
+            val topBar = findViewById<View?>(R.id.topBarContainer)
+            val statusBarInset = androidx.core.view.ViewCompat.getRootWindowInsets(window.decorView)
+                ?.getInsets(androidx.core.view.WindowInsetsCompat.Type.statusBars())?.top ?: -1
+            val topBarLoc = IntArray(2); topBar?.getLocationOnScreen(topBarLoc)
+            val canvasLoc = IntArray(2); canvasContainer.getLocationOnScreen(canvasLoc)
+            val msg = "topBar.visibility=${topBar?.visibility} (0=VISIBLE,4=INVISIBLE,8=GONE)\n" +
+                "topBar.height=${topBar?.height} topBar.screenY=${topBarLoc[1]}\n" +
+                "canvasContainer.height=${canvasContainer.height} canvasContainer.screenY=${canvasLoc[1]}\n" +
+                "drawingView.height=${drawingView.height}\n" +
+                "drawingView.translateY=${drawingView.translateY}\n" +
+                "drawingView.topChromeHeightPx=${drawingView.topChromeHeightPx}\n" +
+                "statusBarInset.top=$statusBarInset\n" +
+                "screenHeightPx=${resources.displayMetrics.heightPixels}"
+            AlertDialog.Builder(this).setTitle("DIAG fullscreen").setMessage(msg).setPositiveButton("OK", null).show()
+        }, 500)
         if (fullscreenRestoreBtn != null) return
         val btn = TextView(this).apply {
             text = "⛶"; textSize = 16f; gravity = Gravity.CENTER
