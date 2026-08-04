@@ -2282,6 +2282,49 @@ class MainActivity : AppCompatActivity() {
         drawingView.invalidate()
     }
 
+    /** Widens the top bar's existing flexible spacer (the plain zero-content View with
+     * layout_weight="1" between the back button and the row of icon buttons in
+     * activity_main.xml) just enough to guarantee no button renders under a front camera
+     * cutout — using the ACTUAL cutout geometry Android reports for this specific device via
+     * WindowInsets, not a guessed pixel position, since that varies by phone (and even by which
+     * corner/edge the cutout sits in).
+     *
+     * That spacer already naturally lands roughly in the middle of the bar (it's the only
+     * flexible child, sandwiched between fixed-width buttons on both sides), which is why this
+     * only needs to WIDEN it rather than build an entirely separate cutout-avoidance layout: if
+     * the cutout already falls entirely inside the spacer's current bounds, nothing changes; the
+     * bar was already clearing it. It only intervenes when the cutout would actually be under one
+     * of the icon buttons, at which point it forces the spacer to span through to the cutout's
+     * right edge (plus a small margin), pushing every button after it clear — self-correcting
+     * based on where the buttons and the cutout actually measure out on THIS screen, rather than
+     * assuming any particular bar layout or screen width.
+     */
+    private fun applyCutoutGapToTopBar() {
+        val topBar = findViewById<LinearLayout?>(R.id.topBarContainer) ?: return
+        val cutout = androidx.core.view.ViewCompat.getRootWindowInsets(window.decorView)?.displayCutout ?: return
+        val rect = cutout.boundingRects.firstOrNull() ?: return
+        var spacer: View? = null
+        for (i in 0 until topBar.childCount) {
+            val child = topBar.getChildAt(i)
+            val lp = child.layoutParams as? LinearLayout.LayoutParams
+            if (lp != null && lp.weight > 0f) { spacer = child; break }
+        }
+        val sp = spacer ?: return
+        topBar.post {
+            if (sp.width <= 0) return@post  // not laid out yet this pass — onResume will retry next time
+            val spacerLoc = IntArray(2); sp.getLocationOnScreen(spacerLoc)
+            val spacerLeftOnScreen = spacerLoc[0]
+            val spacerRightOnScreen = spacerLoc[0] + sp.width
+            if (rect.left >= spacerLeftOnScreen && rect.right <= spacerRightOnScreen) return@post  // already clear
+            val neededWidth = (rect.right - spacerLeftOnScreen + dp(8)).coerceAtLeast(sp.width)
+            val lp = sp.layoutParams as LinearLayout.LayoutParams
+            if (lp.width != neededWidth || lp.weight != 0f) {
+                lp.width = neededWidth; lp.weight = 0f
+                sp.layoutParams = lp
+            }
+        }
+    }
+
     internal fun getPrefs() = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
 
     // Reads the same "app_color_theme" preference BooksActivity's theme picker writes to,
@@ -6287,6 +6330,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         applyStatusBarFullscreenPreference()
+        applyCutoutGapToTopBar()
         if (currentAppTheme() == "GLASS") scheduleBlurUpdate()
         // updateSnapOptionsButton() previously only ran reactively from inside the two Snap
         // switches themselves — so the "Snap ⚙" pill's visibility could drift out of sync with
