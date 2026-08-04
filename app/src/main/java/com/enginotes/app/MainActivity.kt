@@ -624,35 +624,31 @@ class MainActivity : AppCompatActivity() {
                 // fullscreen mode has that bar hidden, since that's a separate, older View-level
                 // mechanism that setDecorFitsSystemWindows()/WindowInsetsController don't override.
                 // That's what left a persistent blank strip at the top even with the status bar
-                // itself successfully hidden. Applying just to topBarContainer, and reading the
-                // REAL current inset here instead, means this correctly collapses to 0 the moment
-                // the status bar is actually hidden, and restores properly when it's shown again.
+                // itself successfully hidden.
+                //
+                // topBarContainer's vertical position for "Always fullscreen" (hide status bar,
+                // but keep the bar itself visible) is now handled by applyTopBarFullscreenShift()
+                // via translationY instead of recomputing padding from live insets here — that
+                // reactive approach (padding = base + statusBarInset, gated on isVisible()) turned
+                // out unreliable on this device: with BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE, the
+                // reported inset/visibility state didn't consistently reflect the real hidden
+                // state, so the bar never actually moved. Padding here now just permanently
+                // reserves space AS IF the status bar were always showing; translationY (driven
+                // directly by our own isAlwaysFullscreenEnabled() flag, not by insets timing)
+                // shifts the whole bar up by exactly that reserved amount when hidden. Still keyed
+                // off the live statusBarTop reading (once, effectively — see
+                // applyTopBarFullscreenShift()'s own caching) so it's correct for the device's
+                // actual status bar height rather than a guess.
                 if (topBar != null) {
-                    // When the status bar is hidden but topBarContainer stays visible (the
-                    // "Always use fullscreen" setting, as opposed to the manual ⛶ button which
-                    // hides the bar entirely), Type.statusBars() correctly collapses to 0 — but
-                    // the physical camera cutout doesn't go anywhere, so padding down to JUST the
-                    // base value can still leave content sitting behind/under the cutout. Padding
-                    // by whichever of the status-bar inset or the cutout's own safe-inset is
-                    // larger keeps the bar clear of the cutout either way, hidden or not.
-                    //
-                    // BUT: with BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE (needed so the bar can still
-                    // be swiped back after being hidden), some devices keep reporting the FULL
-                    // status-bar inset value even while the bar is actually hidden — that space
-                    // stays reserved for the swipe gesture zone. Reading the raw inset alone (the
-                    // old approach here) meant the toolbar never actually moved when "Always
-                    // fullscreen" hid the status bar, since the reported height didn't shrink even
-                    // though the bar visually disappeared. insets.isVisible() reflects the real
-                    // hidden/shown state regardless of that reserved-space quirk, so gate on that
-                    // instead of trusting the raw inset number by itself.
-                    val statusBarVisible = insets.isVisible(androidx.core.view.WindowInsetsCompat.Type.statusBars())
                     val statusBarTop = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.statusBars()).top
                     val cutoutTop = insets.displayCutout?.safeInsetTop ?: 0
-                    val newPadTop = topBarBasePadTop + if (statusBarVisible) maxOf(statusBarTop, cutoutTop) else cutoutTop
+                    val newPadTop = topBarBasePadTop + maxOf(statusBarTop, cutoutTop)
                     if (topBar.paddingTop != newPadTop) {
                         topBar.setPadding(topBarBasePadLeft, newPadTop, topBarBasePadRight, topBarBasePadBottom)
                     }
+                    if (statusBarTop > 0) statusBarHeightCache = statusBarTop
                 }
+                applyTopBarFullscreenShift()
                 // Re-run cutout-avoidance (shifts topBar's flexible spacer so no icon sits under
                 // a front-camera cutout) on every insets pass, not just onCreate/onResume — this
                 // is what was missing for the "Always fullscreen" Settings toggle: that path never
@@ -2383,6 +2379,30 @@ class MainActivity : AppCompatActivity() {
      * assuming any particular bar layout or screen width.
      */
     private var topBarSpacerOriginalWidth: Int? = null
+    // Cached once (and refreshed opportunistically whenever the live inset reports a real
+    // positive value — see the content insets listener) rather than re-derived every time, since
+    // this device's insets reporting proved unreliable specifically around hide/show transitions.
+    // Falls back to the system's own status_bar_height dimen if nothing's been captured yet (e.g.
+    // "Always fullscreen" was already on when the app launched, so the bar was never observed
+    // actually showing).
+    private var statusBarHeightCache: Int = 0
+    /** Directly shifts topBarContainer up by exactly the status bar's height when "Always
+     * fullscreen" is on, back to its normal (padded-below-the-status-bar) position when it's off —
+     * driven by our own persisted setting, not by re-deriving it from live WindowInsets each time
+     * (the previous approach here, which didn't reliably reflect the real hidden/shown state on
+     * this device). Simple and deterministic: same reserved padding always sits under
+     * topBarContainer's content either way, translationY just decides whether that reserved strip
+     * is above the visible screen (hidden) or below the visible top edge... i.e. whether the bar
+     * sits flush with the true top of the screen or below where the status bar would be. */
+    private fun applyTopBarFullscreenShift() {
+        val topBar = findViewById<View?>(R.id.topBarContainer) ?: return
+        if (statusBarHeightCache <= 0) {
+            statusBarHeightCache = resources.getIdentifier("status_bar_height", "dimen", "android")
+                .let { if (it > 0) resources.getDimensionPixelSize(it) else dp(24) }
+        }
+        val shift = if (isAlwaysFullscreenEnabled()) -statusBarHeightCache.toFloat() else 0f
+        if (topBar.translationY != shift) topBar.translationY = shift
+    }
     private fun applyCutoutGapToTopBar(attempt: Int = 0) {
         val topBar = findViewById<LinearLayout?>(R.id.topBarContainer) ?: return
         val cutout = androidx.core.view.ViewCompat.getRootWindowInsets(window.decorView)?.displayCutout
@@ -4012,13 +4032,14 @@ class MainActivity : AppCompatActivity() {
             setOnCheckedChangeListener { _, on ->
                 setAlwaysFullscreenEnabled(on)
                 applyStatusBarFullscreenPreference(manageOwnInsets = true)
+                applyTopBarFullscreenShift()
                 // The checkbox lives inside this Settings AlertDialog, so onResume/onWindowFocusChanged
                 // won't fire again from this — applyStatusBarFullscreenPreference()'s own
                 // requestApplyInsets() call gets the toggle applied, but give it one more pass
                 // shortly after (mirroring onResume's own retry) since the cutout geometry and
                 // the newly-collapsed/expanded status-bar inset aren't always settled in the very
                 // next frame, particularly right as the dialog itself is animating.
-                window.decorView.postDelayed({ applyStatusBarFullscreenPreference(manageOwnInsets = true); applyCutoutGapToTopBar() }, 300)
+                window.decorView.postDelayed({ applyStatusBarFullscreenPreference(manageOwnInsets = true); applyTopBarFullscreenShift(); applyCutoutGapToTopBar() }, 300)
             }
         }; container.addView(fullscreenCb)
         container.addView(TextView(this).apply {
@@ -6448,6 +6469,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         applyStatusBarFullscreenPreference(manageOwnInsets = true)
+        applyTopBarFullscreenShift()
         applyCutoutGapToTopBar()
         // MainActivity does substantially more on-resume/on-open work than the notes-list
         // screens (loading the note's content, setting up DrawingView, sizing/attaching its
@@ -6458,7 +6480,7 @@ class MainActivity : AppCompatActivity() {
         // the status bar after our call above already ran. Re-applying once more, after that
         // heavier setup has had a chance to finish, catches whatever this screen specifically
         // does that the simpler list screens don't.
-        window.decorView.postDelayed({ applyStatusBarFullscreenPreference(manageOwnInsets = true); applyCutoutGapToTopBar(); syncTopChromeHeight() }, 400)
+        window.decorView.postDelayed({ applyStatusBarFullscreenPreference(manageOwnInsets = true); applyTopBarFullscreenShift(); applyCutoutGapToTopBar(); syncTopChromeHeight() }, 400)
         window.decorView.post { syncTopChromeHeight() }
         if (currentAppTheme() == "GLASS") scheduleBlurUpdate()
         // updateSnapOptionsButton() previously only ran reactively from inside the two Snap
@@ -6482,7 +6504,7 @@ class MainActivity : AppCompatActivity() {
     // alone doesn't reliably catch every case. This is the standard extra hook recommended for it.
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) { applyStatusBarFullscreenPreference(manageOwnInsets = true); applyCutoutGapToTopBar() }
+        if (hasFocus) { applyStatusBarFullscreenPreference(manageOwnInsets = true); applyTopBarFullscreenShift(); applyCutoutGapToTopBar() }
     }
 
     override fun onDestroy() {
