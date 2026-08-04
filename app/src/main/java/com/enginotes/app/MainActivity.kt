@@ -605,7 +605,16 @@ class MainActivity : AppCompatActivity() {
                 // Guard: only update bottomMargin when value changes — prevents layout
                 // thrashing and the blinking/lag caused by firing on every tiny inset update.
                 val lp = dock?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
-                val target = baseMargin + extraForKeyboard
+                // Baseline margin now explicitly includes navBarBottom — previously the dock had
+                // no baseline nav-bar clearance of its own here at all; it only ever looked
+                // correct because the root layout's now-removed android:fitsSystemWindows="true"
+                // was silently padding the WHOLE root (bottom included, same double-padding
+                // mechanism that caused the earlier top-bar gap) by the nav bar's height. Removing
+                // that flag fixed the top gap but exposed this: with nothing else accounting for
+                // it, the dock dropped down to sit flush against the true screen edge, behind/
+                // under the gesture bar. Adding it back explicitly here (rather than relying on
+                // the View-level flag) keeps it a single, deliberate source of that spacing.
+                val target = baseMargin + navBarBottom + extraForKeyboard
                 if (lp != null && lp.bottomMargin != target) {
                     lp.bottomMargin = target
                     dock.layoutParams = lp
