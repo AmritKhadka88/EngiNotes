@@ -2205,7 +2205,6 @@ class MainActivity : AppCompatActivity() {
                 "topBar.height=${topBar?.height} topBar.screenY=${topBarLoc[1]}\n" +
                 "canvasContainer.height=${canvasContainer.height} canvasContainer.screenY=${canvasLoc[1]}\n" +
                 "drawingView.height=${drawingView.height}\n" +
-                "drawingView.translateY=${drawingView.translateY}\n" +
                 "drawingView.topChromeHeightPx=${drawingView.topChromeHeightPx}\n" +
                 "statusBarInset.top=$statusBarInset\n" +
                 "screenHeightPx=${resources.displayMetrics.heightPixels}"
