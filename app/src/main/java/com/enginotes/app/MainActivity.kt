@@ -626,9 +626,20 @@ class MainActivity : AppCompatActivity() {
                     // base value can still leave content sitting behind/under the cutout. Padding
                     // by whichever of the status-bar inset or the cutout's own safe-inset is
                     // larger keeps the bar clear of the cutout either way, hidden or not.
+                    //
+                    // BUT: with BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE (needed so the bar can still
+                    // be swiped back after being hidden), some devices keep reporting the FULL
+                    // status-bar inset value even while the bar is actually hidden — that space
+                    // stays reserved for the swipe gesture zone. Reading the raw inset alone (the
+                    // old approach here) meant the toolbar never actually moved when "Always
+                    // fullscreen" hid the status bar, since the reported height didn't shrink even
+                    // though the bar visually disappeared. insets.isVisible() reflects the real
+                    // hidden/shown state regardless of that reserved-space quirk, so gate on that
+                    // instead of trusting the raw inset number by itself.
+                    val statusBarVisible = insets.isVisible(androidx.core.view.WindowInsetsCompat.Type.statusBars())
                     val statusBarTop = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.statusBars()).top
                     val cutoutTop = insets.displayCutout?.safeInsetTop ?: 0
-                    val newPadTop = topBarBasePadTop + maxOf(statusBarTop, cutoutTop)
+                    val newPadTop = topBarBasePadTop + if (statusBarVisible) maxOf(statusBarTop, cutoutTop) else cutoutTop
                     if (topBar.paddingTop != newPadTop) {
                         topBar.setPadding(topBarBasePadLeft, newPadTop, topBarBasePadRight, topBarBasePadBottom)
                     }
