@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.util.Log
 import java.io.File
 import java.security.KeyStore
 import java.security.SecureRandom
@@ -410,7 +411,11 @@ class SecurityManager(private val context: Context) {
         try {
             val ks = KeyStore.getInstance(ANDROID_KEYSTORE); ks.load(null)
             if (ks.containsAlias(KEYSTORE_ALIAS)) ks.deleteEntry(KEYSTORE_ALIAS)
-        } catch (e: Exception) { }
+        } catch (e: Exception) {
+            // This is the step that actually makes deletion unrecoverable — worth knowing if it
+            // silently failed, even though there's no good in-band way to retry it here.
+            Log.w("EngiNotes", "Keystore alias deletion failed during security wipe — data may remain recoverable", e)
+        }
         prefs.edit().clear().apply()
         inMemoryDek = null
         if (notesRoot != null) {
@@ -423,9 +428,9 @@ class SecurityManager(private val context: Context) {
                             f.writeBytes(rnd)
                         }
                         f.delete()
-                    } catch (e: Exception) { }
+                    } catch (e: Exception) { Log.w("EngiNotes", "Failed to shred/delete ${f.name} during security wipe", e) }
                 }
-            } catch (e: Exception) { }
+            } catch (e: Exception) { Log.w("EngiNotes", "Failed to walk notes root during security wipe", e) }
         }
     }
 

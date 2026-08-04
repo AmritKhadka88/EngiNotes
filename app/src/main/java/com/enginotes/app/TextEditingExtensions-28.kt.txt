@@ -38,7 +38,6 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
-import androidx.appcompat.app.AlertDialog
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import java.io.File
@@ -596,9 +595,9 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
             'C'->spannable.setSpan(ForegroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             'U'->spannable.setSpan(UnderlineSpan(),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             'H'->spannable.setSpan(BackgroundColorSpan(sp.value),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            LIST_SPAN_TYPE_BULLET->spannable.setSpan(BulletMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value)),s,e,Spannable.SPAN_INCLUSIVE_INCLUSIVE)
-            LIST_SPAN_TYPE_NUMBER->spannable.setSpan(NumberMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value)),s,e,Spannable.SPAN_INCLUSIVE_INCLUSIVE)
-            LIST_SPAN_TYPE_CHECK->spannable.setSpan(ChecklistMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value),decodeListChecked(sp.value)),s,e,Spannable.SPAN_INCLUSIVE_INCLUSIVE)
+            LIST_SPAN_TYPE_BULLET->spannable.setSpan(BulletMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value)),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            LIST_SPAN_TYPE_NUMBER->spannable.setSpan(NumberMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value)),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            LIST_SPAN_TYPE_CHECK->spannable.setSpan(ChecklistMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value),decodeListChecked(sp.value)),s,e,Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
         } }
         renumberLists(spannable)
         // Ceiling is the actual remaining PAGE width from this item's world x-position, converted
@@ -709,7 +708,6 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
         } }; override fun afterTextChanged(s:Editable?){
             if (suppressListWatcher) return
             if (s == null) return
-            try {
             // A single space was just typed: Word-style autoformat — "- ", "> ", or "12. " at
             // the very start of an empty line converts it into a bullet/numbered list line.
             if (pendingSpaceTrigger >= 0) {
@@ -720,17 +718,7 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                 if (trigger != null) {
                     val ls = pos - trigger.length  // trigger text + space were both removed; line start is stable
                     lastAutoformat = ls to trigger
-                    // Posted rather than called synchronously — this runs from inside an already
-                    // reentrant afterTextChanged (itself nested inside the ORIGINAL space
-                    // keystroke's own change notification), and Android's own internal post-
-                    // insertion processing later in that same synchronous cycle may be what was
-                    // silently overriding a synchronous requestLayout() call here. Posting defers
-                    // this until that entire cycle has fully finished, so nothing later in the
-                    // same frame can clobber it.
-                    et.post {
-                        et.setSelection(ls.coerceAtMost(et.text.length))
-                        et.requestLayout(); et.invalidate()
-                    }
+                    et.post { et.setSelection(ls.coerceAtMost(et.text.length)) }
                 }
             }
             // A single '\n' was just typed: continue the list style onto the new line, or — if
@@ -742,29 +730,12 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                 suppressListWatcher = true
                 val newCursor = handleListEnterKey(s, pos)
                 suppressListWatcher = false
-                if (newCursor != -2) {
+                if (newCursor >= 0) {
                     lastAutoformat = null
-                    // Applied here, in a posted Runnable, NOT inside afterTextChanged itself —
-                    // setSpan() called synchronously from inside afterTextChanged was confirmed to
-                    // be silently dropped; this runs after that notification has fully finished.
-                    val pending = pendingListSpanApply
-                    et.post {
-                        if (pending != null) {
-                            (et.text as? Spannable)?.setSpan(pending.span, pending.pos, pending.pos, Spannable.SPAN_INCLUSIVE_INCLUSIVE)
-                            renumberLists(et.text)
-                            pendingListSpanApply = null
-                        }
-                        if (newCursor >= 0) et.setSelection(newCursor.coerceAtMost(et.text.length))
-                        et.requestLayout(); et.invalidate()
-                    }
+                    et.post { et.setSelection(newCursor.coerceAtMost(et.text.length)) }
                 }
             }
             renumberLists(s)
-            } catch (t: Throwable) {
-                // TEMPORARY diagnostic — makes a silent failure in any of the above visible
-                // instead of indistinguishable from "nothing happened."
-                Toast.makeText(this@showInlineTextEditor, "List watcher error: ${t.javaClass.simpleName}: ${t.message}", Toast.LENGTH_LONG).show()
-            }
             // Android moves the cursor to the end of any inserted text (a paste is one big
             // insert) and auto-scrolls EditText's OWN internal viewport to keep that cursor
             // visible — BEFORE the box has resized to its new full WRAP_CONTENT height. That
@@ -1185,27 +1156,14 @@ internal fun MainActivity.closeInlineEditor(commit:Boolean, delete:Boolean=false
         val et=activeEditText?:return; val tb=activeToolbar; val box=activeEditBox
         val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager; imm.hideSoftInputFromWindow(et.windowToken,0)
         val text=et.text.toString(); val spans=mutableListOf<TextSpanData>(); val ed=et.text
-        for(span in ed.getSpans(0,ed.length,Any::class.java)){ val s=ed.getSpanStart(span);var e=ed.getSpanEnd(span)
-            // List spans (bullet/number/checklist) mark a LINE. They start out zero-length with
-            // SPAN_INCLUSIVE_INCLUSIVE (needed so a freshly-created one doesn't get silently
-            // dropped — a zero-length SPAN_EXCLUSIVE_EXCLUSIVE one was), but that means they keep
-            // absorbing every character typed at their own end, including through Enter presses,
-            // unless explicitly pinned down once their line is finished (handleListEnterKey does
-            // this now) — the very last line of the document never gets that pinning, since
-            // there's no following Enter press to trigger it. Clamping here, once, right before
-            // saving, catches that: it's what was causing markers to keep stacking up in the
-            // static (non-editing) view even after live-editing itself got fixed, since this is
-            // what the static view reconstructs its spans from.
-            if (span is ListMarginSpan) {
-                var ownLineEnd = s
-                while (ownLineEnd < ed.length && ed[ownLineEnd] != '\n') ownLineEnd++
-                e = e.coerceAtMost(ownLineEnd)
-            }
-            // The old "s>=e continue" here silently dropped every zero-length list span on save,
-            // which is why a bullet/checklist applied to an empty line would vanish the moment
-            // the note was closed and reopened — it never actually made it into item.spans in the
-            // first place. Only genuinely invalid ranges (negative, or start past end) get
-            // skipped now.
+        for(span in ed.getSpans(0,ed.length,Any::class.java)){ val s=ed.getSpanStart(span);val e=ed.getSpanEnd(span)
+            // List spans (bullet/number/checklist) are deliberately zero-length — they mark a
+            // LINE, not a text range, and never grow as text is typed after them (that's inherent
+            // to how LeadingMarginSpan works, not a bug). The old "s>=e continue" here silently
+            // dropped every one of them on save, which is why a bullet/checklist applied to a
+            // line with content would vanish the moment the note was closed and reopened — it
+            // never actually made it into item.spans in the first place. Only genuinely invalid
+            // ranges (negative, or start past end) get skipped now.
             if(s<0||e<0||s>e) continue
             when(span){ is StyleSpan->spans.add(TextSpanData(s,e,'S',span.style)); is ForegroundColorSpan->spans.add(TextSpanData(s,e,'C',span.foregroundColor)); is UnderlineSpan->spans.add(TextSpanData(s,e,'U',0)); is BackgroundColorSpan->spans.add(TextSpanData(s,e,'H',span.backgroundColor))
             is BulletMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_BULLET,encodeListValue(span.styleIndex,false,span.indentLevel)))

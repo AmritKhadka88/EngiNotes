@@ -31,6 +31,21 @@ class HomeActivity : AppCompatActivity() {
     private var pendingExportFile: File? = null
     private var pendingExportFormat: String = "pdf"
 
+    // HomeActivity (a book's page list) previously had zero theme awareness at all — root
+    // background, top bar, and FAB were hardcoded to the original purple/light-gray look no
+    // matter which theme was selected in Settings. BooksActivity (the outer book-list screen)
+    // already has the real theme system; reusing its THEMES map here instead of duplicating it
+    // is what makes this screen actually match whatever theme the rest of the app is using.
+    private fun currentThemeSpec(): ThemeSpec {
+        val prefs = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
+        val name = prefs.getString("app_color_theme", "Classic") ?: "Classic"
+        return BooksActivity.THEMES[name] ?: BooksActivity.THEMES["Classic"]!!
+    }
+    private fun currentThemeColors(): Pair<String, String> {
+        val spec = currentThemeSpec()
+        return Pair(spec.toolbar, spec.bg)
+    }
+
     private val pickPdfLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
             val intent = Intent(this, PdfViewerActivity::class.java)
@@ -106,12 +121,24 @@ class HomeActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         bookName = intent.getStringExtra("book_name") ?: "General"
 
+        val (themeToolbar, themeBg) = currentThemeColors()
+
         val root = FrameLayout(this)
-        root.setBackgroundColor(Color.parseColor("#F5F5F5"))
+        root.setBackgroundColor(Color.parseColor(themeBg))
 
         // Top bar
         val topBar = LinearLayout(this); topBar.orientation = LinearLayout.HORIZONTAL
-        topBar.setBackgroundColor(Color.parseColor("#FF6200EE"))
+        if (currentThemeSpec().isGradient) {
+            // Same "fade toolbar color into the page background" treatment BooksActivity uses
+            // for the Gradient theme, so the seam disappears here too instead of just on the
+            // outer book-list screen.
+            topBar.background = android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Color.parseColor(themeToolbar), Color.parseColor(themeBg))
+            )
+        } else {
+            topBar.setBackgroundColor(Color.parseColor(themeToolbar))
+        }
         topBar.setPadding(dp(4), dp(10), dp(4), dp(10))
         topBar.gravity = Gravity.CENTER_VERTICAL
         val topLp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
@@ -169,7 +196,7 @@ class HomeActivity : AppCompatActivity() {
         fab.post {
             fab.background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(Color.parseColor("#FF6200EE"))
+                setColor(Color.parseColor(currentThemeSpec().button))
             }
         }
         fab.setOnClickListener { createNewPage() }
@@ -344,8 +371,13 @@ class HomeActivity : AppCompatActivity() {
 
     private fun showSettingsDialog() {
         val prefs = getSharedPreferences("enginotes_prefs", Context.MODE_PRIVATE)
+        val (_, themeBgSettings) = currentThemeColors()
+        val bgColorInt = Color.parseColor(themeBgSettings)
+        val isDark = Color.red(bgColorInt) * 0.299 + Color.green(bgColorInt) * 0.587 + Color.blue(bgColorInt) * 0.114 < 140
+        val textColor = if (isDark) Color.parseColor("#E8E8E8") else Color.parseColor("#2A2A2A")
         val container = LinearLayout(this); container.orientation = LinearLayout.VERTICAL
         container.setPadding(dp(20), dp(8), dp(20), dp(8))
+        container.setBackgroundColor(bgColorInt)
 
         fun header(text: String) {
             val tv = TextView(this); tv.text = text; tv.textSize = 11f
@@ -405,7 +437,12 @@ class HomeActivity : AppCompatActivity() {
         container.addView(paperLbl)
 
         val scroll = ScrollView(this); scroll.addView(container)
-        AlertDialog.Builder(this).setTitle("⚙ Settings").setView(scroll)
+        val titleView = TextView(this).apply {
+            text = "⚙ Settings"; textSize = 20f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(textColor); setPadding(dp(24), dp(20), dp(24), dp(8))
+            setBackgroundColor(bgColorInt)
+        }
+        AlertDialog.Builder(this).setCustomTitle(titleView).setView(scroll)
             .setPositiveButton("Done") { _, _ ->
                 prefs.edit()
                     .putBoolean("confirm_exit_clear", confirmCb.isChecked)
@@ -416,9 +453,11 @@ class HomeActivity : AppCompatActivity() {
                     .apply()
                 Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show()
             }.setNegativeButton("Cancel", null).show()
+            .also { dlg -> dlg.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(bgColorInt)) }
     }
 
-    override fun onResume() { super.onResume(); refreshPages() }
+    override fun onResume() { super.onResume(); applyStatusBarFullscreenPreference(); refreshPages() }
+    override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) applyStatusBarFullscreenPreference() }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 }

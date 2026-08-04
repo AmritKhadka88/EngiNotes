@@ -11,6 +11,8 @@ import androidx.appcompat.app.AppCompatActivity
 import com.google.mlkit.vision.digitalink.*
 
 class HandwritingActivity : AppCompatActivity() {
+    override fun onResume() { super.onResume(); applyStatusBarFullscreenPreference() }
+    override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) applyStatusBarFullscreenPreference() }
 
     private lateinit var inkView: InkView
     private lateinit var tvResult: TextView

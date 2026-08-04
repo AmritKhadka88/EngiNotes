@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.widget.*
@@ -339,7 +340,13 @@ class BooksActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        applyStatusBarFullscreenPreference()
         refresh()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) applyStatusBarFullscreenPreference()
     }
 
     private fun getBooksRoot(): File {
@@ -381,45 +388,53 @@ class BooksActivity : AppCompatActivity() {
     // tables, text, hatch fills, everything) instead of a second, simplified renderer that would
     // inevitably drift out of sync with what the note actually looks like when opened for real.
     private fun renderThumbnail(note: File, maxWidthPx: Int, maxHeightPx: Int): Bitmap? {
-        val dv = DrawingView(this)
-        dv.loadFromString(security.readNoteFile(note))
-        val convenient = dv.canvasMode == CanvasMode.CONVENIENT
-        if (convenient) {
-            // Convenient-mode notes (the default canvas mode) don't have a fixed intrinsic page
-            // size — DrawingView.onLayout defines their "page" as 82% of whatever View WIDTH and
-            // 110% of whatever View HEIGHT they're CURRENTLY shown in — always taller than one
-            // screen by design (meant to scroll), so there's no achievable "full page height" to
-            // match a thumbnail boundary to at all. Width IS boundable (82% < 100% of the view):
-            // lay out once at a fixed reference size, then crop the resulting bitmap to the
-            // page's real width — its own actual right edge, Notewise-style — and take a
-            // maxHeightPx-tall slice off the top for height, representing "the visible top
-            // portion" of a page that's inherently taller than any static preview could show.
-            dv.measure(View.MeasureSpec.makeMeasureSpec(maxWidthPx, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(maxHeightPx, View.MeasureSpec.EXACTLY))
-            dv.layout(0, 0, maxWidthPx, maxHeightPx)
-            dv.resetViewForThumbnail(1f, 0f, 0f)
-            val fullBmp = Bitmap.createBitmap(maxWidthPx, maxHeightPx, Bitmap.Config.ARGB_8888)
-            dv.draw(android.graphics.Canvas(fullBmp))
-            val cropW = dv.pageWidthPx().toInt().coerceIn(1, maxWidthPx)
-            val cropped = if (cropW < maxWidthPx) Bitmap.createBitmap(fullBmp, 0, 0, cropW, maxHeightPx) else fullBmp
-            applyEdgeFade(cropped)
-            return cropped
+        return try {
+            val dv = DrawingView(this)
+            dv.loadFromString(security.readNoteFile(note))
+            val convenient = dv.canvasMode == CanvasMode.CONVENIENT
+            if (convenient) {
+                // Convenient-mode notes (the default canvas mode) don't have a fixed intrinsic page
+                // size — DrawingView.onLayout defines their "page" as 82% of whatever View WIDTH and
+                // 110% of whatever View HEIGHT they're CURRENTLY shown in — always taller than one
+                // screen by design (meant to scroll), so there's no achievable "full page height" to
+                // match a thumbnail boundary to at all. Width IS boundable (82% < 100% of the view):
+                // lay out once at a fixed reference size, then crop the resulting bitmap to the
+                // page's real width — its own actual right edge, Notewise-style — and take a
+                // maxHeightPx-tall slice off the top for height, representing "the visible top
+                // portion" of a page that's inherently taller than any static preview could show.
+                dv.measure(View.MeasureSpec.makeMeasureSpec(maxWidthPx, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(maxHeightPx, View.MeasureSpec.EXACTLY))
+                dv.layout(0, 0, maxWidthPx, maxHeightPx)
+                dv.resetViewForThumbnail(1f, 0f, 0f)
+                val fullBmp = Bitmap.createBitmap(maxWidthPx, maxHeightPx, Bitmap.Config.ARGB_8888)
+                dv.draw(android.graphics.Canvas(fullBmp))
+                val cropW = dv.pageWidthPx().toInt().coerceIn(1, maxWidthPx)
+                val cropped = if (cropW < maxWidthPx) Bitmap.createBitmap(fullBmp, 0, 0, cropW, maxHeightPx) else fullBmp
+                applyEdgeFade(cropped)
+                return cropped
+            }
+            // Paper-size notes (Fixed/Paginated/Infinite canvas modes): page dimensions come from
+            // paperSize + orientation ALONE — no dependency on view size at all — so pageWidthPx()/
+            // pageHeightPx() are readable immediately after loadFromString(), before any layout pass,
+            // and there's a real, fixed page boundary to match the bitmap to directly.
+            val pageAspect = dv.pageWidthPx().coerceAtLeast(1f) / dv.pageHeightPx().coerceAtLeast(1f)
+            var w = maxWidthPx; var h = (w / pageAspect).toInt()
+            if (h > maxHeightPx) { h = maxHeightPx; w = (h * pageAspect).toInt() }
+            val finalW = w.coerceAtLeast(1); val finalH = h.coerceAtLeast(1)
+            dv.measure(View.MeasureSpec.makeMeasureSpec(finalW, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(finalH, View.MeasureSpec.EXACTLY))
+            dv.layout(0, 0, finalW, finalH)
+            val scale = minOf(finalW / dv.pageWidthPx(), finalH / dv.pageHeightPx())
+            dv.resetViewForThumbnail(if (scale.isFinite() && scale > 0f) scale else 1f, 0f, 0f)
+            val bmp = Bitmap.createBitmap(finalW, finalH, Bitmap.Config.ARGB_8888)
+            dv.draw(android.graphics.Canvas(bmp))
+            applyEdgeFade(bmp)
+            bmp
+        } catch (t: Throwable) {
+            // Deliberately Throwable, not just Exception — this runs once per note on the
+            // notes-list screen. A single corrupted/unreadable file, or an OOM on a very large
+            // note, must never take down the whole list; null already means "no thumbnail" to
+            // every caller of this function.
+            null
         }
-        // Paper-size notes (Fixed/Paginated/Infinite canvas modes): page dimensions come from
-        // paperSize + orientation ALONE — no dependency on view size at all — so pageWidthPx()/
-        // pageHeightPx() are readable immediately after loadFromString(), before any layout pass,
-        // and there's a real, fixed page boundary to match the bitmap to directly.
-        val pageAspect = dv.pageWidthPx().coerceAtLeast(1f) / dv.pageHeightPx().coerceAtLeast(1f)
-        var w = maxWidthPx; var h = (w / pageAspect).toInt()
-        if (h > maxHeightPx) { h = maxHeightPx; w = (h * pageAspect).toInt() }
-        val finalW = w.coerceAtLeast(1); val finalH = h.coerceAtLeast(1)
-        dv.measure(View.MeasureSpec.makeMeasureSpec(finalW, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(finalH, View.MeasureSpec.EXACTLY))
-        dv.layout(0, 0, finalW, finalH)
-        val scale = minOf(finalW / dv.pageWidthPx(), finalH / dv.pageHeightPx())
-        dv.resetViewForThumbnail(if (scale.isFinite() && scale > 0f) scale else 1f, 0f, 0f)
-        val bmp = Bitmap.createBitmap(finalW, finalH, Bitmap.Config.ARGB_8888)
-        dv.draw(android.graphics.Canvas(bmp))
-        applyEdgeFade(bmp)
-        return bmp
     }
 
     // Soft edge fade on all 4 sides (like Samsung Notes' thumbnails) — draws a thin
@@ -465,7 +480,7 @@ class BooksActivity : AppCompatActivity() {
                     // Clear any stale cached file(s) for this note (old mtime baked into the old filename)
                     thumbnailCacheDir().listFiles()?.filter { it.name.startsWith("${note.nameWithoutExtension}_") }?.forEach { it.delete() }
                     FileOutputStream(cached).use { bmp.compress(Bitmap.CompressFormat.PNG, 90, it) }
-                } catch (e: Exception) {}
+                } catch (e: Exception) { Log.w("EngiNotes", "Thumbnail cache write failed for ${note.name}", e) }
             }.start()
         }
     }
@@ -786,7 +801,7 @@ class BooksActivity : AppCompatActivity() {
             for (file in selectedNotes.toList()) {
                 if (file.parentFile?.name == destBook) continue
                 val dest = File(File(getBooksRoot(), destBook), file.name)
-                try { file.copyTo(dest, overwrite = true); file.delete(); moved++ } catch (e: Exception) {}
+                try { file.copyTo(dest, overwrite = true); file.delete(); moved++ } catch (e: Exception) { Log.w("EngiNotes", "Failed to move ${file.name} to $destBook", e) }
             }
             Toast.makeText(this, "Moved $moved note(s) to $destBook", Toast.LENGTH_SHORT).show()
             exitSelectionMode()
@@ -808,7 +823,7 @@ class BooksActivity : AppCompatActivity() {
                 // managers handle a copy-into-same-name conflict.
                 var n = 1
                 while (dest.exists()) { dest = File(destDir, "${file.nameWithoutExtension} (${n})${if (file.extension.isNotEmpty()) "." + file.extension else ""}"); n++ }
-                try { file.copyTo(dest); copied++ } catch (e: Exception) {}
+                try { file.copyTo(dest); copied++ } catch (e: Exception) { Log.w("EngiNotes", "Failed to copy ${file.name} to $destBook", e) }
             }
             Toast.makeText(this, "Copied $copied note(s) to $destBook", Toast.LENGTH_SHORT).show()
             exitSelectionMode()
@@ -820,8 +835,12 @@ class BooksActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle("Delete ${selectedNotes.size} note(s)?")
             .setMessage("This can't be undone.")
             .setPositiveButton("Delete") { _, _ ->
-                for (file in selectedNotes.toList()) { try { file.delete() } catch (e: Exception) {} }
-                Toast.makeText(this, "Deleted ${selectedNotes.size} note(s)", Toast.LENGTH_SHORT).show()
+                var deleted = 0
+                for (file in selectedNotes.toList()) {
+                    try { if (file.delete()) deleted++ } catch (e: Exception) { Log.w("EngiNotes", "Failed to delete ${file.name}", e) }
+                }
+                val msg = if (deleted == selectedNotes.size) "Deleted $deleted note(s)" else "Deleted $deleted of ${selectedNotes.size} note(s) — check storage/permissions"
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
                 exitSelectionMode()
             }.setNegativeButton("Cancel", null).show()
     }
@@ -994,6 +1013,12 @@ class BooksActivity : AppCompatActivity() {
                 // silently only applying the next time the app happens to restart.
                 if (themeChanged) recreate()
             }.setNegativeButton("Cancel", null).show()
+            // AlertDialog's own title/chrome area is a separate region from the container we
+            // themed above — setView() only colors the body, so without this the title strip
+            // stayed the default system white no matter which theme (or how dark) was picked.
+            // Setting the WINDOW's background covers that chrome too, so the whole dialog reads
+            // as one consistent surface instead of a themed body with a white cap on top.
+            .also { dlg -> dlg.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(bgColorInt)) }
     }
 
     private fun showSecurityWarningDialog(onAcknowledged: () -> Unit) {

@@ -1266,6 +1266,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val _holePaint = Paint().apply { style = Paint.Style.FILL; xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR); isAntiAlias = true }
     private val _fillErasePaint = Paint().apply { color = Color.TRANSPARENT; style = Paint.Style.FILL; xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR) }
     private val _cursorPaint = Paint().apply { isAntiAlias = true }
+    // Cached paints for the multiselect handle overlay (drawSelection) — this used to allocate
+    // 9 new Paint objects every single frame it was drawn (not just during a drag), which is a
+    // real, continuous GC-pressure source since it's on the main onDraw path. Colors/styles are
+    // fixed so they're set once here; strokeWidth depends on the live scaleFactor so that's set
+    // right before each use in drawSelection instead.
+    private val _msPinkStroke = Paint().apply { color = android.graphics.Color.parseColor("#E91E8C"); style = Paint.Style.STROKE; isAntiAlias = true }
+    private val _msPinkFill = Paint().apply { color = android.graphics.Color.parseColor("#E91E8C"); style = Paint.Style.FILL; isAntiAlias = true }
+    private val _msWhiteStroke = Paint().apply { color = android.graphics.Color.WHITE; style = Paint.Style.STROKE; isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
+    private val _msGreenFill = Paint().apply { color = android.graphics.Color.parseColor("#34C759"); style = Paint.Style.FILL; isAntiAlias = true }
+    private val _msRedFill = Paint().apply { color = android.graphics.Color.parseColor("#FF3B30"); style = Paint.Style.FILL; isAntiAlias = true }
+    private val _msBlueFill = Paint().apply { color = android.graphics.Color.parseColor("#2196F3"); style = Paint.Style.FILL; isAntiAlias = true }
 
     // Lock/unlock — called from MainActivity lock button
     fun lockSelectedItems() {
@@ -1666,6 +1677,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var onShapeCompleted: ((StrokeItem) -> Unit)? = null  // fired after each shape is drawn
     var fingerPanMode: Boolean = false
 
+    // Read Mode: view-only, no editing. STANDARD looks exactly like the normal editing canvas
+    // (same paper background/pattern) just with all drawing/erasing/editing blocked. PAPER_LIKE
+    // additionally reskins the canvas to feel like a physical page — darker backdrop, a soft
+    // faux drop-shadow around the page, and much fainter ruling — while still blocking editing.
+    enum class ReadMode { OFF, STANDARD, PAPER_LIKE }
+    var readMode: ReadMode = ReadMode.OFF
+        set(value) { field = value; invalidate() }
+
     fun scrollToPercent(pct: Float) {
         // Total scrollable height = number of pages × page height, minimum 2 pages
         val pageH = pageHeightPx()
@@ -1719,9 +1738,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             dv.measure(View.MeasureSpec.makeMeasureSpec(bmpW, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(bmpH, View.MeasureSpec.EXACTLY))
             dv.layout(0, 0, bmpW, bmpH)
             dv.resetViewForThumbnail(exportScale, 0f, pageIdx * ph)
-            val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
-            dv.draw(android.graphics.Canvas(bmp))
-            bitmaps.add(bmp)
+            try {
+                val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+                dv.draw(android.graphics.Canvas(bmp))
+                bitmaps.add(bmp)
+            } catch (e: OutOfMemoryError) {
+                // A large multi-page document at export resolution can genuinely exhaust memory
+                // partway through — return whatever pages rendered successfully so far instead
+                // of losing the whole export (or crashing outright).
+                break
+            }
         }
         return bitmaps
     }
@@ -1822,6 +1848,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 Tool.TEXT -> {
                     val hit = findTextItemAt(wx, wy)
                     if (hit != null) {
+                        // A tap landing exactly on a checkbox glyph toggles it directly instead
+                        // of opening the move/resize selection overlay — "tap the box to check
+                        // it" and "tap the text to select/edit it" need to be two genuinely
+                        // different gestures, not one always winning over the other.
+                        if (toggleChecklistInItem(hit, wx, wy)) return true
                         // Deliberately NOT switching currentTool to SELECT here anymore. The
                         // move/rotate selection overlay (moveSurface, opened via
                         // onTextSelectRequest below) is a separate overlay view that works
@@ -1858,6 +1889,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 Tool.SELECT -> {
                     val hit = findTextItemAt(wx, wy)
                     if (hit != null && hit.linkTarget == null) {
+                        if (toggleChecklistInItem(hit, wx, wy)) return true
                         // Single tap on normal text: show selection box
                         selectedItem = hit
                         onTextSelectRequest?.invoke(hit, e.x, e.y, e.rawX, e.rawY)
@@ -2018,9 +2050,57 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val minTy = height - ph2 - margin; val maxTy = margin
             translateY = translateY.coerceIn(minTy.coerceAtMost(maxTy), maxTy)
         } else if (canvasMode == CanvasMode.CONVENIENT || canvasMode == CanvasMode.PAGINATED) {
-            val topBarH = 64f * resources.displayMetrics.density
-            translateY = translateY.coerceAtMost(topBarH)
+            // The chrome-height cushion alone assumes nothing was ever drawn above the note's
+            // nominal y=0 start — but a stroke CAN end up there (drawn while already scrolled to
+            // the limit, for instance), and a flat cushion has no way to know that happened. When
+            // it does, this was capping translateY below what's actually needed to reveal it,
+            // permanently trapping that content behind the top bar with no way to scroll to it —
+            // the reported "content stuck behind the toolbar, page won't scroll there" bug.
+            var minContentY = 0f
+            for (a in actions) {
+                val b = getBounds(a)
+                if (b != null && b[1] < minContentY) minContentY = b[1]
+            }
+            val extraForContent = (-minContentY * scaleFactor).coerceAtLeast(0f)
+            translateY = translateY.coerceAtMost(topChromeHeightPx + extraForContent)
         }
+    }
+
+    /** How much space to leave above the very start of a note's content before refusing to
+     * scroll further — meant to keep the note's first line from disappearing entirely behind the
+     * app's own top bar, not a fixed cosmetic gap. Used to be hardcoded to 64dp regardless of
+     * whether that bar was actually visible, which is exactly why fullscreen/Read Mode (which
+     * hide it) still always left a blank strip at the top no matter what: this scroll limit was
+     * completely unrelated to any of that, and kept reserving space for a bar that wasn't there
+     * anymore. MainActivity sets this to the real current top bar height, and to 0 whenever it's
+     * hidden (fullscreen, Read Mode) — see setTopChromeHeightPx(). */
+    var topChromeHeightPx: Float = 64f * resources.displayMetrics.density
+
+    // Whether the top bar is currently known to be hidden for fullscreen/Read Mode, and the
+    // scroll position captured right before it was hidden — restored exactly once when it
+    // reappears. Deliberately NOT done by reacting to every topChromeHeightPx reassignment (an
+    // earlier version of this did that): that property gets reassigned repeatedly during layout
+    // settling — onResume, delayed re-checks, insets passes recomputing the bar's real height —
+    // even while nothing about hidden/visible actually changed, and each incidental reassignment
+    // re-triggered the shift, compounding drift further with every settle pass instead of moving
+    // exactly once per real transition. Tying it to explicit enter/exit calls instead means it
+    // fires exactly once per direction no matter how many times syncTopChromeHeight() re-runs
+    // afterward in the same hidden or visible state.
+    private var chromeHiddenForFullscreen = false
+    private var translateYBeforeChromeHide = 0f
+
+    fun prepareForChromeHide() {
+        if (chromeHiddenForFullscreen) return
+        chromeHiddenForFullscreen = true
+        translateYBeforeChromeHide = translateY
+    }
+
+    fun restoreAfterChromeShow() {
+        if (!chromeHiddenForFullscreen) return
+        chromeHiddenForFullscreen = false
+        translateY = translateYBeforeChromeHide
+        clampTranslation()
+        invalidate()
     }
 
     // Public entry point for running OCR on the currently selected image, rather than only ever
@@ -2555,26 +2635,34 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // (re)allocate to cover it and bake the whole stroke-so-far once from scratch.
             val bmpW = (worldW * CACHE_SCALE).toInt().coerceIn(1, 4096)
             val bmpH = (worldH * CACHE_SCALE).toInt().coerceIn(1, 4096)
-            try {
-                liveFlushBitmap = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+            val newBitmap = try {
+                Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
             } catch (e: OutOfMemoryError) { liveFlushBitmap = null; liveFlushCanvas = null; return }
-            liveFlushCanvas = Canvas(liveFlushBitmap!!)
+            liveFlushBitmap = newBitmap
+            val canvas = Canvas(newBitmap)
+            liveFlushCanvas = canvas
             liveFlushLeft = left; liveFlushTop = top; liveFlushWorldW = worldW; liveFlushWorldH = worldH
-            liveFlushCanvas!!.save()
-            liveFlushCanvas!!.translate(-liveFlushLeft * CACHE_SCALE, -liveFlushTop * CACHE_SCALE)
-            liveFlushCanvas!!.scale(CACHE_SCALE, CACHE_SCALE)
-            renderLiveStrokeRange(liveFlushCanvas!!, item, 0)
-            liveFlushCanvas!!.restore()
+            canvas.save()
+            canvas.translate(-liveFlushLeft * CACHE_SCALE, -liveFlushTop * CACHE_SCALE)
+            canvas.scale(CACHE_SCALE, CACHE_SCALE)
+            renderLiveStrokeRange(canvas, item, 0)
+            canvas.restore()
             liveFlushedPairIndex = n
             return
         }
+        // fitsExisting (checked above) required liveFlushBitmap != null, and liveFlushBitmap /
+        // liveFlushCanvas are only ever assigned together (see the two assignment sites above and
+        // the reset in clearLiveFlush()) — so liveFlushCanvas is guaranteed non-null here. Capture
+        // it as a local instead of repeated !! so that invariant doesn't need to hold at every
+        // single use site to avoid a crash.
+        val canvas = liveFlushCanvas ?: return
         val overlapPairs = 8
         val segStart = (liveFlushedPairIndex - overlapPairs).coerceAtLeast(0)
-        liveFlushCanvas!!.save()
-        liveFlushCanvas!!.translate(-liveFlushLeft * CACHE_SCALE, -liveFlushTop * CACHE_SCALE)
-        liveFlushCanvas!!.scale(CACHE_SCALE, CACHE_SCALE)
-        renderLiveStrokeRange(liveFlushCanvas!!, item, segStart)
-        liveFlushCanvas!!.restore()
+        canvas.save()
+        canvas.translate(-liveFlushLeft * CACHE_SCALE, -liveFlushTop * CACHE_SCALE)
+        canvas.scale(CACHE_SCALE, CACHE_SCALE)
+        renderLiveStrokeRange(canvas, item, segStart)
+        canvas.restore()
         liveFlushedPairIndex = n
     }
 
@@ -2598,6 +2686,25 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
         }
         pruneFillBitmaps()
+        pruneImageBitmaps()
+    }
+
+    // Same idea as pruneFillBitmaps() below, for ImageItem. This one was missing entirely —
+    // ImageItem.bitmap held its decoded (up to 1920px, RGB_565) copy forever once loaded, with
+    // no release path, unlike FillItem which already had this exact treatment. A page with many
+    // large inserted photos would just accumulate memory as you scrolled around a session,
+    // never giving any of it back even for images long off-screen.
+    private fun pruneImageBitmaps() {
+        val images = actions.filterIsInstance<ImageItem>().filter { it.bitmap != null }
+        if (images.size <= 40) return  // small documents: no need to churn memory at all
+        val vl = -translateX / scaleFactor; val vt = -translateY / scaleFactor
+        val vr = vl + width / scaleFactor; val vb = vt + height / scaleFactor
+        val marginX = (vr - vl) * 1.5f; val marginY = (vb - vt) * 1.5f
+        for (img in images) {
+            if (img.loading) continue  // never release one mid-decode
+            val outside = img.x + img.w < vl - marginX || img.x > vr + marginX || img.y + img.h < vt - marginY || img.y > vb + marginY
+            if (outside) img.bitmap = null  // shared bitmapCache still has it, so scrolling back is a fast cache hit, not a full re-decode
+        }
     }
 
     // Releases in-memory bitmaps for FillItems well outside the current viewport, so a document
@@ -3002,6 +3109,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (++drawCount % 60 == 0) pruneBrushCache()
+        // Book-style page-turn navigation (Paper-like Read Mode + Paginated canvas) renders
+        // completely differently — one page at a time, fit to the screen, with a second page
+        // sliding in during a drag — so it's dispatched to its own renderer instead of trying to
+        // wedge that into the normal continuous-scroll path below.
+        if (bookPageTurnActive()) { drawBookPageTurn(canvas); return }
+        drawCanvasContent(canvas)
+    }
+
+    private fun drawCanvasContent(canvas: Canvas) {
         canvas.drawColor(if (isExportRender) Color.WHITE else canvasBackgroundColor)
         canvas.save()
         canvas.translate(translateX, translateY)
@@ -3087,7 +3203,149 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (polylineFingerDown) drawMagnifierLens(canvas, polylineCursorX, polylineCursorY)
         }
         canvas.restore()
+        // Paper-like Read Mode used to apply a low-alpha warm multiply overlay across the whole
+        // canvas here to nudge stroke colors toward an ink-on-paper feel. Removed: it touched
+        // every stroke's rendered appearance, not just the background/paper texture the mode is
+        // meant to restyle, and made content read as faded/washed-out rather than just sitting on
+        // a different-colored page. The background color and dimmed rule lines in drawBackground/
+        // drawPaperPattern above are the only visual changes Paper-like should make now.
         drawCursor(canvas)
+    }
+
+    // ── Book-style page-turn navigation (Paper-like Read Mode) ─────────────────────────
+    // Only kicks in for Paginated notes — "turning a page" doesn't have a well-defined meaning
+    // for Infinite/Convenient canvases, which don't have discrete page boundaries the same way.
+    var readPageIndex: Int = 0
+    private var pageTurnDragPx: Float = 0f
+    private var pageTurnDragging = false
+    private var pageTurnStartX = 0f
+    private var pageTurnAnimator: android.animation.ValueAnimator? = null
+
+    private fun bookPageTurnActive(): Boolean = readMode == ReadMode.PAPER_LIKE && canvasMode == CanvasMode.PAGINATED
+
+    /** Called once when entering Paper-like Read Mode on a Paginated note, so the page-turn view
+     * opens on whichever page you were actually scrolled to instead of always restarting at 1. */
+    fun syncReadPageIndexToScroll() {
+        val ph = pageHeightPx(); val gap = 40f
+        val approx = ((-translateY / scaleFactor) / (ph + gap)).toInt()
+        readPageIndex = approx.coerceIn(0, (estimatePageCount() - 1).coerceAtLeast(0))
+    }
+
+    private fun handlePageTurnGesture(event: MotionEvent) {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                pageTurnAnimator?.cancel()
+                pageTurnDragging = true
+                pageTurnStartX = event.x
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!pageTurnDragging) return
+                val pageCount = estimatePageCount().coerceAtLeast(1)
+                val atFirst = readPageIndex <= 0
+                val atLast = readPageIndex >= pageCount - 1
+                var dx = event.x - pageTurnStartX
+                // Soft rubber-band resistance past the first/last page, instead of either a hard
+                // stop (feels broken) or letting it drag as if there were a page there (misleading).
+                if (dx < 0f && atLast) dx *= 0.25f
+                if (dx > 0f && atFirst) dx *= 0.25f
+                pageTurnDragPx = dx.coerceIn(-width.toFloat(), width.toFloat())
+                invalidate()
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                pageTurnDragging = false
+                val pageCount = estimatePageCount().coerceAtLeast(1)
+                val threshold = width * 0.25f
+                val target = when {
+                    pageTurnDragPx <= -threshold && readPageIndex < pageCount - 1 -> readPageIndex + 1
+                    pageTurnDragPx >= threshold && readPageIndex > 0 -> readPageIndex - 1
+                    else -> readPageIndex
+                }
+                settlePageTurn(target)
+            }
+        }
+    }
+
+    private fun settlePageTurn(targetPageIndex: Int) {
+        val start = pageTurnDragPx
+        val goingForward = targetPageIndex > readPageIndex
+        val end = if (targetPageIndex != readPageIndex) (if (goingForward) -width.toFloat() else width.toFloat()) else 0f
+        pageTurnAnimator?.cancel()
+        pageTurnAnimator = android.animation.ValueAnimator.ofFloat(start, end).apply {
+            duration = 240
+            interpolator = android.view.animation.DecelerateInterpolator(1.5f)
+            addUpdateListener { pageTurnDragPx = it.animatedValue as Float; invalidate() }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    readPageIndex = targetPageIndex
+                    pageTurnDragPx = 0f
+                    invalidate()
+                }
+            })
+            start()
+        }
+    }
+
+    /** Renders exactly one page, fit to the screen, at horizontal screen-space offset [xOffset] —
+     * used both for the page currently in view and, mid-drag or mid-animation, the adjacent page
+     * sliding in behind/ahead of it. [edgeShadowAlpha] draws a soft gradient along the page's
+     * leading edge (the side facing the direction it's moving), standing in for the shadow a real
+     * page casts as it lifts off the page beneath it — not a physically-modeled curl, just enough
+     * depth cue to read as one page passing over another rather than a flat slide. */
+    private fun drawBookPage(canvas: Canvas, pageIdx: Int, baseLeft: Float, baseTop: Float, pageScreenW: Float, pageScreenH: Float, fitScale: Float, xOffset: Float, edgeShadowAlpha: Int) {
+        val pageCount = estimatePageCount().coerceAtLeast(1)
+        if (pageIdx < 0 || pageIdx >= pageCount) return
+        val left = baseLeft + xOffset
+        canvas.save()
+        canvas.clipRect(left, baseTop, left + pageScreenW, baseTop + pageScreenH)
+        // Kindle-style warm off-white page — flat color, no grain/texture, matching an e-ink
+        // Paperwhite screen rather than the tan/parchment "physical desk" look Paper-like used
+        // to have (that backdrop-plus-shadow treatment made sense for a single scrollable sheet;
+        // it doesn't for a book you're paging through).
+        val bg = Paint().apply { color = Color.parseColor("#F6F3E9") }
+        canvas.drawRect(left, baseTop, left + pageScreenW, baseTop + pageScreenH, bg)
+        val savedTX = translateX; val savedTY = translateY; val savedScale = scaleFactor
+        translateX = left; translateY = baseTop - pageIdx * (pageHeightPx() + 40f) * fitScale
+        scaleFactor = fitScale
+        drawCanvasContent(canvas)
+        translateX = savedTX; translateY = savedTY; scaleFactor = savedScale
+        canvas.restore()
+        if (edgeShadowAlpha > 0) {
+            val gradW = dp(26).toFloat()
+            val onRightEdge = xOffset <= 0f
+            val x0 = if (onRightEdge) left + pageScreenW - gradW else left
+            val x1 = if (onRightEdge) left + pageScreenW else left + gradW
+            val colors = if (onRightEdge) intArrayOf(0, Color.argb(edgeShadowAlpha, 0, 0, 0)) else intArrayOf(Color.argb(edgeShadowAlpha, 0, 0, 0), 0)
+            val shader = android.graphics.LinearGradient(x0, 0f, x1, 0f, colors, null, android.graphics.Shader.TileMode.CLAMP)
+            canvas.drawRect(x0, baseTop, x1, baseTop + pageScreenH, Paint().apply { this.shader = shader })
+        }
+    }
+
+    private fun drawBookPageTurn(canvas: Canvas) {
+        val w = width.toFloat(); val h = height.toFloat()
+        // Kindle-like neutral warm-gray surround behind the page (a real Kindle has no "desk"
+        // backdrop/floating-sheet shadow the way the old Paper-like treatment did — just a flat
+        // bezel color around the reading area).
+        canvas.drawColor(Color.parseColor("#DEDBCF"))
+        val marginPx = dp(18).toFloat()
+        val ph = pageHeightPx(); val pw = pageWidthPx()
+        val fitScale = kotlin.math.min((w - marginPx * 2f) / pw, (h - marginPx * 2f) / ph)
+        val pageScreenW = pw * fitScale; val pageScreenH = ph * fitScale
+        val baseLeft = (w - pageScreenW) / 2f
+        val baseTop = (h - pageScreenH) / 2f
+        val dragPx = pageTurnDragPx
+        val progress = (kotlin.math.abs(dragPx) / w).coerceIn(0f, 1f)
+        val shadowAlpha = (progress * 90).toInt()
+        when {
+            kotlin.math.abs(dragPx) < 0.5f -> drawBookPage(canvas, readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, 0f, 0)
+            dragPx < 0f -> {
+                drawBookPage(canvas, readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, dragPx, shadowAlpha)
+                drawBookPage(canvas, readPageIndex + 1, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, dragPx + w, 0)
+            }
+            else -> {
+                drawBookPage(canvas, readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, dragPx, shadowAlpha)
+                drawBookPage(canvas, readPageIndex - 1, baseLeft, baseTop, pageScreenW, pageScreenH, fitScale, dragPx - w, 0)
+            }
+        }
     }
 
     private var hasInitialLayout = false
@@ -3219,13 +3477,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         } else {
             for (sp in item.spans) {
                 val s = sp.start.coerceIn(0, item.text.length); val e = sp.end.coerceIn(s, item.text.length)
-                if (s < e) when (sp.type) {
+                // s == e is valid and expected for list spans (see closeInlineEditor's comment
+                // on why they're deliberately zero-length) — only a genuinely reversed range
+                // (shouldn't happen, but coerceIn above guarantees s<=e regardless) is skipped.
+                if (s <= e) when (sp.type) {
                     'S' -> spannable.setSpan(StyleSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                     'C' -> spannable.setSpan(ForegroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                     'U' -> spannable.setSpan(UnderlineSpan(), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                     'H' -> spannable.setSpan(BackgroundColorSpan(sp.value), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    LIST_SPAN_TYPE_BULLET -> spannable.setSpan(BulletMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value)), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    LIST_SPAN_TYPE_NUMBER -> spannable.setSpan(NumberMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value)), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    LIST_SPAN_TYPE_CHECK -> spannable.setSpan(ChecklistMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value), decodeListChecked(sp.value)), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
             }
+            renumberLists(spannable)
         }
         val layout = StaticLayout.Builder.obtain(spannable, 0, spannable.length, tp, ww).setIncludePad(true).build()
         item.cachedLayout = layout; item.cachedLayoutKey = key
@@ -3279,6 +3544,27 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (lineIdx < layout.lineCount) extraSkip += gap + pageTopMargin
         }
         return contentH + extraSkip
+    }
+
+    // Checklist tap-to-toggle for a NOT-currently-being-edited item — e.g. tapping a checkbox on
+    // a committed note without first entering the live text editor. getOrBuildLayout's resulting
+    // StaticLayout keeps a direct reference to the exact Spanned it was built from (Layout.text),
+    // so the same ChecklistMarginSpan instances — with lastDrawnBounds populated by the most
+    // recent actual draw pass — are recoverable straight from the cached layout, without needing
+    // to separately track or rebuild a live Spannable for items that aren't being edited.
+    // Rotated items are skipped (rotation==0 check) — matches the same simplification already
+    // made for paginated text splitting a little above, for the same reason: correct enough for
+    // the overwhelming common case, and not worth the extra transform math for an edge case.
+    fun toggleChecklistInItem(item: TextItem, worldX: Float, worldY: Float): Boolean {
+        if (item.rotation != 0f || item.linkTarget != null) return false
+        val layout = getOrBuildLayout(item)
+        val spanned = layout.text as? Spannable ?: return false
+        val topY = item.y - layout.height.toFloat()
+        val localX = worldX - item.x
+        val localY = worldY - topY
+        val toggled = toggleChecklistAt(spanned, localX, localY)
+        if (toggled) { syncTextItemSpansFromSpanned(item, spanned); invalidate() }
+        return toggled
     }
 
     private fun drawTextItem(canvas: Canvas, item: TextItem) {
@@ -3432,37 +3718,33 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val gcxForRotate = (gb[0]+gb[2])/2f; val gcyForRotate = (gb[1]+gb[3])/2f
             if (rotForDraw != 0f) canvas.save().also { canvas.rotate(rotForDraw, gcxForRotate, gcyForRotate) }
             val hr = 28f / scaleFactor  // larger handles
-            val pinkP = Paint().apply { color = android.graphics.Color.parseColor("#E91E8C"); style = Paint.Style.STROKE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true }
-            canvas.drawRect(gb[0], gb[1], gb[2], gb[3], pinkP)
-            val hF = Paint().apply { style = Paint.Style.FILL; color = android.graphics.Color.parseColor("#E91E8C"); isAntiAlias = true }
-            val hS = Paint().apply { style = Paint.Style.STROKE; color = android.graphics.Color.WHITE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true }
+            _msPinkStroke.strokeWidth = 2.5f/scaleFactor
+            canvas.drawRect(gb[0], gb[1], gb[2], gb[3], _msPinkStroke)
             val gcx = (gb[0]+gb[2])/2f; val gcy = (gb[1]+gb[3])/2f
+            _msWhiteStroke.strokeWidth = 2.5f/scaleFactor
             // 8 resize handles
             for ((hx,hy) in listOf(gb[0] to gb[1], gcx to gb[1], gb[2] to gb[1], gb[0] to gcy, gb[2] to gcy, gb[0] to gb[3], gcx to gb[3], gb[2] to gb[3])) {
-                canvas.drawCircle(hx, hy, hr, hF); canvas.drawCircle(hx, hy, hr, hS)
+                canvas.drawCircle(hx, hy, hr, _msPinkFill); canvas.drawCircle(hx, hy, hr, _msWhiteStroke)
             }
             // Rotation handle (green circle with arc symbol — matches single-select design)
             val rotY = gb[1] - 90f/scaleFactor
-            val rotF = Paint().apply { style = Paint.Style.FILL; color = android.graphics.Color.parseColor("#34C759"); isAntiAlias = true }
-            canvas.drawLine(gcx, gb[1], gcx, rotY+hr, pinkP)
-            canvas.drawCircle(gcx, rotY, hr*1.2f, rotF); canvas.drawCircle(gcx, rotY, hr*1.2f, hS)
+            canvas.drawLine(gcx, gb[1], gcx, rotY+hr, _msPinkStroke)
+            canvas.drawCircle(gcx, rotY, hr*1.2f, _msGreenFill); canvas.drawCircle(gcx, rotY, hr*1.2f, _msWhiteStroke)
             // Arc symbol inside green circle
-            val arcSP = Paint().apply { style = Paint.Style.STROKE; color = android.graphics.Color.WHITE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
             val arcR = hr*0.65f
-            canvas.drawArc(android.graphics.RectF(gcx-arcR, rotY-arcR, gcx+arcR, rotY+arcR), -30f, 240f, false, arcSP)
-            canvas.drawLine(gcx+arcR*0.5f, rotY-arcR*0.85f, gcx+arcR, rotY-arcR*0.3f, arcSP)
+            canvas.drawArc(android.graphics.RectF(gcx-arcR, rotY-arcR, gcx+arcR, rotY+arcR), -30f, 240f, false, _msWhiteStroke)
+            canvas.drawLine(gcx+arcR*0.5f, rotY-arcR*0.85f, gcx+arcR, rotY-arcR*0.3f, _msWhiteStroke)
             // Delete handle (red, top-right)
             val delX = gb[2]+hr*4f; val delY = gb[1]-hr*4f
-            val delF = Paint().apply { style = Paint.Style.FILL; color = android.graphics.Color.parseColor("#FF3B30"); isAntiAlias = true }
-            val delS = Paint().apply { style = Paint.Style.STROKE; color = android.graphics.Color.WHITE; strokeWidth = 3f/scaleFactor; isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
-            canvas.drawCircle(delX, delY, hr*1.5f, delF); canvas.drawCircle(delX, delY, hr*1.5f, hS)
-            val d2 = hr*0.9f; canvas.drawLine(delX-d2,delY-d2,delX+d2,delY+d2,delS); canvas.drawLine(delX+d2,delY-d2,delX-d2,delY+d2,delS)
+            canvas.drawCircle(delX, delY, hr*1.5f, _msRedFill); canvas.drawCircle(delX, delY, hr*1.5f, _msWhiteStroke)
+            _msWhiteStroke.strokeWidth = 3f/scaleFactor
+            val d2 = hr*0.9f; canvas.drawLine(delX-d2,delY-d2,delX+d2,delY+d2,_msWhiteStroke); canvas.drawLine(delX+d2,delY-d2,delX-d2,delY+d2,_msWhiteStroke)
             // Move handle (center arrow icon)
-            val moveF = Paint().apply { style = Paint.Style.FILL; color = android.graphics.Color.parseColor("#2196F3"); isAntiAlias = true }
-            canvas.drawCircle(gcx, gcy, hr*1.2f, moveF); canvas.drawCircle(gcx, gcy, hr*1.2f, hS)
-            val ap = Paint().apply { style = Paint.Style.STROKE; color = android.graphics.Color.WHITE; strokeWidth = 2.5f/scaleFactor; isAntiAlias = true; strokeCap = Paint.Cap.ROUND }
+            canvas.drawCircle(gcx, gcy, hr*1.2f, _msBlueFill)
+            _msWhiteStroke.strokeWidth = 2.5f/scaleFactor
+            canvas.drawCircle(gcx, gcy, hr*1.2f, _msWhiteStroke)
             val a = hr*0.6f
-            canvas.drawLine(gcx-a, gcy, gcx+a, gcy, ap); canvas.drawLine(gcx, gcy-a, gcx, gcy+a, ap)
+            canvas.drawLine(gcx-a, gcy, gcx+a, gcy, _msWhiteStroke); canvas.drawLine(gcx, gcy-a, gcx, gcy+a, _msWhiteStroke)
             if (rotForDraw != 0f) canvas.restore()
             // NOTE: Indiv/Group toggle is shown as a screen-space button via MainActivity
             return
@@ -5532,6 +5814,25 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun drawBackground(canvas: Canvas) {
         val vl = -translateX / scaleFactor; val vt = -translateY / scaleFactor
         val vr = vl + width / scaleFactor; val vb = vt + height / scaleFactor
+        // Paper-like Read Mode backdrop: a darker, warmer gray behind the page (instead of the
+        // normal canvas background) plus a soft faux shadow drawn just outside the page edges —
+        // together these are what make the page read as a physical sheet resting on a desk
+        // rather than filling the whole screen edge-to-edge like a normal editing canvas.
+        // Concentric fading rects instead of Paint.setShadowLayer(): shadowLayer needs a software
+        // (not hardware-accelerated) layer to render reliably, which isn't worth the extra
+        // per-frame cost or the risk of disabling hardware acceleration on this view just for
+        // Read Mode. This gets the same soft-edge look without either.
+        val paperLike = readMode == ReadMode.PAPER_LIKE
+        fun drawFauxPageShadow(pw: Float, ph: Float, topOffset: Float = 0f) {
+            if (!paperLike) return
+            val steps = 6; val maxSpread = 18f / scaleFactor
+            for (i in steps downTo 1) {
+                val spread = maxSpread * i / steps
+                val alpha = (10 * (steps - i + 1))
+                val sp = Paint().apply { color = Color.argb(alpha, 0, 0, 0) }
+                canvas.drawRect(-spread, topOffset - spread, pw + spread, topOffset + ph + spread, sp)
+            }
+        }
         when (canvasMode) {
             CanvasMode.INFINITE -> {
                 if (paperType == PaperType.BLANK_COLORED) { val p = Paint(); p.color = paperColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, p) }
@@ -5539,14 +5840,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             CanvasMode.FIXED -> {
                 val pw = pageWidthPx(); val ph = pageHeightPx()
-                val gp = Paint(); gp.color = if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                val gp = Paint(); gp.color = if (paperLike) Color.parseColor("#E8E3D5") else if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                drawFauxPageShadow(pw, ph)
                 val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else PAPER_BASE_COLOR; canvas.drawRect(0f, 0f, pw, ph, wp)
                 if (paperType != PaperType.BLANK && paperType != PaperType.BLANK_COLORED) { canvas.save(); canvas.clipRect(0f, 0f, pw, ph); drawPaperPattern(canvas, 0f, 0f, pw, ph); canvas.restore() }
                 val bp = Paint(); bp.color = Color.parseColor("#C8C0B0"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 1.5f / scaleFactor; canvas.drawRect(0f, 0f, pw, ph, bp)
             }
             CanvasMode.CONVENIENT -> {
                 val pw = pageWidthPx(); val ph = pageHeightPx(); val gap = 24f
-                val gp = Paint(); gp.color = if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                val gp = Paint(); gp.color = if (paperLike) Color.parseColor("#E8E3D5") else if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
                 val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else PAPER_BASE_COLOR
                 val sp = Paint(); sp.color = Color.parseColor("#00000022"); sp.style = Paint.Style.FILL
                 val period = ph + gap
@@ -5554,6 +5856,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val ei = kotlin.math.ceil(vb / period).toInt() + 1
                 for (i in si..ei) {
                     val top = i * period
+                    drawFauxPageShadow(pw, ph, top)
                     canvas.drawRect(2f / scaleFactor, top + 2f / scaleFactor, pw + 2f / scaleFactor, top + ph + 2f / scaleFactor, sp)
                     canvas.drawRect(0f, top, pw, top + ph, wp)
                     if (paperType != PaperType.BLANK && paperType != PaperType.BLANK_COLORED) { canvas.save(); canvas.clipRect(0f, top, pw, top + ph); drawPaperPattern(canvas, 0f, top, pw, top + ph); canvas.restore() }
@@ -5561,14 +5864,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             CanvasMode.PAGINATED -> {
                 val pw = pageWidthPx(); val ph = pageHeightPx(); val gap = 40f
-                val gp = Paint(); gp.color = if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
+                val gp = Paint(); gp.color = if (paperLike) Color.parseColor("#E8E3D5") else if (isExportRender) Color.parseColor("#EDEAE3") else canvasBackgroundColor; canvas.drawRect(vl - 2000f, vt - 2000f, vr + 2000f, vb + 2000f, gp)
                 val wp = Paint(); wp.color = if (paperType == PaperType.BLANK_COLORED) paperColor else PAPER_BASE_COLOR
                 val bp = Paint(); bp.color = Color.parseColor("#C8C0B0"); bp.style = Paint.Style.STROKE; bp.strokeWidth = 1.5f / scaleFactor
                 val period = ph + gap
                 val si = (kotlin.math.floor(vt / period).toInt() - 1).coerceAtLeast(0)
                 val ei = kotlin.math.ceil(vb / period).toInt() + 1
                 for (i in si..ei) {
-                    val top = i * period; canvas.drawRect(0f, top, pw, top + ph, wp)
+                    val top = i * period
+                    drawFauxPageShadow(pw, ph, top)
+                    canvas.drawRect(0f, top, pw, top + ph, wp)
                     if (paperType != PaperType.BLANK && paperType != PaperType.BLANK_COLORED) { canvas.save(); canvas.clipRect(0f, top, pw, top + ph); drawPaperPattern(canvas, 0f, top, pw, top + ph); canvas.restore() }
                     canvas.drawRect(0f, top, pw, top + ph, bp)
                 }
@@ -5578,34 +5883,39 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun drawPaperPattern(canvas: Canvas, left: Float, top: Float, right: Float, bottom: Float) {
         val ls = lineSpacingPx(); val gs = gridSpacingPx(); val ds = dotSpacingPx()
+        // Read Mode (Paper-like): dial ruling down to ~18% of its normal opacity so it stops
+        // competing with the content — a page you're reading shouldn't have the grid/rule fight
+        // for attention the way it reasonably can while actively drafting on it.
+        val ruleAlphaScale = if (readMode == ReadMode.PAPER_LIKE) 0.18f else 1f
+        fun scaled(p: Paint): Paint { if (ruleAlphaScale != 1f) p.alpha = (p.alpha * ruleAlphaScale).toInt().coerceAtLeast(1); return p }
         when (paperType) {
             PaperType.LINED -> {
-                val p = Paint(); p.color = Color.parseColor("#C8D6F0"); p.strokeWidth = 1f
+                val p = scaled(Paint().apply { color = Color.parseColor("#C8D6F0"); strokeWidth = 1f })
                 var y = (top / ls).toInt() * ls; while (y < bottom) { canvas.drawLine(left, y, right, y, p); y += ls }
                 // School-notebook-style double vertical margin line near the left edge.
                 if (linedDoubleMargin) {
-                    val mp = Paint(); mp.color = Color.parseColor("#F0A8A8"); mp.strokeWidth = 1.5f
+                    val mp = scaled(Paint().apply { color = Color.parseColor("#F0A8A8"); strokeWidth = 1.5f })
                     val marginX = left + 60f
                     canvas.drawLine(marginX, top, marginX, bottom, mp)
                     canvas.drawLine(marginX + 6f, top, marginX + 6f, bottom, mp)
                 }
             }
             PaperType.GRID -> {
-                val p = Paint(); p.color = Color.parseColor("#D0D0D0"); p.strokeWidth = 1f
-                val mp = Paint(); mp.color = Color.parseColor("#A0A0A0"); mp.strokeWidth = 1.5f
+                val p = scaled(Paint().apply { color = Color.parseColor("#D0D0D0"); strokeWidth = 1f })
+                val mp = scaled(Paint().apply { color = Color.parseColor("#A0A0A0"); strokeWidth = 1.5f })
                 var i = (left / gs).toInt(); var x = i * gs
                 while (x < right) { canvas.drawLine(x, top, x, bottom, if (gridMajorDivision > 0 && i % gridMajorDivision == 0) mp else p); i++; x = i * gs }
                 var j = (top / gs).toInt(); var y = j * gs
                 while (y < bottom) { canvas.drawLine(left, y, right, y, if (gridMajorDivision > 0 && j % gridMajorDivision == 0) mp else p); j++; y = j * gs }
             }
             PaperType.DOTS -> {
-                val p = Paint(); p.color = Color.parseColor("#B0B0B0"); p.style = Paint.Style.FILL
+                val p = scaled(Paint().apply { color = Color.parseColor("#B0B0B0"); style = Paint.Style.FILL })
                 var x = (left / ds).toInt() * ds; while (x < right) { var y = (top / ds).toInt() * ds; while (y < bottom) { canvas.drawCircle(x, y, 2.5f, p); y += ds }; x += ds }
             }
             PaperType.ENGINEERING -> {
                 val ms = engineeringSpacingPref; val me = engineeringMajorDivision
-                val mp = Paint(); mp.color = Color.parseColor("#E0E8F5"); mp.strokeWidth = 1f
-                val Mp = Paint(); Mp.color = Color.parseColor("#A8C0E8"); Mp.strokeWidth = 1.5f
+                val mp = scaled(Paint().apply { color = Color.parseColor("#E0E8F5"); strokeWidth = 1f })
+                val Mp = scaled(Paint().apply { color = Color.parseColor("#A8C0E8"); strokeWidth = 1.5f })
                 var i = (left / ms).toInt(); var x = i * ms; while (x < right) { canvas.drawLine(x, top, x, bottom, if (me > 0 && i % me == 0) Mp else mp); i++; x = i * ms }
                 var j = (top / ms).toInt(); var y = j * ms; while (y < bottom) { canvas.drawLine(left, y, right, y, if (me > 0 && j % me == 0) Mp else mp); j++; y = j * ms }
             }
@@ -5654,8 +5964,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             return true
         }
 
-        // fingerPanMode: single finger ALWAYS pans — block ALL other tools immediately
-        if (fingerPanMode && event.pointerCount == 1) {
+        // fingerPanMode: single finger ALWAYS pans — block ALL other tools immediately.
+        // Read Mode (any variant) reuses this exact same gate: view-only means single-finger
+        // touches should only ever pan, never draw/erase/select/edit, which is precisely what
+        // this path already guarantees for fingerPanMode. Two-finger pinch-zoom below is
+        // untouched by either — it was never tool-gated, so reading still zooms normally.
+        if ((fingerPanMode || readMode != ReadMode.OFF) && event.pointerCount == 1) {
+            if (bookPageTurnActive()) { handlePageTurnGesture(event); return true }
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     // Cancel any in-progress stroke so pan→draw switch doesn't produce a straight line
@@ -5767,7 +6082,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (inputMode == InputMode.STYLUS_ONLY && isFinger) return true
         if (inputMode == InputMode.FINGER_ONLY && isStylus) return true
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { if (isStylus) { isStylusDown = true; drawingPointerId = event.getPointerId(0) } else { if (isStylusDown) return true; drawingPointerId = event.getPointerId(0) } }
+            MotionEvent.ACTION_DOWN -> {
+                if (isStylus) {
+                    isStylusDown = true; drawingPointerId = event.getPointerId(0)
+                    // Stylus-down with no drawing tool deliberately chosen (still on the default
+                    // Select tool) starts drawing with Ball pen right away — no icon tap needed.
+                    // Only applies coming from Select; a tool the user actually picked (Eraser,
+                    // Highlighter, a shape, etc.) is left alone regardless of stylus vs finger, so
+                    // this can't override a deliberate choice mid-use.
+                    if (currentTool == Tool.SELECT) { currentTool = Tool.PEN; currentPenStyle = PenStyle.BALL }
+                } else { if (isStylusDown) return true; drawingPointerId = event.getPointerId(0) }
+            }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { if (isStylus) isStylusDown = false; drawingPointerId = -1 }
             MotionEvent.ACTION_MOVE -> { if (isStylusDown && isFinger) return true }
         }
@@ -5941,7 +6266,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         longPressRunnable?.let { longPressHandler.removeCallbacks(it) }; longPressRunnable = null
                         if (hit != null) {
                             val capturedHit = hit; val lx = event.x; val ly = event.y
-                            longPressRunnable = Runnable {
+                            val runnable = Runnable {
                                 longPressRunnable = null
                                 selectedItem = capturedHit; invalidate()
                                 // Post to run AFTER current touch sequence ends
@@ -5950,12 +6275,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                     onTextSelectRequest?.invoke(capturedHit, lx, ly, lx, ly)
                                 }, 50L)
                             }
-                            longPressHandler.postDelayed(longPressRunnable!!, 450L)
+                            longPressRunnable = runnable
+                            longPressHandler.postDelayed(runnable, 450L)
                         }
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        if (longPressRunnable != null && (kotlin.math.abs(event.x - textLongPressStartX) > 10f || kotlin.math.abs(event.y - textLongPressStartY) > 10f)) {
-                            longPressHandler.removeCallbacks(longPressRunnable!!); longPressRunnable = null
+                        if (kotlin.math.abs(event.x - textLongPressStartX) > 10f || kotlin.math.abs(event.y - textLongPressStartY) > 10f) {
+                            longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
                         }
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -7747,7 +8073,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val renderScale = 3f
         val bmpW = ((maxX - minX) * renderScale).toInt().coerceIn(1, 4000)
         val bmpH = ((maxY - minY) * renderScale).toInt().coerceIn(1, 4000)
-        val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+        val bmp = try { Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888) } catch (e: OutOfMemoryError) { return null }
         val cv = Canvas(bmp); cv.drawColor(Color.WHITE)
         cv.save(); cv.translate(-minX * renderScale, -minY * renderScale); cv.scale(renderScale, renderScale)
         for (s in penStrokes) cv.drawPath(s.path, s.paint)
@@ -7871,11 +8197,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     fun exportWindow(left: Float, top: Float, right: Float, bottom: Float): Bitmap {
-        val tmpBmp = Bitmap.createBitmap(this.width, this.height, Bitmap.Config.ARGB_8888); draw(Canvas(tmpBmp))
-        val sx = worldToScreenX(left).toInt().coerceAtLeast(0); val sy = worldToScreenY(top).toInt().coerceAtLeast(0)
-        val ex = worldToScreenX(right).toInt().coerceAtMost(this.width); val ey = worldToScreenY(bottom).toInt().coerceAtMost(this.height)
-        val cw = (ex - sx).coerceAtLeast(1); val ch = (ey - sy).coerceAtLeast(1)
-        return Bitmap.createBitmap(tmpBmp, sx, sy, cw, ch)
+        return try {
+            val tmpBmp = Bitmap.createBitmap(this.width, this.height, Bitmap.Config.ARGB_8888); draw(Canvas(tmpBmp))
+            val sx = worldToScreenX(left).toInt().coerceAtLeast(0); val sy = worldToScreenY(top).toInt().coerceAtLeast(0)
+            val ex = worldToScreenX(right).toInt().coerceAtMost(this.width); val ey = worldToScreenY(bottom).toInt().coerceAtMost(this.height)
+            val cw = (ex - sx).coerceAtLeast(1); val ch = (ey - sy).coerceAtLeast(1)
+            Bitmap.createBitmap(tmpBmp, sx, sy, cw, ch)
+        } catch (e: OutOfMemoryError) { Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888) }
     }
 
     fun undo() {
@@ -7899,13 +8227,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
     fun clearAll() { actions.clear(); redoStack.clear(); selectedItem = null; activeTableItem = null; markSpatialDirty(); invalidate() }
     fun hasContent(): Boolean = actions.isNotEmpty()
-    fun exportBitmap(): Bitmap { val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888); draw(Canvas(bmp)); return bmp }
+    fun exportBitmap(): Bitmap = try {
+        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888); draw(Canvas(bmp)); bmp
+    } catch (e: OutOfMemoryError) { Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888) }
 
     fun renderStrokesOnly(scale: Float): Bitmap {
-        val w = (width * scale).toInt().coerceAtLeast(1); val h = (height * scale).toInt().coerceAtLeast(1)
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); val canvas = Canvas(bmp)
-        canvas.save(); canvas.scale(scale, scale); canvas.translate(translateX, translateY); canvas.scale(scaleFactor, scaleFactor)
-        for (a in actions) drawActionItem(canvas, a, false); canvas.restore(); return bmp
+        return try {
+            val w = (width * scale).toInt().coerceAtLeast(1); val h = (height * scale).toInt().coerceAtLeast(1)
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); val canvas = Canvas(bmp)
+            canvas.save(); canvas.scale(scale, scale); canvas.translate(translateX, translateY); canvas.scale(scaleFactor, scaleFactor)
+            for (a in actions) drawActionItem(canvas, a, false); canvas.restore(); bmp
+        } catch (e: OutOfMemoryError) { Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888) }
     }
 
     fun zoomTo(wx: Float, wy: Float, scale: Float) {
@@ -7996,8 +8328,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 post { if (clusters.isNotEmpty()) { val (cx, cy) = clusters[0]; zoomTo(screenToWorldX(cx/scale - marginX), screenToWorldY(cy/scale - marginY), (scaleFactor*2.5f).coerceAtMost(6f)) }; invalidate() }
             } else {
                 val cw = maxX - minX + 1; val ch = maxY - minY + 1
-                val fp = IntArray(cw * ch) { i -> val gx=minX+i%cw; val gy=minY+i/cw; if(visited[gy*w+gx]) fillColor else Color.TRANSPARENT }
-                val fb = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888); fb.setPixels(fp, 0, cw, 0, 0, cw, ch)
+                val fb = try {
+                    val fp = IntArray(cw * ch) { i -> val gx=minX+i%cw; val gy=minY+i/cw; if(visited[gy*w+gx]) fillColor else Color.TRANSPARENT }
+                    Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888).also { it.setPixels(fp, 0, cw, 0, 0, cw, ch) }
+                } catch (e: OutOfMemoryError) { post { invalidate() }; return@execute }
                 val folder = File(ctx.filesDir, "images"); if (!folder.exists()) folder.mkdirs()
                 val outFile = File(folder, "fill_${System.currentTimeMillis()}.png")
                 try { FileOutputStream(outFile).use { fb.compress(Bitmap.CompressFormat.PNG, 100, it) } } catch (e: Exception) { post { invalidate() }; return@execute }

@@ -536,25 +536,17 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
 
-        // Show any crash captured on a previous run, so it can be copied/screenshotted without
-        // needing Android Studio or adb — the file only exists if a crash actually happened.
+        // If a crash happened last session, reassure the person rather than showing them a raw
+        // stack trace — there's nobody left to act on that information downstream, and a wall of
+        // technical jargon after an unexpected close reads as alarming, not helpful, especially
+        // for a finished app with no further updates planned. The log file itself is still kept
+        // (harmless, and readable later via a file manager if it's ever genuinely needed) — only
+        // what gets shown to the person changes.
         try {
             val crashFile = java.io.File(filesDir, "last_crash.txt")
-            if (crashFile.exists()) {
-                val content = crashFile.readText()
-                if (content.isNotBlank()) {
-                    AlertDialog.Builder(this)
-                        .setTitle("Previous crash log")
-                        .setMessage(content)
-                        .setPositiveButton("Copy") { _, _ ->
-                            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                            cm.setPrimaryClip(android.content.ClipData.newPlainText("crash log", content))
-                            Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
-                            crashFile.delete()
-                        }
-                        .setNegativeButton("Dismiss") { _, _ -> crashFile.delete() }
-                        .show()
-                }
+            if (crashFile.exists() && crashFile.readText().isNotBlank()) {
+                Toast.makeText(this, "EngiNotes closed unexpectedly last time — your notes are safe, autosave keeps them up to date.", Toast.LENGTH_LONG).show()
+                crashFile.delete()
             }
         } catch (e: Exception) { }
 
@@ -593,9 +585,16 @@ class MainActivity : AppCompatActivity() {
         // layout for them.
         run {
             val dock = findViewById<View?>(R.id.bottomToolbarDock)
+            val topBar = findViewById<View?>(R.id.topBarContainer)
             // The dock's own starting bottomMargin, captured once before any keyboard adjustment.
             // Every subsequent update sets margin = baseline + keyboardHeight.
             val baseMargin = (dock?.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.bottomMargin ?: 0
+            // topBarContainer's own original padding (10dp/10dp/6dp/6dp from the XML) — captured
+            // once so the status-bar inset below can be ADDED on top of it, not replace it.
+            val topBarBasePadTop = topBar?.paddingTop ?: 0
+            val topBarBasePadBottom = topBar?.paddingBottom ?: 0
+            val topBarBasePadLeft = topBar?.paddingLeft ?: 0
+            val topBarBasePadRight = topBar?.paddingRight ?: 0
             androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { _, insets ->
                 val imeBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
                 val navBarBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars()).bottom
@@ -606,11 +605,57 @@ class MainActivity : AppCompatActivity() {
                 // Guard: only update bottomMargin when value changes — prevents layout
                 // thrashing and the blinking/lag caused by firing on every tiny inset update.
                 val lp = dock?.layoutParams as? android.view.ViewGroup.MarginLayoutParams
-                val target = baseMargin + extraForKeyboard
+                // Baseline margin now explicitly includes navBarBottom — previously the dock had
+                // no baseline nav-bar clearance of its own here at all; it only ever looked
+                // correct because the root layout's now-removed android:fitsSystemWindows="true"
+                // was silently padding the WHOLE root (bottom included, same double-padding
+                // mechanism that caused the earlier top-bar gap) by the nav bar's height. Removing
+                // that flag fixed the top gap but exposed this: with nothing else accounting for
+                // it, the dock dropped down to sit flush against the true screen edge, behind/
+                // under the gesture bar. Adding it back explicitly here (rather than relying on
+                // the View-level flag) keeps it a single, deliberate source of that spacing.
+                val target = baseMargin + navBarBottom + extraForKeyboard
                 if (lp != null && lp.bottomMargin != target) {
                     lp.bottomMargin = target
                     dock.layoutParams = lp
                 }
+                // The root layout used to have android:fitsSystemWindows="true", which padded the
+                // WHOLE screen down by the status bar height unconditionally — including while
+                // fullscreen mode has that bar hidden, since that's a separate, older View-level
+                // mechanism that setDecorFitsSystemWindows()/WindowInsetsController don't override.
+                // That's what left a persistent blank strip at the top even with the status bar
+                // itself successfully hidden.
+                //
+                // topBarContainer's vertical position for "Always fullscreen" (hide status bar,
+                // but keep the bar itself visible) is now handled by applyTopBarFullscreenShift()
+                // via translationY instead of recomputing padding from live insets here — that
+                // reactive approach (padding = base + statusBarInset, gated on isVisible()) turned
+                // out unreliable on this device: with BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE, the
+                // reported inset/visibility state didn't consistently reflect the real hidden
+                // state, so the bar never actually moved. Padding here now just permanently
+                // reserves space AS IF the status bar were always showing; translationY (driven
+                // directly by our own isAlwaysFullscreenEnabled() flag, not by insets timing)
+                // shifts the whole bar up by exactly that reserved amount when hidden. Still keyed
+                // off the live statusBarTop reading (once, effectively — see
+                // applyTopBarFullscreenShift()'s own caching) so it's correct for the device's
+                // actual status bar height rather than a guess.
+                if (topBar != null) {
+                    val statusBarTop = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.statusBars()).top
+                    val cutoutTop = insets.displayCutout?.safeInsetTop ?: 0
+                    val newPadTop = topBarBasePadTop + maxOf(statusBarTop, cutoutTop)
+                    if (topBar.paddingTop != newPadTop) {
+                        topBar.setPadding(topBarBasePadLeft, newPadTop, topBarBasePadRight, topBarBasePadBottom)
+                    }
+                    if (statusBarTop > 0) statusBarHeightCache = statusBarTop
+                }
+                applyTopBarFullscreenShift()
+                // Re-run cutout-avoidance (shifts topBar's flexible spacer so no icon sits under
+                // a front-camera cutout) on every insets pass, not just onCreate/onResume — this
+                // is what was missing for the "Always fullscreen" Settings toggle: that path never
+                // hides topBarContainer, so its icons need the same left/right dodge the manual
+                // fullscreen button's callers already got via onResume, but the setting can be
+                // flipped from inside a Settings dialog without onResume ever firing again.
+                applyCutoutGapToTopBar()
                 // textOptionsPanel (the font-family/size/color panel) is a separate view, added
                 // independently with plain Gravity.BOTTOM and no keyboard awareness of its own —
                 // without this, it anchors to the bottom of the full screen height (behind the
@@ -932,6 +977,14 @@ class MainActivity : AppCompatActivity() {
                 .withEndAction { btnTouchToggle.animate().scaleX(1f).scaleY(1f).setDuration(80).start() }.start()
         }
 
+        // Read Mode toggle: while off, tapping shows the Standard/Paper-like picker; while
+        // already in either variant, tapping the same icon exits back to normal editing — no
+        // need to hunt for a separate "exit" control for the common case of just turning it
+        // back off the same way it was turned on.
+        findViewById<ImageButton>(R.id.btnReadMode).setOnClickListener {
+            if (drawingView.readMode != DrawingView.ReadMode.OFF) exitReadMode() else showReadModeDialog()
+        }
+
         // Page scroll thumb — touch and drag on right edge moves canvas
         val scrollThumb = findViewById<View?>(R.id.pageScrollThumb)
         scrollThumb?.let { thumb ->
@@ -1108,6 +1161,38 @@ class MainActivity : AppCompatActivity() {
         btn?.let { it.isSelected = true; it.background = themedPillDrawable(theme, selected = true); it.elevation = themedPillElevation(theme) }
     }
     internal fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    /** How much vertical space is actually free above [anchor] on screen right now, minus
+     * [headerReservePx] for whatever fixed-height content (a custom-value row, a divider, etc.)
+     * sits above a scrollable list in the same popup — i.e. what's left over for that list. Used
+     * instead of a fixed dp value so a popup anchored low on screen (like a bottom-toolbar
+     * button, right next to the keyboard) sizes itself to what will actually fit, rather than
+     * assuming a generous, unconditionally-available amount of space that isn't there. */
+    internal fun popupMaxHeightAbove(anchor: View, headerReservePx: Int): Int {
+        val loc = IntArray(2); anchor.getLocationOnScreen(loc)
+        return loc[1] - dp(24) - headerReservePx
+    }
+
+    /** Shows [popup] positioned with [content]'s bottom edge just above [anchor], clamped so it
+     * never runs off the top of the screen — PopupWindow.showAsDropDown's own positioning (what
+     * this replaces at both call sites) doesn't reposition or resize itself to stay on screen, it
+     * just gets silently clipped by whatever edge it runs past, which is exactly what kept
+     * happening for popups anchored in the bottom toolbar. [xOffsetPx] shifts horizontally from
+     * the anchor's own left edge, same meaning as showAsDropDown's xoff parameter. */
+    internal fun showPopupAboveAnchor(anchor: View, popup: android.widget.PopupWindow, content: View, xOffsetPx: Int) {
+        content.measure(
+            View.MeasureSpec.makeMeasureSpec(resources.displayMetrics.widthPixels, View.MeasureSpec.AT_MOST),
+            View.MeasureSpec.makeMeasureSpec(resources.displayMetrics.heightPixels, View.MeasureSpec.AT_MOST)
+        )
+        val contentW = content.measuredWidth; val contentH = content.measuredHeight
+        val loc = IntArray(2); anchor.getLocationOnScreen(loc)
+        val screenW = resources.displayMetrics.widthPixels
+        var x = loc[0] + xOffsetPx
+        if (x + contentW > screenW - dp(8)) x = screenW - contentW - dp(8)
+        if (x < dp(8)) x = dp(8)
+        val y = (loc[1] - contentH - dp(8)).coerceAtLeast(dp(24))
+        popup.showAtLocation(anchor, Gravity.NO_GRAVITY, x, y)
+    }
 
     // No longer does anything — kept so existing call sites don't need to change. Previously
     // this dynamically computed a bottomMargin to keep the context bar glued just above the
@@ -1638,7 +1723,7 @@ class MainActivity : AppCompatActivity() {
             }
             btn.addView(preview, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             btn.setOnClickListener { v ->
-                val popup = android.widget.PopupWindow(this)
+                val popup = android.widget.PopupWindow(this).apply { setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)) }
                 val pLayout = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14))
                     background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
@@ -1663,7 +1748,7 @@ class MainActivity : AppCompatActivity() {
                 sliderView.layoutParams = LinearLayout.LayoutParams(dp(220), dp(40))
                 pLayout.addView(sliderView)
                 popup.contentView = pLayout; popup.width = dp(256); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-                popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
+                popup.isOutsideTouchable = true; popup.isFocusable = false; popup.elevation = dp(8).toFloat()
                 popup.showAsDropDown(v, -dp(100), -dp(90))
             }
             row.addView(btn)
@@ -1693,7 +1778,7 @@ class MainActivity : AppCompatActivity() {
                 background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(11).toFloat() }
             }
             btn.setOnClickListener { v ->
-                val popup = android.widget.PopupWindow(this)
+                val popup = android.widget.PopupWindow(this).apply { setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)) }
                 val pLayout = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
                     background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
@@ -1716,22 +1801,29 @@ class MainActivity : AppCompatActivity() {
                 pLayout.addView(customRow)
                 pLayout.addView(View(this).apply { setBackgroundColor(Color.parseColor("#E5E1DC")); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)) })
                 // Scrollable list of standard sizes — at least 30 entries, matching the familiar
-                // reference points from MS Word's own font-size dropdown.
-                val scroll = android.widget.ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(140), dp(280)) }
+                // reference points from MS Word's own font-size dropdown. Sized to fill whatever
+                // room is actually available ABOVE this button (it lives in the bottom toolbar,
+                // right next to the keyboard, so that's usually a modest, screen-dependent amount
+                // — a fixed dp(420) here was just as wrong as the original dp(280): making it
+                // taller than what fits doesn't show more rows, it just clips more of it off the
+                // bottom of the screen, since PopupWindow doesn't auto-shrink or reposition itself
+                // to stay on screen the way some other Android popups do).
+                val scrollH = popupMaxHeightAbove(v, dp(90)).coerceIn(dp(120), dp(420))
+                val scroll = android.widget.ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(100), scrollH) }
                 val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
                 val currentPts = currentSizePx / PT_TO_PX
                 for (pt in standardPoints) {
                     list.addView(TextView(this).apply {
                         text = ptLabel(pt)
-                        textSize = 16f; setPadding(dp(16), dp(10), dp(16), dp(10))
+                        textSize = 16f; setPadding(dp(12), dp(7), dp(12), dp(7))
                         if (kotlin.math.abs(pt - currentPts) < 0.01f) { setBackgroundColor(Color.parseColor("#E3EEFB")); setTextColor(Color.parseColor("#1565C0")) } else setTextColor(Color.parseColor("#1C1C1E"))
                         setOnClickListener { onChange(pt * PT_TO_PX); btn.text = ptLabel(pt); popup.dismiss() }
                     })
                 }
                 scroll.addView(list); pLayout.addView(scroll)
-                popup.contentView = pLayout; popup.width = dp(180); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-                popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
-                popup.showAsDropDown(v, -dp(60), -dp(90))
+                popup.contentView = pLayout; popup.width = dp(140); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+                popup.isOutsideTouchable = true; popup.isFocusable = false; popup.elevation = dp(8).toFloat()
+                showPopupAboveAnchor(v, popup, pLayout, -dp(60))
             }
             row.addView(btn)
         }
@@ -1751,7 +1843,7 @@ class MainActivity : AppCompatActivity() {
                 background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(11).toFloat() }
             }
             btn.setOnClickListener { v ->
-                val popup = android.widget.PopupWindow(this)
+                val popup = android.widget.PopupWindow(this).apply { setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)) }
                 val pLayout = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14))
                     background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
@@ -1779,7 +1871,7 @@ class MainActivity : AppCompatActivity() {
                 sliderView.layoutParams = LinearLayout.LayoutParams(dp(220), dp(40))
                 pLayout.addView(sliderView)
                 popup.contentView = pLayout; popup.width = dp(256); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-                popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
+                popup.isOutsideTouchable = true; popup.isFocusable = false; popup.elevation = dp(8).toFloat()
                 popup.showAsDropDown(v, -dp(100), -dp(90))
             }
             row.addView(btn)
@@ -1921,6 +2013,47 @@ class MainActivity : AppCompatActivity() {
                 divider()
                 eightColors(editColor) { c -> editColor = c; activeEditText?.setTextColor(c); textSelectionItem?.let { it.color = c; drawingView.invalidate() } }
                 divider()
+                // Bullets / Numbering / Checklist — kept in their own dedicated file
+                // (ListFormatting.kt) rather than built inline here; this just wires the three
+                // toolbar buttons to the picker dialogs defined there.
+                fun ctxListBtn(iconRes: Int, kind: Char) {
+                    row.addView(ImageView(this).apply {
+                        setImageResource(iconRes); scaleType = ImageView.ScaleType.CENTER_INSIDE
+                        val lp = LinearLayout.LayoutParams(dp(34), dp(34)); lp.setMargins(dp(3), 0, dp(3), 0); layoutParams = lp
+                        setPadding(dp(6), dp(6), dp(6), dp(6))
+                        background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#ECEAE7")); cornerRadius = dp(8).toFloat() }
+                        setColorFilter(Color.parseColor("#4A4A4A"))
+                        setOnClickListener {
+                            // Wrapped so that if something throws here, it shows up as a visible
+                            // error instead of silently doing nothing — "tap the icon, nothing
+                            // happens at all" with no crash is otherwise impossible to tell apart
+                            // from "the click isn't even reaching this handler."
+                            try {
+                                // Matches how the B/I/U toggle buttons elsewhere in this same
+                                // toolbar behave: a plain tap applies directly (here: whatever
+                                // style was picked last for this kind, defaulting to the first
+                                // one), and it's only a SECOND tap — on a line that's already
+                                // this kind — that opens the picker, since at that point "apply
+                                // the same thing again" isn't a useful action and "let me choose
+                                // a different style" is what a second tap on an active toggle
+                                // means everywhere else in this app.
+                                val et = activeEditText; val item = textSelectionItem
+                                val from = if (et != null) { val s = et.selectionStart; val e = et.selectionEnd; if (s == e) s else minOf(s, e) } else 0
+                                val to = if (et != null) { val s = et.selectionStart; val e = et.selectionEnd; if (s == e) s else maxOf(s, e) } else 0
+                                if (currentLineIsKind(et, item, from, kind)) {
+                                    showListStylePicker(kind)
+                                } else {
+                                    applyPickedListStyle(kind, lastListStyleIndex(kind), et, from, to, item)
+                                }
+                            }
+                            catch (t: Throwable) { Toast.makeText(this@MainActivity, "List picker error: ${t.javaClass.simpleName}: ${t.message}", Toast.LENGTH_LONG).show() }
+                        }
+                    })
+                }
+                ctxListBtn(R.drawable.ic_list_bullet, LIST_SPAN_TYPE_BULLET)
+                ctxListBtn(R.drawable.ic_list_number, LIST_SPAN_TYPE_NUMBER)
+                ctxListBtn(R.drawable.ic_list_check, LIST_SPAN_TYPE_CHECK)
+                divider()
                 // B / I / U / Delete / Confirm — appended to this SAME shared context bar rather
                 // than a separate floating one, since this is the bar that's actually always
                 // visible and reachable while the Text tool is active, whether you're currently
@@ -2032,6 +2165,7 @@ class MainActivity : AppCompatActivity() {
     // when this is tapped stays active — this only ever touches view visibility, never
     // drawingView.currentTool, so there's nothing here that could reset it.
     private var fullscreenRestoreBtn: View? = null
+    private var readModeExitBtn: View? = null
     private fun addFullscreenToggleButton() {
         val topBar = findViewById<LinearLayout?>(R.id.topBarContainer) ?: return
         val outValue = android.util.TypedValue()
@@ -2048,7 +2182,24 @@ class MainActivity : AppCompatActivity() {
         val idx = if (menuBtn != null) topBar.indexOfChild(menuBtn) else topBar.childCount
         topBar.addView(btn, idx.coerceAtLeast(0))
     }
+    /** Keeps DrawingView's scroll limit (topChromeHeightPx) matched to whatever's actually
+     * visible above the canvas right now — 0 when the top bar is hidden (fullscreen, Read Mode),
+     * its real current height otherwise. Call this any time topBarContainer's visibility changes;
+     * without it, the scroll limit stays wherever it last was regardless of what's actually on
+     * screen, which is exactly what let a note keep reserving blank space at the top for a bar
+     * that had already been hidden. */
+    private fun syncTopChromeHeight() {
+        val topBar = findViewById<View?>(R.id.topBarContainer)
+        drawingView.topChromeHeightPx = if (topBar == null || topBar.visibility != View.VISIBLE) 0f
+            else topBar.height.toFloat().let { if (it > 0f) it else 64f * dp(1) }
+        drawingView.clampTranslation()
+        drawingView.invalidate()
+    }
+
     private fun enterFullscreen() {
+        // Snapshot the scroll position BEFORE topChromeHeightPx collapses to 0 below, so exiting
+        // can restore exactly this value rather than relying on the clamp math to infer it.
+        drawingView.prepareForChromeHide()
         findViewById<View?>(R.id.topBarContainer)?.visibility = View.GONE
         findViewById<View?>(R.id.primaryToolbarScroll)?.visibility = View.GONE
         findViewById<View?>(R.id.toolbarScroll)?.visibility = View.GONE
@@ -2074,6 +2225,20 @@ class MainActivity : AppCompatActivity() {
                     android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
         }
+        syncTopChromeHeight()
+        // Was missing entirely here (present in exitFullscreen, but never added to this,
+        // the actual entry point) — window flags and view visibility changing doesn't
+        // reliably trigger Android to re-measure/re-position canvasContainer on its own.
+        // Confirmed directly: canvasContainer.screenY was staying at its stale pre-
+        // fullscreen position instead of moving to 0, and only correcting itself on a
+        // fresh onCreate() (closing and reopening the note) — i.e. exactly a stale-layout
+        // problem, not an insets-value problem (the insets themselves were already
+        // correctly reporting 0).
+        window.decorView.post {
+            androidx.core.view.ViewCompat.requestApplyInsets(window.decorView)
+            findViewById<View?>(android.R.id.content)?.requestLayout()
+            syncTopChromeHeight()
+        }
         if (fullscreenRestoreBtn != null) return
         val btn = TextView(this).apply {
             text = "⛶"; textSize = 16f; gravity = Gravity.CENTER
@@ -2097,12 +2262,24 @@ class MainActivity : AppCompatActivity() {
     }
     private fun exitFullscreen() {
         findViewById<View?>(R.id.topBarContainer)?.visibility = View.VISIBLE
+        // Restore the exact pre-fullscreen scroll position captured in enterFullscreen(), then
+        // let syncTopChromeHeight()'s clampTranslation() bound it against the now-restored bar
+        // height. Fires exactly once (guarded internally) regardless of how many times this or
+        // syncTopChromeHeight() get called again afterward.
+        drawingView.restoreAfterChromeShow()
         if (getPrefs().getBoolean("show_bottom_toolbar", true)) findViewById<View?>(R.id.primaryToolbarScroll)?.visibility = View.VISIBLE
         if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
             findViewById<View?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
         }
         androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
-        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, true)
+        // Deliberately NOT setDecorFitsSystemWindows(true) here — MainActivity is permanently
+        // edge-to-edge (decorFits=false from onCreate), with its own insets listener padding the
+        // top bar by the live status-bar inset (which restores automatically the moment the bar
+        // above is shown again). Flipping decorFits to true here was what re-armed the
+        // stale-padding trap: the system would apply its own one-bar-height content padding,
+        // which then went stale (inset says 0, content still offset) the next time fullscreen
+        // hid the bar mid-session, only clearing on a full Activity recreate.
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
             window.attributes = window.attributes.apply {
                 layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
@@ -2120,6 +2297,159 @@ class MainActivity : AppCompatActivity() {
         window.decorView.post {
             androidx.core.view.ViewCompat.requestApplyInsets(window.decorView)
             findViewById<View?>(android.R.id.content)?.requestLayout()
+            syncTopChromeHeight()
+        }
+    }
+
+    // Read Mode picker: Standard looks exactly like the normal editing canvas, just uneditable.
+    // Paper-like additionally reskins the canvas toward a physical page and hides the top bar
+    // for a "floating sheet" look, matching the fullscreen feature's own chrome-hiding pattern
+    // above rather than inventing a second, separate one.
+    private fun showReadModeDialog() {
+        val options = arrayOf("Standard — view only, same paper look", "Paper-like — physical paper feel")
+        AlertDialog.Builder(this).setTitle("Read Mode")
+            .setItems(options) { _, i ->
+                enterReadMode(if (i == 0) DrawingView.ReadMode.STANDARD else DrawingView.ReadMode.PAPER_LIKE)
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun enterReadMode(mode: DrawingView.ReadMode) {
+        closeInlineEditor(true)
+        drawingView.readMode = mode
+        if (mode == DrawingView.ReadMode.PAPER_LIKE) drawingView.syncReadPageIndexToScroll()
+        // Neither variant allows editing, so the tool palette has nothing to actually do — hide
+        // it, and the top bar, in both. The distinction between the two modes is only the paper
+        // reskin/dimmed ruling (handled in DrawingView), not chrome visibility — both need the
+        // same floating exit affordance since both hide the top bar's own Read Mode icon.
+        setBottomToolbarVisible(false)
+        findViewById<View?>(R.id.toolbarScroll)?.visibility = View.GONE
+        drawingView.prepareForChromeHide()
+        findViewById<View?>(R.id.topBarContainer)?.visibility = View.GONE
+        if (readModeExitBtn == null) {
+            val btn = TextView(this).apply {
+                text = "📖 Exit Read Mode"; textSize = 13f; gravity = Gravity.CENTER
+                setTextColor(Color.WHITE)
+                setPadding(dp(16), dp(10), dp(16), dp(10))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(Color.parseColor("#991C1C1E")); cornerRadius = dp(20).toFloat()
+                }
+                elevation = dp(6).toFloat()
+                setOnClickListener { exitReadMode() }
+            }
+            val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+            lp.gravity = Gravity.TOP or Gravity.END
+            lp.topMargin = dp(14); lp.rightMargin = dp(14)
+            canvasContainer.addView(btn, lp)
+            readModeExitBtn = btn
+        }
+        readModeExitBtn?.visibility = View.VISIBLE
+        Toast.makeText(this, if (mode == DrawingView.ReadMode.STANDARD) "Read Mode: Standard" else "Read Mode: Paper-like", Toast.LENGTH_SHORT).show()
+        syncTopChromeHeight()
+        drawingView.invalidate()
+    }
+
+    private fun exitReadMode() {
+        drawingView.readMode = DrawingView.ReadMode.OFF
+        findViewById<View?>(R.id.topBarContainer)?.visibility = View.VISIBLE
+        drawingView.restoreAfterChromeShow()
+        if (getPrefs().getBoolean("show_bottom_toolbar", true)) setBottomToolbarVisible(true)
+        if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
+            findViewById<View?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
+        }
+        readModeExitBtn?.visibility = View.GONE
+        window.decorView.post { syncTopChromeHeight() }
+        drawingView.invalidate()
+    }
+
+    /** Widens the top bar's existing flexible spacer (the plain zero-content View with
+     * layout_weight="1" between the back button and the row of icon buttons in
+     * activity_main.xml) just enough to guarantee no button renders under a front camera
+     * cutout — using the ACTUAL cutout geometry Android reports for this specific device via
+     * WindowInsets, not a guessed pixel position, since that varies by phone (and even by which
+     * corner/edge the cutout sits in).
+     *
+     * That spacer already naturally lands roughly in the middle of the bar (it's the only
+     * flexible child, sandwiched between fixed-width buttons on both sides), which is why this
+     * only needs to WIDEN it rather than build an entirely separate cutout-avoidance layout: if
+     * the cutout already falls entirely inside the spacer's current bounds, nothing changes; the
+     * bar was already clearing it. It only intervenes when the cutout would actually be under one
+     * of the icon buttons, at which point it forces the spacer to span through to the cutout's
+     * right edge (plus a small margin), pushing every button after it clear — self-correcting
+     * based on where the buttons and the cutout actually measure out on THIS screen, rather than
+     * assuming any particular bar layout or screen width.
+     */
+    private var topBarSpacerOriginalWidth: Int? = null
+    // Cached once (and refreshed opportunistically whenever the live inset reports a real
+    // positive value — see the content insets listener) rather than re-derived every time, since
+    // this device's insets reporting proved unreliable specifically around hide/show transitions.
+    // Falls back to the system's own status_bar_height dimen if nothing's been captured yet (e.g.
+    // "Always fullscreen" was already on when the app launched, so the bar was never observed
+    // actually showing).
+    private var statusBarHeightCache: Int = 0
+    /** Directly shifts topBarContainer up by exactly the status bar's height when "Always
+     * fullscreen" is on, back to its normal (padded-below-the-status-bar) position when it's off —
+     * driven by our own persisted setting, not by re-deriving it from live WindowInsets each time
+     * (the previous approach here, which didn't reliably reflect the real hidden/shown state on
+     * this device). Simple and deterministic: same reserved padding always sits under
+     * topBarContainer's content either way, translationY just decides whether that reserved strip
+     * is above the visible screen (hidden) or below the visible top edge... i.e. whether the bar
+     * sits flush with the true top of the screen or below where the status bar would be. */
+    private fun applyTopBarFullscreenShift() {
+        val topBar = findViewById<View?>(R.id.topBarContainer) ?: return
+        if (statusBarHeightCache <= 0) {
+            statusBarHeightCache = resources.getIdentifier("status_bar_height", "dimen", "android")
+                .let { if (it > 0) resources.getDimensionPixelSize(it) else dp(24) }
+        }
+        val shift = if (isAlwaysFullscreenEnabled()) -statusBarHeightCache.toFloat() else 0f
+        if (topBar.translationY != shift) topBar.translationY = shift
+    }
+    private fun applyCutoutGapToTopBar(attempt: Int = 0) {
+        val topBar = findViewById<LinearLayout?>(R.id.topBarContainer) ?: return
+        val cutout = androidx.core.view.ViewCompat.getRootWindowInsets(window.decorView)?.displayCutout
+        if (cutout == null || cutout.boundingRects.isEmpty()) {
+            // Right when "Always fullscreen" is toggled, layoutInDisplayCutoutMode has just been
+            // flipped to ALWAYS but the system hasn't necessarily finished a relayout pass yet, so
+            // getRootWindowInsets() can still report no cutout for a frame or two even on a device
+            // that has one — silently giving up here (the old behavior) is what let the icon
+            // dodge never engage for this path. A few short retries catches it once the mode
+            // change has actually taken effect, without retrying forever on devices that truly
+            // have no cutout.
+            if (attempt < 5) topBar.postDelayed({ applyCutoutGapToTopBar(attempt + 1) }, 80L * (attempt + 1))
+            return
+        }
+        val rect = cutout.boundingRects.first()
+        var spacer: View? = null
+        for (i in 0 until topBar.childCount) {
+            val child = topBar.getChildAt(i)
+            val lp = child.layoutParams as? LinearLayout.LayoutParams
+            if (lp != null && lp.weight > 0f) { spacer = child; break }
+        }
+        val sp = spacer ?: return
+        // Original flexible width (weight=1, width=0dp per the XML) — cached once so repeated
+        // calls (this now runs on every insets pass, not just once at onResume) can shrink an
+        // already-widened spacer back down first, instead of only ever growing it. That matters
+        // now that the vertical/cutout padding fix can independently move the bar enough to clear
+        // the cutout on its own, which should let a previously-widened spacer relax again rather
+        // than leaving buttons pushed further right than necessary.
+        val originalWidth = topBarSpacerOriginalWidth ?: sp.layoutParams.width.also { topBarSpacerOriginalWidth = it }
+        topBar.post {
+            if (sp.width <= 0) return@post  // not laid out yet this pass — onResume will retry next time
+            val lp = sp.layoutParams as LinearLayout.LayoutParams
+            if (lp.width != originalWidth || lp.weight != 1f) {
+                lp.width = originalWidth; lp.weight = 1f
+                sp.layoutParams = lp
+                topBar.requestLayout()
+            }
+            sp.post {
+                val spacerLoc = IntArray(2); sp.getLocationOnScreen(spacerLoc)
+                val spacerLeftOnScreen = spacerLoc[0]
+                val spacerRightOnScreen = spacerLoc[0] + sp.width
+                if (rect.left >= spacerLeftOnScreen && rect.right <= spacerRightOnScreen) return@post  // already clear
+                val neededWidth = (rect.right - spacerLeftOnScreen + dp(8)).coerceAtLeast(sp.width)
+                val lp2 = sp.layoutParams as LinearLayout.LayoutParams
+                lp2.width = neededWidth; lp2.weight = 0f
+                sp.layoutParams = lp2
+            }
         }
     }
 
@@ -2148,6 +2478,38 @@ class MainActivity : AppCompatActivity() {
     internal fun navBarBottomInset(): Int {
         val insets = androidx.core.view.ViewCompat.getRootWindowInsets(window.decorView)
         return insets?.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
+    }
+
+    /** Attaches [scroll] to canvasContainer via [lp] (a bottom-gravity FrameLayout.LayoutParams,
+     * not yet given a bottomMargin), then fixes up its position and height once the layout pass
+     * has caught up with whatever visibility changes this panel's caller just made (every one of
+     * these panels hides the toolbarScroll row right before building itself).
+     *
+     * Two real bugs here, not one:
+     * 1. bottomMargin was being set to navBarBottomInset() alone — the system nav bar's own
+     *    inset, not the app's own bottomToolbarDock (the actual toolbar row(s) with the tool
+     *    icons) sitting above it. That dock is far taller than the nav bar inset, so every one of
+     *    these panels was landing with its bottom portion hidden behind — not above — the real
+     *    toolbar, however tall its content was.
+     * 2. Reading heights synchronously, in the same call that just toggled toolbarScroll's
+     *    visibility, can still see the pre-change layout — Android hasn't necessarily re-measured
+     *    yet. Deferring one frame via post() reads the real, current heights.
+     */
+    internal fun attachBottomPanel(scroll: ScrollView, lp: FrameLayout.LayoutParams) {
+        canvasContainer.addView(scroll, lp)
+        canvasContainer.post {
+            val dockH = findViewById<View?>(R.id.bottomToolbarDock)?.height ?: 0
+            val topH = findViewById<View?>(R.id.topBarContainer)?.height ?: 0
+            val screenH = resources.displayMetrics.heightPixels
+            lp.bottomMargin = navBarBottomInset() + dockH
+            val available = (screenH - topH - dockH - navBarBottomInset() - dp(16)).coerceAtLeast(dp(150))
+            scroll.measure(
+                View.MeasureSpec.makeMeasureSpec(resources.displayMetrics.widthPixels, View.MeasureSpec.AT_MOST),
+                View.MeasureSpec.makeMeasureSpec(Int.MAX_VALUE and 0x00FFFFFF, View.MeasureSpec.AT_MOST)
+            )
+            if (scroll.measuredHeight > available) lp.height = available
+            scroll.layoutParams = lp
+        }
     }
 
     // Small themed replacement for Android's stock PopupMenu. PopupMenu draws from the app's
@@ -2673,7 +3035,10 @@ class MainActivity : AppCompatActivity() {
             return
         }
         if (!silent) Toast.makeText(this, "Backing up to Drive…", Toast.LENGTH_SHORT).show()
-        val assetPaths = extractAssetPaths(security.readNoteFile(engFile))
+        val assetPaths = try { extractAssetPaths(security.readNoteFile(engFile)) } catch (e: Exception) {
+            if (!silent) Toast.makeText(this, "Couldn't read this note's file to back it up", Toast.LENGTH_SHORT).show()
+            return
+        }
         uploadAssetsThenNote(assetPaths, 0, engFile, name, silent)
     }
 
@@ -2727,7 +3092,14 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Restoring…", Toast.LENGTH_SHORT).show()
         driveManager.downloadFile(driveFile.name, localFile) { success, error ->
             if (!success) { Toast.makeText(this, "Restore failed: $error", Toast.LENGTH_SHORT).show(); return@downloadFile }
-            val content = security.readNoteFile(localFile)
+            val content = try { security.readNoteFile(localFile) } catch (e: Exception) {
+                // A network interruption mid-download can genuinely leave a truncated/corrupted
+                // file behind — this is the one Drive path where that's a real, likely scenario
+                // rather than a hypothetical one, so it gets its own explicit message rather than
+                // crashing on whatever readNoteFile/decryption throws.
+                Toast.makeText(this, "The downloaded file looks corrupted — try restoring again.", Toast.LENGTH_LONG).show()
+                return@downloadFile
+            }
             val assetPaths = extractAssetPaths(content)
             restoreAssets(assetPaths, 0) {
                 Toast.makeText(this, "Restored! Open the note to view it.", Toast.LENGTH_SHORT).show()
@@ -3344,8 +3716,9 @@ class MainActivity : AppCompatActivity() {
         if (!targetFile.exists()) { Toast.makeText(this, "Linked note no longer exists", Toast.LENGTH_SHORT).show(); return }
 
         // Autosave the current note before leaving so nothing is lost, and so a future "back"
-        // navigation can find it.
-        if (drawingView.hasContent()) autoSave()
+        // navigation can find it. Blocking: we're about to launch a different Activity for the
+        // linked note, so this has to actually be on disk first, not just queued.
+        if (drawingView.hasContent()) autoSave(blocking = true)
 
         val currentBook = intent.getStringExtra("book_name") ?: "General"
         val currentNote = currentFileName
@@ -3613,8 +3986,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this).apply { addView(panel) }
         scrollRef[0] = scroll
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
-        lp.bottomMargin = navBarBottomInset()
-        canvasContainer.addView(scroll, lp)
+        attachBottomPanel(scroll, lp)
     }
 
     // customHatchDir, listCustomHatches, addCustomHatchFromUri, applyCustomHatch, startHatchSnip,
@@ -3653,6 +4025,27 @@ class MainActivity : AppCompatActivity() {
         val lockColorCb = CheckBox(this).apply { text="Locked items: prevent colour changes"; isChecked=prefs.getBoolean("lock_prevent_color",true); buttonTintList = accentTint; setOnCheckedChangeListener { _,on -> prefs.edit().putBoolean("lock_prevent_color",on).apply() } }; container.addView(lockColorCb)
 
         div(); hdr("GENERAL")
+        val fullscreenCb = CheckBox(this).apply {
+            text = "Always use fullscreen (hide status bar)"
+            isChecked = isAlwaysFullscreenEnabled()
+            buttonTintList = accentTint
+            setOnCheckedChangeListener { _, on ->
+                setAlwaysFullscreenEnabled(on)
+                applyStatusBarFullscreenPreference(manageOwnInsets = true)
+                applyTopBarFullscreenShift()
+                // The checkbox lives inside this Settings AlertDialog, so onResume/onWindowFocusChanged
+                // won't fire again from this — applyStatusBarFullscreenPreference()'s own
+                // requestApplyInsets() call gets the toggle applied, but give it one more pass
+                // shortly after (mirroring onResume's own retry) since the cutout geometry and
+                // the newly-collapsed/expanded status-bar inset aren't always settled in the very
+                // next frame, particularly right as the dialog itself is animating.
+                window.decorView.postDelayed({ applyStatusBarFullscreenPreference(manageOwnInsets = true); applyTopBarFullscreenShift(); applyCutoutGapToTopBar() }, 300)
+            }
+        }; container.addView(fullscreenCb)
+        container.addView(TextView(this).apply {
+            text = "Applies everywhere in the app — the notes list as well as inside a note — not just this screen."
+            textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(2), 0, dp(4))
+        })
         val confirmCb = CheckBox(this).apply{ text="Confirm before exit or clear canvas"; isChecked=prefs.getBoolean("confirm_exit_clear",true); buttonTintList = accentTint }; container.addView(confirmCb)
         val autosaveCb = CheckBox(this).apply{ text="Autosave every 10 seconds"; isChecked=prefs.getBoolean("autosave",true); buttonTintList = accentTint }; container.addView(autosaveCb)
         val layersBtnCb = CheckBox(this).apply {
@@ -3953,6 +4346,11 @@ class MainActivity : AppCompatActivity() {
         val titleView = TextView(this).apply {
             text = "Settings"; textSize = 22f; typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor("#1C1C1E")); setPadding(dp(24), dp(20), dp(24), dp(8))
+            // Container below has the theme's background baked in via its GradientDrawable, but
+            // this title TextView had none of its own — it was rendering on the dialog window's
+            // plain default (white) background, which is exactly the white strip above an
+            // otherwise-themed dialog body. Matching it here makes the two read as one surface.
+            setBackgroundColor(currentThemeBackgroundColor())
         }
         AlertDialog.Builder(this).setCustomTitle(titleView).setView(scroll)
             .setPositiveButton("Done") { _,_ ->
@@ -3994,7 +4392,7 @@ class MainActivity : AppCompatActivity() {
                 applyBarIconSize(selBarSize)
                 rebuildContextBar()
                 repositionContextBar()
-            }.show()
+            }.show().also { dlg -> dlg.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(currentThemeBackgroundColor())) }
     }
 
     private fun checkAndRecordAudio() {
@@ -4334,8 +4732,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this)
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
-        lp.bottomMargin = navBarBottomInset()
-        canvasContainer.addView(scroll, lp)
+        attachBottomPanel(scroll, lp)
         textOptionsPanel = scroll
         animatePanelIn(scroll)
     }
@@ -4591,8 +4988,7 @@ class MainActivity : AppCompatActivity() {
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         lp.gravity = android.view.Gravity.BOTTOM
-        lp.bottomMargin = navBarBottomInset()
-        canvasContainer.addView(scroll, lp)
+        attachBottomPanel(scroll, lp)
         shapeOptionsPanel = scroll
         animatePanelIn(scroll)
     }
@@ -4820,7 +5216,7 @@ class MainActivity : AppCompatActivity() {
             20f to "1:20", 50f to "1:50", 100f to "1:100",
             200f to "1:200", 500f to "1:500", 1000f to "1:1000"
         )
-        val popup = android.widget.PopupWindow(this)
+        val popup = android.widget.PopupWindow(this).apply { setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)) }
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(currentThemeBackgroundColor())
@@ -4995,8 +5391,7 @@ class MainActivity : AppCompatActivity() {
 
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
-        lp.bottomMargin = navBarBottomInset()
-        canvasContainer.addView(scroll, lp)
+        attachBottomPanel(scroll, lp)
         penOptionsPanel = scroll
         animatePanelIn(scroll)
     }
@@ -5102,8 +5497,8 @@ class MainActivity : AppCompatActivity() {
         panel.addView(clearBtn)
 
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
-        lp.bottomMargin = navBarBottomInset()
         canvasContainer.addView(panel, lp)
+        canvasContainer.post { lp.bottomMargin = navBarBottomInset() + (findViewById<View?>(R.id.bottomToolbarDock)?.height ?: 0); panel.layoutParams = lp }
         eraserOptionsPanel = panel
         animatePanelIn(panel)
     }
@@ -5187,8 +5582,7 @@ class MainActivity : AppCompatActivity() {
 
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
-        lp.bottomMargin = navBarBottomInset()
-        canvasContainer.addView(scroll, lp)
+        attachBottomPanel(scroll, lp)
         highlighterOptionsPanel = scroll
         animatePanelIn(scroll)
     }
@@ -5296,8 +5690,7 @@ class MainActivity : AppCompatActivity() {
 
         scroll.addView(panel)
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
-        lp.bottomMargin = navBarBottomInset()
-        canvasContainer.addView(scroll, lp)
+        attachBottomPanel(scroll, lp)
         brushOptionsPanel = scroll
         animatePanelIn(scroll)
     }
@@ -5530,8 +5923,7 @@ class MainActivity : AppCompatActivity() {
         // above it the way Text/Eraser/Highlighter panels do.
         val maxPanelHeight = (canvasContainer.height * 0.55f).toInt().coerceAtLeast(dp(280))
         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, maxPanelHeight, Gravity.BOTTOM)
-        lp.bottomMargin = navBarBottomInset()
-        canvasContainer.addView(scroll, lp)
+        attachBottomPanel(scroll, lp)
         tablePropertiesPanel = scroll
         animatePanelIn(scroll)
     }
@@ -5803,7 +6195,7 @@ class MainActivity : AppCompatActivity() {
         }
         fun openSizePicker(anchor: View) {
             val standardPoints = listOf(6f,7f,8f,9f,10f,10.5f,11f,12f,13f,14f,16f,18f,20f,22f,24f,26f,28f,32f,36f,40f,44f,48f,54f,60f,66f,72f,80f,88f,96f,108f,120f,132f,144f,160f)
-            val popup = android.widget.PopupWindow(this)
+            val popup = android.widget.PopupWindow(this).apply { setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)) }
             val pLayout = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(16).toFloat() }
@@ -5824,21 +6216,22 @@ class MainActivity : AppCompatActivity() {
             customRow.addView(customEdit); customRow.addView(setBtn)
             pLayout.addView(customRow)
             pLayout.addView(View(this).apply { setBackgroundColor(Color.parseColor("#E5E1DC")); layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)) })
-            val scroll = ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(140), dp(280)) }
+            val scrollH = popupMaxHeightAbove(anchor, dp(90)).coerceIn(dp(120), dp(420))
+            val scroll = ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(100), scrollH) }
             val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             val currentPts = cell.textSize / PT_TO_PX
             for (pt in standardPoints) {
                 list.addView(TextView(this).apply {
                     text = ptLabel(pt)
-                    textSize = 16f; setPadding(dp(16), dp(10), dp(16), dp(10))
+                    textSize = 16f; setPadding(dp(12), dp(7), dp(12), dp(7))
                     if (kotlin.math.abs(pt - currentPts) < 0.01f) { setBackgroundColor(Color.parseColor("#E3EEFB")); setTextColor(Color.parseColor("#1565C0")) } else setTextColor(Color.parseColor("#1C1C1E"))
                     setOnClickListener { applySizeChangePx(pt * PT_TO_PX); popup.dismiss() }
                 })
             }
             scroll.addView(list); pLayout.addView(scroll)
-            popup.contentView = pLayout; popup.width = dp(180); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-            popup.isOutsideTouchable = true; popup.isFocusable = true; popup.elevation = dp(8).toFloat()
-            popup.showAsDropDown(anchor, -dp(60), -dp(300))
+            popup.contentView = pLayout; popup.width = dp(140); popup.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+            popup.isOutsideTouchable = true; popup.isFocusable = false; popup.elevation = dp(8).toFloat()
+            showPopupAboveAnchor(anchor, popup, pLayout, -dp(60))
         }
         fun buildToolbar() {
             actionsRow.removeAllViews()
@@ -5939,16 +6332,63 @@ class MainActivity : AppCompatActivity() {
         val f=File(File(filesDir,"books"),bookName); if(!f.exists()) f.mkdirs(); return f
     }
 
-    private fun writeCurrentFile() {
-        val name=currentFileName?:return
-        security.writeNoteFile(File(getDrawingsFolder(),"$name.eng"), drawingView.serialize())
-        lastSavedContent=drawingView.serialize()
-        if (getPrefs().getBoolean("auto_backup_drive", false) && driveManager.isSignedIn()) {
-            backUpNoteToDrive(name, silent = true)
+    // Single-thread executor so every write (periodic autosave tick, manual Save, exit-path
+    // save) goes through in strict order on a background thread — never racing each other,
+    // never blocking the caller's thread just to get in line behind a previous write.
+    private val saveExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    // Serializing the in-memory drawing model into a string is fast (pure string building, no
+    // disk/crypto work) so it stays on the caller's thread. The actual AES-GCM encryption + file
+    // write is the expensive part and always runs on saveExecutor.
+    //
+    // blocking=false (used by the repeating 10s autosave tick): fires the write in the
+    // background and returns immediately, so a periodic autosave never causes a stutter while
+    // the user is mid-stroke. blocking=true (used by exit/manual-save paths, where we need to
+    // know the write actually landed before finish()/pause proceeds): waits for it via the
+    // executor, same durability guarantee as before, just funneled through the same queue so it
+    // can never interleave with a background tick and corrupt the file.
+    private fun writeCurrentFile(blocking: Boolean = false): Boolean {
+        val name = currentFileName ?: return false
+        val content = drawingView.serialize()
+        val folder = getDrawingsFolder()
+        val backupDrive = getPrefs().getBoolean("auto_backup_drive", false) && driveManager.isSignedIn()
+
+        fun doWrite(): Boolean = try {
+            security.writeNoteFile(File(folder, "$name.eng"), content)
+            true
+        } catch (t: Throwable) {
+            // Deliberately catching Throwable (not just Exception) here specifically — this is
+            // the one call site where a crash is worst-case (silent recurring timer, could loop
+            // every 10s if the cause persists), so being maximally defensive is worth it even
+            // though catching Throwable broadly is normally the wrong call.
+            try {
+                File(filesDir, "last_save_error.txt").writeText("Save failed at ${java.util.Date()}\n${t.javaClass.name}: ${t.message}")
+            } catch (e2: Exception) { }
+            false
+        }
+
+        fun onDone(ok: Boolean) {
+            if (ok) {
+                lastSavedContent = content
+                if (backupDrive) backUpNoteToDrive(name, silent = true)
+            }
+        }
+
+        return if (blocking) {
+            val ok = try { saveExecutor.submit<Boolean> { doWrite() }.get() } catch (e: Exception) { false }
+            onDone(ok)
+            ok
+        } else {
+            saveExecutor.execute {
+                val ok = doWrite()
+                runOnUiThread { onDone(ok) }
+            }
+            true // optimistic — this path doesn't block on the real result, matching the old
+                 // fire-and-forget timer behavior; failures still land in last_save_error.txt
         }
     }
 
-    private fun autoSave() {
+    private fun autoSave(blocking: Boolean = false) {
         if(!drawingView.hasContent()) return
         if(currentFileName==null){ val name=nextAutoName(); currentFileName=name; tvTitle.text=name }
         // Keep the Activity's own intent in sync with whatever filename this note now has.
@@ -5957,22 +6397,22 @@ class MainActivity : AppCompatActivity() {
         // this ensures it still resolves to the file that was actually just written to disk
         // instead of quietly treating a now-saved note as a blank "New Note" again.
         intent.putExtra("filename", currentFileName)
-        writeCurrentFile()
+        writeCurrentFile(blocking)
     }
 
     private fun saveCurrent() {
         if(currentFileName==null){
             val input=EditText(this).apply{ setText(nextAutoName()); selectAll() }
             AlertDialog.Builder(this).setTitle("Save Note").setView(input)
-                .setPositiveButton("Save"){ _,_ -> val name=input.text.toString().trim().ifEmpty{nextAutoName()}; currentFileName=name; tvTitle.text=name; writeCurrentFile(); Toast.makeText(this,"Saved",Toast.LENGTH_SHORT).show() }
+                .setPositiveButton("Save"){ _,_ -> val name=input.text.toString().trim().ifEmpty{nextAutoName()}; currentFileName=name; tvTitle.text=name; val ok=writeCurrentFile(blocking = true); Toast.makeText(this, if (ok) "Saved" else "Couldn't save — check available storage and try again", Toast.LENGTH_SHORT).show() }
                 .setNegativeButton("Cancel",null).show()
-        } else { writeCurrentFile(); Toast.makeText(this,"Saved",Toast.LENGTH_SHORT).show() }
+        } else { val ok=writeCurrentFile(blocking = true); Toast.makeText(this, if (ok) "Saved" else "Couldn't save — check available storage and try again", Toast.LENGTH_SHORT).show() }
     }
 
     private fun saveAsNew() {
         val input=EditText(this).apply{ setText(nextAutoName()); selectAll() }
         AlertDialog.Builder(this).setTitle("Save as New").setView(input)
-            .setPositiveButton("Save"){ _,_ -> val name=input.text.toString().trim().ifEmpty{nextAutoName()}; currentFileName=name; tvTitle.text=name; writeCurrentFile(); Toast.makeText(this,"Saved as $name",Toast.LENGTH_SHORT).show() }
+            .setPositiveButton("Save"){ _,_ -> val name=input.text.toString().trim().ifEmpty{nextAutoName()}; currentFileName=name; tvTitle.text=name; val ok=writeCurrentFile(blocking = true); Toast.makeText(this, if (ok) "Saved as $name" else "Couldn't save — check available storage and try again", Toast.LENGTH_SHORT).show() }
             .setNegativeButton("Cancel",null).show()
     }
 
@@ -5987,13 +6427,13 @@ class MainActivity : AppCompatActivity() {
         closeInlineEditor(true)
         val changed=drawingView.serialize()!=lastSavedContent&&drawingView.hasContent()
         if(!changed){ finish(); return }
-        if(getPrefs().getBoolean("autosave",true)){ autoSave(); finish(); return }
+        if(getPrefs().getBoolean("autosave",true)){ autoSave(blocking = true); finish(); return }
         if(getPrefs().getBoolean("confirm_exit_clear",true)){
             AlertDialog.Builder(this).setTitle("Unsaved Changes").setMessage("Save before leaving?")
                 .setPositiveButton("Save"){ _,_ -> saveCurrent(); finish() }
                 .setNeutralButton("Don't Save"){ _,_ -> finish() }
                 .setNegativeButton("Cancel",null).show()
-        } else { autoSave(); finish() }
+        } else { autoSave(blocking = true); finish() }
     }
 
     private fun confirmThenClear() {
@@ -6006,7 +6446,11 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         closeInlineEditor(true)
-        autoSave()
+        // Blocking here (unlike the periodic 10s timer tick) — onPause fires once per
+        // backgrounding, not repeatedly while drawing, so a brief wait here isn't felt as jank,
+        // and the process can be killed shortly after onPause returns, so this write needs to
+        // actually be on disk before that happens rather than just queued.
+        autoSave(blocking = true)
         if(isRecording){ AudioHelper.stopRecording(); isRecording=false }
         blurHandler.removeCallbacksAndMessages(null); blurUpdateScheduled = false
     }
@@ -6024,6 +6468,20 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        applyStatusBarFullscreenPreference(manageOwnInsets = true)
+        applyTopBarFullscreenShift()
+        applyCutoutGapToTopBar()
+        // MainActivity does substantially more on-resume/on-open work than the notes-list
+        // screens (loading the note's content, setting up DrawingView, sizing/attaching its
+        // canvas) — any of that requesting focus for itself (DrawingView very likely does, to
+        // receive key/stylus input) counts as an internal focus change, not a WINDOW focus
+        // change, so it doesn't re-trigger onWindowFocusChanged the way switching apps or
+        // dismissing a dialog does — but it can still be enough for Android to silently re-assert
+        // the status bar after our call above already ran. Re-applying once more, after that
+        // heavier setup has had a chance to finish, catches whatever this screen specifically
+        // does that the simpler list screens don't.
+        window.decorView.postDelayed({ applyStatusBarFullscreenPreference(manageOwnInsets = true); applyTopBarFullscreenShift(); applyCutoutGapToTopBar(); syncTopChromeHeight() }, 400)
+        window.decorView.post { syncTopChromeHeight() }
         if (currentAppTheme() == "GLASS") scheduleBlurUpdate()
         // updateSnapOptionsButton() previously only ran reactively from inside the two Snap
         // switches themselves — so the "Snap ⚙" pill's visibility could drift out of sync with
@@ -6040,9 +6498,22 @@ class MainActivity : AppCompatActivity() {
         updateGroupModeToggle(drawingView.selectedItems.isNotEmpty())
     }
 
+    // The system can silently re-assert the status bar right around when the window itself
+    // regains focus (switching back from another app, dismissing a dialog, the keyboard closing,
+    // etc.) — a well-documented reliability gap in Android's immersive-mode APIs where onResume
+    // alone doesn't reliably catch every case. This is the standard extra hook recommended for it.
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) { applyStatusBarFullscreenPreference(manageOwnInsets = true); applyTopBarFullscreenShift(); applyCutoutGapToTopBar() }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         autosaveHandler.removeCallbacks(autosaveRunnable)
         AudioHelper.releaseAll()
+        // onPause() already blocked until any pending write landed, so nothing queued here is
+        // lost — this just releases the background thread instead of leaking it every time a
+        // note Activity is destroyed.
+        saveExecutor.shutdown()
     }
 }
