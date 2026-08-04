@@ -3217,15 +3217,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     // ── Book-style page-turn navigation (Paper-like Read Mode) ─────────────────────────
-    // Only kicks in for Paginated notes — "turning a page" doesn't have a well-defined meaning
-    // for Infinite/Convenient canvases, which don't have discrete page boundaries the same way.
+    // Active for Paper-like Read Mode regardless of the note's own canvas mode — Paper-like is
+    // meant to feel like reading a physical book (horizontal page turns, no vertical scroll) even
+    // for a Convenient/Fixed note that's normally one continuous scrollable sheet. This works
+    // because pageHeightPx()/pageWidthPx()/estimatePageCount() already define a sensible page size
+    // for every mode except Infinite (Convenient gets its own "one screen-height page" size, Fixed
+    // and Paginated use the physical paper size) — Infinite still falls back to a single
+    // non-turnable page via estimatePageCount(), which is the correct behavior there since an
+    // infinite canvas genuinely has no page boundaries to turn between.
     var readPageIndex: Int = 0
     private var pageTurnDragPx: Float = 0f
     private var pageTurnDragging = false
     private var pageTurnStartX = 0f
     private var pageTurnAnimator: android.animation.ValueAnimator? = null
 
-    private fun bookPageTurnActive(): Boolean = readMode == ReadMode.PAPER_LIKE && canvasMode == CanvasMode.PAGINATED
+    private fun bookPageTurnActive(): Boolean = readMode == ReadMode.PAPER_LIKE && canvasMode != CanvasMode.INFINITE
 
     /** Called once when entering Paper-like Read Mode on a Paginated note, so the page-turn view
      * opens on whichever page you were actually scrolled to instead of always restarting at 1. */
