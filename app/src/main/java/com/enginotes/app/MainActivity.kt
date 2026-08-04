@@ -6331,6 +6331,16 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         applyStatusBarFullscreenPreference()
         applyCutoutGapToTopBar()
+        // MainActivity does substantially more on-resume/on-open work than the notes-list
+        // screens (loading the note's content, setting up DrawingView, sizing/attaching its
+        // canvas) — any of that requesting focus for itself (DrawingView very likely does, to
+        // receive key/stylus input) counts as an internal focus change, not a WINDOW focus
+        // change, so it doesn't re-trigger onWindowFocusChanged the way switching apps or
+        // dismissing a dialog does — but it can still be enough for Android to silently re-assert
+        // the status bar after our call above already ran. Re-applying once more, after that
+        // heavier setup has had a chance to finish, catches whatever this screen specifically
+        // does that the simpler list screens don't.
+        window.decorView.postDelayed({ applyStatusBarFullscreenPreference(); applyCutoutGapToTopBar() }, 400)
         if (currentAppTheme() == "GLASS") scheduleBlurUpdate()
         // updateSnapOptionsButton() previously only ran reactively from inside the two Snap
         // switches themselves — so the "Snap ⚙" pill's visibility could drift out of sync with
