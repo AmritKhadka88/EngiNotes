@@ -2181,6 +2181,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun enterFullscreen() {
+        // Snapshot the scroll position BEFORE topChromeHeightPx collapses to 0 below, so exiting
+        // can restore exactly this value rather than relying on the clamp math to infer it.
+        drawingView.prepareForChromeHide()
         findViewById<View?>(R.id.topBarContainer)?.visibility = View.GONE
         findViewById<View?>(R.id.primaryToolbarScroll)?.visibility = View.GONE
         findViewById<View?>(R.id.toolbarScroll)?.visibility = View.GONE
@@ -2243,6 +2246,11 @@ class MainActivity : AppCompatActivity() {
     }
     private fun exitFullscreen() {
         findViewById<View?>(R.id.topBarContainer)?.visibility = View.VISIBLE
+        // Restore the exact pre-fullscreen scroll position captured in enterFullscreen(), then
+        // let syncTopChromeHeight()'s clampTranslation() bound it against the now-restored bar
+        // height. Fires exactly once (guarded internally) regardless of how many times this or
+        // syncTopChromeHeight() get called again afterward.
+        drawingView.restoreAfterChromeShow()
         if (getPrefs().getBoolean("show_bottom_toolbar", true)) findViewById<View?>(R.id.primaryToolbarScroll)?.visibility = View.VISIBLE
         if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
             findViewById<View?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
@@ -2299,6 +2307,7 @@ class MainActivity : AppCompatActivity() {
         // same floating exit affordance since both hide the top bar's own Read Mode icon.
         setBottomToolbarVisible(false)
         findViewById<View?>(R.id.toolbarScroll)?.visibility = View.GONE
+        drawingView.prepareForChromeHide()
         findViewById<View?>(R.id.topBarContainer)?.visibility = View.GONE
         if (readModeExitBtn == null) {
             val btn = TextView(this).apply {
@@ -2326,6 +2335,7 @@ class MainActivity : AppCompatActivity() {
     private fun exitReadMode() {
         drawingView.readMode = DrawingView.ReadMode.OFF
         findViewById<View?>(R.id.topBarContainer)?.visibility = View.VISIBLE
+        drawingView.restoreAfterChromeShow()
         if (getPrefs().getBoolean("show_bottom_toolbar", true)) setBottomToolbarVisible(true)
         if (penOptionsPanel == null && eraserOptionsPanel == null && highlighterOptionsPanel == null && brushOptionsPanel == null) {
             findViewById<View?>(R.id.toolbarScroll)?.visibility = View.VISIBLE

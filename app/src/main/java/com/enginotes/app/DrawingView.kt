@@ -2075,24 +2075,33 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
      * anymore. MainActivity sets this to the real current top bar height, and to 0 whenever it's
      * hidden (fullscreen, Read Mode) — see setTopChromeHeightPx(). */
     var topChromeHeightPx: Float = 64f * resources.displayMetrics.density
-        set(value) {
-            val old = field
-            // clampTranslation() only ever pulls translateY DOWN when this shrinks (fullscreen /
-            // Read Mode hiding the top bar) — it has no way to push translateY back up again on
-            // its own once the bar reappears and the limit grows back, which is exactly what left
-            // the canvas permanently sitting lower than its pre-fullscreen position (only a fresh
-            // onCreate — closing and reopening the note — actually restored it). Following the
-            // delta here, but ONLY when translateY was sitting right at the previous limit (i.e.
-            // it was actually the thing that got clamped, not just coincidentally nearby), means a
-            // scroll position that was never affected by chrome-height changes is left alone, while
-            // one that WAS pinned there by the fullscreen clamp gets carried back out to the new
-            // limit symmetrically when the bar returns.
-            if ((canvasMode == CanvasMode.CONVENIENT || canvasMode == CanvasMode.PAGINATED) &&
-                kotlin.math.abs(translateY - old) < 1f) {
-                translateY += (value - old)
-            }
-            field = value
-        }
+
+    // Whether the top bar is currently known to be hidden for fullscreen/Read Mode, and the
+    // scroll position captured right before it was hidden — restored exactly once when it
+    // reappears. Deliberately NOT done by reacting to every topChromeHeightPx reassignment (an
+    // earlier version of this did that): that property gets reassigned repeatedly during layout
+    // settling — onResume, delayed re-checks, insets passes recomputing the bar's real height —
+    // even while nothing about hidden/visible actually changed, and each incidental reassignment
+    // re-triggered the shift, compounding drift further with every settle pass instead of moving
+    // exactly once per real transition. Tying it to explicit enter/exit calls instead means it
+    // fires exactly once per direction no matter how many times syncTopChromeHeight() re-runs
+    // afterward in the same hidden or visible state.
+    private var chromeHiddenForFullscreen = false
+    private var translateYBeforeChromeHide = 0f
+
+    fun prepareForChromeHide() {
+        if (chromeHiddenForFullscreen) return
+        chromeHiddenForFullscreen = true
+        translateYBeforeChromeHide = translateY
+    }
+
+    fun restoreAfterChromeShow() {
+        if (!chromeHiddenForFullscreen) return
+        chromeHiddenForFullscreen = false
+        translateY = translateYBeforeChromeHide
+        clampTranslation()
+        invalidate()
+    }
 
     // Public entry point for running OCR on the currently selected image, rather than only ever
     // looking at pen strokes. Reuses the existing async bitmap loader so this works reliably even
