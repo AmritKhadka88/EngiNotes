@@ -2151,6 +2151,20 @@ class MainActivity : AppCompatActivity() {
         val idx = if (menuBtn != null) topBar.indexOfChild(menuBtn) else topBar.childCount
         topBar.addView(btn, idx.coerceAtLeast(0))
     }
+    /** Keeps DrawingView's scroll limit (topChromeHeightPx) matched to whatever's actually
+     * visible above the canvas right now — 0 when the top bar is hidden (fullscreen, Read Mode),
+     * its real current height otherwise. Call this any time topBarContainer's visibility changes;
+     * without it, the scroll limit stays wherever it last was regardless of what's actually on
+     * screen, which is exactly what let a note keep reserving blank space at the top for a bar
+     * that had already been hidden. */
+    private fun syncTopChromeHeight() {
+        val topBar = findViewById<View?>(R.id.topBarContainer)
+        drawingView.topChromeHeightPx = if (topBar == null || topBar.visibility != View.VISIBLE) 0f
+            else topBar.height.toFloat().let { if (it > 0f) it else 64f * dp(1) }
+        drawingView.clampTranslation()
+        drawingView.invalidate()
+    }
+
     private fun enterFullscreen() {
         findViewById<View?>(R.id.topBarContainer)?.visibility = View.GONE
         findViewById<View?>(R.id.primaryToolbarScroll)?.visibility = View.GONE
@@ -2177,6 +2191,7 @@ class MainActivity : AppCompatActivity() {
                     android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
         }
+        syncTopChromeHeight()
         if (fullscreenRestoreBtn != null) return
         val btn = TextView(this).apply {
             text = "⛶"; textSize = 16f; gravity = Gravity.CENTER
@@ -2223,6 +2238,7 @@ class MainActivity : AppCompatActivity() {
         window.decorView.post {
             androidx.core.view.ViewCompat.requestApplyInsets(window.decorView)
             findViewById<View?>(android.R.id.content)?.requestLayout()
+            syncTopChromeHeight()
         }
     }
 
@@ -2268,6 +2284,7 @@ class MainActivity : AppCompatActivity() {
         }
         readModeExitBtn?.visibility = View.VISIBLE
         Toast.makeText(this, if (mode == DrawingView.ReadMode.STANDARD) "Read Mode: Standard" else "Read Mode: Paper-like", Toast.LENGTH_SHORT).show()
+        syncTopChromeHeight()
         drawingView.invalidate()
     }
 
@@ -2279,6 +2296,7 @@ class MainActivity : AppCompatActivity() {
             findViewById<View?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
         }
         readModeExitBtn?.visibility = View.GONE
+        window.decorView.post { syncTopChromeHeight() }
         drawingView.invalidate()
     }
 
@@ -6340,7 +6358,8 @@ class MainActivity : AppCompatActivity() {
         // the status bar after our call above already ran. Re-applying once more, after that
         // heavier setup has had a chance to finish, catches whatever this screen specifically
         // does that the simpler list screens don't.
-        window.decorView.postDelayed({ applyStatusBarFullscreenPreference(); applyCutoutGapToTopBar() }, 400)
+        window.decorView.postDelayed({ applyStatusBarFullscreenPreference(); applyCutoutGapToTopBar(); syncTopChromeHeight() }, 400)
+        window.decorView.post { syncTopChromeHeight() }
         if (currentAppTheme() == "GLASS") scheduleBlurUpdate()
         // updateSnapOptionsButton() previously only ran reactively from inside the two Snap
         // switches themselves — so the "Snap ⚙" pill's visibility could drift out of sync with

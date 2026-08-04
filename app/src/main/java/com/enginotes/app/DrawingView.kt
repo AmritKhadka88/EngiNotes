@@ -2050,10 +2050,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val minTy = height - ph2 - margin; val maxTy = margin
             translateY = translateY.coerceIn(minTy.coerceAtMost(maxTy), maxTy)
         } else if (canvasMode == CanvasMode.CONVENIENT || canvasMode == CanvasMode.PAGINATED) {
-            val topBarH = 64f * resources.displayMetrics.density
-            translateY = translateY.coerceAtMost(topBarH)
+            translateY = translateY.coerceAtMost(topChromeHeightPx)
         }
     }
+
+    /** How much space to leave above the very start of a note's content before refusing to
+     * scroll further — meant to keep the note's first line from disappearing entirely behind the
+     * app's own top bar, not a fixed cosmetic gap. Used to be hardcoded to 64dp regardless of
+     * whether that bar was actually visible, which is exactly why fullscreen/Read Mode (which
+     * hide it) still always left a blank strip at the top no matter what: this scroll limit was
+     * completely unrelated to any of that, and kept reserving space for a bar that wasn't there
+     * anymore. MainActivity sets this to the real current top bar height, and to 0 whenever it's
+     * hidden (fullscreen, Read Mode) — see setTopChromeHeightPx(). */
+    var topChromeHeightPx: Float = 64f * resources.displayMetrics.density
 
     // Public entry point for running OCR on the currently selected image, rather than only ever
     // looking at pen strokes. Reuses the existing async bitmap loader so this works reliably even
