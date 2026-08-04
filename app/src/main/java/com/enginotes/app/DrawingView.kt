@@ -3235,6 +3235,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // page curls from the top corner, lower half from the bottom corner, matching Moon
     // Reader/iBooks-style curl readers) rather than always peeling from one fixed corner.
     private var pageTurnCurlFromTop = true
+    // Which edge is "forward" (turning to next page, curling from the right) vs "backward"
+    // (turning to previous, curling from the left) — locked once per gesture from which half of
+    // the page was touched, same reasoning as pageTurnCurlFromTop above.
+    private var pageTurnForward = true
     private var pageTurnAnimator: android.animation.ValueAnimator? = null
 
     private fun bookPageTurnActive(): Boolean = readMode == ReadMode.PAPER_LIKE && canvasMode != CanvasMode.INFINITE
@@ -3252,12 +3256,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     /** Shared between the gesture handler and the draw pass so both agree on exactly where the
      * page rectangle sits on screen — computing this independently in two places risked them
      * drifting out of sync (e.g. after a resize) in a way that would misplace the curl relative
-     * to where the finger actually is. */
+     * to where the finger actually is.
+     *
+     * Uses "cover" scaling (fills the full screen, cropping whatever overflows) rather than the
+     * previous "contain" scaling (fitScale = min(...), letterboxed within a margin) — a note's
+     * configured page shape (e.g. A4-ish) rarely matches a phone screen's aspect ratio, and
+     * "contain" left large empty bezel strips above/below or beside the page instead of reading
+     * edge-to-edge like a real e-reader. No margin either, for the same reason. */
     private fun computePageLayout(): PageLayout {
         val w = width.toFloat(); val h = height.toFloat()
-        val marginPx = dp(18).toFloat()
         val ph = pageHeightPx(); val pw = pageWidthPx()
-        val fitScale = kotlin.math.min((w - marginPx * 2f) / pw, (h - marginPx * 2f) / ph)
+        val fitScale = kotlin.math.max(w / pw, h / ph)
         val pageScreenW = pw * fitScale; val pageScreenH = ph * fitScale
         return PageLayout((w - pageScreenW) / 2f, (h - pageScreenH) / 2f, pageScreenW, pageScreenH, fitScale)
     }
@@ -3271,6 +3280,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 pageTurnTouchX = event.x; pageTurnTouchY = event.y
                 val layout = computePageLayout()
                 pageTurnCurlFromTop = (event.y - layout.baseTop) < layout.pageScreenH / 2f
+                // Direction (and therefore which edge the curl lifts from) is decided ONCE here,
+                // from which half of the page was touched — not re-derived live from drag delta
+                // on every frame the way it used to be. Recomputing it live meant the tiniest
+                // wobble in the drag near the start point could flip which edge was "forward,"
+                // which is what caused the curl to randomly anchor the wrong side mid-gesture.
+                // Touching the right half means "turn to next page," curling from the right edge;
+                // left half means "turn to previous," curling from the left — this is also just
+                // how real page-turn UIs work (tap/drag side of screen determines direction),
+                // rather than inferring intent purely from which way the drag happens to go.
+                pageTurnForward = (event.x - layout.baseLeft) > layout.pageScreenW / 2f
             }
             MotionEvent.ACTION_MOVE -> {
                 if (!pageTurnActive) return
@@ -3283,7 +3302,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (dx < 0f && atLast) dx *= 0.25f
                 if (dx > 0f && atFirst) dx *= 0.25f
                 pageTurnTouchX = pageTurnStartX + dx
-                pageTurnTouchY = event.y
+                // A page turn is fundamentally a horizontal gesture — a mostly-VERTICAL drag
+                // shouldn't be able to swing the curl's pull direction to near-vertical, which is
+                // what was producing the transparent/broken-looking curl on a top-to-bottom drag:
+                // the mesh math assumes a roughly horizontal roll, and a near-vertical pull
+                // direction pushed it into degenerate territory. Clamping how far Y can move
+                // relative to how far X has moved keeps the vertical touch position free to do
+                // its actual job (picking/tilting which corner curls) without ever letting it
+                // dominate the fold direction outright.
+                val maxDy = kotlin.math.abs(dx).coerceAtLeast(1f) * 0.55f
+                pageTurnTouchY = event.y.coerceIn(pageTurnStartY - maxDy, pageTurnStartY + maxDy)
                 invalidate()
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -3302,8 +3330,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private fun settlePageTurn(targetPageIndex: Int) {
         val layout = computePageLayout()
-        val forward = pageTurnTouchX < pageTurnStartX
-        val anchorX = if (forward) layout.baseLeft + layout.pageScreenW else layout.baseLeft
+        val anchorX = if (pageTurnForward) layout.baseLeft + layout.pageScreenW else layout.baseLeft
         val anchorY = if (pageTurnCurlFromTop) layout.baseTop else layout.baseTop + layout.pageScreenH
         val curDx = pageTurnTouchX - anchorX; val curDy = pageTurnTouchY - anchorY
         val curDist = kotlin.math.hypot(curDx, curDy).coerceAtLeast(1f)
@@ -3467,7 +3494,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         canvas.save()
         canvas.clipRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH)
-        canvas.drawBitmapMesh(bitmap, cols, rows, verts, 0, null, 0, null)
+        // isFilterBitmap smooths the texture sampling across mesh triangles — left at the default
+        // (unfiltered) Paint before, the seams between adjacent mesh cells showed as a visible
+        // faint grid, especially in the flatter, more gradual parts of the curl. Filtering plus
+        // anti-aliasing the mesh edges themselves is what actually removes that.
+        canvas.drawBitmapMesh(bitmap, cols, rows, verts, 0, null, 0, meshPaint)
 
         // Shading + paper-back tint, generated as a small texture and warped through the exact
         // same verts array — each texel corresponds to one ORIGINAL (unwarped) page position,
@@ -3499,7 +3530,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 shadeBmp.setPixel(col, row, argb)
             }
         }
-        canvas.drawBitmapMesh(shadeBmp, cols, rows, verts, 0, null, 0, null)
+        canvas.drawBitmapMesh(shadeBmp, cols, rows, verts, 0, null, 0, meshPaint)
         canvas.restore()
         return (pullDist / pageScreenW).coerceIn(0f, 1f)
     }
@@ -3508,6 +3539,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // every call since those are fixed constants above, so one small bitmap just gets its pixels
     // overwritten every frame instead of creating/GC'ing a new one at drag-gesture frame rates.
     private var pageCurlShadeBitmap: Bitmap? = null
+    private val meshPaint = Paint().apply { isFilterBitmap = true; isAntiAlias = true }
     private fun getOrCreatePageCurlShadeBitmap(w: Int, h: Int): Bitmap {
         val cached = pageCurlShadeBitmap
         if (cached != null && !cached.isRecycled && cached.width == w && cached.height == h) return cached
@@ -3529,7 +3561,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             drawBookPage(canvas, readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, layout.fitScale, 0f, 0)
             return
         }
-        val forward = pageTurnTouchX < pageTurnStartX  // dragging left = turning forward
+        val forward = pageTurnForward
         val anchorX = if (forward) baseLeft + pageScreenW else baseLeft
         val anchorY = if (pageTurnCurlFromTop) baseTop else baseTop + pageScreenH
         val pullDx = pageTurnTouchX - anchorX; val pullDy = pageTurnTouchY - anchorY
