@@ -58,4 +58,5 @@ fun Activity.applyStatusBarFullscreenPreference() {
         }
     }
     androidx.core.view.ViewCompat.requestApplyInsets(window.decorView)
+    findViewById<android.view.View?>(android.R.id.content)?.requestLayout()
 }

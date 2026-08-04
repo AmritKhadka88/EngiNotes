@@ -2192,6 +2192,19 @@ class MainActivity : AppCompatActivity() {
             }
         }
         syncTopChromeHeight()
+        // Was missing entirely here (present in exitFullscreen, but never added to this,
+        // the actual entry point) — window flags and view visibility changing doesn't
+        // reliably trigger Android to re-measure/re-position canvasContainer on its own.
+        // Confirmed directly: canvasContainer.screenY was staying at its stale pre-
+        // fullscreen position instead of moving to 0, and only correcting itself on a
+        // fresh onCreate() (closing and reopening the note) — i.e. exactly a stale-layout
+        // problem, not an insets-value problem (the insets themselves were already
+        // correctly reporting 0).
+        window.decorView.post {
+            androidx.core.view.ViewCompat.requestApplyInsets(window.decorView)
+            findViewById<View?>(android.R.id.content)?.requestLayout()
+            syncTopChromeHeight()
+        }
         // TEMPORARY diagnostic — shows the actual runtime state a moment after entering
         // fullscreen (deferred so layout/insets have settled), instead of continuing to guess at
         // what's actually happening on the real device.
