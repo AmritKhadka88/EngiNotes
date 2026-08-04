@@ -2251,7 +2251,14 @@ class MainActivity : AppCompatActivity() {
             findViewById<View?>(R.id.toolbarScroll)?.visibility = View.VISIBLE
         }
         androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
-        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, true)
+        // Deliberately NOT setDecorFitsSystemWindows(true) here — MainActivity is permanently
+        // edge-to-edge (decorFits=false from onCreate), with its own insets listener padding the
+        // top bar by the live status-bar inset (which restores automatically the moment the bar
+        // above is shown again). Flipping decorFits to true here was what re-armed the
+        // stale-padding trap: the system would apply its own one-bar-height content padding,
+        // which then went stale (inset says 0, content still offset) the next time fullscreen
+        // hid the bar mid-session, only clearing on a full Activity recreate.
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
             window.attributes = window.attributes.apply {
                 layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
@@ -3950,7 +3957,7 @@ class MainActivity : AppCompatActivity() {
             text = "Always use fullscreen (hide status bar)"
             isChecked = isAlwaysFullscreenEnabled()
             buttonTintList = accentTint
-            setOnCheckedChangeListener { _, on -> setAlwaysFullscreenEnabled(on); applyStatusBarFullscreenPreference() }
+            setOnCheckedChangeListener { _, on -> setAlwaysFullscreenEnabled(on); applyStatusBarFullscreenPreference(manageOwnInsets = true) }
         }; container.addView(fullscreenCb)
         container.addView(TextView(this).apply {
             text = "Applies everywhere in the app — the notes list as well as inside a note — not just this screen."
@@ -6378,7 +6385,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        applyStatusBarFullscreenPreference()
+        applyStatusBarFullscreenPreference(manageOwnInsets = true)
         applyCutoutGapToTopBar()
         // MainActivity does substantially more on-resume/on-open work than the notes-list
         // screens (loading the note's content, setting up DrawingView, sizing/attaching its
@@ -6389,7 +6396,7 @@ class MainActivity : AppCompatActivity() {
         // the status bar after our call above already ran. Re-applying once more, after that
         // heavier setup has had a chance to finish, catches whatever this screen specifically
         // does that the simpler list screens don't.
-        window.decorView.postDelayed({ applyStatusBarFullscreenPreference(); applyCutoutGapToTopBar(); syncTopChromeHeight() }, 400)
+        window.decorView.postDelayed({ applyStatusBarFullscreenPreference(manageOwnInsets = true); applyCutoutGapToTopBar(); syncTopChromeHeight() }, 400)
         window.decorView.post { syncTopChromeHeight() }
         if (currentAppTheme() == "GLASS") scheduleBlurUpdate()
         // updateSnapOptionsButton() previously only ran reactively from inside the two Snap
@@ -6413,7 +6420,7 @@ class MainActivity : AppCompatActivity() {
     // alone doesn't reliably catch every case. This is the standard extra hook recommended for it.
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) applyStatusBarFullscreenPreference()
+        if (hasFocus) applyStatusBarFullscreenPreference(manageOwnInsets = true)
     }
 
     override fun onDestroy() {

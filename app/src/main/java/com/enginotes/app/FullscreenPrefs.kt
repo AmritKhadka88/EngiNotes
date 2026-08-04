@@ -28,10 +28,21 @@ fun Activity.setAlwaysFullscreenEnabled(enabled: Boolean) {
  * just onCreate) so it's re-applied whenever a screen becomes visible again — both because
  * returning from the background can reset transient system-bar state, and because it's what
  * makes toggling the setting on one screen take effect immediately on every other screen you
- * navigate to afterward, without needing to force-close and reopen the app. */
-fun Activity.applyStatusBarFullscreenPreference() {
+ * navigate to afterward, without needing to force-close and reopen the app.
+ *
+ * [manageOwnInsets]: pass true from an Activity that runs edge-to-edge permanently and does its
+ * own status-bar spacing via a window-insets listener (MainActivity — its listener pads the top
+ * bar by the live status-bar inset, which correctly collapses to 0 whenever the bar is hidden).
+ * For such an Activity, decorFitsSystemWindows must stay false in BOTH states: letting this
+ * function flip it to true whenever fullscreen was off (the old unconditional behavior) meant the
+ * system applied its own 128px content padding for the status bar — and that padding goes STALE
+ * when fullscreen mode later hides the bar mid-session, because the system only recomputes it on
+ * a full Activity recreate. Confirmed directly via on-device diagnostic: status-bar inset
+ * correctly read 0 in fullscreen while the content still sat exactly one bar-height down, and
+ * only closing/reopening the note (a recreate) fixed it. */
+fun Activity.applyStatusBarFullscreenPreference(manageOwnInsets: Boolean = false) {
     val hide = isAlwaysFullscreenEnabled()
-    WindowCompat.setDecorFitsSystemWindows(window, !hide)
+    WindowCompat.setDecorFitsSystemWindows(window, if (manageOwnInsets) false else !hide)
     val controller = WindowCompat.getInsetsController(window, window.decorView)
     if (hide) {
         controller.hide(WindowInsetsCompat.Type.statusBars())
