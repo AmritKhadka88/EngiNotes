@@ -1686,8 +1686,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         set(value) {
             if (field != value) recyclePageCurlBitmap()
             field = value
+            invalidate()
         }
-        set(value) { field = value; invalidate() }
 
     fun scrollToPercent(pct: Float) {
         // Total scrollable height = number of pages × page height, minimum 2 pages
