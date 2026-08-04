@@ -619,12 +619,27 @@ class MainActivity : AppCompatActivity() {
                 // REAL current inset here instead, means this correctly collapses to 0 the moment
                 // the status bar is actually hidden, and restores properly when it's shown again.
                 if (topBar != null) {
+                    // When the status bar is hidden but topBarContainer stays visible (the
+                    // "Always use fullscreen" setting, as opposed to the manual ⛶ button which
+                    // hides the bar entirely), Type.statusBars() correctly collapses to 0 — but
+                    // the physical camera cutout doesn't go anywhere, so padding down to JUST the
+                    // base value can still leave content sitting behind/under the cutout. Padding
+                    // by whichever of the status-bar inset or the cutout's own safe-inset is
+                    // larger keeps the bar clear of the cutout either way, hidden or not.
                     val statusBarTop = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.statusBars()).top
-                    val newPadTop = topBarBasePadTop + statusBarTop
+                    val cutoutTop = insets.displayCutout?.safeInsetTop ?: 0
+                    val newPadTop = topBarBasePadTop + maxOf(statusBarTop, cutoutTop)
                     if (topBar.paddingTop != newPadTop) {
                         topBar.setPadding(topBarBasePadLeft, newPadTop, topBarBasePadRight, topBarBasePadBottom)
                     }
                 }
+                // Re-run cutout-avoidance (shifts topBar's flexible spacer so no icon sits under
+                // a front-camera cutout) on every insets pass, not just onCreate/onResume — this
+                // is what was missing for the "Always fullscreen" Settings toggle: that path never
+                // hides topBarContainer, so its icons need the same left/right dodge the manual
+                // fullscreen button's callers already got via onResume, but the setting can be
+                // flipped from inside a Settings dialog without onResume ever firing again.
+                applyCutoutGapToTopBar()
                 // textOptionsPanel (the font-family/size/color panel) is a separate view, added
                 // independently with plain Gravity.BOTTOM and no keyboard awareness of its own —
                 // without this, it anchors to the bottom of the full screen height (behind the
@@ -2205,24 +2220,6 @@ class MainActivity : AppCompatActivity() {
             findViewById<View?>(android.R.id.content)?.requestLayout()
             syncTopChromeHeight()
         }
-        // TEMPORARY diagnostic — shows the actual runtime state a moment after entering
-        // fullscreen (deferred so layout/insets have settled), instead of continuing to guess at
-        // what's actually happening on the real device.
-        window.decorView.postDelayed({
-            val topBar = findViewById<View?>(R.id.topBarContainer)
-            val statusBarInset = androidx.core.view.ViewCompat.getRootWindowInsets(window.decorView)
-                ?.getInsets(androidx.core.view.WindowInsetsCompat.Type.statusBars())?.top ?: -1
-            val topBarLoc = IntArray(2); topBar?.getLocationOnScreen(topBarLoc)
-            val canvasLoc = IntArray(2); canvasContainer.getLocationOnScreen(canvasLoc)
-            val msg = "topBar.visibility=${topBar?.visibility} (0=VISIBLE,4=INVISIBLE,8=GONE)\n" +
-                "topBar.height=${topBar?.height} topBar.screenY=${topBarLoc[1]}\n" +
-                "canvasContainer.height=${canvasContainer.height} canvasContainer.screenY=${canvasLoc[1]}\n" +
-                "drawingView.height=${drawingView.height}\n" +
-                "drawingView.topChromeHeightPx=${drawingView.topChromeHeightPx}\n" +
-                "statusBarInset.top=$statusBarInset\n" +
-                "screenHeightPx=${resources.displayMetrics.heightPixels}"
-            AlertDialog.Builder(this).setTitle("DIAG fullscreen").setMessage(msg).setPositiveButton("OK", null).show()
-        }, 500)
         if (fullscreenRestoreBtn != null) return
         val btn = TextView(this).apply {
             text = "⛶"; textSize = 16f; gravity = Gravity.CENTER
@@ -2355,6 +2352,7 @@ class MainActivity : AppCompatActivity() {
      * based on where the buttons and the cutout actually measure out on THIS screen, rather than
      * assuming any particular bar layout or screen width.
      */
+    private var topBarSpacerOriginalWidth: Int? = null
     private fun applyCutoutGapToTopBar() {
         val topBar = findViewById<LinearLayout?>(R.id.topBarContainer) ?: return
         val cutout = androidx.core.view.ViewCompat.getRootWindowInsets(window.decorView)?.displayCutout ?: return
@@ -2366,17 +2364,30 @@ class MainActivity : AppCompatActivity() {
             if (lp != null && lp.weight > 0f) { spacer = child; break }
         }
         val sp = spacer ?: return
+        // Original flexible width (weight=1, width=0dp per the XML) — cached once so repeated
+        // calls (this now runs on every insets pass, not just once at onResume) can shrink an
+        // already-widened spacer back down first, instead of only ever growing it. That matters
+        // now that the vertical/cutout padding fix can independently move the bar enough to clear
+        // the cutout on its own, which should let a previously-widened spacer relax again rather
+        // than leaving buttons pushed further right than necessary.
+        val originalWidth = topBarSpacerOriginalWidth ?: sp.layoutParams.width.also { topBarSpacerOriginalWidth = it }
         topBar.post {
             if (sp.width <= 0) return@post  // not laid out yet this pass — onResume will retry next time
-            val spacerLoc = IntArray(2); sp.getLocationOnScreen(spacerLoc)
-            val spacerLeftOnScreen = spacerLoc[0]
-            val spacerRightOnScreen = spacerLoc[0] + sp.width
-            if (rect.left >= spacerLeftOnScreen && rect.right <= spacerRightOnScreen) return@post  // already clear
-            val neededWidth = (rect.right - spacerLeftOnScreen + dp(8)).coerceAtLeast(sp.width)
             val lp = sp.layoutParams as LinearLayout.LayoutParams
-            if (lp.width != neededWidth || lp.weight != 0f) {
-                lp.width = neededWidth; lp.weight = 0f
+            if (lp.width != originalWidth || lp.weight != 1f) {
+                lp.width = originalWidth; lp.weight = 1f
                 sp.layoutParams = lp
+                topBar.requestLayout()
+            }
+            sp.post {
+                val spacerLoc = IntArray(2); sp.getLocationOnScreen(spacerLoc)
+                val spacerLeftOnScreen = spacerLoc[0]
+                val spacerRightOnScreen = spacerLoc[0] + sp.width
+                if (rect.left >= spacerLeftOnScreen && rect.right <= spacerRightOnScreen) return@post  // already clear
+                val neededWidth = (rect.right - spacerLeftOnScreen + dp(8)).coerceAtLeast(sp.width)
+                val lp2 = sp.layoutParams as LinearLayout.LayoutParams
+                lp2.width = neededWidth; lp2.weight = 0f
+                sp.layoutParams = lp2
             }
         }
     }
@@ -3957,7 +3968,17 @@ class MainActivity : AppCompatActivity() {
             text = "Always use fullscreen (hide status bar)"
             isChecked = isAlwaysFullscreenEnabled()
             buttonTintList = accentTint
-            setOnCheckedChangeListener { _, on -> setAlwaysFullscreenEnabled(on); applyStatusBarFullscreenPreference(manageOwnInsets = true) }
+            setOnCheckedChangeListener { _, on ->
+                setAlwaysFullscreenEnabled(on)
+                applyStatusBarFullscreenPreference(manageOwnInsets = true)
+                // The checkbox lives inside this Settings AlertDialog, so onResume/onWindowFocusChanged
+                // won't fire again from this — applyStatusBarFullscreenPreference()'s own
+                // requestApplyInsets() call gets the toggle applied, but give it one more pass
+                // shortly after (mirroring onResume's own retry) since the cutout geometry and
+                // the newly-collapsed/expanded status-bar inset aren't always settled in the very
+                // next frame, particularly right as the dialog itself is animating.
+                window.decorView.postDelayed({ applyStatusBarFullscreenPreference(manageOwnInsets = true); applyCutoutGapToTopBar() }, 300)
+            }
         }; container.addView(fullscreenCb)
         container.addView(TextView(this).apply {
             text = "Applies everywhere in the app — the notes list as well as inside a note — not just this screen."

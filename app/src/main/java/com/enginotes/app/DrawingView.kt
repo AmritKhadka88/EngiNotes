@@ -2075,6 +2075,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
      * anymore. MainActivity sets this to the real current top bar height, and to 0 whenever it's
      * hidden (fullscreen, Read Mode) — see setTopChromeHeightPx(). */
     var topChromeHeightPx: Float = 64f * resources.displayMetrics.density
+        set(value) {
+            val old = field
+            // clampTranslation() only ever pulls translateY DOWN when this shrinks (fullscreen /
+            // Read Mode hiding the top bar) — it has no way to push translateY back up again on
+            // its own once the bar reappears and the limit grows back, which is exactly what left
+            // the canvas permanently sitting lower than its pre-fullscreen position (only a fresh
+            // onCreate — closing and reopening the note — actually restored it). Following the
+            // delta here, but ONLY when translateY was sitting right at the previous limit (i.e.
+            // it was actually the thing that got clamped, not just coincidentally nearby), means a
+            // scroll position that was never affected by chrome-height changes is left alone, while
+            // one that WAS pinned there by the fullscreen clamp gets carried back out to the new
+            // limit symmetrically when the bar returns.
+            if ((canvasMode == CanvasMode.CONVENIENT || canvasMode == CanvasMode.PAGINATED) &&
+                kotlin.math.abs(translateY - old) < 1f) {
+                translateY += (value - old)
+            }
+            field = value
+        }
 
     // Public entry point for running OCR on the currently selected image, rather than only ever
     // looking at pen strokes. Reuses the existing async bitmap loader so this works reliably even
