@@ -44,6 +44,14 @@ fun Activity.applyStatusBarFullscreenPreference(manageOwnInsets: Boolean = false
     val hide = isAlwaysFullscreenEnabled()
     WindowCompat.setDecorFitsSystemWindows(window, if (manageOwnInsets) false else !hide)
     val controller = WindowCompat.getInsetsController(window, window.decorView)
+    // The app's own background behind the status bar's strip is always the light cream color
+    // (#FAF6EF / white toolbar), never dark — so the status bar needs DARK icons to stay visible
+    // against it. This was never being set at all before, in either branch: statusBarColor was
+    // only ever assigned TRANSPARENT in the hide branch below, so on exiting fullscreen the bar
+    // came back transparent over that light background with icon color left at the theme's
+    // default — invisible if that default happened to be light-on-light. Setting it explicitly,
+    // unconditionally, in both states fixes it regardless of hidden/shown.
+    controller.isAppearanceLightStatusBars = true
     if (hide) {
         controller.hide(WindowInsetsCompat.Type.statusBars())
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -62,6 +70,8 @@ fun Activity.applyStatusBarFullscreenPreference(manageOwnInsets: Boolean = false
         }
     } else {
         controller.show(WindowInsetsCompat.Type.statusBars())
+        @Suppress("DEPRECATION")
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
             window.attributes = window.attributes.apply {
                 layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
