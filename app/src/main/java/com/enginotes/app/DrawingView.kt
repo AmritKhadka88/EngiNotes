@@ -3284,8 +3284,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val layout = computePageLayout()
                 val topFrac = ((event.y - layout.baseTop) / layout.pageScreenH).coerceIn(0f, 1f)
                 pageTurnCurlAnchorYFrac = when {
-                    topFrac < 0.35f -> 0f
-                    topFrac > 0.65f -> 1f
+                    topFrac < 0.14f -> 0f
+                    topFrac > 0.86f -> 1f
                     else -> topFrac
                 }
                 // Direction (and therefore which edge the curl lifts from) is decided ONCE here,
@@ -3480,6 +3480,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val ux = pullDx / pullDist; val uy = pullDy / pullDist
         val vx = -uy; val vy = ux  // perpendicular to the pull direction
         val curlRadius = kotlin.math.min(dp(90).toFloat(), pageScreenW * 0.28f)
+        // Capping theta well short of 180° is the actual fix for the "rolling into a tube" look —
+        // letting it go all the way to 180° meant the arc (R·sin θ) swings back down from its
+        // peak at 90° toward 0 again as θ approaches 180°, which is what coiled the far end of the
+        // curl back around into a visible scroll/tube shape (and, since that also squeezes a wide
+        // range of original x-positions into a narrow band of screen space, produced degenerate
+        // sliver triangles in the mesh — the source of the banding/"strips" artifact). Stopping
+        // at a modest amount past 90° keeps the lift-and-bend look (plus a bit of back-face
+        // reveal) without ever entering that back-swinging, self-overlapping territory.
+        val thetaMax = Math.PI.toFloat() * 0.58f
         val cols = 40; val rows = 24
         val verts = FloatArray((cols + 1) * (rows + 1) * 2)
         var vi = 0
@@ -3492,7 +3501,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val perp = relX * vx + relY * vy
                 val newProj = if (proj >= pullDist) proj else {
                     val distIntoRoll = pullDist - proj
-                    val theta = (distIntoRoll / curlRadius).coerceAtMost(Math.PI.toFloat())
+                    val theta = (distIntoRoll / curlRadius).coerceAtMost(thetaMax)
                     pullDist - curlRadius * kotlin.math.sin(theta)
                 }
                 verts[vi] = baseLeft + anchorLocalX + ux * newProj + vx * perp
@@ -3522,9 +3531,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val proj = relX * ux + relY * uy
                 var argb = 0
                 if (proj < pullDist) {
-                    val theta = ((pullDist - proj) / curlRadius).coerceAtMost(Math.PI.toFloat())
+                    val theta = ((pullDist - proj) / curlRadius).coerceAtMost(thetaMax)
                     val shadeAlpha = ((0.45f * kotlin.math.sin(theta)) * 140).toInt().coerceIn(0, 255)
-                    val backAlpha = ((theta - halfPi) / halfPi).coerceIn(0f, 1f)
+                    val backAlpha = ((theta - halfPi) / (thetaMax - halfPi)).coerceIn(0f, 1f)
                     val creamA = (backAlpha * 235).toInt().coerceIn(0, 255)
                     // Standard "over" compositing of a cream tint atop a black darken layer — the
                     // black layer contributes only to alpha (its own RGB is 0,0,0), so the result
