@@ -3413,6 +3413,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // 60fps-ish drag anyway).
     private var pageCurlBitmap: Bitmap? = null
     private var pageCurlBitmapForIndex: Int = -1
+    // A horizontally-flipped copy of pageCurlBitmap, regenerated in lockstep with it (see
+    // getOrRenderPageCurlBitmap below) — used to render an actual mirrored back-of-the-page for
+    // the portion of the curl that's swung past 90°, instead of approximating it with a flat
+    // tint. A real book page's back isn't blank, and a flat tint read as noticeably fake next to
+    // a reference that shows genuine (if faint/reversed) text through the back of the curl.
+    private var pageCurlMirrorBitmap: Bitmap? = null
 
     /** Releases the cached curl bitmap — called whenever readMode changes (leaving Paper-like
      * Read Mode, or the note closing while it's still recycling the View) so a page-sized bitmap
@@ -3421,6 +3427,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         pageCurlBitmap?.let { if (!it.isRecycled) it.recycle() }
         pageCurlBitmap = null
         pageCurlBitmapForIndex = -1
+        pageCurlMirrorBitmap?.let { if (!it.isRecycled) it.recycle() }
+        pageCurlMirrorBitmap = null
         pageCurlShadeBitmap?.let { if (!it.isRecycled) it.recycle() }
         pageCurlShadeBitmap = null
     }
@@ -3445,6 +3453,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             pageCurlBitmap?.let { if (it !== bmp && !it.isRecycled) it.recycle() }
             pageCurlBitmap = bmp
             pageCurlBitmapForIndex = pageIdx
+            // Mirror it once here, right alongside — same lifetime/invalidation as the front
+            // bitmap, so there's no separate cache-key bookkeeping to keep in sync.
+            val mirror = Bitmap.createBitmap(bmp, 0, 0, w, h, android.graphics.Matrix().apply { setScale(-1f, 1f) }, false)
+            pageCurlMirrorBitmap?.let { if (!it.isRecycled) it.recycle() }
+            pageCurlMirrorBitmap = mirror
             bmp
         } catch (e: OutOfMemoryError) { null }
     }
@@ -3468,7 +3481,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
      * pixel-for-pixel without needing per-cell rect fills. Returns 0..1 curl progress so the
      * caller can scale the shadow it casts onto the page beneath accordingly. */
     private fun drawCurlingPage(
-        canvas: Canvas, bitmap: Bitmap, baseLeft: Float, baseTop: Float, pageScreenW: Float, pageScreenH: Float,
+        canvas: Canvas, bitmap: Bitmap, mirrorBitmap: Bitmap, baseLeft: Float, baseTop: Float, pageScreenW: Float, pageScreenH: Float,
         anchorLocalX: Float, anchorLocalY: Float, pullDx: Float, pullDy: Float, pullDist: Float
     ): Float {
         if (pullDist < 1f) {
@@ -3489,9 +3502,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // at a modest amount past 90° keeps the lift-and-bend look (plus a bit of back-face
         // reveal) without ever entering that back-swinging, self-overlapping territory.
         val thetaMax = Math.PI.toFloat() * 0.58f
+        val halfPi = Math.PI.toFloat() / 2f
         val cols = 40; val rows = 24
-        val verts = FloatArray((cols + 1) * (rows + 1) * 2)
-        var vi = 0
+        val vertCount = (cols + 1) * (rows + 1)
+        val verts = FloatArray(vertCount * 2)
+        val shadeAlphaAt = IntArray(vertCount)
+        val backAlphaAt = IntArray(vertCount)
+        var vi = 0; var pi = 0
         for (row in 0..rows) {
             val py = pageScreenH * row / rows
             for (col in 0..cols) {
@@ -3499,14 +3516,23 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val relX = px - anchorLocalX; val relY = py - anchorLocalY
                 val proj = relX * ux + relY * uy
                 val perp = relX * vx + relY * vy
-                val newProj = if (proj >= pullDist) proj else {
+                var newProj = proj
+                if (proj < pullDist) {
                     val distIntoRoll = pullDist - proj
                     val theta = (distIntoRoll / curlRadius).coerceAtMost(thetaMax)
-                    pullDist - curlRadius * kotlin.math.sin(theta)
+                    newProj = pullDist - curlRadius * kotlin.math.sin(theta)
+                    // Peaks at theta=90° (the part most edge-on to the viewer, so darkest) and
+                    // fades back down toward thetaMax — a flat mesh warp alone reads as a bent
+                    // photo, not a lit, rounded surface, without this.
+                    shadeAlphaAt[pi] = ((0.45f * kotlin.math.sin(theta)) * 140).toInt().coerceIn(0, 255)
+                    // 0 before the fold swings past vertical, ramping to full by thetaMax — this
+                    // is what the mirrored-bitmap pass below fades in by, so the back of the page
+                    // only becomes visible once you'd actually be looking at its underside.
+                    backAlphaAt[pi] = (((theta - halfPi) / (thetaMax - halfPi)).coerceIn(0f, 1f) * 255).toInt()
                 }
                 verts[vi] = baseLeft + anchorLocalX + ux * newProj + vx * perp
                 verts[vi + 1] = baseTop + anchorLocalY + uy * newProj + vy * perp
-                vi += 2
+                vi += 2; pi++
             }
         }
         canvas.save()
@@ -3517,34 +3543,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // anti-aliasing the mesh edges themselves is what actually removes that.
         canvas.drawBitmapMesh(bitmap, cols, rows, verts, 0, null, 0, meshPaint)
 
-        // Shading + paper-back tint, generated as a small texture and warped through the exact
-        // same verts array — each texel corresponds to one ORIGINAL (unwarped) page position,
-        // computed the same way as the vertices above, so this lines up with the curl pixel-for-
-        // pixel automatically instead of needing separately-tracked per-cell overlay geometry.
+        // Real mirrored back-of-the-page, not a flat tint — an actual reversed render of the same
+        // content, faded in per-vertex via backAlphaAt (the colors array's per-vertex alpha
+        // modulates the sampled texture, so this fades smoothly from invisible at the fold to
+        // fully opaque past thetaMax exactly where the front bitmap's own shading peaks, without
+        // needing a second overlay texture generated pixel-by-pixel).
+        canvas.drawBitmapMesh(mirrorBitmap, cols, rows, verts, 0, IntArray(vertCount) { Color.argb(backAlphaAt[it], 255, 255, 255) }, 0, meshPaint)
+
+        // Darkening-only shading (peaks at theta=90°, the part most edge-on to the viewer) —
+        // generated as a small texture and warped through the exact same verts array, layered on
+        // top of both the front bitmap AND the mirrored back so the roundness cue reads correctly
+        // on whichever face is currently showing at each point on the curl.
         val shadeBmp = getOrCreatePageCurlShadeBitmap(cols + 1, rows + 1)
-        val halfPi = Math.PI.toFloat() / 2f
         for (row in 0..rows) {
-            val py = pageScreenH * row / rows
             for (col in 0..cols) {
-                val px = pageScreenW * col / cols
-                val relX = px - anchorLocalX; val relY = py - anchorLocalY
-                val proj = relX * ux + relY * uy
-                var argb = 0
-                if (proj < pullDist) {
-                    val theta = ((pullDist - proj) / curlRadius).coerceAtMost(thetaMax)
-                    val shadeAlpha = ((0.45f * kotlin.math.sin(theta)) * 140).toInt().coerceIn(0, 255)
-                    val backAlpha = ((theta - halfPi) / (thetaMax - halfPi)).coerceIn(0f, 1f)
-                    val creamA = (backAlpha * 235).toInt().coerceIn(0, 255)
-                    // Standard "over" compositing of a cream tint atop a black darken layer — the
-                    // black layer contributes only to alpha (its own RGB is 0,0,0), so the result
-                    // just interpolates toward cream as creamA grows.
-                    val outA = creamA + shadeAlpha * (255 - creamA) / 255
-                    if (outA > 0) {
-                        val r = 0xED * creamA / outA; val g = 0xE7 * creamA / outA; val b = 0xD5 * creamA / outA
-                        argb = Color.argb(outA, r.coerceIn(0, 255), g.coerceIn(0, 255), b.coerceIn(0, 255))
-                    }
-                }
-                shadeBmp.setPixel(col, row, argb)
+                val idx = row * (cols + 1) + col
+                shadeBmp.setPixel(col, row, Color.argb(shadeAlphaAt[idx], 0, 0, 0))
             }
         }
         canvas.drawBitmapMesh(shadeBmp, cols, rows, verts, 0, null, 0, meshPaint)
@@ -3592,8 +3606,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // curl above it recedes).
         drawBookPage(canvas, nextPageIdx, baseLeft, baseTop, pageScreenW, pageScreenH, layout.fitScale, 0f, 0)
         val bitmap = getOrRenderPageCurlBitmap(readPageIndex, pageScreenW, pageScreenH, layout.fitScale)
-        val curlProgress = if (bitmap != null) {
-            drawCurlingPage(canvas, bitmap, baseLeft, baseTop, pageScreenW, pageScreenH, anchorX - baseLeft, anchorY - baseTop, pullDx, pullDy, pullDist)
+        val mirrorBitmap = pageCurlMirrorBitmap
+        val curlProgress = if (bitmap != null && mirrorBitmap != null && !mirrorBitmap.isRecycled) {
+            drawCurlingPage(canvas, bitmap, mirrorBitmap, baseLeft, baseTop, pageScreenW, pageScreenH, anchorX - baseLeft, anchorY - baseTop, pullDx, pullDy, pullDist)
         } else {
             // Bitmap allocation failed (very low memory) — fall back to drawing the page flat
             // rather than showing nothing.
