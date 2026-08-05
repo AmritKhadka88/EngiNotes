@@ -3544,8 +3544,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // quadratic curve (t²) rather than growing 1:1 with the raw drag distance, so the very
         // start of a slide barely moves it and it visibly accelerates the further you drag — a
         // deliberate "slow to start, speeds up" feel rather than a strict linear follow.
-        val maxFlapWidth = pageScreenW * 0.85f
-        val flapT = (pullDist / maxFlapWidth).coerceIn(0f, 1f)
+        // Two SEPARATE things here, which the previous version conflated into one number and got
+        // wrong: how BIG the flap is allowed to get (bounded, modest — a believable corner-peel
+        // size, not something that consumes most of the screen), and how LONG a drag it takes to
+        // reach that size (spread across most of the gesture, eased). Capping maxFlapWidth at
+        // ~140dp keeps the actual visible size sane; separately stretching the growth over 60% of
+        // the page width (growthRange) is what gives the "starts at zero, gradually gets there"
+        // feel without also letting the flap itself balloon to page-spanning width — that
+        // ballooning is exactly what went wrong last round: tying the SIZE cap to a large fraction
+        // of the page width made both problems the same knob, so fixing "grows too little" by
+        // raising that number also made the end result far too big.
+        val maxFlapWidth = kotlin.math.min(dp(140).toFloat(), pageScreenW * 0.38f)
+        val growthRange = pageScreenW * 0.6f
+        val flapT = (pullDist / growthRange).coerceIn(0f, 1f)
         val flapWidth = (flapT * flapT) * maxFlapWidth
         val flapFarTop = CPt(topCurl.x + perpX * flapWidth, topCurl.y + perpY * flapWidth)
         val flapFarBottom = CPt(bottomCurl.x + perpX * flapWidth, bottomCurl.y + perpY * flapWidth)
