@@ -3478,7 +3478,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
      * simpler and more robust, which is the point of switching to it. */
     private fun drawCurlingPage(
         canvas: Canvas, bitmap: Bitmap, baseLeft: Float, baseTop: Float, pageScreenW: Float, pageScreenH: Float,
-        anchorScreenX: Float, anchorScreenY: Float, touchScreenX: Float, touchScreenY: Float, forward: Boolean
+        anchorScreenX: Float, anchorScreenY: Float, touchScreenX: Float, touchScreenY: Float, pullDist: Float, forward: Boolean
     ) {
         val flatX = if (forward) baseLeft else baseLeft + pageScreenW
         val turnX = if (forward) baseLeft + pageScreenW else baseLeft
@@ -3523,25 +3523,30 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         canvas.drawBitmap(bitmap, baseLeft, baseTop, null)
         canvas.restore()
 
-        // Folded-over region: a flat polygon bounded by the crease and, where the crease doesn't
-        // reach the top/bottom corners directly, the turning edge itself.
-        val turnTop = CPt(turnX, baseTop); val turnBottom = CPt(turnX, baseTop + pageScreenH)
-        val turnSide = linesIntersect(topCurl, bottomCurl, turnTop, turnBottom)
-        val poly = mutableListOf<CPt>()
-        if (if (forward) topCurl.x < turnX else topCurl.x > turnX) {
-            poly.add(topCurl); poly.add(CPt(turnX, topCurl.y))
-        } else {
-            turnSide?.let { poly.add(it); poly.add(it) }
-        }
-        if (if (forward) bottomCurl.x < turnX else bottomCurl.x > turnX) {
-            poly.add(turnBottom); poly.add(bottomCurl)
-        } else {
-            turnSide?.let { poly.add(it); poly.add(it) }
-        }
-        if (poly.size < 3) return
+        // Folded-over "flap": a flat quad parallel to the crease, growing in width from 0 as you
+        // drag (capped at a reasonable max), rather than always extending all the way to the
+        // turning edge. The literal single-crease-fold geometry technically covers the WHOLE
+        // remaining page once folded — but since that's the same on-screen rectangle the NEXT
+        // page is drawn into underneath, a flap that always reached the turning edge meant it
+        // permanently hid the next page until the turn fully completed: solid white the entire
+        // drag, no visible page-turning motion, no page-behind ever showing through. Bounding the
+        // flap's width and leaving the remaining space undrawn lets the next page (already drawn
+        // by the caller beneath everything here) show through beyond it — the actual "you can see
+        // it turning, and the next page coming in" look, while the flap itself is still just a
+        // flat quad — no curvature, so still none of the coiling/compression/mesh-artifact issues.
+        val creaseDx = bottomCurl.x - topCurl.x; val creaseDy = bottomCurl.y - topCurl.y
+        val creaseLen = kotlin.math.hypot(creaseDx, creaseDy).coerceAtLeast(1f)
+        var perpX = -creaseDy / creaseLen; var perpY = creaseDx / creaseLen
+        if ((turnX - topCurl.x) * perpX < 0) { perpX = -perpX; perpY = -perpY }
+        val maxFlapWidth = kotlin.math.min(dp(130).toFloat(), pageScreenW * 0.4f)
+        val flapWidth = pullDist.coerceAtMost(maxFlapWidth)
+        val flapFarTop = CPt(topCurl.x + perpX * flapWidth, topCurl.y + perpY * flapWidth)
+        val flapFarBottom = CPt(bottomCurl.x + perpX * flapWidth, bottomCurl.y + perpY * flapWidth)
         val polyPath = Path().apply {
-            moveTo(poly[0].x, poly[0].y)
-            for (i in 1 until poly.size) lineTo(poly[i].x, poly[i].y)
+            moveTo(topCurl.x, topCurl.y)
+            lineTo(flapFarTop.x, flapFarTop.y)
+            lineTo(flapFarBottom.x, flapFarBottom.y)
+            lineTo(bottomCurl.x, bottomCurl.y)
             close()
         }
 
@@ -3552,12 +3557,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // Soft shadow right at the crease, drawn ON TOP of the solid fill (not before it — an
         // opaque fill drawn afterward would just cover the shadow completely), perpendicular to
         // the crease (not just horizontal — the crease can tilt with the touch position), fading
-        // out over a short distance into the fold.
-        val creaseDx = bottomCurl.x - topCurl.x; val creaseDy = bottomCurl.y - topCurl.y
-        val creaseLen = kotlin.math.hypot(creaseDx, creaseDy).coerceAtLeast(1f)
-        var perpX = -creaseDy / creaseLen; var perpY = creaseDx / creaseLen
-        if ((turnX - topCurl.x) * perpX < 0) { perpX = -perpX; perpY = -perpY }
-        val shadowDepth = kotlin.math.min(dp(50).toFloat(), pageScreenW * 0.15f)
+        // out over a short distance into the flap.
+        val shadowDepth = kotlin.math.min(dp(50).toFloat(), flapWidth)
         val farX = topCurl.x + perpX * shadowDepth; val farY = topCurl.y + perpY * shadowDepth
         val shader = android.graphics.LinearGradient(topCurl.x, topCurl.y, farX, farY, Color.argb(70, 0, 0, 0), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
         canvas.drawPath(polyPath, Paint().apply { this.shader = shader; isAntiAlias = true })
@@ -3597,7 +3598,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         drawBookPage(canvas, if (nextPageIdx in 0 until pageCount) nextPageIdx else readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, layout.fitScale, 0f, 0)
         val bitmap = getOrRenderPageCurlBitmap(readPageIndex, pageScreenW, pageScreenH, layout.fitScale)
         if (bitmap != null) {
-            drawCurlingPage(canvas, bitmap, baseLeft, baseTop, pageScreenW, pageScreenH, anchorX, anchorY, pageTurnTouchX, pageTurnTouchY, forward)
+            drawCurlingPage(canvas, bitmap, baseLeft, baseTop, pageScreenW, pageScreenH, anchorX, anchorY, pageTurnTouchX, pageTurnTouchY, pullDist, forward)
         } else {
             // Bitmap allocation failed (very low memory) — fall back to drawing the page flat
             // rather than showing nothing.
