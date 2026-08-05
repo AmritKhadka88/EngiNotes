@@ -3503,9 +3503,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // reveal) without ever entering that back-swinging, self-overlapping territory.
         val thetaMax = Math.PI.toFloat() * 0.58f
         val halfPi = Math.PI.toFloat() / 2f
+        // Radians of "extra" distance-into-the-roll, beyond thetaMax, over which content fades
+        // out to fully hidden rather than continuing to compress. Without this, holding theta
+        // pinned at thetaMax for anything beyond it meant an ever-growing range of original
+        // source columns all got mapped into that same fixed-width screen band as pullDist grew —
+        // with bilinear filtering, a wide enough range of compressed text just averages out to
+        // flat gray, which read as "the back of the page is missing" rather than what it actually
+        // was (readable content, just badly oversquashed). Fading it out instead means content
+        // that's gone that far into the roll is treated as genuinely wrapped away/hidden — which
+        // is also just correct: on a real curling page, that part IS out of view at this point.
+        val fadeRange = 0.4f
         val cols = 40; val rows = 24
         val vertCount = (cols + 1) * (rows + 1)
         val verts = FloatArray(vertCount * 2)
+        val frontAlphaAt = IntArray(vertCount) { 255 }
         val shadeAlphaAt = IntArray(vertCount)
         val backAlphaAt = IntArray(vertCount)
         var vi = 0; var pi = 0
@@ -3519,16 +3530,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 var newProj = proj
                 if (proj < pullDist) {
                     val distIntoRoll = pullDist - proj
-                    val theta = (distIntoRoll / curlRadius).coerceAtMost(thetaMax)
+                    val thetaRaw = distIntoRoll / curlRadius
+                    val theta = thetaRaw.coerceAtMost(thetaMax)
                     newProj = pullDist - curlRadius * kotlin.math.sin(theta)
+                    val visible = (1f - (thetaRaw - thetaMax) / fadeRange).coerceIn(0f, 1f)
+                    frontAlphaAt[pi] = (visible * 255).toInt()
                     // Peaks at theta=90° (the part most edge-on to the viewer, so darkest) and
                     // fades back down toward thetaMax — a flat mesh warp alone reads as a bent
                     // photo, not a lit, rounded surface, without this.
-                    shadeAlphaAt[pi] = ((0.45f * kotlin.math.sin(theta)) * 140).toInt().coerceIn(0, 255)
-                    // 0 before the fold swings past vertical, ramping to full by thetaMax — this
-                    // is what the mirrored-bitmap pass below fades in by, so the back of the page
-                    // only becomes visible once you'd actually be looking at its underside.
-                    backAlphaAt[pi] = (((theta - halfPi) / (thetaMax - halfPi)).coerceIn(0f, 1f) * 255).toInt()
+                    shadeAlphaAt[pi] = ((0.45f * kotlin.math.sin(theta)) * 140 * visible).toInt().coerceIn(0, 255)
+                    // 0 before the fold swings past vertical, ramping to full by thetaMax, then
+                    // fading back out over fadeRange along with everything else — this is what the
+                    // mirrored-bitmap pass below fades in/out by, so the back of the page is only
+                    // visible in the band where you'd actually be looking at its underside.
+                    backAlphaAt[pi] = (((theta - halfPi) / (thetaMax - halfPi)).coerceIn(0f, 1f) * visible * 255).toInt()
                 }
                 verts[vi] = baseLeft + anchorLocalX + ux * newProj + vx * perp
                 verts[vi + 1] = baseTop + anchorLocalY + uy * newProj + vy * perp
@@ -3541,7 +3556,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // (unfiltered) Paint before, the seams between adjacent mesh cells showed as a visible
         // faint grid, especially in the flatter, more gradual parts of the curl. Filtering plus
         // anti-aliasing the mesh edges themselves is what actually removes that.
-        canvas.drawBitmapMesh(bitmap, cols, rows, verts, 0, null, 0, meshPaint)
+        canvas.drawBitmapMesh(bitmap, cols, rows, verts, 0, IntArray(vertCount) { Color.argb(frontAlphaAt[it], 255, 255, 255) }, 0, meshPaint)
 
         // Real mirrored back-of-the-page, not a flat tint — an actual reversed render of the same
         // content, faded in per-vertex via backAlphaAt (the colors array's per-vertex alpha
