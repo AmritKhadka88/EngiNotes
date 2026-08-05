@@ -3493,30 +3493,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val ux = pullDx / pullDist; val uy = pullDy / pullDist
         val vx = -uy; val vy = ux  // perpendicular to the pull direction
         val curlRadius = kotlin.math.min(dp(90).toFloat(), pageScreenW * 0.28f)
-        // Capping theta well short of 180° is the actual fix for the "rolling into a tube" look —
-        // letting it go all the way to 180° meant the arc (R·sin θ) swings back down from its
-        // peak at 90° toward 0 again as θ approaches 180°, which is what coiled the far end of the
-        // curl back around into a visible scroll/tube shape (and, since that also squeezes a wide
-        // range of original x-positions into a narrow band of screen space, produced degenerate
-        // sliver triangles in the mesh — the source of the banding/"strips" artifact). Stopping
-        // at a modest amount past 90° keeps the lift-and-bend look (plus a bit of back-face
-        // reveal) without ever entering that back-swinging, self-overlapping territory.
+        // Roll ONCE through the bend (0..thetaMax, the same R·sin(θ) arc as before), then continue
+        // in an actual straight line beyond it — using the tangent slope at thetaMax as a constant
+        // rate, rather than either continuing the sine (which swings back down and coils into a
+        // tube past 90°) or freezing/fading it (which was the previous attempt: holding position
+        // constant compressed an ever-growing range of source content into the same screen pixels,
+        // and fading THAT out just made it disappear instead of fixing the compression). A straight
+        // linear continuation keeps the mapping from original page position to screen position
+        // one-to-one no matter how far the drag goes — no compression, nothing to hide — which is
+        // also just physically correct: past the bend, the folded-over page IS flat again (its
+        // back now facing the viewer), continuing away from the fold in a straight line, not
+        // curving further.
         val thetaMax = Math.PI.toFloat() * 0.58f
         val halfPi = Math.PI.toFloat() / 2f
-        // Radians of "extra" distance-into-the-roll, beyond thetaMax, over which content fades
-        // out to fully hidden rather than continuing to compress. Without this, holding theta
-        // pinned at thetaMax for anything beyond it meant an ever-growing range of original
-        // source columns all got mapped into that same fixed-width screen band as pullDist grew —
-        // with bilinear filtering, a wide enough range of compressed text just averages out to
-        // flat gray, which read as "the back of the page is missing" rather than what it actually
-        // was (readable content, just badly oversquashed). Fading it out instead means content
-        // that's gone that far into the roll is treated as genuinely wrapped away/hidden — which
-        // is also just correct: on a real curling page, that part IS out of view at this point.
-        val fadeRange = 0.4f
+        val tangentSlope = -curlRadius * kotlin.math.cos(thetaMax)  // d(newProj)/d(thetaRaw) at thetaMax
+        val projAtThetaMax = -curlRadius * kotlin.math.sin(thetaMax)  // newProj-minus-pullDist at thetaMax
         val cols = 40; val rows = 24
         val vertCount = (cols + 1) * (rows + 1)
         val verts = FloatArray(vertCount * 2)
-        val frontAlphaAt = IntArray(vertCount) { 255 }
         val shadeAlphaAt = IntArray(vertCount)
         val backAlphaAt = IntArray(vertCount)
         var vi = 0; var pi = 0
@@ -3531,19 +3525,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (proj < pullDist) {
                     val distIntoRoll = pullDist - proj
                     val thetaRaw = distIntoRoll / curlRadius
+                    newProj = if (thetaRaw <= thetaMax) {
+                        pullDist - curlRadius * kotlin.math.sin(thetaRaw)
+                    } else {
+                        pullDist + projAtThetaMax + tangentSlope * (thetaRaw - thetaMax)
+                    }
                     val theta = thetaRaw.coerceAtMost(thetaMax)
-                    newProj = pullDist - curlRadius * kotlin.math.sin(theta)
-                    val visible = (1f - (thetaRaw - thetaMax) / fadeRange).coerceIn(0f, 1f)
-                    frontAlphaAt[pi] = (visible * 255).toInt()
-                    // Peaks at theta=90° (the part most edge-on to the viewer, so darkest) and
-                    // fades back down toward thetaMax — a flat mesh warp alone reads as a bent
-                    // photo, not a lit, rounded surface, without this.
-                    shadeAlphaAt[pi] = ((0.45f * kotlin.math.sin(theta)) * 140 * visible).toInt().coerceIn(0, 255)
+                    // Peaks at theta=90° (the part most edge-on to the viewer, so darkest), holds
+                    // at whatever it reached by thetaMax for the whole straight continuation beyond
+                    // it — that flat folded-over stretch has one consistent lighting, not more
+                    // curvature to shade.
+                    shadeAlphaAt[pi] = ((0.45f * kotlin.math.sin(theta)) * 140).toInt().coerceIn(0, 255)
                     // 0 before the fold swings past vertical, ramping to full by thetaMax, then
-                    // fading back out over fadeRange along with everything else — this is what the
-                    // mirrored-bitmap pass below fades in/out by, so the back of the page is only
-                    // visible in the band where you'd actually be looking at its underside.
-                    backAlphaAt[pi] = (((theta - halfPi) / (thetaMax - halfPi)).coerceIn(0f, 1f) * visible * 255).toInt()
+                    // staying fully opaque for the entire straight continuation beyond — once
+                    // you're past the bend you're looking straight at the back of the page for
+                    // as far as that folded-over stretch extends.
+                    backAlphaAt[pi] = (((theta - halfPi) / (thetaMax - halfPi)).coerceIn(0f, 1f) * 255).toInt()
                 }
                 verts[vi] = baseLeft + anchorLocalX + ux * newProj + vx * perp
                 verts[vi + 1] = baseTop + anchorLocalY + uy * newProj + vy * perp
@@ -3556,7 +3553,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // (unfiltered) Paint before, the seams between adjacent mesh cells showed as a visible
         // faint grid, especially in the flatter, more gradual parts of the curl. Filtering plus
         // anti-aliasing the mesh edges themselves is what actually removes that.
-        canvas.drawBitmapMesh(bitmap, cols, rows, verts, 0, IntArray(vertCount) { Color.argb(frontAlphaAt[it], 255, 255, 255) }, 0, meshPaint)
+        canvas.drawBitmapMesh(bitmap, cols, rows, verts, 0, null, 0, meshPaint)
 
         // Real mirrored back-of-the-page, not a flat tint — an actual reversed render of the same
         // content, faded in per-vertex via backAlphaAt (the colors array's per-vertex alpha
@@ -3617,9 +3614,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             return
         }
         val nextPageIdx = if (forward) readPageIndex + 1 else readPageIndex - 1
+        val pageCount = estimatePageCount().coerceAtLeast(1)
         // Page beneath the curl (drawn flat, full-size, no offset — it's simply revealed as the
-        // curl above it recedes).
-        drawBookPage(canvas, nextPageIdx, baseLeft, baseTop, pageScreenW, pageScreenH, layout.fitScale, 0f, 0)
+        // curl above it recedes). If there's no actual next/previous page (dragging past the
+        // first/last page — rubber-banded but still visually engaged), drawBookPage() silently
+        // draws nothing for an out-of-range index, which left the plain gray backdrop showing
+        // through wherever the curl had faded to reveal it — reading as "there's nothing back
+        // there at all" rather than what it should look like: the SAME page still sitting flat
+        // underneath, since physically there's nowhere for it to have gone.
+        drawBookPage(canvas, if (nextPageIdx in 0 until pageCount) nextPageIdx else readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, layout.fitScale, 0f, 0)
         val bitmap = getOrRenderPageCurlBitmap(readPageIndex, pageScreenW, pageScreenH, layout.fitScale)
         val mirrorBitmap = pageCurlMirrorBitmap
         val curlProgress = if (bitmap != null && mirrorBitmap != null && !mirrorBitmap.isRecycled) {
