@@ -3490,7 +3490,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val thetaMax = Math.PI.toFloat() * 0.75f
         val tangentSlope = -curlRadius * kotlin.math.cos(thetaMax)  // d(newProj)/d(thetaRaw) at thetaMax
         val projAtThetaMax = -curlRadius * kotlin.math.sin(thetaMax)  // newProj-minus-pullDist at thetaMax
-        val cols = 40; val rows = 24
+        val cols = 64; val rows = 40
         val vertCount = (cols + 1) * (rows + 1)
         val verts = FloatArray(vertCount * 2)
         // Front-face shadow and back-face whiteness are now mutually exclusive at every vertex —
@@ -3578,14 +3578,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // every call since those are fixed constants above, so one small bitmap just gets its pixels
     // overwritten every frame instead of creating/GC'ing a new one at drag-gesture frame rates.
     private var pageCurlShadeBitmap: Bitmap? = null
-    // isAntiAlias is deliberately OFF here (unlike most Paints in this file) — with it on, the
-    // content mesh and the overlay mesh (drawn right on top, sharing the exact same vertex
-    // positions) each got their own independent AA treatment at triangle edges, and the two
-    // didn't always rasterize pixel-identically at the shared boundary. That mismatch is what
-    // produced the thin transparent seam/gap artifact on steeper-angled drags — a classic
-    // symptom of stacking multiple independently-anti-aliased draws over the same geometry.
-    // isFilterBitmap stays on since that's what actually smooths texture sampling across cells.
-    private val meshPaint = Paint().apply { isFilterBitmap = true; isAntiAlias = false }
+    // isFilterBitmap smooths texture sampling across mesh cells; isAntiAlias smooths the mesh
+    // triangles' own edges. Both matter here — the crease/curl boundary is diagonal, not aligned
+    // to the mesh grid, so without AA it renders as a hard pixelated staircase along that edge
+    // (very visible at this mesh's resolution) rather than a smooth line. (isAntiAlias was
+    // briefly turned off in an earlier attempt at fixing a suspected mesh-seam artifact — that
+    // traded a subtle, never-actually-confirmed issue for this much more visible one, so it's
+    // back on.)
+    private val meshPaint = Paint().apply { isFilterBitmap = true; isAntiAlias = true }
     private fun getOrCreatePageCurlShadeBitmap(w: Int, h: Int): Bitmap {
         val cached = pageCurlShadeBitmap
         if (cached != null && !cached.isRecycled && cached.width == w && cached.height == h) return cached
