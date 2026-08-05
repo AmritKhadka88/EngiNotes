@@ -3504,6 +3504,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // edges sharing the same boundary is also the likely fix for the transparent seam artifact
         // that showed up on steeper upward-angled drags, since that's a classic symptom of
         // multiple AA'd mesh layers not rasterizing pixel-identically atop one another.
+        //
+        // The curved surface itself now carries NO shading at all — per reference, the curl's own
+        // front-facing surface stays plain/normal page color throughout; the only shadow is a thin
+        // dark-to-light gradient right at the crease, cast onto the STILL-FLAT part of the page
+        // immediately next to the fold (see shadowDepth below). That shadow is computed here, in
+        // the same per-vertex pass, and baked into this same overlay/mesh — not drawn as a
+        // separate layer beforehand — because a separate pre-drawn layer got fully painted over by
+        // this mesh's own flat (unwarped) region right afterward, which is why the shadow wasn't
+        // showing up correctly before.
+        val shadowDepth = curlRadius * 0.5f
         val overlayAt = IntArray(vertCount)
         var vi = 0; var pi = 0
         for (row in 0..rows) {
@@ -3527,16 +3537,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     // then staying 1 for the whole straight continuation beyond (you're looking
                     // straight at the blank back for as far as that folded-over stretch extends).
                     val backFrac = ((theta - halfPi) / (thetaMax - halfPi)).coerceIn(0f, 1f)
-                    // Shading peaks at theta=90° (the part most edge-on to the viewer) but is now
-                    // scaled by (1 - backFrac) so it's ALWAYS zero once the back is fully showing —
-                    // it only ever darkens the front-facing curve, never the blank back beneath it.
-                    val shadeAlpha = (((0.45f * kotlin.math.sin(theta)) * 140) * (1f - backFrac)).toInt().coerceIn(0, 255)
-                    val whiteAlpha = (backFrac * 255).toInt().coerceIn(0, 255)
-                    // Standard "white over black" alpha compositing — black's own RGB is (0,0,0)
-                    // so it only ever contributes to alpha, not color.
-                    val outA = whiteAlpha + shadeAlpha * (255 - whiteAlpha) / 255
-                    val outRgb = if (outA > 0) 255 * whiteAlpha / outA else 0
-                    overlayAt[pi] = Color.argb(outA, outRgb, outRgb, outRgb)
+                    overlayAt[pi] = Color.argb((backFrac * 255).toInt().coerceIn(0, 255), 255, 255, 255)
+                } else if (proj < pullDist + shadowDepth) {
+                    // Just past the crease, on the still-flat part of the page — dark right at the
+                    // fold, fading to nothing by shadowDepth away from it.
+                    val shadowFrac = 1f - (proj - pullDist) / shadowDepth
+                    overlayAt[pi] = Color.argb((shadowFrac * 90).toInt().coerceIn(0, 90), 0, 0, 0)
                 }
                 verts[vi] = baseLeft + anchorLocalX + ux * newProj + vx * perp
                 verts[vi + 1] = baseTop + anchorLocalY + uy * newProj + vy * perp
@@ -3619,29 +3625,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // there at all" rather than what it should look like: the SAME page still sitting flat
         // underneath, since physically there's nowhere for it to have gone.
         drawBookPage(canvas, if (nextPageIdx in 0 until pageCount) nextPageIdx else readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, layout.fitScale, 0f, 0)
-        // Cast shadow onto the page beneath, right at the crease, BEFORE the curl itself is drawn
-        // — a band running the full length of the fold (a LinearGradient oriented along the pull
-        // direction, constant across the perpendicular direction) rather than a small radial spot
-        // at one point, which is what the earlier version did and is why it looked like an
-        // isolated blob instead of a shadow following the actual boundary between the curl and
-        // the page it's revealing.
-        if (pullDist > 1f) {
-            val ux = pullDx / pullDist; val uy = pullDy / pullDist
-            val boundedPullDist = pullDist.coerceAtMost(pageScreenW)
-            val creaseX = anchorX + ux * boundedPullDist
-            val creaseY = anchorY + uy * boundedPullDist
-            val curlRadiusForShadow = kotlin.math.min(dp(130).toFloat(), pageScreenW * 0.4f)
-            val shadowDepth = curlRadiusForShadow * 0.55f
-            val farX = creaseX + ux * shadowDepth
-            val farY = creaseY + uy * shadowDepth
-            val progress = (boundedPullDist / pageScreenW).coerceIn(0f, 1f)
-            val alpha = (progress * 80).toInt().coerceIn(0, 80)
-            val shader = android.graphics.LinearGradient(creaseX, creaseY, farX, farY, Color.argb(alpha, 0, 0, 0), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
-            canvas.save()
-            canvas.clipRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH)
-            canvas.drawRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH, Paint().apply { this.shader = shader })
-            canvas.restore()
-        }
+        // The crease shadow used to be drawn here as a separate layer before the curl — but the
+        // curl's own flat (unwarped) region gets drawn right on top of this exact area
+        // immediately afterward, which fully painted over it. It's now baked directly into
+        // drawCurlingPage()'s own mesh/overlay instead, where it can't get covered.
         val bitmap = getOrRenderPageCurlBitmap(readPageIndex, pageScreenW, pageScreenH, layout.fitScale)
         if (bitmap != null) {
             drawCurlingPage(canvas, bitmap, baseLeft, baseTop, pageScreenW, pageScreenH, anchorX - baseLeft, anchorY - baseTop, pullDx, pullDy, pullDist)
