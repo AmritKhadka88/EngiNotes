@@ -3456,6 +3456,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // Mirror it once here, right alongside — same lifetime/invalidation as the front
             // bitmap, so there's no separate cache-key bookkeeping to keep in sync.
             val mirror = Bitmap.createBitmap(bmp, 0, 0, w, h, android.graphics.Matrix().apply { setScale(-1f, 1f) }, false)
+            // Wash it with a translucent pass of the paper color — a real page's ink shows through
+            // the back faint/grayed, not sharp black. This blends dark ink pixels most of the way
+            // toward the paper tone (a big visual change) while barely affecting pixels that were
+            // already near that color (the page background), which is the effect actually wanted:
+            // fade the TEXT, not just dim the whole bitmap uniformly. Staying fully opaque
+            // throughout (this is a flat wash, not adding transparency) still lets the mirror
+            // properly obscure the front content wherever it's drawn — only its own ink is faded.
+            Canvas(mirror).drawColor(Color.argb(190, 0xF6, 0xF3, 0xE9))
             pageCurlMirrorBitmap?.let { if (!it.isRecycled) it.recycle() }
             pageCurlMirrorBitmap = mirror
             bmp
@@ -3482,15 +3490,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
      * caller can scale the shadow it casts onto the page beneath accordingly. */
     private fun drawCurlingPage(
         canvas: Canvas, bitmap: Bitmap, mirrorBitmap: Bitmap, baseLeft: Float, baseTop: Float, pageScreenW: Float, pageScreenH: Float,
-        anchorLocalX: Float, anchorLocalY: Float, pullDx: Float, pullDy: Float, pullDist: Float
+        anchorLocalX: Float, anchorLocalY: Float, pullDx: Float, pullDy: Float, pullDistRaw: Float
     ): Float {
-        if (pullDist < 1f) {
+        if (pullDistRaw < 1f) {
             canvas.save(); canvas.clipRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH)
             canvas.drawBitmap(bitmap, baseLeft, baseTop, null)
             canvas.restore()
             return 0f
         }
-        val ux = pullDx / pullDist; val uy = pullDy / pullDist
+        // A real page can't fold over more of itself than its own width — letting pullDist grow
+        // past that (which the release/auto-complete animation does on purpose, to guarantee it
+        // reaches "fully turned") meant the folded-over portion's straight run kept extending
+        // further and further the more you dragged, well past where the page's own far edge would
+        // physically be. Capping the distance actually used for the fold geometry at the page's
+        // own width bounds it to a physically sensible maximum extent.
+        val pullDist = pullDistRaw.coerceAtMost(pageScreenW)
+        val ux = pullDx / pullDistRaw; val uy = pullDy / pullDistRaw
         val vx = -uy; val vy = ux  // perpendicular to the pull direction
         val curlRadius = kotlin.math.min(dp(130).toFloat(), pageScreenW * 0.4f)
         // Roll ONCE through the bend (0..thetaMax, the same R·sin(θ) arc as before), then continue
@@ -3534,11 +3549,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         pullDist + projAtThetaMax + tangentSlope * (thetaRaw - thetaMax)
                     }
                     val theta = thetaRaw.coerceAtMost(thetaMax)
-                    // Peaks at theta=90° (the part most edge-on to the viewer, so darkest), holds
-                    // at whatever it reached by thetaMax for the whole straight continuation beyond
-                    // it — that flat folded-over stretch has one consistent lighting, not more
-                    // curvature to shade.
-                    shadeAlphaAt[pi] = ((0.45f * kotlin.math.sin(theta)) * 140).toInt().coerceIn(0, 255)
+                    // Shadow lives ONLY on the curved bend itself (a real page's shadow comes from
+                    // its curvature catching the light, not from a flat folded-over stretch) —
+                    // ramps up through the bend and back down again as it exits, instead of the
+                    // earlier version which held constant for the entire straight run beyond the
+                    // bend, smearing a flat gray tint across the whole folded-over flap.
+                    val shadeEnvelope = if (thetaRaw <= thetaMax) 1f else (1f - (thetaRaw - thetaMax) / (halfPi)).coerceIn(0f, 1f)
+                    shadeAlphaAt[pi] = ((0.45f * kotlin.math.sin(theta)) * 140 * shadeEnvelope).toInt().coerceIn(0, 255)
                     // 0 before the fold swings past vertical, ramping to full by thetaMax, then
                     // staying fully opaque for the entire straight continuation beyond — once
                     // you're past the bend you're looking straight at the back of the page for
@@ -3636,17 +3653,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             drawBookPage(canvas, readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, layout.fitScale, 0f, 0)
             0f
         }
-        // Soft shadow the lifted curl casts onto the page beneath, emanating from the anchor
-        // corner along the pull direction — width and opacity both scale with how far the page
-        // has curled, same as a real sheet casting a deeper shadow the higher it lifts off the
-        // page below. A directional gradient along the pull axis rather than a pixel-precise
-        // silhouette of the curl's wedge shape, but reads correctly at the sizes this renders at.
+        // Soft shadow the lifted curl casts onto the page beneath — centered on the actual
+        // curved bend (not the far end of the drag, which is what the previous version did:
+        // positioning it at up to 1.6× the page width out along the pull direction put the
+        // shadow way out past the visible curve entirely once the straight continuation got
+        // long, nowhere near where the page is actually curved). Width and opacity both scale
+        // with how far the page has curled, same as a real sheet casting a deeper shadow the
+        // higher it lifts off the page below.
         if (curlProgress > 0.001f) {
             val ux = pullDx / pullDist; val uy = pullDy / pullDist
-            val shadowLen = dp(40).toFloat() * curlProgress.coerceAtMost(1f)
-            val foldX = anchorX + ux * pullDist.coerceAtMost(pageScreenW * 1.6f)
-            val foldY = anchorY + uy * pullDist.coerceAtMost(pageScreenW * 1.6f)
-            val alpha = (curlProgress * 100).toInt().coerceIn(0, 100)
+            val curlRadiusForShadow = kotlin.math.min(dp(130).toFloat(), pageScreenW * 0.4f)
+            val boundedPullDist = pullDist.coerceAtMost(pageScreenW)
+            val peakDist = (boundedPullDist - curlRadiusForShadow).coerceAtLeast(0f)
+            val shadowLen = curlRadiusForShadow * 0.8f
+            val foldX = anchorX + ux * peakDist
+            val foldY = anchorY + uy * peakDist
+            val alpha = (curlProgress * 90).toInt().coerceIn(0, 90)
             val shader = android.graphics.RadialGradient(foldX, foldY, shadowLen, Color.argb(alpha, 0, 0, 0), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
             canvas.save()
             canvas.clipRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH)
