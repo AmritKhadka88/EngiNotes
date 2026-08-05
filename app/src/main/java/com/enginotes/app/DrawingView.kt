@@ -3473,13 +3473,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
      * pageTurnCurlAnchorYFrac), following the finger's full 2D position continuously. Model: for
      * each mesh point, project its position onto the pull direction (anchor -> touch); points
      * whose projection is beyond the current pull distance are untouched (still flat); points
-     * within it get mapped onto an arc of radius R, rolling once through 0..thetaMax (~135 deg)
-     * and then continuing along that arc's own tangent line beyond it -- a straight extrapolation,
-     * not a continued sine curve (which would swing back down and coil into a tube past 90 deg)
-     * and not a frozen/compressed position either (which was an earlier attempt here and caused
-     * an unbounded amount of source content to compress into the same screen pixels the further
-     * you dragged). No mirrored back-face -- the curled region is solid white immediately, with a
-     * thin dark-to-light shadow gradient baked into the same mesh pass right at the crease. */
+     * within it get mapped onto an arc of radius R, with theta (the roll angle) allowed to swing
+     * the full 180° — this is what gives the visible rolling/coiling character as you drag
+     * further (past 90°, the arc swings back in toward the crease rather than continuing to
+     * extend outward), specifically chosen here over a flatter, less-curved tangent-line
+     * continuation that was tried in between. No mirrored back-face — the curled region is solid
+     * white immediately, with a thin dark-to-light shadow gradient baked into the same mesh pass
+     * right at the crease. */
     private fun drawCurlingPage(
         canvas: Canvas, bitmap: Bitmap, baseLeft: Float, baseTop: Float, pageScreenW: Float, pageScreenH: Float,
         anchorLocalX: Float, anchorLocalY: Float, pullDx: Float, pullDy: Float, pullDistRaw: Float
@@ -3495,9 +3495,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val ux = pullDx / pullDistRaw; val uy = pullDy / pullDistRaw
         val vx = -uy; val vy = ux  // perpendicular to the pull direction
         val curlRadius = kotlin.math.min(dp(130).toFloat(), pageScreenW * 0.4f)
-        val thetaMax = Math.PI.toFloat() * 0.75f
-        val tangentSlope = -curlRadius * kotlin.math.cos(thetaMax)  // d(newProj)/d(thetaRaw) at thetaMax
-        val projAtThetaMax = -curlRadius * kotlin.math.sin(thetaMax)  // newProj-minus-pullDist at thetaMax
+        // theta capped at a full 180° rather than the ~135°-then-straight-tangent compromise —
+        // this is what actually produces the visible "rolling/coiling" look (a fold that swings
+        // all the way around and back near the crease as it's dragged further), which is what
+        // was specifically asked for here over the tangent-line version's flatter, less curved
+        // fold.
+        val thetaMax = Math.PI.toFloat()
         val cols = 64; val rows = 40
         val vertCount = (cols + 1) * (rows + 1)
         val verts = FloatArray(vertCount * 2)
@@ -3515,11 +3518,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (proj < pullDist) {
                     val distIntoRoll = pullDist - proj
                     val thetaRaw = distIntoRoll / curlRadius
-                    newProj = if (thetaRaw <= thetaMax) {
-                        pullDist - curlRadius * kotlin.math.sin(thetaRaw)
-                    } else {
-                        pullDist + projAtThetaMax + tangentSlope * (thetaRaw - thetaMax)
-                    }
+                    val theta = thetaRaw.coerceAtMost(thetaMax)
+                    newProj = pullDist - curlRadius * kotlin.math.sin(theta)
                     // Fully opaque white the instant a point starts curling -- no gradual fade-in
                     // (an earlier version faded it, which let compressed/overlapping original
                     // text bleed through and blend into a gray smear).
