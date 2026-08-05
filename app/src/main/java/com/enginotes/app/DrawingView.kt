@@ -3492,19 +3492,22 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         val ux = pullDx / pullDist; val uy = pullDy / pullDist
         val vx = -uy; val vy = ux  // perpendicular to the pull direction
-        val curlRadius = kotlin.math.min(dp(90).toFloat(), pageScreenW * 0.28f)
+        val curlRadius = kotlin.math.min(dp(130).toFloat(), pageScreenW * 0.4f)
         // Roll ONCE through the bend (0..thetaMax, the same R·sin(θ) arc as before), then continue
         // in an actual straight line beyond it — using the tangent slope at thetaMax as a constant
         // rate, rather than either continuing the sine (which swings back down and coils into a
-        // tube past 90°) or freezing/fading it (which was the previous attempt: holding position
-        // constant compressed an ever-growing range of source content into the same screen pixels,
-        // and fading THAT out just made it disappear instead of fixing the compression). A straight
-        // linear continuation keeps the mapping from original page position to screen position
-        // one-to-one no matter how far the drag goes — no compression, nothing to hide — which is
-        // also just physically correct: past the bend, the folded-over page IS flat again (its
-        // back now facing the viewer), continuing away from the fold in a straight line, not
-        // curving further.
-        val thetaMax = Math.PI.toFloat() * 0.58f
+        // tube past 90°) or freezing/fading it (an earlier attempt: holding position constant
+        // compressed an ever-growing range of source content into the same screen pixels, and
+        // fading THAT out just made it disappear instead of fixing the compression).
+        // thetaMax at 135° (rather than the ~104° used initially) makes the curved bend itself
+        // more prominent — the previous angle made the turned page look "barely bent, mostly
+        // straight" — AND, since the straight continuation's rate is set by cos(thetaMax), pushing
+        // thetaMax further past 90° also means LESS compression on that continuation: cos(104°)
+        // ≈ -0.24 (only ~24% of each unit dragged actually showed as visible back-of-page width,
+        // which read as "the back isn't appearing fast enough"), vs cos(135°) ≈ -0.71 (~71%) — much
+        // closer to a natural, direct correspondence between how far you've dragged and how much
+        // of the back you can see.
+        val thetaMax = Math.PI.toFloat() * 0.75f
         val halfPi = Math.PI.toFloat() / 2f
         val tangentSlope = -curlRadius * kotlin.math.cos(thetaMax)  // d(newProj)/d(thetaRaw) at thetaMax
         val projAtThetaMax = -curlRadius * kotlin.math.sin(thetaMax)  // newProj-minus-pullDist at thetaMax
