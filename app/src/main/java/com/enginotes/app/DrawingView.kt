@@ -3283,11 +3283,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 pageTurnTouchX = event.x; pageTurnTouchY = event.y
                 val layout = computePageLayout()
                 val topFrac = ((event.y - layout.baseTop) / layout.pageScreenH).coerceIn(0f, 1f)
-                pageTurnCurlAnchorYFrac = when {
-                    topFrac < 0.14f -> 0f
-                    topFrac > 0.86f -> 1f
-                    else -> topFrac
-                }
+                // Always snap to the nearest corner (top or bottom), never float to the exact
+                // touch height. A mid-edge anchor puts anchorY ≈ touchY, which makes the pull
+                // direction nearly parallel to the page — the roll's projection barely varies
+                // by row, so instead of a tapered corner wedge you get a uniform-width diagonal
+                // band running the full page height (looked like a glitch, not a curl).
+                pageTurnCurlAnchorYFrac = if (topFrac < 0.5f) 0f else 1f
                 // Direction (and therefore which edge the curl lifts from) is decided ONCE here,
                 // from which half of the page was touched — not re-derived live from drag delta
                 // on every frame the way it used to be. Recomputing it live meant the tiniest
@@ -3530,6 +3531,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val shadowDepth = curlRadius * 0.5f
         val shadowAt = IntArray(vertCount)
         val backAlphaAt = IntArray(vertCount)
+        // Front bitmap's own per-vertex alpha — defaults to fully opaque (255) for every point
+        // that never enters the roll at all (proj >= pullDist), and only drops below that once a
+        // point has rolled past 90° (see below).
+        val frontAlphaAt = IntArray(vertCount) { 255 }
         var vi = 0; var pi = 0
         for (row in 0..rows) {
             val py = pageScreenH * row / rows
@@ -3542,12 +3547,23 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (proj < pullDist) {
                     val distIntoRoll = pullDist - proj
                     val thetaRaw = distIntoRoll / curlRadius
-                    val theta = thetaRaw.coerceAtMost(thetaMax)
-                    newProj = pullDist - curlRadius * kotlin.math.sin(theta)
+                    // Geometric position is capped at 90° — sin(theta) is one-to-one over 0..90°,
+                    // but past that it starts DEcreasing again, so continuing to move the vertex
+                    // by sin(theta) all the way to 180° would map two genuinely different original
+                    // page positions onto the same screen pixel (whichever one is drawn second just
+                    // stacks on top with nothing to hide the other) — that's what was producing the
+                    // overlapping/duplicated "ghost text". Freezing the position at the 90° edge
+                    // once a point is fully rolled avoids that; only opacity keeps changing past
+                    // this point (front fading out, mirrored back fading in below), which is what a
+                    // real page rolling out of view would look like anyway.
+                    val thetaPos = thetaRaw.coerceAtMost(halfPi)
+                    newProj = pullDist - curlRadius * kotlin.math.sin(thetaPos)
+                    val thetaFade = thetaRaw.coerceAtMost(thetaMax)
                     // 0 before the fold swings past vertical, ramping to fully opaque by theta=180°
                     // — this is what the mirrored-bitmap pass below fades in by, so the back of
                     // the page only becomes visible once you'd actually be looking at its underside.
-                    backAlphaAt[pi] = (((theta - halfPi) / (thetaMax - halfPi)).coerceIn(0f, 1f) * 255).toInt()
+                    backAlphaAt[pi] = (((thetaFade - halfPi) / (thetaMax - halfPi)).coerceIn(0f, 1f) * 255).toInt()
+                    frontAlphaAt[pi] = 255 - backAlphaAt[pi]
                 } else if (proj < pullDist + shadowDepth) {
                     // Just past the crease, on the still-flat part of the page -- dark right at
                     // the fold, fading to nothing by shadowDepth away from it.
@@ -3561,7 +3577,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         canvas.save()
         canvas.clipRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH)
-        canvas.drawBitmapMesh(bitmap, cols, rows, verts, 0, null, 0, meshPaint)
+        canvas.drawBitmapMesh(bitmap, cols, rows, verts, 0, IntArray(vertCount) { Color.argb(frontAlphaAt[it], 255, 255, 255) }, 0, meshPaint)
         // Real mirrored back-of-the-page, faded in per-vertex via backAlphaAt (the colors array's
         // per-vertex alpha modulates the sampled texture, so this fades smoothly exactly as theta
         // swings past vertical).
