@@ -3231,13 +3231,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var pageTurnStartY = 0f
     private var pageTurnTouchX = 0f
     private var pageTurnTouchY = 0f
-    // Which corner the curl lifts from — locked once per gesture (touching the upper half of the
-    // page curls from the top corner, lower half from the bottom corner, matching Moon
-    // Reader/iBooks-style curl readers) rather than always peeling from one fixed corner.
-    private var pageTurnCurlFromTop = true
+    // Where along the turning edge the curl anchors, as a 0..1 fraction of page height (0 = top
+    // corner, 1 = bottom corner) — locked once per gesture, from where the touch started. Touching
+    // near the top or bottom snaps to that corner (a real corner-peel); touching nearer the middle
+    // anchors directly opposite the touch's own height instead of being forced into one corner or
+    // the other, giving a more symmetric, nearly-vertical curl for a mid-edge drag — matching how
+    // curl readers support both a corner-peel AND a flatter mid-edge curl, not just corners.
+    private var pageTurnCurlAnchorYFrac = 0f
     // Which edge is "forward" (turning to next page, curling from the right) vs "backward"
     // (turning to previous, curling from the left) — locked once per gesture from which half of
-    // the page was touched, same reasoning as pageTurnCurlFromTop above.
+    // the page was touched, same reasoning as pageTurnCurlAnchorYFrac above.
     private var pageTurnForward = true
     private var pageTurnAnimator: android.animation.ValueAnimator? = null
 
@@ -3279,7 +3282,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 pageTurnStartX = event.x; pageTurnStartY = event.y
                 pageTurnTouchX = event.x; pageTurnTouchY = event.y
                 val layout = computePageLayout()
-                pageTurnCurlFromTop = (event.y - layout.baseTop) < layout.pageScreenH / 2f
+                val topFrac = ((event.y - layout.baseTop) / layout.pageScreenH).coerceIn(0f, 1f)
+                pageTurnCurlAnchorYFrac = when {
+                    topFrac < 0.35f -> 0f
+                    topFrac > 0.65f -> 1f
+                    else -> topFrac
+                }
                 // Direction (and therefore which edge the curl lifts from) is decided ONCE here,
                 // from which half of the page was touched — not re-derived live from drag delta
                 // on every frame the way it used to be. Recomputing it live meant the tiniest
@@ -3331,7 +3339,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private fun settlePageTurn(targetPageIndex: Int) {
         val layout = computePageLayout()
         val anchorX = if (pageTurnForward) layout.baseLeft + layout.pageScreenW else layout.baseLeft
-        val anchorY = if (pageTurnCurlFromTop) layout.baseTop else layout.baseTop + layout.pageScreenH
+        val anchorY = layout.baseTop + pageTurnCurlAnchorYFrac * layout.pageScreenH
         val curDx = pageTurnTouchX - anchorX; val curDy = pageTurnTouchY - anchorY
         val curDist = kotlin.math.hypot(curDx, curDy).coerceAtLeast(1f)
         val ux = curDx / curDist; val uy = curDy / curDist
@@ -3563,7 +3571,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
         val forward = pageTurnForward
         val anchorX = if (forward) baseLeft + pageScreenW else baseLeft
-        val anchorY = if (pageTurnCurlFromTop) baseTop else baseTop + pageScreenH
+        val anchorY = baseTop + pageTurnCurlAnchorYFrac * pageScreenH
         val pullDx = pageTurnTouchX - anchorX; val pullDy = pageTurnTouchY - anchorY
         val pullDist = kotlin.math.hypot(pullDx, pullDy)
         if (pullDist < 1f) {
