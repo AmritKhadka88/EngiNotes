@@ -3538,8 +3538,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val creaseLen = kotlin.math.hypot(creaseDx, creaseDy).coerceAtLeast(1f)
         var perpX = -creaseDy / creaseLen; var perpY = creaseDx / creaseLen
         if ((turnX - topCurl.x) * perpX < 0) { perpX = -perpX; perpY = -perpY }
-        val maxFlapWidth = kotlin.math.min(dp(130).toFloat(), pageScreenW * 0.4f)
-        val flapWidth = pullDist.coerceAtMost(maxFlapWidth)
+        // Grows across nearly the WHOLE drag range now (was capped at a small fixed 130dp before
+        // — for a normal-width drag that cap gets hit almost immediately, so the flap looked like
+        // a constant-width band for most of the gesture instead of visibly growing). Eased with a
+        // quadratic curve (t²) rather than growing 1:1 with the raw drag distance, so the very
+        // start of a slide barely moves it and it visibly accelerates the further you drag — a
+        // deliberate "slow to start, speeds up" feel rather than a strict linear follow.
+        val maxFlapWidth = pageScreenW * 0.85f
+        val flapT = (pullDist / maxFlapWidth).coerceIn(0f, 1f)
+        val flapWidth = (flapT * flapT) * maxFlapWidth
         val flapFarTop = CPt(topCurl.x + perpX * flapWidth, topCurl.y + perpY * flapWidth)
         val flapFarBottom = CPt(bottomCurl.x + perpX * flapWidth, bottomCurl.y + perpY * flapWidth)
         val polyPath = Path().apply {
