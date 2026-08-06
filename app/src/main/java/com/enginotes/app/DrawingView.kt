@@ -3522,13 +3522,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 // The touch point itself always sits at perp=0 (by construction — u points exactly
                 // from anchor to touch). Tapering the effective fold depth down from its full value
                 // at perp=0 to zero at the taper edge is what gives the curl a natural, curved
-                // "dog-ear" shape — deepest where you're actually pulling, narrowing smoothly toward
-                // the page's far edges/corners — instead of the same depth being applied uniformly
-                // across the whole page height, which is what was producing a rigid, uniform-width
-                // box shape rather than a real curl.
-                val taperDist = pullDist.coerceAtLeast(curlRadius)
-                val taperFrac = (kotlin.math.abs(perp) / taperDist).coerceIn(0f, 1f)
-                val localPullDist = pullDist * (0.5f * (1f + kotlin.math.cos(Math.PI.toFloat() * taperFrac)))
+                // The anchor corner is physically pinned, so the fold depth must taper to zero
+                // exactly at the anchor's own edge (Y=0 or Y=pageScreenH, whichever corner it's
+                // pinned to) and ramp up to full depth by the row where you're actually touching —
+                // then stay at that full depth for the rest of the page beyond the touch, since
+                // nothing pins that far side. This is what gives the curl its natural, one-sided
+                // taper (curved near the anchor's corner, like a real page peeling off it) instead
+                // of a rigid uniform-width box. (An earlier version of this tapered symmetrically
+                // around the touch point instead, which pinched BOTH ends toward zero — a
+                // lens/crescent shape rather than a real curl silhouette.)
+                val touchLocalY = anchorLocalY + pullDy
+                val edgeSideFrac = if (kotlin.math.abs(touchLocalY - anchorLocalY) > 1f) {
+                    ((py - anchorLocalY) / (touchLocalY - anchorLocalY)).coerceIn(0f, 1f)
+                } else 1f
+                val localPullDist = pullDist * (0.5f * (1f - kotlin.math.cos(Math.PI.toFloat() * edgeSideFrac)))
                 val localCurlRadius = kotlin.math.min(curlRadius, localPullDist)
                 if (localPullDist > 1f && proj < localPullDist) {
                     val distIntoRoll = localPullDist - proj
