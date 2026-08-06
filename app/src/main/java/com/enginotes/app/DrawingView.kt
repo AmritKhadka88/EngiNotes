@@ -3477,13 +3477,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             canvas.restore()
             return 0f
         }
-        // A real page can't fold over more of itself than its own width — letting pullDist grow
-        // past that (which the release/auto-complete animation does on purpose, to guarantee it
-        // reaches "fully turned") meant the folded-over portion's straight run kept extending
-        // further and further the more you dragged, well past where the page's own far edge would
-        // physically be. Capping the distance actually used for the fold geometry at the page's
-        // own width bounds it to a physically sensible maximum extent.
-        val pullDist = pullDistRaw.coerceAtMost(pageScreenW)
+        // A real page can't fold over more of itself than its own extent in the direction it's
+        // being pulled — capped by the page's diagonal (not just its width) so this doesn't cap a
+        // mostly-vertical drag on a page that's much taller than it is wide far too early.
+        val pageDiagonal = kotlin.math.hypot(pageScreenW, pageScreenH)
+        val pullDist = pullDistRaw.coerceAtMost(pageDiagonal)
         val ux = pullDx / pullDistRaw; val uy = pullDy / pullDistRaw
         val vx = -uy; val vy = ux  // perpendicular to the pull direction
         val curlRadius = kotlin.math.min(dp(130).toFloat(), pageScreenW * 0.4f)
@@ -3672,7 +3670,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (pullDist > 1f) {
             val ux = pullDx / pullDist; val uy = pullDy / pullDist
             val vx = -uy; val vy = ux
-            val boundedPullDist = pullDist.coerceAtMost(pageScreenW)
+            val pageDiagonal = kotlin.math.hypot(pageScreenW, pageScreenH)
+            val boundedPullDist = pullDist.coerceAtMost(pageDiagonal)
             val curlRadiusForShadow = kotlin.math.min(dp(130).toFloat(), pageScreenW * 0.4f)
             val rollNearDist = (boundedPullDist - curlRadiusForShadow).coerceAtLeast(0f)
             val edgeX = anchorX + ux * rollNearDist
