@@ -143,6 +143,7 @@ class MainActivity : AppCompatActivity() {
     internal var textSelectionItem: TextItem? = null
     internal var textSelectionHandles: List<View> = emptyList()
     internal var layerToolbar: View? = null
+    private var layerToolbarPopup: PopupWindow? = null
     private val recentFonts = mutableListOf("sans-serif", "serif", "monospace")
 
     // Returns a short display name for a font family string (system name or file path)
@@ -796,6 +797,7 @@ class MainActivity : AppCompatActivity() {
             if (dimModeEnabled) {
                 if (item != null) showDimOverlayForSelected() else clearDimOverlay()
             }
+            layerToolbarPopup?.dismiss(); layerToolbarPopup = null
             if (item == null) {
                 // Tapped outside a shape — restore the last shape tool so user can keep drawing
                 val restore = lastShapeTool
@@ -804,15 +806,9 @@ class MainActivity : AppCompatActivity() {
                 val tb = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
-                }
-                val scroll = HorizontalScrollView(this).apply {
-                    isHorizontalScrollBarEnabled = false
                     background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(18).toFloat() }
                     elevation = dp(5).toFloat()
-                    layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).also {
-                        it.gravity = Gravity.TOP or Gravity.END; it.topMargin = dp(56); it.rightMargin = dp(8)
-                    }
-                    addView(tb)
+                    setPadding(dp(4), dp(4), dp(4), dp(4))
                 }
                 val iconSize = dp(30)
                 fun sep() = View(this).apply {
@@ -847,8 +843,9 @@ class MainActivity : AppCompatActivity() {
                 }
                 if (item is StrokeItem) {
                     sep()
-                    lBtn("Offset") { showOffsetDialog(item) }
+                    lBtn("Offset") { layerToolbarPopup?.dismiss(); layerToolbarPopup = null; showOffsetDialog(item) }
                     lBtn("Explode") {
+                        layerToolbarPopup?.dismiss(); layerToolbarPopup = null
                         val pieces = drawingView.explodeItem(item)
                         if (pieces == null) {
                             Toast.makeText(this, "Can't explode this — curves and simple lines aren't explodable", Toast.LENGTH_SHORT).show()
@@ -866,10 +863,44 @@ class MainActivity : AppCompatActivity() {
                 }
                 iconBtn("🗑") {
                     drawingView.deleteAnyItem(item)
-                    canvasContainer.removeView(scroll); layerToolbar = null
+                    layerToolbarPopup?.dismiss(); layerToolbarPopup = null
+                    layerToolbar?.let { canvasContainer.removeView(it) }; layerToolbar = null
                 }
-                canvasContainer.addView(scroll)
-                layerToolbar = scroll
+                // Small round trigger button, always at a fixed spot clear of every other panel
+                // (bottom-right, sitting well above the bottom toolbar dock) — unlike the options
+                // row itself, this anchor never moves or depends on item position/screen size, so
+                // it can never end up covered or pushed off-screen the way the old always-expanded
+                // panel could. Tapping it shows the same options as a popup anchored to this button.
+                val trigger = TextView(this).apply {
+                    text = "⋮"; textSize = 18f; gravity = Gravity.CENTER
+                    setTextColor(Color.WHITE)
+                    val sz = dp(42)
+                    layoutParams = FrameLayout.LayoutParams(sz, sz).also {
+                        it.gravity = Gravity.BOTTOM or Gravity.END
+                        it.rightMargin = dp(10)
+                        // Clear of the bottom toolbar dock (context row + primary row + divider) —
+                        // measured from the dock itself rather than a guessed constant, so this
+                        // still clears it correctly if the user's icon-size preference changes the
+                        // dock's actual height.
+                        val dock = findViewById<View>(R.id.bottomToolbarDock)
+                        it.bottomMargin = (dock?.height?.takeIf { h -> h > 0 } ?: dp(100)) + dp(12)
+                    }
+                    background = themedButtonDrawable(this@MainActivity, currentAppTheme(), currentThemeSpec().button, oval = true)
+                    elevation = dp(6).toFloat()
+                    setOnClickListener {
+                        if (layerToolbarPopup?.isShowing == true) { layerToolbarPopup?.dismiss(); layerToolbarPopup = null; return@setOnClickListener }
+                        val popup = PopupWindow(tb, LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT, true)
+                        popup.isOutsideTouchable = true
+                        popup.elevation = dp(6).toFloat()
+                        // showAsDropDown positions relative to this anchor and Android already
+                        // flips it above the anchor when there isn't room below — since the anchor
+                        // itself is always on-screen, the popup can't end up hidden either.
+                        popup.showAsDropDown(this, -dp(4), -(height + dp(4)))
+                        layerToolbarPopup = popup
+                    }
+                }
+                canvasContainer.addView(trigger)
+                layerToolbar = trigger
             }
         }
         drawingView.onTableCellEditRequest = { table, row, col, sx, sy -> showTableCellEditor(table, row, col, sx, sy) }
