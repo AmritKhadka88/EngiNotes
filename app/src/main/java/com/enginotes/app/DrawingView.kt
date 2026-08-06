@@ -3680,14 +3680,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // Fades going BACK toward the anchor (-ux), into the page-beneath's exposed territory.
             val farX = edgeX - ux * shadowDepth
             val farY = edgeY - uy * shadowDepth
-            val progress = (boundedPullDist / pageScreenW).coerceIn(0f, 1f)
+            // Same distance metric (pageDiagonal) as the rest of the geometry — this used to divide
+            // by pageScreenW while the curl itself was already capped by pageDiagonal, so on a long
+            // vertical drag the shadow's alpha would race ahead of and desync from the actual curl.
+            val progress = (boundedPullDist / pageDiagonal).coerceIn(0f, 1f)
             val alpha = (progress * 130).toInt().coerceIn(0, 130)
             val shader = android.graphics.LinearGradient(edgeX, edgeY, farX, farY, Color.argb(alpha, 0, 0, 0), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
             canvas.save()
             canvas.clipRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH)
-            // Hard-bound the fill to a band around that edge, running the fold's full length —
-            // built directly from the same (ux,uy)/(vx,vy) axes as the gradient itself so it can
-            // never end up wider than intended regardless of any transform state elsewhere.
+            // Draw the band polygon itself, rather than clipping a full-page rect fill to it. The
+            // previous version built a quad up to pageDiagonal long (thousands of px) but only
+            // shadowDepth (14dp) wide — an extremely thin, long shape — then intersected it with
+            // clipPath() against another rect. That combination (a near-degenerate aspect-ratio
+            // polygon run through the clip rasterizer, clipped a second time) is a known-flaky
+            // pattern; drawing the polygon directly with the shader removes that extra clipping
+            // stage entirely, which is a strictly simpler and more reliable path to the same pixels.
             val bandHalf = kotlin.math.max(pageScreenW, pageScreenH)
             val bandPath = android.graphics.Path().apply {
                 moveTo(edgeX + vx * bandHalf, edgeY + vy * bandHalf)
@@ -3696,8 +3703,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 lineTo(farX + vx * bandHalf, farY + vy * bandHalf)
                 close()
             }
-            canvas.clipPath(bandPath)
-            canvas.drawRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH, Paint().apply { this.shader = shader })
+            canvas.drawPath(bandPath, Paint().apply { this.shader = shader; isAntiAlias = true })
             canvas.restore()
         }
         val bitmap = getOrRenderPageCurlBitmap(readPageIndex, pageScreenW, pageScreenH, layout.fitScale)
