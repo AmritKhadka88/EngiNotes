@@ -143,6 +143,7 @@ class MainActivity : AppCompatActivity() {
     internal var textSelectionItem: TextItem? = null
     internal var textSelectionHandles: List<View> = emptyList()
     internal var layerToolbar: View? = null
+    private var layerToolbarPopup: PopupWindow? = null
     private val recentFonts = mutableListOf("sans-serif", "serif", "monospace")
 
     // Returns a short display name for a font family string (system name or file path)
@@ -796,6 +797,7 @@ class MainActivity : AppCompatActivity() {
             if (dimModeEnabled) {
                 if (item != null) showDimOverlayForSelected() else clearDimOverlay()
             }
+            layerToolbarPopup?.dismiss(); layerToolbarPopup = null
             if (item == null) {
                 // Tapped outside a shape — restore the last shape tool so user can keep drawing
                 val restore = lastShapeTool
@@ -804,15 +806,9 @@ class MainActivity : AppCompatActivity() {
                 val tb = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
-                }
-                val scroll = HorizontalScrollView(this).apply {
-                    isHorizontalScrollBarEnabled = false
                     background = android.graphics.drawable.GradientDrawable().apply { setColor(currentThemeBackgroundColor()); cornerRadius = dp(18).toFloat() }
                     elevation = dp(5).toFloat()
-                    layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).also {
-                        it.gravity = Gravity.TOP or Gravity.END; it.topMargin = dp(56); it.rightMargin = dp(8)
-                    }
-                    addView(tb)
+                    setPadding(dp(4), dp(4), dp(4), dp(4))
                 }
                 val iconSize = dp(30)
                 fun sep() = View(this).apply {
@@ -847,8 +843,9 @@ class MainActivity : AppCompatActivity() {
                 }
                 if (item is StrokeItem) {
                     sep()
-                    lBtn("Offset") { showOffsetDialog(item) }
+                    lBtn("Offset") { layerToolbarPopup?.dismiss(); layerToolbarPopup = null; showOffsetDialog(item) }
                     lBtn("Explode") {
+                        layerToolbarPopup?.dismiss(); layerToolbarPopup = null
                         val pieces = drawingView.explodeItem(item)
                         if (pieces == null) {
                             Toast.makeText(this, "Can't explode this — curves and simple lines aren't explodable", Toast.LENGTH_SHORT).show()
@@ -866,10 +863,44 @@ class MainActivity : AppCompatActivity() {
                 }
                 iconBtn("🗑") {
                     drawingView.deleteAnyItem(item)
-                    canvasContainer.removeView(scroll); layerToolbar = null
+                    layerToolbarPopup?.dismiss(); layerToolbarPopup = null
+                    layerToolbar?.let { canvasContainer.removeView(it) }; layerToolbar = null
                 }
-                canvasContainer.addView(scroll)
-                layerToolbar = scroll
+                // Small round trigger button, always at a fixed spot clear of every other panel
+                // (bottom-right, sitting well above the bottom toolbar dock) — unlike the options
+                // row itself, this anchor never moves or depends on item position/screen size, so
+                // it can never end up covered or pushed off-screen the way the old always-expanded
+                // panel could. Tapping it shows the same options as a popup anchored to this button.
+                val trigger = TextView(this).apply {
+                    text = "⋮"; textSize = 18f; gravity = Gravity.CENTER
+                    setTextColor(Color.WHITE)
+                    val sz = dp(42)
+                    layoutParams = FrameLayout.LayoutParams(sz, sz).also {
+                        it.gravity = Gravity.BOTTOM or Gravity.END
+                        it.rightMargin = dp(10)
+                        // Clear of the bottom toolbar dock (context row + primary row + divider) —
+                        // measured from the dock itself rather than a guessed constant, so this
+                        // still clears it correctly if the user's icon-size preference changes the
+                        // dock's actual height.
+                        val dock = findViewById<View>(R.id.bottomToolbarDock)
+                        it.bottomMargin = (dock?.height?.takeIf { h -> h > 0 } ?: dp(100)) + dp(12)
+                    }
+                    background = themedButtonDrawable(this@MainActivity, currentAppTheme(), currentThemeSpec().button, oval = true)
+                    elevation = dp(6).toFloat()
+                    setOnClickListener {
+                        if (layerToolbarPopup?.isShowing == true) { layerToolbarPopup?.dismiss(); layerToolbarPopup = null; return@setOnClickListener }
+                        val popup = PopupWindow(tb, LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT, true)
+                        popup.isOutsideTouchable = true
+                        popup.elevation = dp(6).toFloat()
+                        // showAsDropDown positions relative to this anchor and Android already
+                        // flips it above the anchor when there isn't room below — since the anchor
+                        // itself is always on-screen, the popup can't end up hidden either.
+                        popup.showAsDropDown(this, -dp(4), -(height + dp(4)))
+                        layerToolbarPopup = popup
+                    }
+                }
+                canvasContainer.addView(trigger)
+                layerToolbar = trigger
             }
         }
         drawingView.onTableCellEditRequest = { table, row, col, sx, sy -> showTableCellEditor(table, row, col, sx, sy) }
@@ -2166,6 +2197,7 @@ class MainActivity : AppCompatActivity() {
     // drawingView.currentTool, so there's nothing here that could reset it.
     private var fullscreenRestoreBtn: View? = null
     private var readModeExitBtn: View? = null
+    private var pageFlipView: ReadModePageFlipView? = null
     private fun addFullscreenToggleButton() {
         val topBar = findViewById<LinearLayout?>(R.id.topBarContainer) ?: return
         val outValue = android.util.TypedValue()
@@ -2316,7 +2348,16 @@ class MainActivity : AppCompatActivity() {
     private fun enterReadMode(mode: DrawingView.ReadMode) {
         closeInlineEditor(true)
         drawingView.readMode = mode
-        if (mode == DrawingView.ReadMode.PAPER_LIKE) drawingView.syncReadPageIndexToScroll()
+        if (mode == DrawingView.ReadMode.PAPER_LIKE) {
+            drawingView.syncReadPageIndexToScroll()
+            if (getPrefs().getBoolean("paper_flip_animation_enabled", true)) {
+                showPageFlipView()
+            } else {
+                hidePageFlipView()
+            }
+        } else {
+            hidePageFlipView()
+        }
         // Neither variant allows editing, so the tool palette has nothing to actually do — hide
         // it, and the top bar, in both. The distinction between the two modes is only the paper
         // reskin/dimmed ruling (handled in DrawingView), not chrome visibility — both need the
@@ -2342,14 +2383,45 @@ class MainActivity : AppCompatActivity() {
             canvasContainer.addView(btn, lp)
             readModeExitBtn = btn
         }
+        canvasContainer.bringChildToFront(readModeExitBtn)
         readModeExitBtn?.visibility = View.VISIBLE
         Toast.makeText(this, if (mode == DrawingView.ReadMode.STANDARD) "Read Mode: Standard" else "Read Mode: Paper-like", Toast.LENGTH_SHORT).show()
         syncTopChromeHeight()
         drawingView.invalidate()
     }
 
+    /** Creates (if needed) and shows the PageFlip GL view on top of DrawingView, wired to render
+     *  page content through DrawingView.renderPageContentBitmap — see ReadModePageFlipView's own
+     *  doc comment for why a whole separate GPU-based renderer replaced the old Canvas curl here. */
+    private fun showPageFlipView() {
+        var pfv = pageFlipView
+        if (pfv == null) {
+            pfv = ReadModePageFlipView(this)
+            pfv.pageProvider = { index, w, h -> drawingView.renderPageContentBitmap(index, w, h) }
+            pfv.pageCountProvider = { drawingView.readModePageCount() }
+            pfv.onPageChanged = { newIndex -> drawingView.readPageIndex = newIndex }
+            canvasContainer.addView(pfv, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            pageFlipView = pfv
+        }
+        pfv.setBaseDurationMs(when (getPrefs().getString("paper_flip_speed", "NORMAL")) {
+            "SLOW" -> 650
+            "FAST" -> 220
+            else -> 400
+        })
+        pfv.visibility = View.VISIBLE
+        pfv.onResume()
+        canvasContainer.bringChildToFront(pfv)
+        readModeExitBtn?.let { canvasContainer.bringChildToFront(it) }
+        pfv.resetToPage(drawingView.readPageIndex)
+    }
+
+    private fun hidePageFlipView() {
+        pageFlipView?.let { it.visibility = View.GONE; it.releasePageFlip(); it.onPause() }
+    }
+
     private fun exitReadMode() {
         drawingView.readMode = DrawingView.ReadMode.OFF
+        hidePageFlipView()
         findViewById<View?>(R.id.topBarContainer)?.visibility = View.VISIBLE
         drawingView.restoreAfterChromeShow()
         if (getPrefs().getBoolean("show_bottom_toolbar", true)) setBottomToolbarVisible(true)
@@ -4059,7 +4131,57 @@ class MainActivity : AppCompatActivity() {
             textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(2), 0, dp(4))
         })
 
-        div(); hdr("APPEARANCE")
+        div(); hdr("READING & PAGES")
+        val paperFlipCb = CheckBox(this).apply {
+            text = "Paper flip animation in Paper-like Read Mode"
+            isChecked = prefs.getBoolean("paper_flip_animation_enabled", true)
+            buttonTintList = accentTint
+        }; container.addView(paperFlipCb)
+        container.addView(TextView(this).apply {
+            text = "When off, Paper-like Read Mode pages through content without the curl animation."
+            textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(2), 0, dp(8))
+        })
+        val flipSpeedRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(2), 0, dp(6)) }
+        val flipSpeedButtons = mutableListOf<TextView>()
+        var selFlipSpeed = prefs.getString("paper_flip_speed", "NORMAL") ?: "NORMAL"
+        for (label in listOf("Slow", "Normal", "Fast")) {
+            val key = label.uppercase()
+            val b = TextView(this).apply {
+                text = label; textSize = 13f; gravity = Gravity.CENTER
+                setPadding(dp(6), dp(10), dp(6), dp(10))
+                val p = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f); p.setMargins(dp(2), 0, dp(2), 0)
+                layoutParams = p
+                setOnClickListener {
+                    selFlipSpeed = key
+                    flipSpeedButtons.forEach { fb -> fb.setBackgroundColor(Color.parseColor("#F0EBE0")); fb.setTextColor(Color.parseColor("#4A4A4A")) }
+                    setBackgroundColor(accent); setTextColor(Color.WHITE)
+                }
+            }
+            if (key == selFlipSpeed) { b.setBackgroundColor(accent); b.setTextColor(Color.WHITE) }
+            else { b.setBackgroundColor(Color.parseColor("#F0EBE0")); b.setTextColor(Color.parseColor("#4A4A4A")) }
+            flipSpeedButtons.add(b); flipSpeedRow.addView(b)
+        }
+        container.addView(flipSpeedRow)
+        container.addView(TextView(this).apply {
+            text = "Sets how long a deliberate, slow release takes to settle — a quick swipe always flips faster than this regardless of the setting."
+            textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(2), 0, dp(8))
+        })
+        val horizSlidesCb = CheckBox(this).apply {
+            text = "Horizontal slides for Convenient / Paper-size layout"
+            isChecked = prefs.getBoolean("horizontal_slides_enabled", false)
+            buttonTintList = accentTint
+        }; container.addView(horizSlidesCb)
+        val horizSlidesAnimCb = CheckBox(this).apply {
+            text = "Show animation when sliding between pages"
+            isChecked = prefs.getBoolean("horizontal_slides_animation_enabled", true)
+            buttonTintList = accentTint
+        }; container.addView(horizSlidesAnimCb)
+        container.addView(TextView(this).apply {
+            text = "One page at a time, two-finger swipe to move between pages (or one-finger, via a toggle in the top bar once this is on). Saved now — the actual paginated layout is still being built, so toggling this on doesn't change anything yet."
+            textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(2), 0, dp(4))
+        })
+
+
         val themeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, dp(6)) }
         val themeButtons = mutableListOf<TextView>()
         for ((key, label) in listOf("ORIGINAL" to "Original", "TRANSLUCENT" to "Transparent", "GLASS" to "Glass")) {
@@ -4357,6 +4479,10 @@ class MainActivity : AppCompatActivity() {
                 prefs.edit()
                     .putBoolean("confirm_exit_clear",confirmCb.isChecked)
                     .putBoolean("autosave",autosaveCb.isChecked)
+                    .putBoolean("paper_flip_animation_enabled", paperFlipCb.isChecked)
+                    .putString("paper_flip_speed", selFlipSpeed)
+                    .putBoolean("horizontal_slides_enabled", horizSlidesCb.isChecked)
+                    .putBoolean("horizontal_slides_animation_enabled", horizSlidesAnimCb.isChecked)
                     .putString("default_paper",selPaper)
                     .putInt("paper_color", selPaperColor)
                     .putFloat("hatch_scale", selHatchScale)
@@ -6446,6 +6572,7 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         closeInlineEditor(true)
+        pageFlipView?.onPause()
         // Blocking here (unlike the periodic 10s timer tick) — onPause fires once per
         // backgrounding, not repeatedly while drawing, so a brief wait here isn't felt as jank,
         // and the process can be killed shortly after onPause returns, so this write needs to
@@ -6468,6 +6595,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        pageFlipView?.let { if (it.visibility == View.VISIBLE) it.onResume() }
         applyStatusBarFullscreenPreference(manageOwnInsets = true)
         applyTopBarFullscreenShift()
         applyCutoutGapToTopBar()
@@ -6509,6 +6637,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        pageFlipView?.releasePageFlip()
         autosaveHandler.removeCallbacks(autosaveRunnable)
         AudioHelper.releaseAll()
         // onPause() already blocked until any pending write landed, so nothing queued here is

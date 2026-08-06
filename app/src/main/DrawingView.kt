@@ -1073,14 +1073,6 @@ class DimensionItem(
 
 // Represents an undoable fill-toggle on a shape. Undo/redo flip fill back and rebuild the paint.
 class FillToggleAction(val item: StrokeItem, val wasFilled: Boolean, val wasColor: Int, val newColor: Int)
-// Records a move/resize/rotate (single item or a whole group together as one step) so Undo/Redo
-// can actually revert it. restoreBefore/restoreAfter are one closure per affected item, each
-// closure putting that specific item back to its captured geometry (position/size/points/
-// rotation, whichever fields that item type actually has) — captured once at drag-start (before)
-// and once at drag-end (after), rather than trying to recompute the transform mathematically in
-// reverse, which would need to duplicate every drag path's exact math (move/resize/rotate,
-// single-item or group) instead of just replaying a snapshot.
-class TransformAction(val restoreBefore: List<() -> Unit>, val restoreAfter: List<() -> Unit>)
 
 class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
 
@@ -1564,11 +1556,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private var activeHandle = HandleType.NONE
     private var dragStartWorldX = 0f; private var dragStartWorldY = 0f
-    // "Before" geometry snapshot for whatever's selected, captured at the start of every Select
-    // ACTION_DOWN — committed as a TransformAction (see pushTransformIfChanged) at ACTION_UP only
-    // if a real MOVE/RESIZE/ROTATE handle actually got engaged this gesture.
-    private var pendingTransformItems: List<Any> = emptyList()
-    private var pendingTransformBefore: List<() -> Unit> = emptyList()
     // Group (pink) bounding box state for multi-select
     private var groupActiveHandle = HandleType.NONE
     private var groupDragStartX = 0f; private var groupDragStartY = 0f
@@ -1724,33 +1711,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (b != null && b[3] > maxY) maxY = b[3]
         }
         return kotlin.math.ceil(maxY / pageH).toInt().coerceAtLeast(1)
-    }
-
-    /** Public wrapper for [estimatePageCount] — how many "pages" Read Mode has to page through. */
-    fun readModePageCount(): Int = estimatePageCount().coerceAtLeast(1)
-
-    /** Renders page [pageIdx] (0-based) as a flat, standalone bitmap at exactly (w x h) — the
-     *  content source for [ReadModePageFlipView]. Deliberately independent of the older
-     *  pageCurlBitmap cache (used by the retired Canvas-mesh curl path) so the two renderers can
-     *  never read or invalidate each other's cached bitmap. Same rendering technique as the
-     *  PDF-export and old curl-bitmap paths: temporarily repoint this view's own translate/scale
-     *  state at the target page, render through the normal drawCanvasContent(), then restore it. */
-    fun renderPageContentBitmap(pageIdx: Int, w: Int, h: Int): Bitmap? {
-        val pageCount = estimatePageCount().coerceAtLeast(1)
-        if (pageIdx < 0 || pageIdx >= pageCount) return null
-        val bw = w.coerceAtLeast(1); val bh = h.coerceAtLeast(1)
-        return try {
-            val fitScale = kotlin.math.max(bw / pageWidthPx(), bh / pageHeightPx())
-            val bmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
-            val bmpCanvas = Canvas(bmp)
-            bmpCanvas.drawColor(Color.parseColor("#F6F3E9"))
-            val savedTX = translateX; val savedTY = translateY; val savedScale = scaleFactor
-            translateX = 0f; translateY = -pageIdx * (pageHeightPx() + 40f) * fitScale
-            scaleFactor = fitScale
-            drawCanvasContent(bmpCanvas)
-            translateX = savedTX; translateY = savedTY; scaleFactor = savedScale
-            bmp
-        } catch (e: OutOfMemoryError) { null }
     }
 
     // Renders each page of the note as its own separate bitmap, at a fixed export resolution —
@@ -3517,14 +3477,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             canvas.restore()
             return 0f
         }
-        // A real page can't fold over more of itself than its own extent in the direction it's
-        // being pulled — capped by the page's diagonal (not just its width) so this doesn't cap a
-        // mostly-vertical drag on a page that's much taller than it is wide far too early.
-        val pageDiagonal = kotlin.math.hypot(pageScreenW, pageScreenH)
-        val pullDist = pullDistRaw.coerceAtMost(pageDiagonal)
+        // A real page can't fold over more of itself than its own width — letting pullDist grow
+        // past that (which the release/auto-complete animation does on purpose, to guarantee it
+        // reaches "fully turned") meant the folded-over portion's straight run kept extending
+        // further and further the more you dragged, well past where the page's own far edge would
+        // physically be. Capping the distance actually used for the fold geometry at the page's
+        // own width bounds it to a physically sensible maximum extent.
+        val pullDist = pullDistRaw.coerceAtMost(pageScreenW)
         val ux = pullDx / pullDistRaw; val uy = pullDy / pullDistRaw
         val vx = -uy; val vy = ux  // perpendicular to the pull direction
         val curlRadius = kotlin.math.min(dp(130).toFloat(), pageScreenW * 0.4f)
+        val thetaMax = Math.PI.toFloat() * (160f / 180f)
         val halfPi = Math.PI.toFloat() / 2f
         // One mesh cell per ~14dp of on-screen page size, not a fixed 40x24 — a fixed row count
         // was fine for pageScreenW (cols=40 over a ~1080px-wide page is ~27px/cell) but far too
@@ -3559,20 +3522,9 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val proj = relX * ux + relY * uy
                 val perp = relX * vx + relY * vy
                 var newProj = proj
-                // The touch point itself always sits at perp=0 (by construction — u points exactly
-                // from anchor to touch). Tapering the effective fold depth down from its full value
-                // at perp=0 to zero at the taper edge is what gives the curl a natural, curved
-                // "dog-ear" shape — deepest where you're actually pulling, narrowing smoothly toward
-                // the page's far edges/corners — instead of the same depth being applied uniformly
-                // across the whole page height, which is what was producing a rigid, uniform-width
-                // box shape rather than a real curl.
-                val taperDist = pullDist.coerceAtLeast(curlRadius)
-                val taperFrac = (kotlin.math.abs(perp) / taperDist).coerceIn(0f, 1f)
-                val localPullDist = pullDist * (0.5f * (1f + kotlin.math.cos(Math.PI.toFloat() * taperFrac)))
-                val localCurlRadius = kotlin.math.min(curlRadius, localPullDist)
-                if (localPullDist > 1f && proj < localPullDist) {
-                    val distIntoRoll = localPullDist - proj
-                    val thetaRaw = distIntoRoll / localCurlRadius
+                if (proj < pullDist) {
+                    val distIntoRoll = pullDist - proj
+                    val thetaRaw = distIntoRoll / curlRadius
                     // Geometry is frozen at the halfPi (90°) position — sin(theta) is one-to-one
                     // over 0..90°, but continuing past that (even via a straight tangent, as this
                     // used to) keeps moving points that are further into the roll BACK toward
@@ -3586,17 +3538,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     // position removes the crossover entirely; only the overlay alpha below keeps
                     // responding to drag distance past this point.
                     val thetaPos = thetaRaw.coerceAtMost(halfPi)
-                    newProj = localPullDist - localCurlRadius * kotlin.math.sin(thetaPos)
-                    // Commits to fully opaque white by about 40° into the roll — well before the
-                    // 90° freeze point — instead of only doing so deep past it. The previous version
-                    // only started whitening after distIntoRoll passed a fairly large radius's worth
-                    // of 90°, which a normal-sized drag never reached at all: you'd see the shaded
-                    // but still-legible front text for the whole visible roll instead of a solid
-                    // back. Reaching opaque quickly means only a thin sliver near the crease shows
-                    // shaded front content before the roll is a solid, opaque surface — no text.
-                    val whiteFrac = (thetaPos / (halfPi * 0.45f)).coerceIn(0f, 1f)
-                    val shadeAlpha = (((0.5f * kotlin.math.sin(thetaPos)) * 160) * (1f - whiteFrac)).toInt().coerceIn(0, 255)
-                    val whiteAlpha = (whiteFrac * 255).toInt().coerceIn(0, 255)
+                    newProj = pullDist - curlRadius * kotlin.math.sin(thetaPos)
+                    val theta = thetaRaw.coerceAtMost(thetaMax)
+                    // backFrac: 0 before the fold swings past vertical, ramping to 1 by thetaMax,
+                    // then staying 1 for the whole straight continuation beyond (you're looking
+                    // straight at the blank back for as far as that folded-over stretch extends).
+                    val backFrac = ((theta - halfPi) / (thetaMax - halfPi)).coerceIn(0f, 1f)
+                    // Shading peaks at theta=90° (the part most edge-on to the viewer) but is now
+                    // scaled by (1 - backFrac) so it's ALWAYS zero once the back is fully showing —
+                    // it only ever darkens the front-facing curve, never the blank back beneath it.
+                    val shadeAlpha = (((0.45f * kotlin.math.sin(thetaPos)) * 140) * (1f - backFrac)).toInt().coerceIn(0, 255)
+                    val whiteAlpha = (backFrac * 255).toInt().coerceIn(0, 255)
                     // Standard "white over black" alpha compositing — black's own RGB is (0,0,0)
                     // so it only ever contributes to alpha, not color.
                     val outA = whiteAlpha + shadeAlpha * (255 - whiteAlpha) / 255
@@ -3684,51 +3636,40 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // there at all" rather than what it should look like: the SAME page still sitting flat
         // underneath, since physically there's nowhere for it to have gone.
         drawBookPage(canvas, if (nextPageIdx in 0 until pageCount) nextPageIdx else readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, layout.fitScale, 0f, 0)
-        // Cast a shadow onto the page beneath, right where the rolled edge of the curling page
-        // sits closest to it — NOT at the crease. The crease (anchor + pullDist along the pull
-        // direction) is the far edge of Page 1, still the current page's own flat territory; the
-        // curling page's mesh always occupies the proj range [pullDist-curlRadius, pullDist], and
-        // it's the NEAR end of that range (closest to the anchor) that actually borders the page
-        // beneath. A band positioned at the crease was landing entirely inside the area the front
-        // mesh draws over afterward, which is why it never showed up — this band sits where the
-        // mesh does NOT reach, so it stays visible once the mesh is drawn on top of everything else.
+        // Cast shadow onto the page beneath, right at the crease, BEFORE the curl itself is drawn
+        // — a band running the full length of the fold (a LinearGradient oriented along the pull
+        // direction, constant across the perpendicular direction) rather than a small radial spot
+        // at one point, which is what the earlier version did and is why it looked like an
+        // isolated blob instead of a shadow following the actual boundary between the curl and
+        // the page it's revealing.
         if (pullDist > 1f) {
             val ux = pullDx / pullDist; val uy = pullDy / pullDist
             val vx = -uy; val vy = ux
-            val pageDiagonal = kotlin.math.hypot(pageScreenW, pageScreenH)
-            val boundedPullDist = pullDist.coerceAtMost(pageDiagonal)
+            val boundedPullDist = pullDist.coerceAtMost(pageScreenW)
+            val creaseX = anchorX + ux * boundedPullDist
+            val creaseY = anchorY + uy * boundedPullDist
             val curlRadiusForShadow = kotlin.math.min(dp(130).toFloat(), pageScreenW * 0.4f)
-            val rollNearDist = (boundedPullDist - curlRadiusForShadow).coerceAtLeast(0f)
-            val edgeX = anchorX + ux * rollNearDist
-            val edgeY = anchorY + uy * rollNearDist
-            val shadowDepth = dp(14).toFloat()
-            // Fades going BACK toward the anchor (-ux), into the page-beneath's exposed territory.
-            val farX = edgeX - ux * shadowDepth
-            val farY = edgeY - uy * shadowDepth
-            // Same distance metric (pageDiagonal) as the rest of the geometry — this used to divide
-            // by pageScreenW while the curl itself was already capped by pageDiagonal, so on a long
-            // vertical drag the shadow's alpha would race ahead of and desync from the actual curl.
-            val progress = (boundedPullDist / pageDiagonal).coerceIn(0f, 1f)
-            val alpha = (progress * 130).toInt().coerceIn(0, 130)
-            val shader = android.graphics.LinearGradient(edgeX, edgeY, farX, farY, Color.argb(alpha, 0, 0, 0), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
+            val shadowDepth = curlRadiusForShadow * 0.55f
+            val farX = creaseX + ux * shadowDepth
+            val farY = creaseY + uy * shadowDepth
+            val progress = (boundedPullDist / pageScreenW).coerceIn(0f, 1f)
+            val alpha = (progress * 80).toInt().coerceIn(0, 80)
+            val shader = android.graphics.LinearGradient(creaseX, creaseY, farX, farY, Color.argb(alpha, 0, 0, 0), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
             canvas.save()
             canvas.clipRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH)
-            // Draw the band polygon itself, rather than clipping a full-page rect fill to it. The
-            // previous version built a quad up to pageDiagonal long (thousands of px) but only
-            // shadowDepth (14dp) wide — an extremely thin, long shape — then intersected it with
-            // clipPath() against another rect. That combination (a near-degenerate aspect-ratio
-            // polygon run through the clip rasterizer, clipped a second time) is a known-flaky
-            // pattern; drawing the polygon directly with the shader removes that extra clipping
-            // stage entirely, which is a strictly simpler and more reliable path to the same pixels.
+            // Hard-bound the fill to a band around the crease, running the fold's full length —
+            // built directly from the same (ux,uy)/(vx,vy) axes as the gradient itself so it can
+            // never end up wider than intended regardless of any transform state elsewhere.
             val bandHalf = kotlin.math.max(pageScreenW, pageScreenH)
             val bandPath = android.graphics.Path().apply {
-                moveTo(edgeX + vx * bandHalf, edgeY + vy * bandHalf)
-                lineTo(edgeX - vx * bandHalf, edgeY - vy * bandHalf)
+                moveTo(creaseX + vx * bandHalf, creaseY + vy * bandHalf)
+                lineTo(creaseX - vx * bandHalf, creaseY - vy * bandHalf)
                 lineTo(farX - vx * bandHalf, farY - vy * bandHalf)
                 lineTo(farX + vx * bandHalf, farY + vy * bandHalf)
                 close()
             }
-            canvas.drawPath(bandPath, Paint().apply { this.shader = shader; isAntiAlias = true })
+            canvas.clipPath(bandPath)
+            canvas.drawRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH, Paint().apply { this.shader = shader })
             canvas.restore()
         }
         val bitmap = getOrRenderPageCurlBitmap(readPageIndex, pageScreenW, pageScreenH, layout.fitScale)
@@ -3738,39 +3679,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // Bitmap allocation failed (very low memory) — fall back to drawing the page flat
             // rather than showing nothing.
             drawBookPage(canvas, readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, layout.fitScale, 0f, 0)
-        }
-        // Shadow the turning page casts onto the still-flat part of ITSELF (what the sketch calls
-        // "Page 1"), right at the crease — drawn AFTER the curl, as its own band, for the same two
-        // reasons as the Page-2 band above: a shadow drawn before the mesh gets fully painted over
-        // by the opaque front bitmap, and trying to represent a band this thin (14dp) through the
-        // coarse mesh grid meant individual mesh rows either happened to land inside it or skipped
-        // clean over it — producing a dashed line instead of a continuous one.
-        run {
-            val ux = pullDx / pullDist; val uy = pullDy / pullDist
-            val vx = -uy; val vy = ux
-            val pageDiagonal = kotlin.math.hypot(pageScreenW, pageScreenH)
-            val boundedPullDist = pullDist.coerceAtMost(pageDiagonal)
-            val creaseX = anchorX + ux * boundedPullDist
-            val creaseY = anchorY + uy * boundedPullDist
-            val shadowDepth = dp(14).toFloat()
-            // Fades going FORWARD along the pull direction (+ux), into Page 1's own flat territory.
-            val farX = creaseX + ux * shadowDepth
-            val farY = creaseY + uy * shadowDepth
-            val progress = (boundedPullDist / pageDiagonal).coerceIn(0f, 1f)
-            val alpha = (progress * 130).toInt().coerceIn(0, 130)
-            val shader = android.graphics.LinearGradient(creaseX, creaseY, farX, farY, Color.argb(alpha, 0, 0, 0), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
-            val bandHalf = kotlin.math.max(pageScreenW, pageScreenH)
-            val bandPath = android.graphics.Path().apply {
-                moveTo(creaseX + vx * bandHalf, creaseY + vy * bandHalf)
-                lineTo(creaseX - vx * bandHalf, creaseY - vy * bandHalf)
-                lineTo(farX - vx * bandHalf, farY - vy * bandHalf)
-                lineTo(farX + vx * bandHalf, farY + vy * bandHalf)
-                close()
-            }
-            canvas.save()
-            canvas.clipRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH)
-            canvas.drawPath(bandPath, Paint().apply { this.shader = shader; isAntiAlias = true })
-            canvas.restore()
         }
     }
 
@@ -5055,16 +4963,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             tableIsActive = false; tableSelStart = null; tableSelEnd = null
         }
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-            // Snapshot current selection's geometry now, before any handle-type detection below —
-            // covers group handles (which return early, before reaching the ACTION_DOWN branch
-            // further down) and single-item handles uniformly. Committed as a TransformAction
-            // (see pushTransformIfChanged) at ACTION_UP, but only if a real MOVE/RESIZE/ROTATE
-            // handle actually got engaged this gesture — a plain tap-to-select isn't a transform.
-            val selNow = (selectedItems + setOfNotNull(selectedItem)).toSet().toList()
-            pendingTransformItems = selNow
-            pendingTransformBefore = selNow.mapNotNull { captureGeomSnapshot(it) }
-        }
-        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             // Pink group box handles — active for ANY tool when 2+ items selected (lasso, rect, multi)
             val allSel = (selectedItems + setOfNotNull(selectedItem)).toSet()
             val minForGroup = if (currentTool == Tool.MULTISELECT) 1 else 2
@@ -5403,14 +5301,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             MotionEvent.ACTION_UP -> {
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
-                // A real MOVE/RESIZE/ROTATE handle was engaged this gesture (not just a tap) —
-                // commit the snapshot captured at ACTION_DOWN as an undoable TransformAction now,
-                // before the handle states below get reset and finalizeGroupResize() settles the
-                // final geometry.
-                if (activeHandle != HandleType.NONE || groupActiveHandle != HandleType.NONE) {
-                    pushTransformIfChanged(pendingTransformItems, pendingTransformBefore)
-                }
-                pendingTransformItems = emptyList(); pendingTransformBefore = emptyList()
                 activeHandle = HandleType.NONE; groupActiveHandle = HandleType.NONE; groupSnapshots.clear(); pinkGroupRotation = 0f
                 finalizeGroupResize()
                 strokeResizeOrigPoints = null; strokeResizeOrigBounds = null
@@ -5589,39 +5479,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     // Snapshot-based version: applies scale from original captured state to avoid incremental compounding
-    // Captures the current geometry of ANY item type as a closure that restores it later — used
-    // to build both the "before" (drag-start) and "after" (drag-end) halves of a TransformAction.
-    // Each item type restores whichever fields it actually has; StrokeItem additionally needs its
-    // path/cache rebuilt after points change, which plain field restoration wouldn't trigger.
-    private fun captureGeomSnapshot(item: Any): (() -> Unit)? = when (item) {
-        is StrokeItem -> {
-            val pts = item.data.points.toFloatArray(); val rot = item.data.rotation
-            {
-                item.data.points.clear(); for (v in pts) item.data.points.add(v)
-                item.data.rotation = rot
-                item.data.invalidateGeometryCaches(); item.path = item.data.buildPath(); item.invalidateCache()
-            }
-        }
-        is TextItem -> { val x = item.x; val y = item.y; val s = item.size; { item.x = x; item.y = y; item.size = s } }
-        is ImageItem -> { val x = item.x; val y = item.y; val w = item.w; val h = item.h; { item.x = x; item.y = y; item.w = w; item.h = h } }
-        is FillItem -> { val x = item.x; val y = item.y; val w = item.w; val h = item.h; { item.x = x; item.y = y; item.w = w; item.h = h } }
-        is AudioItem -> { val x = item.x; val y = item.y; val r = item.radius; { item.x = x; item.y = y; item.radius = r } }
-        else -> null
-    }
-    // Pushes a TransformAction if anything in `items` actually has a geometry difference between
-    // its `before` closures (already captured at drag-start) and its current state right now —
-    // called at drag-end. Skips pushing anything for a tap/no-op drag (nothing actually moved).
-    private fun pushTransformIfChanged(items: List<Any>, before: List<() -> Unit>) {
-        if (items.isEmpty() || before.isEmpty()) return
-        val after = items.mapNotNull { captureGeomSnapshot(it) }
-        if (after.size != before.size) return
-        // No explicit "did anything actually change" check — a caller only invokes this once a
-        // genuine MOVE/RESIZE/ROTATE handle was engaged, which itself implies intent to transform,
-        // so recording unconditionally here is fine. Worst case is an undo step that restores
-        // identical values (harmless no-op), not a missing one.
-        actions.add(TransformAction(before, after)); redoStack.clear()
-    }
-
     private fun scaleItemInGroupFromSnapshot(item: Any, snap: FloatArray?, ox: Float, oy: Float, sx: Float, sy: Float, newOx: Float, newOy: Float) {
         if (snap == null) return
         when (item) {
@@ -6567,18 +6424,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     // Only applies coming from Select; a tool the user actually picked (Eraser,
                     // Highlighter, a shape, etc.) is left alone regardless of stylus vs finger, so
                     // this can't override a deliberate choice mid-use.
-                    // Two conditions, both required:
-                    // - Tap must hit nothing: tapping directly ON an existing item is a selection
-                    //   attempt regardless of anything else, and must never be hijacked into
-                    //   drawing through it.
-                    // - Nothing currently selected: tapping empty space to deselect a just-drawn
-                    //   shape (so its tool can be restored) is ALSO a tap that hits nothing — this
-                    //   second condition is what tells the two apart, since only that specific case
-                    //   has something selected at the moment of the tap.
-                    if (currentTool == Tool.SELECT && selectedItem == null) {
-                        val hitsItem = findItemAt(screenToWorldX(event.x), screenToWorldY(event.y)) != null
-                        if (!hitsItem) { currentTool = Tool.PEN; currentPenStyle = PenStyle.BALL }
-                    }
+                    if (currentTool == Tool.SELECT) { currentTool = Tool.PEN; currentPenStyle = PenStyle.BALL }
                 } else { if (isStylusDown) return true; drawingPointerId = event.getPointerId(0) }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { if (isStylus) isStylusDown = false; drawingPointerId = -1 }
@@ -7338,7 +7184,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                     // centerline within radius r, so a thick stroke keeps a visible
                                     // strip of ink on both sides even though the eraser circle
                                     // visually covers it (only a tiny sliver of centerline gets cut).
-                                    val effR = r + (a.data.strokeWidth / 2f).coerceAtMost(r * 0.6f)
+                                    val effR = r + (a.data.strokeWidth / 2f).coerceAtMost(r * 2f)
                                     val frags = splitStrokeAroundEraser(a.data, x, y, effR)
                                     actions.removeAt(idx); actions.addAll(idx, frags)
                                     removeFromSpatialIndex(a); for (f in frags) addToSpatialIndex(f)
@@ -7355,7 +7201,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val replacement = mutableListOf<StrokeItem>()
                                 for (comp in components) {
                                     if (strokeHitTest(comp.data, x, y, r)) {
-                                        val effR = r + (comp.data.strokeWidth / 2f).coerceAtMost(r * 0.6f)
+                                        val effR = r + (comp.data.strokeWidth / 2f).coerceAtMost(r * 2f)
                                         replacement.addAll(splitStrokeAroundEraser(comp.data, x, y, effR))
                                     } else {
                                         replacement.add(comp)
@@ -7368,7 +7214,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         } else {
                             // Open shapes (LINE, ARROW): split into fragments
                             if (strokeHitTest(a.data, x, y, r)) {
-                                val effR = r + (a.data.strokeWidth / 2f).coerceAtMost(r * 0.6f)
+                                val effR = r + (a.data.strokeWidth / 2f)
                                 val frags = splitShapeAroundEraser(a.data, x, y, effR)
                                 actions.removeAt(idx); actions.addAll(idx, frags)
                                 removeFromSpatialIndex(a); for (f in frags) addToSpatialIndex(f)
@@ -8028,7 +7874,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // Account for the stroke's own width so the eraser circle has to actually overlap the
             // VISIBLE ink (not just the invisible centerline) - matters for thick marker/brush/
             // highlighter strokes where the painted area extends well past the recorded points.
-            val effectiveR = r + (data.strokeWidth / 2f).coerceAtMost(r * 0.6f)
+            val effectiveR = r + (data.strokeWidth / 2f).coerceAtMost(r * 2f)
             if (data.points.size == 2) return distance(x, y, data.points[0], data.points[1]) <= effectiveR
             // Chunk pre-check: a chunk whose padded bbox doesn't reach (x,y) can't possibly
             // contain a hit, so skip straight past every segment in it — for a long stroke where
@@ -8050,7 +7896,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // eraser only triggers when it genuinely touches the drawn line - this is what makes
             // area-mode erasing on shapes behave like area erasing instead of object erasing.
             if (data.points.size < 4) return false
-            val effectiveR = r + (data.strokeWidth / 2f).coerceAtMost(r * 0.6f)
+            val effectiveR = r + (data.strokeWidth / 2f)
             return distanceToShapeOutline(data, x, y) <= effectiveR
         }
     }
@@ -8702,8 +8548,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val last = actions.removeAt(actions.size - 1)
         if (last is FillToggleAction) {
             last.item.data.fill = last.wasFilled; last.item.data.fillColorVal = last.wasColor; last.item.paint = last.item.data.toPaint()
-        } else if (last is TransformAction) {
-            for (restore in last.restoreBefore) restore()
         }
         redoStack.add(last); if (redoStack.size > 50) redoStack.removeAt(0); markSpatialDirty(); invalidate()
     }
@@ -8712,8 +8556,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val next = redoStack.removeAt(redoStack.size - 1)
         if (next is FillToggleAction) {
             next.item.data.fill = !next.wasFilled; next.item.data.fillColorVal = next.newColor; next.item.paint = next.item.data.toPaint()
-        } else if (next is TransformAction) {
-            for (restore in next.restoreAfter) restore()
         }
         actions.add(next); markSpatialDirty(); invalidate()
     }
@@ -8779,16 +8621,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (a is StrokeItem) {
                 val thickPaint = Paint(a.paint).apply {
                     style = Paint.Style.STROKE
-                    // Round caps/joins (not the paint's own, usually BUTT/MITER) specifically for
-                    // this detection-only bitmap — where two strokes meet or nearly meet at a
-                    // point (e.g. two lines drawn to converge at a corner), a flat cap has zero
-                    // tolerance for even a sub-pixel gap between them, which is invisible at normal
-                    // zoom but still enough for the flood-fill to leak through. Round caps/joins
-                    // add a small overlap right at those meeting points, sealing gaps like that
-                    // without changing anything about how the strokes actually look when drawn.
-                    strokeCap = Paint.Cap.ROUND
-                    strokeJoin = Paint.Join.ROUND
-                    strokeWidth = strokeWidth.coerceAtLeast(6f / scaleFactor)
+                    strokeWidth = strokeWidth.coerceAtLeast(4f / scaleFactor)
                     alpha = 255; isAntiAlias = false; shader = null; pathEffect = null
                 }
                 if (a.data.rotation != 0f) {
