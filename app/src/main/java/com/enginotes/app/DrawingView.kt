@@ -3487,7 +3487,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val ux = pullDx / pullDistRaw; val uy = pullDy / pullDistRaw
         val vx = -uy; val vy = ux  // perpendicular to the pull direction
         val curlRadius = kotlin.math.min(dp(130).toFloat(), pageScreenW * 0.4f)
-        val page1ShadowDepth = curlRadius * 0.6f
+        val page1ShadowDepth = dp(14).toFloat()
         val thetaMax = Math.PI.toFloat() * (160f / 180f)
         val halfPi = Math.PI.toFloat() / 2f
         // One mesh cell per ~14dp of on-screen page size, not a fixed 40x24 — a fixed row count
@@ -3566,7 +3566,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     // gets fully painted over by the opaque front bitmap everywhere in this
                     // proj >= pullDist region, which is why it never actually showed up.
                     val fade = 1f - (proj - pullDist) / page1ShadowDepth
-                    val shadeAlpha = (fade * 90).toInt().coerceIn(0, 90)
+                    val shadeAlpha = (fade * 130).toInt().coerceIn(0, 130)
                     overlayAt[pi] = Color.argb(shadeAlpha, 0, 0, 0)
                 }
                 verts[vi] = baseLeft + anchorLocalX + ux * newProj + vx * perp
@@ -3666,12 +3666,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val rollNearDist = (boundedPullDist - curlRadiusForShadow).coerceAtLeast(0f)
             val edgeX = anchorX + ux * rollNearDist
             val edgeY = anchorY + uy * rollNearDist
-            val shadowDepth = curlRadiusForShadow * 0.55f
+            val shadowDepth = dp(14).toFloat()
             // Fades going BACK toward the anchor (-ux), into the page-beneath's exposed territory.
             val farX = edgeX - ux * shadowDepth
             val farY = edgeY - uy * shadowDepth
             val progress = (boundedPullDist / pageScreenW).coerceIn(0f, 1f)
-            val alpha = (progress * 100).toInt().coerceIn(0, 100)
+            val alpha = (progress * 130).toInt().coerceIn(0, 130)
             val shader = android.graphics.LinearGradient(edgeX, edgeY, farX, farY, Color.argb(alpha, 0, 0, 0), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
             canvas.save()
             canvas.clipRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH)
