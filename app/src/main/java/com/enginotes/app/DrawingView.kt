@@ -3485,7 +3485,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val ux = pullDx / pullDistRaw; val uy = pullDy / pullDistRaw
         val vx = -uy; val vy = ux  // perpendicular to the pull direction
         val curlRadius = kotlin.math.min(dp(130).toFloat(), pageScreenW * 0.4f)
-        val page1ShadowDepth = dp(14).toFloat()
         val thetaMax = Math.PI.toFloat() * (160f / 180f)
         val halfPi = Math.PI.toFloat() / 2f
         // How much additional roll angle (past 90°) it takes to go from fully front-visible to
@@ -3567,16 +3566,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val outA = whiteAlpha + shadeAlpha * (255 - whiteAlpha) / 255
                     val outRgb = if (outA > 0) 255 * whiteAlpha / outA else 0
                     overlayAt[pi] = Color.argb(outA, outRgb, outRgb, outRgb)
-                } else if (proj < pullDist + page1ShadowDepth) {
-                    // Shadow the turning page casts onto the still-flat part of ITSELF (what the
-                    // sketch calls "Page 1"), right where it's being lifted away. This has to live
-                    // here, inside the same overlay that's painted together with the front bitmap
-                    // mesh — a shadow rect drawn separately before the mesh, as was tried earlier,
-                    // gets fully painted over by the opaque front bitmap everywhere in this
-                    // proj >= pullDist region, which is why it never actually showed up.
-                    val fade = 1f - (proj - pullDist) / page1ShadowDepth
-                    val shadeAlpha = (fade * 130).toInt().coerceIn(0, 130)
-                    overlayAt[pi] = Color.argb(shadeAlpha, 0, 0, 0)
                 }
                 verts[vi] = baseLeft + anchorLocalX + ux * newProj + vx * perp
                 verts[vi + 1] = baseTop + anchorLocalY + uy * newProj + vy * perp
@@ -3713,6 +3702,39 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // Bitmap allocation failed (very low memory) — fall back to drawing the page flat
             // rather than showing nothing.
             drawBookPage(canvas, readPageIndex, baseLeft, baseTop, pageScreenW, pageScreenH, layout.fitScale, 0f, 0)
+        }
+        // Shadow the turning page casts onto the still-flat part of ITSELF (what the sketch calls
+        // "Page 1"), right at the crease — drawn AFTER the curl, as its own band, for the same two
+        // reasons as the Page-2 band above: a shadow drawn before the mesh gets fully painted over
+        // by the opaque front bitmap, and trying to represent a band this thin (14dp) through the
+        // coarse mesh grid meant individual mesh rows either happened to land inside it or skipped
+        // clean over it — producing a dashed line instead of a continuous one.
+        run {
+            val ux = pullDx / pullDist; val uy = pullDy / pullDist
+            val vx = -uy; val vy = ux
+            val pageDiagonal = kotlin.math.hypot(pageScreenW, pageScreenH)
+            val boundedPullDist = pullDist.coerceAtMost(pageDiagonal)
+            val creaseX = anchorX + ux * boundedPullDist
+            val creaseY = anchorY + uy * boundedPullDist
+            val shadowDepth = dp(14).toFloat()
+            // Fades going FORWARD along the pull direction (+ux), into Page 1's own flat territory.
+            val farX = creaseX + ux * shadowDepth
+            val farY = creaseY + uy * shadowDepth
+            val progress = (boundedPullDist / pageDiagonal).coerceIn(0f, 1f)
+            val alpha = (progress * 130).toInt().coerceIn(0, 130)
+            val shader = android.graphics.LinearGradient(creaseX, creaseY, farX, farY, Color.argb(alpha, 0, 0, 0), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
+            val bandHalf = kotlin.math.max(pageScreenW, pageScreenH)
+            val bandPath = android.graphics.Path().apply {
+                moveTo(creaseX + vx * bandHalf, creaseY + vy * bandHalf)
+                lineTo(creaseX - vx * bandHalf, creaseY - vy * bandHalf)
+                lineTo(farX - vx * bandHalf, farY - vy * bandHalf)
+                lineTo(farX + vx * bandHalf, farY + vy * bandHalf)
+                close()
+            }
+            canvas.save()
+            canvas.clipRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH)
+            canvas.drawPath(bandPath, Paint().apply { this.shader = shader; isAntiAlias = true })
+            canvas.restore()
         }
     }
 
