@@ -3485,19 +3485,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val ux = pullDx / pullDistRaw; val uy = pullDy / pullDistRaw
         val vx = -uy; val vy = ux  // perpendicular to the pull direction
         val curlRadius = kotlin.math.min(dp(130).toFloat(), pageScreenW * 0.4f)
-        val thetaMax = Math.PI.toFloat() * (160f / 180f)
         val halfPi = Math.PI.toFloat() / 2f
-        // How much additional roll angle (past 90°) it takes to go from fully front-visible to
-        // fully opaque white. Deliberately short and decoupled from thetaMax — on a long drag
-        // (e.g. dragging the full page height), a huge number of different original rows all end
-        // up frozen at the same position once past 90°, and every one of them sits at whatever
-        // opacity this fade has reached at that point in the drag. A fade spread across the whole
-        // 90°-to-160° range meant a wide swath of the drag left many different rows all partially
-        // see-through at once, all stacked at the same spot — which is what was showing up as a
-        // featureless blur on long/vertical drags. Reaching full opacity quickly means each row
-        // only has a narrow window to be partially transparent before it's fully hidden, so they
-        // don't get the chance to visibly overlap.
-        val whiteFadeRange = Math.PI.toFloat() * (20f / 180f)
         // One mesh cell per ~14dp of on-screen page size, not a fixed 40x24 — a fixed row count
         // was fine for pageScreenW (cols=40 over a ~1080px-wide page is ~27px/cell) but far too
         // coarse for pageScreenH (rows=24 over a ~2340px-tall page is ~97px/cell). A diagonal fold
@@ -3531,9 +3519,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 val proj = relX * ux + relY * uy
                 val perp = relX * vx + relY * vy
                 var newProj = proj
-                if (proj < pullDist) {
-                    val distIntoRoll = pullDist - proj
-                    val thetaRaw = distIntoRoll / curlRadius
+                // The touch point itself always sits at perp=0 (by construction — u points exactly
+                // from anchor to touch). Tapering the effective fold depth down from its full value
+                // at perp=0 to zero at the taper edge is what gives the curl a natural, curved
+                // "dog-ear" shape — deepest where you're actually pulling, narrowing smoothly toward
+                // the page's far edges/corners — instead of the same depth being applied uniformly
+                // across the whole page height, which is what was producing a rigid, uniform-width
+                // box shape rather than a real curl.
+                val taperDist = pullDist.coerceAtLeast(curlRadius)
+                val taperFrac = (kotlin.math.abs(perp) / taperDist).coerceIn(0f, 1f)
+                val localPullDist = pullDist * (0.5f * (1f + kotlin.math.cos(Math.PI.toFloat() * taperFrac)))
+                val localCurlRadius = kotlin.math.min(curlRadius, localPullDist)
+                if (localPullDist > 1f && proj < localPullDist) {
+                    val distIntoRoll = localPullDist - proj
+                    val thetaRaw = distIntoRoll / localCurlRadius
                     // Geometry is frozen at the halfPi (90°) position — sin(theta) is one-to-one
                     // over 0..90°, but continuing past that (even via a straight tangent, as this
                     // used to) keeps moving points that are further into the roll BACK toward
@@ -3547,20 +3546,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     // position removes the crossover entirely; only the overlay alpha below keeps
                     // responding to drag distance past this point.
                     val thetaPos = thetaRaw.coerceAtMost(halfPi)
-                    newProj = pullDist - curlRadius * kotlin.math.sin(thetaPos)
-                    val theta = thetaRaw.coerceAtMost(thetaMax)
-                    // backFrac ramps to 1 within a short stretch past 90° (not across the whole
-                    // range to thetaMax) — see the note above the whiteFadeRange declaration for
-                    // why a slow fade here caused a visible blur on long drags.
-                    val backFrac = ((theta - halfPi) / whiteFadeRange).coerceIn(0f, 1f)
-                    // Shading peaks at theta=90° (the part most edge-on to the viewer) but is now
-                    // scaled by (1 - backFrac) so it's ALWAYS zero once the back is fully showing —
-                    // it only ever darkens the front-facing curve, never the blank back beneath it.
-                    // Peak alpha raised from 63 to 150 — the curved portion's own shading was
-                    // technically being applied before but was faint enough over the cream page
-                    // color to read as "no shadow at all".
-                    val shadeAlpha = (((0.45f * kotlin.math.sin(thetaPos)) * 150) * (1f - backFrac)).toInt().coerceIn(0, 255)
-                    val whiteAlpha = (backFrac * 255).toInt().coerceIn(0, 255)
+                    newProj = localPullDist - localCurlRadius * kotlin.math.sin(thetaPos)
+                    // Commits to fully opaque white by about 40° into the roll — well before the
+                    // 90° freeze point — instead of only doing so deep past it. The previous version
+                    // only started whitening after distIntoRoll passed a fairly large radius's worth
+                    // of 90°, which a normal-sized drag never reached at all: you'd see the shaded
+                    // but still-legible front text for the whole visible roll instead of a solid
+                    // back. Reaching opaque quickly means only a thin sliver near the crease shows
+                    // shaded front content before the roll is a solid, opaque surface — no text.
+                    val whiteFrac = (thetaPos / (halfPi * 0.45f)).coerceIn(0f, 1f)
+                    val shadeAlpha = (((0.5f * kotlin.math.sin(thetaPos)) * 160) * (1f - whiteFrac)).toInt().coerceIn(0, 255)
+                    val whiteAlpha = (whiteFrac * 255).toInt().coerceIn(0, 255)
                     // Standard "white over black" alpha compositing — black's own RGB is (0,0,0)
                     // so it only ever contributes to alpha, not color.
                     val outA = whiteAlpha + shadeAlpha * (255 - whiteAlpha) / 255
