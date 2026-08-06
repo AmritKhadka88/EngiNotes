@@ -1726,6 +1726,33 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return kotlin.math.ceil(maxY / pageH).toInt().coerceAtLeast(1)
     }
 
+    /** Public wrapper for [estimatePageCount] — how many "pages" Read Mode has to page through. */
+    fun readModePageCount(): Int = estimatePageCount().coerceAtLeast(1)
+
+    /** Renders page [pageIdx] (0-based) as a flat, standalone bitmap at exactly (w x h) — the
+     *  content source for [ReadModePageFlipView]. Deliberately independent of the older
+     *  pageCurlBitmap cache (used by the retired Canvas-mesh curl path) so the two renderers can
+     *  never read or invalidate each other's cached bitmap. Same rendering technique as the
+     *  PDF-export and old curl-bitmap paths: temporarily repoint this view's own translate/scale
+     *  state at the target page, render through the normal drawCanvasContent(), then restore it. */
+    fun renderPageContentBitmap(pageIdx: Int, w: Int, h: Int): Bitmap? {
+        val pageCount = estimatePageCount().coerceAtLeast(1)
+        if (pageIdx < 0 || pageIdx >= pageCount) return null
+        val bw = w.coerceAtLeast(1); val bh = h.coerceAtLeast(1)
+        return try {
+            val fitScale = kotlin.math.max(bw / pageWidthPx(), bh / pageHeightPx())
+            val bmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
+            val bmpCanvas = Canvas(bmp)
+            bmpCanvas.drawColor(Color.parseColor("#F6F3E9"))
+            val savedTX = translateX; val savedTY = translateY; val savedScale = scaleFactor
+            translateX = 0f; translateY = -pageIdx * (pageHeightPx() + 40f) * fitScale
+            scaleFactor = fitScale
+            drawCanvasContent(bmpCanvas)
+            translateX = savedTX; translateY = savedTY; scaleFactor = savedScale
+            bmp
+        } catch (e: OutOfMemoryError) { null }
+    }
+
     // Renders each page of the note as its own separate bitmap, at a fixed export resolution —
     // used by "Export as PDF" so each app-page becomes its own PDF page, instead of a single
     // on-screen-viewport screenshot (which only ever captured whatever was currently scrolled

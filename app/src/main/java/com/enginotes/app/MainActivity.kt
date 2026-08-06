@@ -2197,6 +2197,7 @@ class MainActivity : AppCompatActivity() {
     // drawingView.currentTool, so there's nothing here that could reset it.
     private var fullscreenRestoreBtn: View? = null
     private var readModeExitBtn: View? = null
+    private var pageFlipView: ReadModePageFlipView? = null
     private fun addFullscreenToggleButton() {
         val topBar = findViewById<LinearLayout?>(R.id.topBarContainer) ?: return
         val outValue = android.util.TypedValue()
@@ -2347,7 +2348,12 @@ class MainActivity : AppCompatActivity() {
     private fun enterReadMode(mode: DrawingView.ReadMode) {
         closeInlineEditor(true)
         drawingView.readMode = mode
-        if (mode == DrawingView.ReadMode.PAPER_LIKE) drawingView.syncReadPageIndexToScroll()
+        if (mode == DrawingView.ReadMode.PAPER_LIKE) {
+            drawingView.syncReadPageIndexToScroll()
+            showPageFlipView()
+        } else {
+            hidePageFlipView()
+        }
         // Neither variant allows editing, so the tool palette has nothing to actually do — hide
         // it, and the top bar, in both. The distinction between the two modes is only the paper
         // reskin/dimmed ruling (handled in DrawingView), not chrome visibility — both need the
@@ -2373,14 +2379,40 @@ class MainActivity : AppCompatActivity() {
             canvasContainer.addView(btn, lp)
             readModeExitBtn = btn
         }
+        canvasContainer.bringChildToFront(readModeExitBtn)
         readModeExitBtn?.visibility = View.VISIBLE
         Toast.makeText(this, if (mode == DrawingView.ReadMode.STANDARD) "Read Mode: Standard" else "Read Mode: Paper-like", Toast.LENGTH_SHORT).show()
         syncTopChromeHeight()
         drawingView.invalidate()
     }
 
+    /** Creates (if needed) and shows the PageFlip GL view on top of DrawingView, wired to render
+     *  page content through DrawingView.renderPageContentBitmap — see ReadModePageFlipView's own
+     *  doc comment for why a whole separate GPU-based renderer replaced the old Canvas curl here. */
+    private fun showPageFlipView() {
+        var pfv = pageFlipView
+        if (pfv == null) {
+            pfv = ReadModePageFlipView(this)
+            pfv.pageProvider = { index, w, h -> drawingView.renderPageContentBitmap(index, w, h) }
+            pfv.pageCountProvider = { drawingView.readModePageCount() }
+            pfv.onPageChanged = { newIndex -> drawingView.readPageIndex = newIndex }
+            canvasContainer.addView(pfv, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            pageFlipView = pfv
+        }
+        pfv.visibility = View.VISIBLE
+        pfv.onResume()
+        canvasContainer.bringChildToFront(pfv)
+        readModeExitBtn?.let { canvasContainer.bringChildToFront(it) }
+        pfv.resetToPage(drawingView.readPageIndex)
+    }
+
+    private fun hidePageFlipView() {
+        pageFlipView?.let { it.visibility = View.GONE; it.releasePageFlip(); it.onPause() }
+    }
+
     private fun exitReadMode() {
         drawingView.readMode = DrawingView.ReadMode.OFF
+        hidePageFlipView()
         findViewById<View?>(R.id.topBarContainer)?.visibility = View.VISIBLE
         drawingView.restoreAfterChromeShow()
         if (getPrefs().getBoolean("show_bottom_toolbar", true)) setBottomToolbarVisible(true)
@@ -6477,6 +6509,7 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         closeInlineEditor(true)
+        pageFlipView?.onPause()
         // Blocking here (unlike the periodic 10s timer tick) — onPause fires once per
         // backgrounding, not repeatedly while drawing, so a brief wait here isn't felt as jank,
         // and the process can be killed shortly after onPause returns, so this write needs to
@@ -6499,6 +6532,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        pageFlipView?.let { if (it.visibility == View.VISIBLE) it.onResume() }
         applyStatusBarFullscreenPreference(manageOwnInsets = true)
         applyTopBarFullscreenShift()
         applyCutoutGapToTopBar()
@@ -6540,6 +6574,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        pageFlipView?.releasePageFlip()
         autosaveHandler.removeCallbacks(autosaveRunnable)
         AudioHelper.releaseAll()
         // onPause() already blocked until any pending write landed, so nothing queued here is
