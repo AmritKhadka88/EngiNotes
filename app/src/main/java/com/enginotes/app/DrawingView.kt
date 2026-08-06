@@ -6540,7 +6540,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     // Only applies coming from Select; a tool the user actually picked (Eraser,
                     // Highlighter, a shape, etc.) is left alone regardless of stylus vs finger, so
                     // this can't override a deliberate choice mid-use.
-                    if (currentTool == Tool.SELECT && selectedItem == null) { currentTool = Tool.PEN; currentPenStyle = PenStyle.BALL }
+                    // Two conditions, both required:
+                    // - Tap must hit nothing: tapping directly ON an existing item is a selection
+                    //   attempt regardless of anything else, and must never be hijacked into
+                    //   drawing through it.
+                    // - Nothing currently selected: tapping empty space to deselect a just-drawn
+                    //   shape (so its tool can be restored) is ALSO a tap that hits nothing — this
+                    //   second condition is what tells the two apart, since only that specific case
+                    //   has something selected at the moment of the tap.
+                    if (currentTool == Tool.SELECT && selectedItem == null) {
+                        val hitsItem = findItemAt(screenToWorldX(event.x), screenToWorldY(event.y)) != null
+                        if (!hitsItem) { currentTool = Tool.PEN; currentPenStyle = PenStyle.BALL }
+                    }
                 } else { if (isStylusDown) return true; drawingPointerId = event.getPointerId(0) }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { if (isStylus) isStylusDown = false; drawingPointerId = -1 }
