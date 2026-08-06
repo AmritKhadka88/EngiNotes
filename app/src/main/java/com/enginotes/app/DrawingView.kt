@@ -3490,6 +3490,17 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val page1ShadowDepth = dp(14).toFloat()
         val thetaMax = Math.PI.toFloat() * (160f / 180f)
         val halfPi = Math.PI.toFloat() / 2f
+        // How much additional roll angle (past 90°) it takes to go from fully front-visible to
+        // fully opaque white. Deliberately short and decoupled from thetaMax — on a long drag
+        // (e.g. dragging the full page height), a huge number of different original rows all end
+        // up frozen at the same position once past 90°, and every one of them sits at whatever
+        // opacity this fade has reached at that point in the drag. A fade spread across the whole
+        // 90°-to-160° range meant a wide swath of the drag left many different rows all partially
+        // see-through at once, all stacked at the same spot — which is what was showing up as a
+        // featureless blur on long/vertical drags. Reaching full opacity quickly means each row
+        // only has a narrow window to be partially transparent before it's fully hidden, so they
+        // don't get the chance to visibly overlap.
+        val whiteFadeRange = Math.PI.toFloat() * (20f / 180f)
         // One mesh cell per ~14dp of on-screen page size, not a fixed 40x24 — a fixed row count
         // was fine for pageScreenW (cols=40 over a ~1080px-wide page is ~27px/cell) but far too
         // coarse for pageScreenH (rows=24 over a ~2340px-tall page is ~97px/cell). A diagonal fold
@@ -3541,10 +3552,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val thetaPos = thetaRaw.coerceAtMost(halfPi)
                     newProj = pullDist - curlRadius * kotlin.math.sin(thetaPos)
                     val theta = thetaRaw.coerceAtMost(thetaMax)
-                    // backFrac: 0 before the fold swings past vertical, ramping to 1 by thetaMax,
-                    // then staying 1 for the whole straight continuation beyond (you're looking
-                    // straight at the blank back for as far as that folded-over stretch extends).
-                    val backFrac = ((theta - halfPi) / (thetaMax - halfPi)).coerceIn(0f, 1f)
+                    // backFrac ramps to 1 within a short stretch past 90° (not across the whole
+                    // range to thetaMax) — see the note above the whiteFadeRange declaration for
+                    // why a slow fade here caused a visible blur on long drags.
+                    val backFrac = ((theta - halfPi) / whiteFadeRange).coerceIn(0f, 1f)
                     // Shading peaks at theta=90° (the part most edge-on to the viewer) but is now
                     // scaled by (1 - backFrac) so it's ALWAYS zero once the back is fully showing —
                     // it only ever darkens the front-facing curve, never the blank back beneath it.
