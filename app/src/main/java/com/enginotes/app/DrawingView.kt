@@ -1073,6 +1073,14 @@ class DimensionItem(
 
 // Represents an undoable fill-toggle on a shape. Undo/redo flip fill back and rebuild the paint.
 class FillToggleAction(val item: StrokeItem, val wasFilled: Boolean, val wasColor: Int, val newColor: Int)
+// Records a move/resize/rotate (single item or a whole group together as one step) so Undo/Redo
+// can actually revert it. restoreBefore/restoreAfter are one closure per affected item, each
+// closure putting that specific item back to its captured geometry (position/size/points/
+// rotation, whichever fields that item type actually has) — captured once at drag-start (before)
+// and once at drag-end (after), rather than trying to recompute the transform mathematically in
+// reverse, which would need to duplicate every drag path's exact math (move/resize/rotate,
+// single-item or group) instead of just replaying a snapshot.
+class TransformAction(val restoreBefore: List<() -> Unit>, val restoreAfter: List<() -> Unit>)
 
 class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
 
@@ -1556,6 +1564,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     private var activeHandle = HandleType.NONE
     private var dragStartWorldX = 0f; private var dragStartWorldY = 0f
+    // "Before" geometry snapshot for whatever's selected, captured at the start of every Select
+    // ACTION_DOWN — committed as a TransformAction (see pushTransformIfChanged) at ACTION_UP only
+    // if a real MOVE/RESIZE/ROTATE handle actually got engaged this gesture.
+    private var pendingTransformItems: List<Any> = emptyList()
+    private var pendingTransformBefore: List<() -> Unit> = emptyList()
     // Group (pink) bounding box state for multi-select
     private var groupActiveHandle = HandleType.NONE
     private var groupDragStartX = 0f; private var groupDragStartY = 0f
@@ -5015,6 +5028,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             tableIsActive = false; tableSelStart = null; tableSelEnd = null
         }
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            // Snapshot current selection's geometry now, before any handle-type detection below —
+            // covers group handles (which return early, before reaching the ACTION_DOWN branch
+            // further down) and single-item handles uniformly. Committed as a TransformAction
+            // (see pushTransformIfChanged) at ACTION_UP, but only if a real MOVE/RESIZE/ROTATE
+            // handle actually got engaged this gesture — a plain tap-to-select isn't a transform.
+            val selNow = (selectedItems + setOfNotNull(selectedItem)).toSet().toList()
+            pendingTransformItems = selNow
+            pendingTransformBefore = selNow.mapNotNull { captureGeomSnapshot(it) }
+        }
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             // Pink group box handles — active for ANY tool when 2+ items selected (lasso, rect, multi)
             val allSel = (selectedItems + setOfNotNull(selectedItem)).toSet()
             val minForGroup = if (currentTool == Tool.MULTISELECT) 1 else 2
@@ -5353,6 +5376,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             MotionEvent.ACTION_UP -> {
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it); longPressRunnable = null }
+                // A real MOVE/RESIZE/ROTATE handle was engaged this gesture (not just a tap) —
+                // commit the snapshot captured at ACTION_DOWN as an undoable TransformAction now,
+                // before the handle states below get reset and finalizeGroupResize() settles the
+                // final geometry.
+                if (activeHandle != HandleType.NONE || groupActiveHandle != HandleType.NONE) {
+                    pushTransformIfChanged(pendingTransformItems, pendingTransformBefore)
+                }
+                pendingTransformItems = emptyList(); pendingTransformBefore = emptyList()
                 activeHandle = HandleType.NONE; groupActiveHandle = HandleType.NONE; groupSnapshots.clear(); pinkGroupRotation = 0f
                 finalizeGroupResize()
                 strokeResizeOrigPoints = null; strokeResizeOrigBounds = null
@@ -5531,6 +5562,39 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     // Snapshot-based version: applies scale from original captured state to avoid incremental compounding
+    // Captures the current geometry of ANY item type as a closure that restores it later — used
+    // to build both the "before" (drag-start) and "after" (drag-end) halves of a TransformAction.
+    // Each item type restores whichever fields it actually has; StrokeItem additionally needs its
+    // path/cache rebuilt after points change, which plain field restoration wouldn't trigger.
+    private fun captureGeomSnapshot(item: Any): (() -> Unit)? = when (item) {
+        is StrokeItem -> {
+            val pts = item.data.points.toFloatArray(); val rot = item.data.rotation
+            {
+                item.data.points.clear(); for (v in pts) item.data.points.add(v)
+                item.data.rotation = rot
+                item.data.invalidateGeometryCaches(); item.path = item.data.buildPath(); item.invalidateCache()
+            }
+        }
+        is TextItem -> { val x = item.x; val y = item.y; val s = item.size; { item.x = x; item.y = y; item.size = s } }
+        is ImageItem -> { val x = item.x; val y = item.y; val w = item.w; val h = item.h; { item.x = x; item.y = y; item.w = w; item.h = h } }
+        is FillItem -> { val x = item.x; val y = item.y; val w = item.w; val h = item.h; { item.x = x; item.y = y; item.w = w; item.h = h } }
+        is AudioItem -> { val x = item.x; val y = item.y; val r = item.radius; { item.x = x; item.y = y; item.radius = r } }
+        else -> null
+    }
+    // Pushes a TransformAction if anything in `items` actually has a geometry difference between
+    // its `before` closures (already captured at drag-start) and its current state right now —
+    // called at drag-end. Skips pushing anything for a tap/no-op drag (nothing actually moved).
+    private fun pushTransformIfChanged(items: List<Any>, before: List<() -> Unit>) {
+        if (items.isEmpty() || before.isEmpty()) return
+        val after = items.mapNotNull { captureGeomSnapshot(it) }
+        if (after.size != before.size) return
+        // No explicit "did anything actually change" check — a caller only invokes this once a
+        // genuine MOVE/RESIZE/ROTATE handle was engaged, which itself implies intent to transform,
+        // so recording unconditionally here is fine. Worst case is an undo step that restores
+        // identical values (harmless no-op), not a missing one.
+        actions.add(TransformAction(before, after)); redoStack.clear()
+    }
+
     private fun scaleItemInGroupFromSnapshot(item: Any, snap: FloatArray?, ox: Float, oy: Float, sx: Float, sy: Float, newOx: Float, newOy: Float) {
         if (snap == null) return
         when (item) {
@@ -6476,7 +6540,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     // Only applies coming from Select; a tool the user actually picked (Eraser,
                     // Highlighter, a shape, etc.) is left alone regardless of stylus vs finger, so
                     // this can't override a deliberate choice mid-use.
-                    if (currentTool == Tool.SELECT) { currentTool = Tool.PEN; currentPenStyle = PenStyle.BALL }
+                    if (currentTool == Tool.SELECT && selectedItem == null) { currentTool = Tool.PEN; currentPenStyle = PenStyle.BALL }
                 } else { if (isStylusDown) return true; drawingPointerId = event.getPointerId(0) }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { if (isStylus) isStylusDown = false; drawingPointerId = -1 }
@@ -7236,7 +7300,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                     // centerline within radius r, so a thick stroke keeps a visible
                                     // strip of ink on both sides even though the eraser circle
                                     // visually covers it (only a tiny sliver of centerline gets cut).
-                                    val effR = r + (a.data.strokeWidth / 2f).coerceAtMost(r * 2f)
+                                    val effR = r + (a.data.strokeWidth / 2f).coerceAtMost(r * 0.6f)
                                     val frags = splitStrokeAroundEraser(a.data, x, y, effR)
                                     actions.removeAt(idx); actions.addAll(idx, frags)
                                     removeFromSpatialIndex(a); for (f in frags) addToSpatialIndex(f)
@@ -7253,7 +7317,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val replacement = mutableListOf<StrokeItem>()
                                 for (comp in components) {
                                     if (strokeHitTest(comp.data, x, y, r)) {
-                                        val effR = r + (comp.data.strokeWidth / 2f).coerceAtMost(r * 2f)
+                                        val effR = r + (comp.data.strokeWidth / 2f).coerceAtMost(r * 0.6f)
                                         replacement.addAll(splitStrokeAroundEraser(comp.data, x, y, effR))
                                     } else {
                                         replacement.add(comp)
@@ -7266,7 +7330,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         } else {
                             // Open shapes (LINE, ARROW): split into fragments
                             if (strokeHitTest(a.data, x, y, r)) {
-                                val effR = r + (a.data.strokeWidth / 2f)
+                                val effR = r + (a.data.strokeWidth / 2f).coerceAtMost(r * 0.6f)
                                 val frags = splitShapeAroundEraser(a.data, x, y, effR)
                                 actions.removeAt(idx); actions.addAll(idx, frags)
                                 removeFromSpatialIndex(a); for (f in frags) addToSpatialIndex(f)
@@ -7926,7 +7990,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // Account for the stroke's own width so the eraser circle has to actually overlap the
             // VISIBLE ink (not just the invisible centerline) - matters for thick marker/brush/
             // highlighter strokes where the painted area extends well past the recorded points.
-            val effectiveR = r + (data.strokeWidth / 2f).coerceAtMost(r * 2f)
+            val effectiveR = r + (data.strokeWidth / 2f).coerceAtMost(r * 0.6f)
             if (data.points.size == 2) return distance(x, y, data.points[0], data.points[1]) <= effectiveR
             // Chunk pre-check: a chunk whose padded bbox doesn't reach (x,y) can't possibly
             // contain a hit, so skip straight past every segment in it — for a long stroke where
@@ -7948,7 +8012,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // eraser only triggers when it genuinely touches the drawn line - this is what makes
             // area-mode erasing on shapes behave like area erasing instead of object erasing.
             if (data.points.size < 4) return false
-            val effectiveR = r + (data.strokeWidth / 2f)
+            val effectiveR = r + (data.strokeWidth / 2f).coerceAtMost(r * 0.6f)
             return distanceToShapeOutline(data, x, y) <= effectiveR
         }
     }
@@ -8600,6 +8664,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val last = actions.removeAt(actions.size - 1)
         if (last is FillToggleAction) {
             last.item.data.fill = last.wasFilled; last.item.data.fillColorVal = last.wasColor; last.item.paint = last.item.data.toPaint()
+        } else if (last is TransformAction) {
+            for (restore in last.restoreBefore) restore()
         }
         redoStack.add(last); if (redoStack.size > 50) redoStack.removeAt(0); markSpatialDirty(); invalidate()
     }
@@ -8608,6 +8674,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val next = redoStack.removeAt(redoStack.size - 1)
         if (next is FillToggleAction) {
             next.item.data.fill = !next.wasFilled; next.item.data.fillColorVal = next.newColor; next.item.paint = next.item.data.toPaint()
+        } else if (next is TransformAction) {
+            for (restore in next.restoreAfter) restore()
         }
         actions.add(next); markSpatialDirty(); invalidate()
     }
@@ -8673,7 +8741,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             if (a is StrokeItem) {
                 val thickPaint = Paint(a.paint).apply {
                     style = Paint.Style.STROKE
-                    strokeWidth = strokeWidth.coerceAtLeast(4f / scaleFactor)
+                    // Round caps/joins (not the paint's own, usually BUTT/MITER) specifically for
+                    // this detection-only bitmap — where two strokes meet or nearly meet at a
+                    // point (e.g. two lines drawn to converge at a corner), a flat cap has zero
+                    // tolerance for even a sub-pixel gap between them, which is invisible at normal
+                    // zoom but still enough for the flood-fill to leak through. Round caps/joins
+                    // add a small overlap right at those meeting points, sealing gaps like that
+                    // without changing anything about how the strokes actually look when drawn.
+                    strokeCap = Paint.Cap.ROUND
+                    strokeJoin = Paint.Join.ROUND
+                    strokeWidth = strokeWidth.coerceAtLeast(6f / scaleFactor)
                     alpha = 255; isAntiAlias = false; shader = null; pathEffect = null
                 }
                 if (a.data.rotation != 0f) {
