@@ -2350,7 +2350,11 @@ class MainActivity : AppCompatActivity() {
         drawingView.readMode = mode
         if (mode == DrawingView.ReadMode.PAPER_LIKE) {
             drawingView.syncReadPageIndexToScroll()
-            showPageFlipView()
+            if (getPrefs().getBoolean("paper_flip_animation_enabled", true)) {
+                showPageFlipView()
+            } else {
+                hidePageFlipView()
+            }
         } else {
             hidePageFlipView()
         }
@@ -2399,6 +2403,11 @@ class MainActivity : AppCompatActivity() {
             canvasContainer.addView(pfv, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             pageFlipView = pfv
         }
+        pfv.setBaseDurationMs(when (getPrefs().getString("paper_flip_speed", "NORMAL")) {
+            "SLOW" -> 650
+            "FAST" -> 220
+            else -> 400
+        })
         pfv.visibility = View.VISIBLE
         pfv.onResume()
         canvasContainer.bringChildToFront(pfv)
@@ -4122,7 +4131,57 @@ class MainActivity : AppCompatActivity() {
             textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(2), 0, dp(4))
         })
 
-        div(); hdr("APPEARANCE")
+        div(); hdr("READING & PAGES")
+        val paperFlipCb = CheckBox(this).apply {
+            text = "Paper flip animation in Paper-like Read Mode"
+            isChecked = prefs.getBoolean("paper_flip_animation_enabled", true)
+            buttonTintList = accentTint
+        }; container.addView(paperFlipCb)
+        container.addView(TextView(this).apply {
+            text = "When off, Paper-like Read Mode pages through content without the curl animation."
+            textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(2), 0, dp(8))
+        })
+        val flipSpeedRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(2), 0, dp(6)) }
+        val flipSpeedButtons = mutableListOf<TextView>()
+        var selFlipSpeed = prefs.getString("paper_flip_speed", "NORMAL") ?: "NORMAL"
+        for (label in listOf("Slow", "Normal", "Fast")) {
+            val key = label.uppercase()
+            val b = TextView(this).apply {
+                text = label; textSize = 13f; gravity = Gravity.CENTER
+                setPadding(dp(6), dp(10), dp(6), dp(10))
+                val p = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f); p.setMargins(dp(2), 0, dp(2), 0)
+                layoutParams = p
+                setOnClickListener {
+                    selFlipSpeed = key
+                    flipSpeedButtons.forEach { fb -> fb.setBackgroundColor(Color.parseColor("#F0EBE0")); fb.setTextColor(Color.parseColor("#4A4A4A")) }
+                    setBackgroundColor(accent); setTextColor(Color.WHITE)
+                }
+            }
+            if (key == selFlipSpeed) { b.setBackgroundColor(accent); b.setTextColor(Color.WHITE) }
+            else { b.setBackgroundColor(Color.parseColor("#F0EBE0")); b.setTextColor(Color.parseColor("#4A4A4A")) }
+            flipSpeedButtons.add(b); flipSpeedRow.addView(b)
+        }
+        container.addView(flipSpeedRow)
+        container.addView(TextView(this).apply {
+            text = "Sets how long a deliberate, slow release takes to settle — a quick swipe always flips faster than this regardless of the setting."
+            textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(2), 0, dp(8))
+        })
+        val horizSlidesCb = CheckBox(this).apply {
+            text = "Horizontal slides for Convenient / Paper-size layout"
+            isChecked = prefs.getBoolean("horizontal_slides_enabled", false)
+            buttonTintList = accentTint
+        }; container.addView(horizSlidesCb)
+        val horizSlidesAnimCb = CheckBox(this).apply {
+            text = "Show animation when sliding between pages"
+            isChecked = prefs.getBoolean("horizontal_slides_animation_enabled", true)
+            buttonTintList = accentTint
+        }; container.addView(horizSlidesAnimCb)
+        container.addView(TextView(this).apply {
+            text = "One page at a time, two-finger swipe to move between pages (or one-finger, via a toggle in the top bar once this is on). Saved now — the actual paginated layout is still being built, so toggling this on doesn't change anything yet."
+            textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(2), 0, dp(4))
+        })
+
+
         val themeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, dp(6)) }
         val themeButtons = mutableListOf<TextView>()
         for ((key, label) in listOf("ORIGINAL" to "Original", "TRANSLUCENT" to "Transparent", "GLASS" to "Glass")) {
@@ -4420,6 +4479,10 @@ class MainActivity : AppCompatActivity() {
                 prefs.edit()
                     .putBoolean("confirm_exit_clear",confirmCb.isChecked)
                     .putBoolean("autosave",autosaveCb.isChecked)
+                    .putBoolean("paper_flip_animation_enabled", paperFlipCb.isChecked)
+                    .putString("paper_flip_speed", selFlipSpeed)
+                    .putBoolean("horizontal_slides_enabled", horizSlidesCb.isChecked)
+                    .putBoolean("horizontal_slides_animation_enabled", horizSlidesAnimCb.isChecked)
                     .putString("default_paper",selPaper)
                     .putInt("paper_color", selPaperColor)
                     .putFloat("hatch_scale", selHatchScale)

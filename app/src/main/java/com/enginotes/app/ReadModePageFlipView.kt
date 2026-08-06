@@ -9,6 +9,7 @@ import android.os.Looper
 import android.os.Message
 import android.util.AttributeSet
 import android.view.MotionEvent
+import android.view.VelocityTracker
 import com.eschao.android.widget.pageflip.OnPageFlipListener
 import com.eschao.android.widget.pageflip.PageFlip
 import com.eschao.android.widget.pageflip.PageFlipException
@@ -67,7 +68,13 @@ class ReadModePageFlipView @JvmOverloads constructor(
     private var pageNo = 0
     private var drawCommand = DRAW_FULL_PAGE
     private var contentBitmap: Bitmap? = null
-    private var animateDurationMs = 400
+    // "Base" duration used when the release velocity is low/deliberate — the actual per-gesture
+    // duration (computed in handleFingerUp below) scales this down for a fast swipe and clamps
+    // back up toward it for a slow one, rather than every flip taking the same fixed time
+    // regardless of how the user actually swiped.
+    private var baseDurationMs = 400
+    private var minDurationMs = 120
+    private var velocityTracker: VelocityTracker? = null
 
     private val mainHandler = Handler(Looper.getMainLooper()) { msg ->
         if (msg.what == MSG_ENDED_DRAWING_FRAME) {
@@ -109,7 +116,7 @@ class ReadModePageFlipView @JvmOverloads constructor(
         }
     }
 
-    fun setAnimateDurationMs(ms: Int) { animateDurationMs = ms }
+    fun setBaseDurationMs(ms: Int) { baseDurationMs = ms.coerceAtLeast(50) }
 
     /** Releases the content bitmap and detaches this view's listener from the PageFlip instance.
      *  Call when Read Mode is closed / this view is removed, mirroring the sample's
@@ -119,12 +126,28 @@ class ReadModePageFlipView @JvmOverloads constructor(
             drawLock.lock()
             contentBitmap?.recycle(); contentBitmap = null
             pageFlip.setListener(null)
+            velocityTracker?.recycle(); velocityTracker = null
         } finally { drawLock.unlock() }
     }
 
     // --- OnPageFlipListener ---
     override fun canFlipForward(): Boolean = pageNo < (pageCountProvider?.invoke() ?: 1) - 1
-    override fun canFlipBackward(): Boolean = pageNo > 0
+    // NOT a pure query — matches the library's own sample: starting a backward flip requires
+    // moving the current page's texture into the "second texture" slot first (and marking first
+    // unset), which is what makes onDrawFrame's "!page.isFirstTextureSet" check below correctly
+    // fire and load the PREVIOUS page's content. Skipping this is exactly what silently broke
+    // backward flips — the state machine still entered BACKWARD_FLIP correctly, but the old
+    // texture never got swapped out, so the current page just peeled back over itself instead of
+    // revealing the previous page. Plain field bookkeeping (no raw GL calls inside), so this is
+    // safe to call from onFingerMove's calling thread (the main/UI thread, via onTouchEvent) same
+    // as everywhere else this gets invoked from.
+    override fun canFlipBackward(): Boolean {
+        if (pageNo > 0) {
+            pageFlip.firstPage?.setSecondTextureWithFirst()
+            return true
+        }
+        return false
+    }
 
     // --- Touch: same event-to-call mapping as the library's own sample (SampleActivity +
     // PageFlipView.onFingerDown/Move/Up), just read directly off onTouchEvent instead of through
@@ -133,9 +156,12 @@ class ReadModePageFlipView @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                velocityTracker?.recycle()
+                velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
                 if (!pageFlip.isAnimating) pageFlip.onFingerDown(event.x, event.y)
             }
             MotionEvent.ACTION_MOVE -> {
+                velocityTracker?.addMovement(event)
                 if (pageFlip.isAnimating) {
                     // Mid-animation: ignore further move input, matching the library sample.
                 } else if (pageFlip.canAnimate(event.x, event.y)) {
@@ -148,14 +174,32 @@ class ReadModePageFlipView @JvmOverloads constructor(
                     requestRender()
                 }
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> handleFingerUp(event.x, event.y)
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                velocityTracker?.addMovement(event)
+                handleFingerUp(event.x, event.y)
+                velocityTracker?.recycle(); velocityTracker = null
+            }
         }
         return true
     }
 
+    // Maps the finger's release speed onto an animation duration: fast swipe -> short duration
+    // (page "flies" the rest of the way, feels snappy), slow/deliberate release -> stays close to
+    // baseDurationMs. 1000px/s is roughly a brisk, deliberate swipe on most screen densities —
+    // used as the reference point where duration bottoms out at minDurationMs; anything slower
+    // scales back up toward baseDurationMs.
+    private fun computeFlipDurationMs(): Int {
+        val vt = velocityTracker ?: return baseDurationMs
+        vt.computeCurrentVelocity(1000) // px/second
+        val speed = kotlin.math.abs(vt.xVelocity).coerceAtLeast(1f)
+        val fastSpeedReference = 1000f
+        val frac = (speed / fastSpeedReference).coerceIn(0f, 1f)
+        return (baseDurationMs - (baseDurationMs - minDurationMs) * frac).toInt().coerceAtLeast(minDurationMs)
+    }
+
     private fun handleFingerUp(x: Float, y: Float) {
         if (!pageFlip.isAnimating) {
-            pageFlip.onFingerUp(x, y, animateDurationMs)
+            pageFlip.onFingerUp(x, y, computeFlipDurationMs())
             var needsRender = false
             try {
                 drawLock.lock()
