@@ -3489,8 +3489,6 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val curlRadius = kotlin.math.min(dp(130).toFloat(), pageScreenW * 0.4f)
         val thetaMax = Math.PI.toFloat() * 0.75f
         val halfPi = Math.PI.toFloat() / 2f
-        val tangentSlope = -curlRadius * kotlin.math.cos(thetaMax)  // d(newProj)/d(thetaRaw) at thetaMax
-        val projAtThetaMax = -curlRadius * kotlin.math.sin(thetaMax)  // newProj-minus-pullDist at thetaMax
         // One mesh cell per ~14dp of on-screen page size, not a fixed 40x24 — a fixed row count
         // was fine for pageScreenW (cols=40 over a ~1080px-wide page is ~27px/cell) but far too
         // coarse for pageScreenH (rows=24 over a ~2340px-tall page is ~97px/cell). A diagonal fold
@@ -3527,11 +3525,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 if (proj < pullDist) {
                     val distIntoRoll = pullDist - proj
                     val thetaRaw = distIntoRoll / curlRadius
-                    newProj = if (thetaRaw <= thetaMax) {
-                        pullDist - curlRadius * kotlin.math.sin(thetaRaw)
-                    } else {
-                        pullDist + projAtThetaMax + tangentSlope * (thetaRaw - thetaMax)
-                    }
+                    // Geometry is frozen at the halfPi (90°) position — sin(theta) is one-to-one
+                    // over 0..90°, but continuing past that (even via a straight tangent, as this
+                    // used to) keeps moving points that are further into the roll BACK toward
+                    // (and eventually past) points that are less far in. Two different original
+                    // page positions then land at overlapping/crossed screen locations, and
+                    // drawBitmapMesh has no depth buffer to resolve that: the mesh triangles
+                    // spanning the crossover go degenerate and render as transparent gaps (the
+                    // "teeth"), while the front texture — still the ordinary, unmirrored front
+                    // bitmap — gets sampled in spatially-reversed order there, which is what reads
+                    // as mirrored text even though no mirrored texture is involved. Freezing the
+                    // position removes the crossover entirely; only the overlay alpha below keeps
+                    // responding to drag distance past this point.
+                    val thetaPos = thetaRaw.coerceAtMost(halfPi)
+                    newProj = pullDist - curlRadius * kotlin.math.sin(thetaPos)
                     val theta = thetaRaw.coerceAtMost(thetaMax)
                     // backFrac: 0 before the fold swings past vertical, ramping to 1 by thetaMax,
                     // then staying 1 for the whole straight continuation beyond (you're looking
@@ -3540,7 +3547,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     // Shading peaks at theta=90° (the part most edge-on to the viewer) but is now
                     // scaled by (1 - backFrac) so it's ALWAYS zero once the back is fully showing —
                     // it only ever darkens the front-facing curve, never the blank back beneath it.
-                    val shadeAlpha = (((0.45f * kotlin.math.sin(theta)) * 140) * (1f - backFrac)).toInt().coerceIn(0, 255)
+                    val shadeAlpha = (((0.45f * kotlin.math.sin(thetaPos)) * 140) * (1f - backFrac)).toInt().coerceIn(0, 255)
                     val whiteAlpha = (backFrac * 255).toInt().coerceIn(0, 255)
                     // Standard "white over black" alpha compositing — black's own RGB is (0,0,0)
                     // so it only ever contributes to alpha, not color.
@@ -3637,6 +3644,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // the page it's revealing.
         if (pullDist > 1f) {
             val ux = pullDx / pullDist; val uy = pullDy / pullDist
+            val vx = -uy; val vy = ux
             val boundedPullDist = pullDist.coerceAtMost(pageScreenW)
             val creaseX = anchorX + ux * boundedPullDist
             val creaseY = anchorY + uy * boundedPullDist
@@ -3649,6 +3657,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             val shader = android.graphics.LinearGradient(creaseX, creaseY, farX, farY, Color.argb(alpha, 0, 0, 0), Color.TRANSPARENT, android.graphics.Shader.TileMode.CLAMP)
             canvas.save()
             canvas.clipRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH)
+            // Hard-bound the fill to a band around the crease, running the fold's full length —
+            // built directly from the same (ux,uy)/(vx,vy) axes as the gradient itself so it can
+            // never end up wider than intended regardless of any transform state elsewhere.
+            val bandHalf = kotlin.math.max(pageScreenW, pageScreenH)
+            val bandPath = android.graphics.Path().apply {
+                moveTo(creaseX + vx * bandHalf, creaseY + vy * bandHalf)
+                lineTo(creaseX - vx * bandHalf, creaseY - vy * bandHalf)
+                lineTo(farX - vx * bandHalf, farY - vy * bandHalf)
+                lineTo(farX + vx * bandHalf, farY + vy * bandHalf)
+                close()
+            }
+            canvas.clipPath(bandPath)
             canvas.drawRect(baseLeft, baseTop, baseLeft + pageScreenW, baseTop + pageScreenH, Paint().apply { this.shader = shader })
             canvas.restore()
         }
