@@ -15,6 +15,11 @@
  */
 package com.eschao.android.widget.pageflip;
 
+// Originally compiled as this library's own module with its own generated R class in the same
+// package. Here it's compiled directly into the host app instead, so R.raw.xxx below needs to
+// resolve to the app's own generated R class explicitly.
+import com.enginotes.app.R;
+
 import android.content.Context;
 
 import static android.opengl.GLES20.glGetAttribLocation;
