@@ -1130,7 +1130,8 @@ class MainActivity : AppCompatActivity() {
     private fun applyConvenientLayout() {
         isConvenientLayout = true
         drawingView.canvasMode = CanvasMode.CONVENIENT
-        drawingView.clampTranslation()
+        drawingView.recomputeConvenientPageSize()
+        drawingView.clampTranslation(adjustScale = false)
         drawingView.invalidate()
     }
 
