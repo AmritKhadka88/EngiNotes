@@ -1148,7 +1148,7 @@ class MainActivity : AppCompatActivity() {
     // to fit the new width — there's no separate "keep as is" choice anymore.
     private fun showPaperSizeMenu(anchor: View) {
         val names = PaperSizeOption.values().map { it.name }
-        showThemedDropdown(anchor, names) { label ->
+        showThemedDropdown(anchor, names, drawingView.paperSize.name) { label ->
             val selected = try { PaperSizeOption.valueOf(label) } catch (e: Exception) { return@showThemedDropdown }
             applyConvenientLayout()
             drawingView.changePaperSize(selected)
@@ -1156,7 +1156,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showLayoutMenu(anchor: View) {
-        showThemedDropdown(anchor, listOf("Convenient", "Paper Size...", "Infinite Canvas")) { label ->
+        val current = when (drawingView.canvasMode) {
+            CanvasMode.CONVENIENT -> if (drawingView.paperSizeExplicit) "Paper Size..." else "Convenient"
+            CanvasMode.INFINITE -> "Infinite Canvas"
+            else -> null
+        }
+        showThemedDropdown(anchor, listOf("Convenient", "Paper Size...", "Infinite Canvas"), current) { label ->
             when (label) {
                 "Convenient" -> applyConvenientLayout()
                 "Paper Size..." -> showPaperSizeMenu(anchor)
@@ -2179,6 +2184,22 @@ class MainActivity : AppCompatActivity() {
                 eightColors(drawingView.currentColor) { c -> drawingView.currentColor = c }
             }
         }
+        repositionOpenBottomPanels()
+    }
+
+    // Re-measures the bottom toolbar dock's CURRENT height and re-applies it to any bottom-docked
+    // options panel that's still open — attachBottomPanel() only measures this once, at the
+    // moment a panel opens, so if the dock's height changes afterward (e.g. rebuildContextBar()
+    // makes the context bar row taller/shorter for a different tool/state) an already-open panel's
+    // bottom margin goes stale and it can end up overlapping/hidden behind the dock instead of
+    // sitting cleanly above it.
+    private fun repositionOpenBottomPanels() {
+        val dockH = findViewById<View?>(R.id.bottomToolbarDock)?.height ?: 0
+        val bottomM = navBarBottomInset() + dockH
+        listOfNotNull(textOptionsPanel, eraserOptionsPanel, tablePropertiesPanel, penOptionsPanel, highlighterOptionsPanel, brushOptionsPanel, shapeOptionsPanel).forEach { panel ->
+            val lp = panel.layoutParams as? FrameLayout.LayoutParams ?: return@forEach
+            if (lp.bottomMargin != bottomM) { lp.bottomMargin = bottomM; panel.layoutParams = lp }
+        }
     }
 
     // Hides the primary bottom toolbar while typing in a table cell (so the keyboard has more
@@ -2588,7 +2609,7 @@ class MainActivity : AppCompatActivity() {
     // these dropdowns; whatever tint they showed was just the base theme's default accent color,
     // not any chosen theme. This builds a plain themed panel instead, same pattern as the other
     // hand-rolled panels in this file (Highlighter/Eraser/Pen options etc).
-    private fun showThemedDropdown(anchor: View, items: List<String>, onSelect: (String) -> Unit) {
+    private fun showThemedDropdown(anchor: View, items: List<String>, selectedLabel: String? = null, onSelect: (String) -> Unit) {
         val spec = currentThemeSpec()
         val bg = Color.parseColor(spec.bg)
         val accent = Color.parseColor(spec.toolbar)
@@ -2606,11 +2627,16 @@ class MainActivity : AppCompatActivity() {
             elevation = dp(10).toFloat()
         }
         for (label in items) {
+            val isSelected = label == selectedLabel
             container.addView(TextView(this).apply {
-                text = label; textSize = 14f; setTextColor(accent)
+                text = (if (isSelected) "✓ " else "") + label; textSize = 14f
+                setTextColor(if (isSelected) Color.WHITE else accent)
+                setTypeface(null, if (isSelected) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
                 setPadding(dp(18), dp(12), dp(18), dp(12))
                 isClickable = true
-                background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.TRANSPARENT); cornerRadius = dp(6).toFloat() }
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(if (isSelected) accent else Color.TRANSPARENT); cornerRadius = dp(6).toFloat()
+                }
                 setOnClickListener { popupWindow.dismiss(); onSelect(label) }
             })
         }
@@ -2675,14 +2701,20 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showEraserModePopup(anchor: View) {
-        showThemedDropdown(anchor, listOf("Object Eraser", "Area Eraser")) { label ->
+        val current = if (drawingView.eraserMode == EraserMode.OBJECT) "Object Eraser" else "Area Eraser"
+        showThemedDropdown(anchor, listOf("Object Eraser", "Area Eraser"), current) { label ->
             drawingView.eraserMode = if (label == "Object Eraser") EraserMode.OBJECT else EraserMode.AREA
             Toast.makeText(this, label, Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun showSelectModePopup(anchor: View) {
-        showThemedDropdown(anchor, listOf("Select (default)", "Box Select (drag a rectangle)", "Lasso (freeform loop)")) { label ->
+        val current = when (drawingView.currentTool) {
+            Tool.AUTOSELECT -> "Box Select (drag a rectangle)"
+            Tool.LASSO -> "Lasso (freeform loop)"
+            else -> "Select (default)"
+        }
+        showThemedDropdown(anchor, listOf("Select (default)", "Box Select (drag a rectangle)", "Lasso (freeform loop)"), current) { label ->
             when (label) {
                 "Select (default)" -> setActiveTool(null, Tool.SELECT)
                 "Box Select (drag a rectangle)" -> {
@@ -2776,9 +2808,11 @@ class MainActivity : AppCompatActivity() {
         refreshLineTypeBtn()
         lineTypeBtn.setOnClickListener {
             val options = (listOf("Not set") + LineType.values().map { it.label }).toTypedArray()
-            AlertDialog.Builder(this).setTitle("Default line type").setItems(options) { _, idx ->
+            val current = layer.defaultLineType?.let { LineType.values().indexOf(it) + 1 } ?: 0
+            AlertDialog.Builder(this).setTitle("Default line type").setSingleChoiceItems(options, current) { dialog, idx ->
                 layer.defaultLineType = if (idx == 0) null else LineType.values()[idx - 1]
                 refreshLineTypeBtn()
+                dialog.dismiss()
             }.show()
         }
         container.addView(lineTypeBtn)
@@ -2824,8 +2858,10 @@ class MainActivity : AppCompatActivity() {
         fontFamilyBtn.setOnClickListener {
             val labels = arrayOf("Not set", "Default (Sans)", "Serif", "Monospace (LaTeX-style)")
             val values = arrayOf(null, "sans-serif", "serif", "monospace")
-            AlertDialog.Builder(this).setTitle("Default font family").setItems(labels) { _, idx ->
+            val current = values.indexOf(layer.defaultFontFamily).coerceAtLeast(0)
+            AlertDialog.Builder(this).setTitle("Default font family").setSingleChoiceItems(labels, current) { dialog, idx ->
                 layer.defaultFontFamily = values[idx]; refreshFontFamilyBtn()
+                dialog.dismiss()
             }.show()
         }
         container.addView(fontFamilyBtn)
@@ -4297,11 +4333,13 @@ class MainActivity : AppCompatActivity() {
         refPaperStyleRows()
 
         paperLbl.setOnClickListener{
-            AlertDialog.Builder(this).setTitle("Default Paper").setItems(paperLabels){ _,i->
+            val current = paperValues.indexOf(selPaper).coerceAtLeast(0)
+            AlertDialog.Builder(this).setTitle("Default Paper").setSingleChoiceItems(paperLabels, current){ dialog,i->
                 selPaper=paperValues[i]; refP(); refPaperColorRow(); refPaperStyleRows()
                 // Picking "Coloured" with nothing chosen yet should immediately prompt for a
                 // colour rather than silently falling back to whatever the old fixed default was.
                 if (selPaper == "BLANK_COLORED") showColorGridDialog { c -> selPaperColor = c; refPaperColorRow() }
+                dialog.dismiss()
             }.show()
         }
 
@@ -4325,8 +4363,15 @@ class MainActivity : AppCompatActivity() {
         }
         refPage()
         for(lbl in listOf(modeLbl,sizeLbl,orientLbl)){ lbl.textSize=15f; lbl.setTextColor(accent); lbl.setPadding(0,dp(8),0,dp(8)); container.addView(lbl) }
-        sizeLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Paper Size").setItems(PaperSizeOption.values().map{it.name}.toTypedArray()){ _,i-> drawingView.changePaperSize(PaperSizeOption.values()[i]); refPage() }.show() }
-        orientLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Orientation").setItems(arrayOf("Portrait","Landscape")){ _,i-> drawingView.changePageOrientation(if(i==0)Orientation.PORTRAIT else Orientation.LANDSCAPE); refPage() }.show() }
+        sizeLbl.setOnClickListener{
+            val sizes = PaperSizeOption.values()
+            val current = sizes.indexOf(drawingView.paperSize).coerceAtLeast(0)
+            AlertDialog.Builder(this).setTitle("Paper Size").setSingleChoiceItems(sizes.map{it.name}.toTypedArray(), current){ dialog,i-> drawingView.changePaperSize(sizes[i]); refPage(); dialog.dismiss() }.show()
+        }
+        orientLbl.setOnClickListener{
+            val current = if (drawingView.pageOrientation == Orientation.PORTRAIT) 0 else 1
+            AlertDialog.Builder(this).setTitle("Orientation").setSingleChoiceItems(arrayOf("Portrait","Landscape"), current){ dialog,i-> drawingView.changePageOrientation(if(i==0)Orientation.PORTRAIT else Orientation.LANDSCAPE); refPage(); dialog.dismiss() }.show()
+        }
 
         div(); hdr("PDF EXPORT")
         // Points-per-pixel conversion in savePdfLauncher is exact math (72/150 at the known
@@ -4359,7 +4404,8 @@ class MainActivity : AppCompatActivity() {
         fun refHatch() { hatchLbl.text = "Density: ${hatchLabels[closestHatchIndex()]}  (tap)" }
         refHatch()
         hatchLbl.setOnClickListener {
-            AlertDialog.Builder(this).setTitle("Hatch Density").setItems(hatchLabels) { _, i ->
+            AlertDialog.Builder(this).setTitle("Hatch Density").setSingleChoiceItems(hatchLabels, closestHatchIndex()) { dialog, i ->
+                dialog.dismiss()
                 val applyChoice = { selHatchScale = hatchValues[i]; refHatch() }
                 if (hatchValues[i] < 1f) {
                     // Fine hatches on a large filled area mean a lot of lines get drawn the
@@ -4416,8 +4462,9 @@ class MainActivity : AppCompatActivity() {
         fun refBarSize() { barSizeLbl.text = "Icon size: ${barSizeLabels[barSizeValues.indexOf(selBarSize).coerceAtLeast(0)]}  (tap)" }
         refBarSize()
         barSizeLbl.setOnClickListener {
-            AlertDialog.Builder(this).setTitle("Icon Size").setItems(barSizeLabels) { _, i ->
+            AlertDialog.Builder(this).setTitle("Icon Size").setSingleChoiceItems(barSizeLabels, barSizeValues.indexOf(selBarSize).coerceAtLeast(0)) { dialog, i ->
                 selBarSize = barSizeValues[i]; refBarSize()
+                dialog.dismiss()
             }.show()
         }
         container.addView(barSizeLbl)
