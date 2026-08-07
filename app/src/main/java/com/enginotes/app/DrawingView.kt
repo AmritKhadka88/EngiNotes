@@ -3783,16 +3783,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private var hasInitialLayout = false
-    // Recomputes Convenient mode's page pixel dimensions from the current paperSize/orientation —
-    // pulled out of onLayout() so it can also be called directly whenever paperSize or orientation
-    // changes outside of an actual layout pass (e.g. picking a new size from a menu), which only
-    // triggers invalidate()/redraw, not onLayout(). Previously this only ever ran during a real
-    // layout pass, so changing paper size updated the paperSize value but never the pixel
-    // dimensions derived from it — the paper visually never changed size.
+    // Convenient mode's page has its own fixed default size — A4's width, and 0.85x A4's height
+    // (a shorter, more scroll-friendly page than full A4) — independent of the Paper Size picker
+    // and page orientation entirely. Pulled out of onLayout() so it can be called directly
+    // whenever needed outside of an actual layout pass, same reasoning as before.
     fun recomputeConvenientPageSize() {
         val m = 3.7795f
-        convenientPageW = if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
-        convenientPageH = if (pageOrientation == Orientation.PORTRAIT) paperSize.heightMM * m else paperSize.widthMM * m
+        convenientPageW = 210f * m
+        convenientPageH = 297f * 0.85f * m
     }
 
     // Changes paper size (or orientation) while explicitly preserving the user's current zoom
