@@ -2078,7 +2078,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     })
 
-    fun clampTranslation() {
+    fun clampTranslation(adjustScale: Boolean = true) {
         if (canvasMode == CanvasMode.INFINITE) return
         val pw = pageWidthPx() * scaleFactor; val ph = pageHeightPx() * scaleFactor
         val margin = 16f
@@ -2090,7 +2090,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             CanvasMode.CONVENIENT, CanvasMode.PAGINATED -> minScaleW.coerceAtLeast(0.3f)
             else -> 0.3f
         }
-        if (scaleFactor < minScale) {
+        if (adjustScale && scaleFactor < minScale) {
             scaleFactor = minScale
             translateX = (width - pageWidthPx() * scaleFactor) / 2f
             if (canvasMode == CanvasMode.FIXED) translateY = (height - pageHeightPx() * scaleFactor) / 2f
@@ -3793,6 +3793,29 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val m = 3.7795f
         convenientPageW = if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
         convenientPageH = if (pageOrientation == Orientation.PORTRAIT) paperSize.heightMM * m else paperSize.widthMM * m
+    }
+
+    // Changes paper size (or orientation) while explicitly preserving the user's current zoom
+    // level. clampTranslation()'s "page must fill at least the screen width" floor means
+    // shrinking the page (e.g. switching to a narrower paper size) could force scaleFactor up to
+    // compensate — and since that's a floor, not a target, switching back to a wider size never
+    // reversed it: the canvas stayed zoomed in from then on. Paper size is meant to just change
+    // the page's boundary/ratio, not silently re-zoom the drawing — clampTranslation(adjustScale
+    // = false) still clamps translateX/Y for the new bounds, it just never touches scaleFactor.
+    fun changePaperSize(newSize: PaperSizeOption) {
+        paperSize = newSize
+        recomputeConvenientPageSize()
+        rewrapTextToPage()
+        clampTranslation(adjustScale = false)
+        invalidate()
+    }
+
+    fun changePageOrientation(newOrientation: Orientation) {
+        pageOrientation = newOrientation
+        recomputeConvenientPageSize()
+        rewrapTextToPage()
+        clampTranslation(adjustScale = false)
+        invalidate()
     }
 
     private var lastLayoutWidth = 0
