@@ -727,6 +727,12 @@ class MainActivity : AppCompatActivity() {
         lastSavedContent = drawingView.serialize()
         driveManager.trySilentSignIn { }
         drawingView.arcDivisions = prefs.getInt("arc_divisions",3)
+        drawingView.horizontalPagingOneFinger = prefs.getBoolean("horizontal_slides_one_finger", false)
+        drawingView.horizontalPagingShowAnimation = prefs.getBoolean("horizontal_slides_animation_enabled", true)
+        if (prefs.getBoolean("horizontal_slides_enabled", false)) {
+            drawingView.enterHorizontalPaging()
+            drawingView.horizontalPagingEnabled = true
+        }
         drawingView.canvasBackgroundColor = currentThemeBackgroundColor()
         drawingView.lineSpacingPref = prefs.getFloat("paper_line_spacing", 40f)
         drawingView.gridSpacingPref = prefs.getFloat("paper_grid_spacing", 40f)
@@ -4172,13 +4178,18 @@ class MainActivity : AppCompatActivity() {
             isChecked = prefs.getBoolean("horizontal_slides_enabled", false)
             buttonTintList = accentTint
         }; container.addView(horizSlidesCb)
+        val horizSlidesOneFingerCb = CheckBox(this).apply {
+            text = "Use one finger to swipe pages (instead of two)"
+            isChecked = prefs.getBoolean("horizontal_slides_one_finger", false)
+            buttonTintList = accentTint
+        }; container.addView(horizSlidesOneFingerCb)
         val horizSlidesAnimCb = CheckBox(this).apply {
             text = "Show animation when sliding between pages"
             isChecked = prefs.getBoolean("horizontal_slides_animation_enabled", true)
             buttonTintList = accentTint
         }; container.addView(horizSlidesAnimCb)
         container.addView(TextView(this).apply {
-            text = "One page at a time, two-finger swipe to move between pages (or one-finger, via a toggle in the top bar once this is on). Saved now — the actual paginated layout is still being built, so toggling this on doesn't change anything yet."
+            text = "One page at a time — swipe with two fingers to move between pages (or one finger, with the toggle above; stylus still draws normally either way)."
             textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(2), 0, dp(4))
         })
 
@@ -4483,6 +4494,7 @@ class MainActivity : AppCompatActivity() {
                     .putBoolean("paper_flip_animation_enabled", paperFlipCb.isChecked)
                     .putString("paper_flip_speed", selFlipSpeed)
                     .putBoolean("horizontal_slides_enabled", horizSlidesCb.isChecked)
+                    .putBoolean("horizontal_slides_one_finger", horizSlidesOneFingerCb.isChecked)
                     .putBoolean("horizontal_slides_animation_enabled", horizSlidesAnimCb.isChecked)
                     .putString("default_paper",selPaper)
                     .putInt("paper_color", selPaperColor)
@@ -4503,6 +4515,13 @@ class MainActivity : AppCompatActivity() {
                     .putFloat("dim_arrow_size", dimArrowSz)
                     .apply()
                 drawingView.arcDivisions = prefs.getInt("arc_divisions",3)
+                val wasHorizPaging = drawingView.horizontalPagingEnabled
+                drawingView.horizontalPagingOneFinger = horizSlidesOneFingerCb.isChecked
+                drawingView.horizontalPagingShowAnimation = horizSlidesAnimCb.isChecked
+                if (horizSlidesCb.isChecked && !wasHorizPaging) {
+                    drawingView.enterHorizontalPaging()
+                }
+                drawingView.horizontalPagingEnabled = horizSlidesCb.isChecked
                 drawingView.lineSpacingPref = lineSpacing
                 drawingView.gridSpacingPref = gridSpacing
                 drawingView.dotSpacingPref = dotSpacing

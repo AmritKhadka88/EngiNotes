@@ -1760,6 +1760,85 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         } catch (e: OutOfMemoryError) { null }
     }
 
+    // Instantly positions the live (editable) view at editPageIndex's vertical slot — no
+    // animation, used both for the very first layout in horizontal-paging mode and as the final
+    // step after a slide-transition animation finishes (by then the transition already showed the
+    // move visually; this just makes the underlying live view match what's already on screen).
+    private fun snapToEditPage() {
+        val ph = pageHeightPx()
+        translateY = -editPageIndex * (ph + 40f) * scaleFactor
+        clampTranslation()
+    }
+
+    // Kicks off (or, if animation is disabled in Settings, instantly performs) a page change.
+    // dir is +1 for next page, -1 for previous. Safe to call even if a transition is already
+    // running (a new one simply isn't started until the current one finishes, matching how a
+    // real pager ignores input mid-transition rather than trying to interrupt/reflow it).
+    private fun goToEditPage(newIndex: Int, dir: Int) {
+        val pageCount = estimatePageCount().coerceAtLeast(1)
+        val clamped = newIndex.coerceIn(0, pageCount - 1)
+        if (clamped == editPageIndex || pagingAnimator?.isRunning == true) return
+        if (!horizontalPagingShowAnimation) {
+            editPageIndex = clamped
+            snapToEditPage()
+            onEditPageChanged?.invoke(editPageIndex, pageCount)
+            invalidate()
+            return
+        }
+        runPagingAnimation(clamped, dir, commit = true)
+    }
+
+    // Plays the slide animation. commit=true actually changes editPageIndex once it finishes;
+    // commit=false is a "snap back" (the swipe didn't cross the threshold) that slides the
+    // dragged-out current page back into place and the peeked adjacent page back out, ending on
+    // the SAME page it started on.
+    private fun runPagingAnimation(targetIndex: Int, dir: Int, commit: Boolean) {
+        val pageCount = estimatePageCount().coerceAtLeast(1)
+        val w = width.coerceAtLeast(1); val h = height.coerceAtLeast(1)
+        val fromIdx = if (commit) editPageIndex else targetIndex
+        val toIdx = if (commit) targetIndex else editPageIndex
+        pagingFromBitmap?.recycle(); pagingToBitmap?.recycle()
+        pagingFromBitmap = renderPageContentBitmap(fromIdx, w, h)
+        pagingToBitmap = if (toIdx in 0 until pageCount) renderPageContentBitmap(toIdx, w, h) else null
+        pagingAnimDirection = dir
+        pagingAnimTargetIndex = targetIndex
+        pagingAnimIsCommit = commit
+        pagingSuppressLiveContent = true
+        pagingAnimator?.cancel()
+        val startProgress = if (commit) 0f else 1f
+        val endProgress = if (commit) 1f else 0f
+        pagingAnimProgress = startProgress
+        pagingAnimator = android.animation.ValueAnimator.ofFloat(startProgress, endProgress).apply {
+            duration = 260
+            interpolator = android.view.animation.DecelerateInterpolator()
+            addUpdateListener { pagingAnimProgress = it.animatedValue as Float; invalidate() }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    pagingSuppressLiveContent = false
+                    pagingFromBitmap?.recycle(); pagingFromBitmap = null
+                    pagingToBitmap?.recycle(); pagingToBitmap = null
+                    if (commit) {
+                        editPageIndex = targetIndex
+                        snapToEditPage()
+                        onEditPageChanged?.invoke(editPageIndex, estimatePageCount().coerceAtLeast(1))
+                    }
+                    invalidate()
+                }
+            })
+            start()
+        }
+    }
+
+    // Draws the slide-transition overlay in place of live content while it's running — called
+    // from onDraw() before the normal content draw when pagingSuppressLiveContent is true.
+    private fun drawPagingTransition(canvas: Canvas) {
+        val w = width.toFloat(); val h = height.toFloat()
+        val fromX = -pagingAnimProgress * w * pagingAnimDirection
+        val toX = fromX + w * pagingAnimDirection
+        pagingFromBitmap?.let { canvas.drawBitmap(it, fromX, 0f, null) }
+        pagingToBitmap?.let { canvas.drawBitmap(it, toX, 0f, null) }
+    }
+
     // Renders each page of the note as its own separate bitmap, at a fixed export resolution —
     // used by "Export as PDF" so each app-page becomes its own PDF page, instead of a single
     // on-screen-viewport screenshot (which only ever captured whatever was currently scrolled
@@ -1815,6 +1894,39 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private var twoFingerInitialDist = 0f  // finger distance when second finger touched down
     private var twoFingerActive = false       // true while 2+ fingers are on screen
     private var twoFingerEverActive = false   // true from first 2-finger contact until next fresh ACTION_DOWN
+    // Horizontal Slides (Settings toggle): Convenient/Paper-size mode shows one page at a time,
+    // navigated by a horizontal swipe instead of continuous vertical scroll. Wired from
+    // MainActivity based on the "horizontal_slides_*" preferences.
+    var horizontalPagingEnabled: Boolean = false
+    var horizontalPagingOneFinger: Boolean = false
+    var horizontalPagingShowAnimation: Boolean = true
+    var editPageIndex: Int = 0
+    var onEditPageChanged: ((Int, Int) -> Unit)? = null  // (index, pageCount)
+    private fun horizontalPagingActive() = horizontalPagingEnabled && canvasMode == CanvasMode.CONVENIENT
+    // Accumulated horizontal drag distance for the CURRENT gesture while horizontal paging is
+    // active — swipe intent is decided once at finger-up (total distance vs a threshold), not
+    // tracked as a live drag-follow, since a live-follow would need to keep an adjacent page's
+    // bitmap positioned in perfect sync with raw per-frame touch deltas; deciding once at release
+    // and then playing one clean slide animation is far more robust to build and verify blind.
+    private var pagingDragStartX = 0f
+    private var pagingDragTotalX = 0f
+    private var pagingDragging = false
+    // Slide-transition playback state — sourced from renderPageContentBitmap (the same source
+    // ReadModePageFlipView uses), since pages here are stacked VERTICALLY in the underlying
+    // coordinate system (translateY-based, same convention as Read Mode's page stack) with no
+    // horizontal relationship between them at all; a horizontal slide has to be faked with a
+    // pair of bitmap snapshots animated across the screen, then swapped in as the new live
+    // (editable) page once the animation completes — translateX-ing the live view itself would
+    // just push the current page off-screen without revealing anything, since the next page's
+    // content doesn't live to the left/right of it in world space.
+    private var pagingFromBitmap: Bitmap? = null
+    private var pagingToBitmap: Bitmap? = null
+    private var pagingAnimProgress: Float = 0f  // 0 = fully on "from", 1 = fully on "to"
+    private var pagingAnimDirection: Int = 1    // +1 = next page (slides in from the right), -1 = previous
+    private var pagingAnimTargetIndex: Int = -1
+    private var pagingAnimator: android.animation.ValueAnimator? = null
+    private var pagingAnimIsCommit: Boolean = false  // true = actually changing page; false = snap-back (cancelled swipe)
+    private var pagingSuppressLiveContent = false // true while an animation/overlay owns the frame
     private var hoverX: Float? = null; private var hoverY: Float? = null
 
     private var isStylusDown = false
@@ -3165,6 +3277,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         // sliding in during a drag — so it's dispatched to its own renderer instead of trying to
         // wedge that into the normal continuous-scroll path below.
         if (bookPageTurnActive()) { drawBookPageTurn(canvas); return }
+        if (pagingSuppressLiveContent) { drawPagingTransition(canvas); return }
         drawCanvasContent(canvas)
     }
 
@@ -3299,6 +3412,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val ph = pageHeightPx(); val gap = 40f
         val approx = ((-translateY / scaleFactor) / (ph + gap)).toInt()
         readPageIndex = approx.coerceIn(0, (estimatePageCount() - 1).coerceAtLeast(0))
+    }
+
+    /** Same idea as [syncReadPageIndexToScroll] but for horizontal-paging edit mode — call right
+     *  before turning horizontalPagingEnabled on so it starts at whatever page the user was
+     *  already scrolled to, then instantly snaps the view to that page's slot (locking out
+     *  further vertical scroll from that point on). */
+    fun enterHorizontalPaging() {
+        val ph = pageHeightPx(); val gap = 40f
+        val approx = ((-translateY / scaleFactor) / (ph + gap)).toInt()
+        editPageIndex = approx.coerceIn(0, (estimatePageCount() - 1).coerceAtLeast(0))
+        snapToEditPage()
+        invalidate()
     }
 
     private data class PageLayout(val baseLeft: Float, val baseTop: Float, val pageScreenW: Float, val pageScreenH: Float, val fitScale: Float)
@@ -6458,6 +6583,34 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             return true
         }
 
+        // One-finger Horizontal Slides variant (Settings: "one finger" toggle) — a genuine finger
+        // touch (not stylus) becomes swipe-to-page-turn instead of drawing, the same way
+        // fingerPanMode already repurposes single-finger touches for panning. Stylus keeps
+        // drawing normally either way, so this doesn't take away the ability to draw outright.
+        if (horizontalPagingActive() && horizontalPagingOneFinger && event.pointerCount == 1 &&
+            event.getToolType(0) != MotionEvent.TOOL_TYPE_STYLUS) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    if (currentItem != null) { currentItem = null; invalidate() }
+                    pagingDragStartX = event.x; pagingDragTotalX = 0f; pagingDragging = true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (pagingDragging) pagingDragTotalX = event.x - pagingDragStartX
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (pagingDragging) {
+                        pagingDragging = false
+                        val threshold = dp(60).toFloat()
+                        when {
+                            pagingDragTotalX <= -threshold -> goToEditPage(editPageIndex + 1, 1)
+                            pagingDragTotalX >= threshold -> goToEditPage(editPageIndex - 1, -1)
+                        }
+                        pagingDragTotalX = 0f
+                    }
+                }
+            }
+            return true
+        }
         // fingerPanMode: single finger ALWAYS pans — block ALL other tools immediately.
         // Read Mode (any variant) reuses this exact same gate: view-only means single-finger
         // touches should only ever pan, never draw/erase/select/edit, which is precisely what
@@ -6485,6 +6638,34 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             return true
         }
         if (event.pointerCount >= 2) {
+            if (horizontalPagingActive() && !horizontalPagingOneFinger) {
+                if (currentItem != null) { currentItem = null; invalidate() }
+                twoFingerActive = true; twoFingerEverActive = true
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_POINTER_DOWN -> {
+                        pagingDragStartX = (event.getX(0) + event.getX(1)) / 2f
+                        pagingDragTotalX = 0f; pagingDragging = true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        if (pagingDragging) {
+                            val fx = (event.getX(0) + event.getX(1)) / 2f
+                            pagingDragTotalX = fx - pagingDragStartX
+                        }
+                    }
+                    MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        if (pagingDragging) {
+                            pagingDragging = false
+                            val threshold = dp(60).toFloat()
+                            when {
+                                pagingDragTotalX <= -threshold -> goToEditPage(editPageIndex + 1, 1)
+                                pagingDragTotalX >= threshold -> goToEditPage(editPageIndex - 1, -1)
+                            }
+                            pagingDragTotalX = 0f
+                        }
+                    }
+                }
+                return true
+            }
             twoFingerActive = true; twoFingerEverActive = true
             if (currentItem != null) { currentItem = null; invalidate() }
             isStylusDown = false; drawingPointerId = -1
