@@ -1740,12 +1740,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (pageIdx < 0 || pageIdx >= pageCount) return null
         val bw = w.coerceAtLeast(1); val bh = h.coerceAtLeast(1)
         return try {
-            val fitScale = kotlin.math.max(bw / pageWidthPx(), bh / pageHeightPx())
+            val pw = pageWidthPx(); val ph = pageHeightPx()
+            val fitScale = kotlin.math.max(bw / pw, bh / ph)
+            // Center the cover-fit page within the bitmap — cropping equally off both edges in
+            // whichever dimension overflows, matching computePageLayout()'s own centering, instead
+            // of anchoring the page's top-left corner to the bitmap's top-left and letting the
+            // overflow run off just the right/bottom edge uncentered.
+            val offsetX = (bw - pw * fitScale) / 2f
+            val offsetY = (bh - ph * fitScale) / 2f
             val bmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
             val bmpCanvas = Canvas(bmp)
             bmpCanvas.drawColor(Color.parseColor("#F6F3E9"))
             val savedTX = translateX; val savedTY = translateY; val savedScale = scaleFactor
-            translateX = 0f; translateY = -pageIdx * (pageHeightPx() + 40f) * fitScale
+            translateX = offsetX; translateY = offsetY - pageIdx * (ph + 40f) * fitScale
             scaleFactor = fitScale
             drawCanvasContent(bmpCanvas)
             translateX = savedTX; translateY = savedTY; scaleFactor = savedScale
@@ -3775,6 +3782,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private var hasInitialLayout = false
+    // Recomputes Convenient mode's page pixel dimensions from the current paperSize/orientation —
+    // pulled out of onLayout() so it can also be called directly whenever paperSize or orientation
+    // changes outside of an actual layout pass (e.g. picking a new size from a menu), which only
+    // triggers invalidate()/redraw, not onLayout(). Previously this only ever ran during a real
+    // layout pass, so changing paper size updated the paperSize value but never the pixel
+    // dimensions derived from it — the paper visually never changed size.
+    fun recomputeConvenientPageSize() {
+        val m = 3.7795f
+        convenientPageW = if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
+        convenientPageH = if (pageOrientation == Orientation.PORTRAIT) paperSize.heightMM * m else paperSize.widthMM * m
+    }
+
     private var lastLayoutWidth = 0
     private var stableLayoutHeight = 0  // frozen height used for page-size math, ignores keyboard resize
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
@@ -3793,9 +3812,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // no relationship to any real paper size. Now driven by the same selectable paperSize
             // every other mode uses (same mm-to-px conversion), so Convenient mode's page size
             // actually changes when the user picks a different paper size.
-            val m = 3.7795f
-            convenientPageW = if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
-            convenientPageH = if (pageOrientation == Orientation.PORTRAIT) paperSize.heightMM * m else paperSize.widthMM * m
+            recomputeConvenientPageSize()
             if (isFirstLayout) {
                 hasInitialLayout = true
                 when (canvasMode) {

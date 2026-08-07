@@ -1151,6 +1151,7 @@ class MainActivity : AppCompatActivity() {
             val selected = try { PaperSizeOption.valueOf(label) } catch (e: Exception) { return@showThemedDropdown }
             applyConvenientLayout()
             drawingView.paperSize = selected
+            drawingView.recomputeConvenientPageSize()
             drawingView.rewrapTextToPage()
             drawingView.clampTranslation()
             drawingView.invalidate()
@@ -2404,9 +2405,9 @@ class MainActivity : AppCompatActivity() {
             pageFlipView = pfv
         }
         pfv.setBaseDurationMs(when (getPrefs().getString("paper_flip_speed", "NORMAL")) {
-            "SLOW" -> 650
-            "FAST" -> 220
-            else -> 400
+            "SLOW" -> 900
+            "FAST" -> 350
+            else -> 550
         })
         pfv.visibility = View.VISIBLE
         pfv.onResume()
@@ -4340,8 +4341,8 @@ class MainActivity : AppCompatActivity() {
         }
         refPage()
         for(lbl in listOf(modeLbl,sizeLbl,orientLbl)){ lbl.textSize=15f; lbl.setTextColor(accent); lbl.setPadding(0,dp(8),0,dp(8)); container.addView(lbl) }
-        sizeLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Paper Size").setItems(PaperSizeOption.values().map{it.name}.toTypedArray()){ _,i-> drawingView.paperSize=PaperSizeOption.values()[i]; drawingView.rewrapTextToPage(); drawingView.clampTranslation(); drawingView.invalidate(); refPage() }.show() }
-        orientLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Orientation").setItems(arrayOf("Portrait","Landscape")){ _,i-> drawingView.pageOrientation=if(i==0)Orientation.PORTRAIT else Orientation.LANDSCAPE; drawingView.rewrapTextToPage(); drawingView.clampTranslation(); drawingView.invalidate(); refPage() }.show() }
+        sizeLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Paper Size").setItems(PaperSizeOption.values().map{it.name}.toTypedArray()){ _,i-> drawingView.paperSize=PaperSizeOption.values()[i]; drawingView.recomputeConvenientPageSize(); drawingView.rewrapTextToPage(); drawingView.clampTranslation(); drawingView.invalidate(); refPage() }.show() }
+        orientLbl.setOnClickListener{ AlertDialog.Builder(this).setTitle("Orientation").setItems(arrayOf("Portrait","Landscape")){ _,i-> drawingView.pageOrientation=if(i==0)Orientation.PORTRAIT else Orientation.LANDSCAPE; drawingView.recomputeConvenientPageSize(); drawingView.rewrapTextToPage(); drawingView.clampTranslation(); drawingView.invalidate(); refPage() }.show() }
 
         div(); hdr("PDF EXPORT")
         // Points-per-pixel conversion in savePdfLauncher is exact math (72/150 at the known
