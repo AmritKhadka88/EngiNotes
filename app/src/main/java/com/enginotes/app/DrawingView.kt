@@ -3787,18 +3787,31 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private var hasInitialLayout = false
-    // Convenient mode's page defaults to matching the screen size — until the user explicitly
-    // picks something from the Paper Size menu (paperSizeExplicit), at which point it uses that
-    // size's real mm dimensions (with orientation) instead. Pulled out of onLayout() so it can be
-    // called directly whenever needed outside of an actual layout pass, same reasoning as before.
+    // Convenient mode's page defaults to a fixed real-world width (A4's 210mm, same on every
+    // device) and a height that matches the screen's own height in px (so it varies device to
+    // device, filling the screen vertically) — until the user explicitly picks something from
+    // the Paper Size menu (paperSizeExplicit), at which point it uses that size's real mm
+    // dimensions for BOTH width and height (with orientation) instead. Pulled out of onLayout()
+    // so it can be called directly whenever needed outside of an actual layout pass.
     fun recomputeConvenientPageSize() {
         if (paperSizeExplicit) {
             val m = 3.7795f
             convenientPageW = if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
             convenientPageH = if (pageOrientation == Orientation.PORTRAIT) paperSize.heightMM * m else paperSize.widthMM * m
         } else {
-            convenientPageW = width.toFloat().coerceAtLeast(1f)
-            convenientPageH = height.toFloat().coerceAtLeast(1f)
+            val m = 3.7795f
+            val rawW = 210f * m  // A4's width in fixed 96dpi-based px — not tied to actual screen pixel width
+            convenientPageW = rawW
+            val screenW = width.toFloat().coerceAtLeast(1f)
+            val screenH = height.toFloat().coerceAtLeast(1f)
+            // clampTranslation() auto-scales the page so its (fixed, device-independent) width
+            // fills the actual screen width — scaleFactor ends up screenW/rawW. Whatever height is
+            // set here gets stretched by that same scaleFactor once rendered, so to make the
+            // ON-SCREEN height come out to exactly screenH after that scaling, it has to be
+            // pre-divided by the same ratio here (screenH * rawW / screenW), not just set to
+            // screenH directly — otherwise the page LOOKS too tall or too short once auto-fit
+            // kicks in, even though this raw value alone would have been correct at scale 1.
+            convenientPageH = screenH * rawW / screenW
         }
     }
 
