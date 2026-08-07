@@ -633,13 +633,24 @@ class BooksActivity : AppCompatActivity() {
         val isSelected = selectionMode && selectedNotes.contains(file)
         val thumbMaxW = dp(200); val thumbMaxH = dp(260)
         // Wrapped in a FrameLayout so a checkmark badge can overlay the thumbnail in selection mode.
-        val thumbFrame = android.widget.FrameLayout(this)
+        val thumbFrame = android.widget.FrameLayout(this).apply {
+            // Selection border lives here — on the FRAME, as a foreground (drawn on top of
+            // everything inside it, including the thumbnail bitmap) — rather than on imageView's
+            // own background. It used to be on imageView's background, but the CENTER_CROP
+            // thumbnail bitmap fills the view edge-to-edge and painted directly over that stroke
+            // once it loaded, so the "selected" border never actually showed; what looked like a
+            // highlight jumping between cards was really just Android's default touch-ripple
+            // effect on whichever card had just been tapped, not a persistent per-card indicator.
+            foreground = android.graphics.drawable.GradientDrawable().apply {
+                setColor(android.graphics.Color.TRANSPARENT); cornerRadius = dp(10).toFloat()
+                setStroke(if (isSelected) dp(3) else dp(1), if (isSelected) android.graphics.Color.parseColor("#8D6E63") else android.graphics.Color.parseColor("#E0E0E0"))
+            }
+        }
         val imageView = ImageView(this).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(140))
             scaleType = ImageView.ScaleType.CENTER_CROP
             background = android.graphics.drawable.GradientDrawable().apply {
                 setColor(android.graphics.Color.WHITE); cornerRadius = dp(10).toFloat()
-                setStroke(if (isSelected) dp(3) else dp(1), if (isSelected) android.graphics.Color.parseColor("#8D6E63") else android.graphics.Color.parseColor("#E0E0E0"))
             }
             // Without this, the rendered thumbnail bitmap — a plain rectangle — poked past the
             // rounded corners of the white background/border underneath it instead of being
