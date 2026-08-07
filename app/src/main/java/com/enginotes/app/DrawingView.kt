@@ -1514,6 +1514,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     var canvasMode: CanvasMode = CanvasMode.CONVENIENT
     var paperSize: PaperSizeOption = PaperSizeOption.A4
+    // False by default: Convenient mode's page just matches the screen size until the user
+    // explicitly picks a size from the Paper Size menu, at which point changePaperSize() sets
+    // this true and the page switches to that size's real mm dimensions instead.
+    var paperSizeExplicit: Boolean = false
 
     // ── Real-world scale system ───────────────────────────────────────────────
     var paperScale: Float = 1f        // denominator: 100 = 1:100
@@ -3783,14 +3787,19 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private var hasInitialLayout = false
-    // Convenient mode's page has its own fixed default size — A4's width, and 0.85x A4's height
-    // (a shorter, more scroll-friendly page than full A4) — independent of the Paper Size picker
-    // and page orientation entirely. Pulled out of onLayout() so it can be called directly
-    // whenever needed outside of an actual layout pass, same reasoning as before.
+    // Convenient mode's page defaults to matching the screen size — until the user explicitly
+    // picks something from the Paper Size menu (paperSizeExplicit), at which point it uses that
+    // size's real mm dimensions (with orientation) instead. Pulled out of onLayout() so it can be
+    // called directly whenever needed outside of an actual layout pass, same reasoning as before.
     fun recomputeConvenientPageSize() {
-        val m = 3.7795f
-        convenientPageW = 210f * m
-        convenientPageH = 297f * 0.85f * m
+        if (paperSizeExplicit) {
+            val m = 3.7795f
+            convenientPageW = if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
+            convenientPageH = if (pageOrientation == Orientation.PORTRAIT) paperSize.heightMM * m else paperSize.widthMM * m
+        } else {
+            convenientPageW = width.toFloat().coerceAtLeast(1f)
+            convenientPageH = height.toFloat().coerceAtLeast(1f)
+        }
     }
 
     // Changes paper size (or orientation) while explicitly preserving the user's current zoom
@@ -3802,6 +3811,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     // = false) still clamps translateX/Y for the new bounds, it just never touches scaleFactor.
     fun changePaperSize(newSize: PaperSizeOption) {
         paperSize = newSize
+        paperSizeExplicit = true
         recomputeConvenientPageSize()
         rewrapTextToPage()
         clampTranslation(adjustScale = false)
@@ -3810,6 +3820,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     fun changePageOrientation(newOrientation: Orientation) {
         pageOrientation = newOrientation
+        paperSizeExplicit = true
         recomputeConvenientPageSize()
         rewrapTextToPage()
         clampTranslation(adjustScale = false)
