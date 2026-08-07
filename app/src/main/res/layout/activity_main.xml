@@ -61,107 +61,119 @@
             android:visibility="gone"
             android:text="New Note" />
 
-        <View
+        <HorizontalScrollView
             android:layout_width="0dp"
-            android:layout_height="1dp"
-            android:layout_weight="1" />
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:scrollbars="none"
+            android:overScrollMode="never"
+            android:fillViewport="true">
 
-        <ImageButton
-            android:id="@+id/btnLayoutToggle"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:src="@drawable/ic_paper"
-            android:scaleType="centerInside"
-            android:padding="9dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Layout" />
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="end|center_vertical">
 
-        <TextView
-            android:id="@+id/btnScaleRatio"
-            android:layout_width="wrap_content"
-            android:layout_height="32dp"
-            android:text="1:1"
-            android:textSize="12sp"
-            android:textColor="#3C3C3E"
-            android:textStyle="bold"
-            android:gravity="center"
-            android:paddingStart="8dp"
-            android:paddingEnd="8dp"
-            android:background="@drawable/btn_pill_selector"
-            android:layout_marginStart="2dp"
-            android:layout_marginEnd="2dp"
-            android:contentDescription="Drawing Scale" />
+                <ImageButton
+                    android:id="@+id/btnLayoutToggle"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:src="@drawable/ic_paper"
+                    android:scaleType="centerInside"
+                    android:padding="9dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Layout" />
 
-        <TextView
-            android:id="@+id/btnDimToggle"
-            android:layout_width="wrap_content"
-            android:layout_height="32dp"
-            android:text="Dim"
-            android:textSize="12sp"
-            android:textColor="#3C3C3E"
-            android:textStyle="bold"
-            android:gravity="center"
-            android:paddingStart="8dp"
-            android:paddingEnd="8dp"
-            android:background="@drawable/btn_pill_selector"
-            android:layout_marginStart="2dp"
-            android:layout_marginEnd="2dp"
-            android:contentDescription="Dimension Mode" />
+                <TextView
+                    android:id="@+id/btnScaleRatio"
+                    android:layout_width="wrap_content"
+                    android:layout_height="32dp"
+                    android:text="1:1"
+                    android:textSize="12sp"
+                    android:textColor="#3C3C3E"
+                    android:textStyle="bold"
+                    android:gravity="center"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:background="@drawable/btn_pill_selector"
+                    android:layout_marginStart="2dp"
+                    android:layout_marginEnd="2dp"
+                    android:contentDescription="Drawing Scale" />
 
-        <TextView
-            android:id="@+id/btnLock"
-            android:layout_width="wrap_content"
-            android:layout_height="32dp"
-            android:text="🔓"
-            android:textSize="14sp"
-            android:gravity="center"
-            android:paddingStart="6dp"
-            android:paddingEnd="6dp"
-            android:visibility="gone"
-            android:background="@drawable/btn_pill_selector"
-            android:layout_marginStart="2dp"
-            android:layout_marginEnd="2dp"
-            android:contentDescription="Lock selection" />
+                <TextView
+                    android:id="@+id/btnDimToggle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="32dp"
+                    android:text="Dim"
+                    android:textSize="12sp"
+                    android:textColor="#3C3C3E"
+                    android:textStyle="bold"
+                    android:gravity="center"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:background="@drawable/btn_pill_selector"
+                    android:layout_marginStart="2dp"
+                    android:layout_marginEnd="2dp"
+                    android:contentDescription="Dimension Mode" />
 
-        <ImageButton
-            android:id="@+id/btnLink"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:src="@drawable/ic_link"
-            android:scaleType="centerInside"
-            android:padding="9dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Insert Link" />
+                <TextView
+                    android:id="@+id/btnLock"
+                    android:layout_width="wrap_content"
+                    android:layout_height="32dp"
+                    android:text="🔓"
+                    android:textSize="14sp"
+                    android:gravity="center"
+                    android:paddingStart="6dp"
+                    android:paddingEnd="6dp"
+                    android:visibility="gone"
+                    android:background="@drawable/btn_pill_selector"
+                    android:layout_marginStart="2dp"
+                    android:layout_marginEnd="2dp"
+                    android:contentDescription="Lock selection" />
 
-        <ImageButton
-            android:id="@+id/btnTouchToggle"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:src="@drawable/ic_finger"
-            android:scaleType="centerInside"
-            android:padding="9dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Toggle touch/pan" />
+                <ImageButton
+                    android:id="@+id/btnLink"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:src="@drawable/ic_link"
+                    android:scaleType="centerInside"
+                    android:padding="9dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Insert Link" />
 
-        <ImageButton
-            android:id="@+id/btnReadMode"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:src="@drawable/ic_read_mode"
-            android:scaleType="centerInside"
-            android:padding="9dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Read Mode" />
+                <ImageButton
+                    android:id="@+id/btnTouchToggle"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:src="@drawable/ic_finger"
+                    android:scaleType="centerInside"
+                    android:padding="9dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Toggle touch/pan" />
 
-        <ImageButton
-            android:id="@+id/btnMenu"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:src="@drawable/ic_more_vert"
-            android:scaleType="centerInside"
-            android:padding="10dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Menu" />
+                <ImageButton
+                    android:id="@+id/btnReadMode"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:src="@drawable/ic_read_mode"
+                    android:scaleType="centerInside"
+                    android:padding="9dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Read Mode" />
+
+                <ImageButton
+                    android:id="@+id/btnMenu"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:src="@drawable/ic_more_vert"
+                    android:scaleType="centerInside"
+                    android:padding="10dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Menu" />
+
+            </LinearLayout>
+        </HorizontalScrollView>
 
     </LinearLayout>
 
