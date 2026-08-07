@@ -3787,11 +3787,13 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private var hasInitialLayout = false
-    // Convenient mode's page defaults to a fixed size — half of A4's width, 0.85x A4's height —
-    // until the user explicitly picks something from the Paper Size menu (paperSizeExplicit), at
-    // which point it uses that size's real mm dimensions for BOTH width and height (with
-    // orientation) instead. Pulled out of onLayout() so it can be called directly whenever needed
-    // outside of an actual layout pass.
+    // Convenient mode's page defaults to A4's real width, with height set from the DEVICE'S OWN
+    // screen aspect ratio (screen height / screen width) applied to that width — so the page's
+    // shape always matches the device's screen shape exactly (no letterboxing, no auto-zoom
+    // needed to fit), while width stays anchored to true A4 size regardless of device. This is
+    // recalculated per-device since width/height here are this view's own measured pixel
+    // dimensions — pulled out of onLayout() so it can also be called directly whenever needed
+    // outside of an actual layout pass (e.g. when explicit paper size changes below).
     fun recomputeConvenientPageSize() {
         if (paperSizeExplicit) {
             val m = 3.7795f
@@ -3799,8 +3801,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             convenientPageH = if (pageOrientation == Orientation.PORTRAIT) paperSize.heightMM * m else paperSize.widthMM * m
         } else {
             val m = 3.7795f
-            convenientPageW = 210f * 0.5f * m
-            convenientPageH = 297f * 0.85f * m
+            val screenW = width.toFloat().coerceAtLeast(1f)
+            val screenH = height.toFloat().coerceAtLeast(1f)
+            convenientPageW = 210f * m
+            convenientPageH = (screenH / screenW) * convenientPageW
         }
     }
 
