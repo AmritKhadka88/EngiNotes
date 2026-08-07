@@ -654,9 +654,19 @@ class BooksActivity : AppCompatActivity() {
             val badge = TextView(this).apply {
                 text = if (isSelected) "\u2705" else "\u2B55"; textSize = 16f
                 setPadding(dp(4), dp(4), dp(4), dp(4))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(android.graphics.Color.WHITE)
+                }
+                // Must be higher than imageView's elevation (dp(4)) — overlapping siblings in the
+                // same FrameLayout composite by elevation, not just add-order, so despite being
+                // added AFTER the image, the badge was rendering underneath it and never showing
+                // at all, even though this code always ran whenever selectionMode was on.
+                elevation = dp(8).toFloat()
             }
             val badgeLp = android.widget.FrameLayout.LayoutParams(android.widget.FrameLayout.LayoutParams.WRAP_CONTENT, android.widget.FrameLayout.LayoutParams.WRAP_CONTENT)
             badgeLp.gravity = Gravity.TOP or Gravity.END
+            badgeLp.topMargin = dp(6); badgeLp.rightMargin = dp(6)
             thumbFrame.addView(badge, badgeLp)
         }
         card.addView(thumbFrame)
