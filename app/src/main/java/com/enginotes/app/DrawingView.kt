@@ -1741,11 +1741,12 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val bw = w.coerceAtLeast(1); val bh = h.coerceAtLeast(1)
         return try {
             val pw = pageWidthPx(); val ph = pageHeightPx()
-            val fitScale = kotlin.math.max(bw / pw, bh / ph)
-            // Center the cover-fit page within the bitmap — cropping equally off both edges in
-            // whichever dimension overflows, matching computePageLayout()'s own centering, instead
-            // of anchoring the page's top-left corner to the bitmap's top-left and letting the
-            // overflow run off just the right/bottom edge uncentered.
+            // "Contain" fit (min), not "cover" (max) — the whole page is always fully visible,
+            // with a gap in whichever dimension has room to spare, instead of cropping off
+            // whichever dimension overflows when the screen and page aspect ratios don't match.
+            val fitScale = kotlin.math.min(bw / pw, bh / ph)
+            // Centers the page within the bitmap — an equal gap on both edges of whichever
+            // dimension doesn't exactly fill, rather than pinned to one corner.
             val offsetX = (bw - pw * fitScale) / 2f
             val offsetY = (bh - ph * fitScale) / 2f
             val bmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
