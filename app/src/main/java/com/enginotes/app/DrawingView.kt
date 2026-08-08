@@ -1081,6 +1081,14 @@ class FillToggleAction(val item: StrokeItem, val wasFilled: Boolean, val wasColo
 // reverse, which would need to duplicate every drag path's exact math (move/resize/rotate,
 // single-item or group) instead of just replaying a snapshot.
 class TransformAction(val restoreBefore: List<() -> Unit>, val restoreAfter: List<() -> Unit>)
+// Records an entire erase gesture (Object or Area eraser, from finger/stylus down to up) as one
+// undo step — before/after are full snapshots of the actions list's CONTENT (item references),
+// not deep copies of each item, since erasing removes items and/or replaces them with fragments
+// (never mutates an existing item's own fields in place for the vector paths this covers), so a
+// list-level snapshot is enough to fully restore either state. One continuous erase drag can call
+// eraseAt() dozens of times as the finger moves — this collapses all of that into a single undo
+// step for the whole gesture, not one tiny step per touch-move sample.
+class EraseAction(val before: List<Any>, val after: List<Any>)
 
 class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
 
@@ -1494,6 +1502,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val dirtyFillItems = mutableSetOf<FillItem>()
     private val dirtyImageItems = mutableSetOf<ImageItem>()
     private var eraserLastX = Float.NaN; private var eraserLastY = Float.NaN  // persists ACROSS ACTION_MOVE calls for gap-free interpolation
+    // Snapshot of actions' content at the start of the current erase gesture (finger/stylus down),
+    // committed as a single EraseAction covering the whole gesture at finger-up — see EraseAction's
+    // own doc comment for why undo needs this at all.
+    private var eraseSessionBefore: List<Any>? = null
     var eraserShape: EraserShape = EraserShape.ROUND
     var inputMode: InputMode = InputMode.AUTO  // AUTO = existing palm-rejection-while-stylus-down behavior
     var fillShapes: Boolean = false
@@ -6995,7 +7007,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val pressure = if (isStylusInput) event.pressure.coerceIn(0.3f, 1.5f) else 1f
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (currentTool == Tool.ERASER) { eraserLastX = wx; eraserLastY = wy; eraseAt(wx, wy); invalidate(); return }
+                if (currentTool == Tool.ERASER) { eraseSessionBefore = actions.toList(); eraserLastX = wx; eraserLastY = wy; eraseAt(wx, wy); invalidate(); return }
                 // Snap start point to nearest existing endpoint if snap is enabled
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
                     val snap = findSnapTarget(wx, wy)
@@ -7191,7 +7203,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             MotionEvent.ACTION_UP -> {
                 resetLiveFlush()
-                if (currentTool == Tool.ERASER) { flushDirtyFillItems(); flushDirtyImageItems(); flushEraseSessionBitmaps(); eraserLastX = Float.NaN; eraserLastY = Float.NaN }
+                if (currentTool == Tool.ERASER) {
+                    flushDirtyFillItems(); flushDirtyImageItems(); flushEraseSessionBitmaps(); eraserLastX = Float.NaN; eraserLastY = Float.NaN
+                    val before = eraseSessionBefore
+                    if (before != null && before != actions) {
+                        actions.add(EraseAction(before, actions.toList())); redoStack.clear()
+                    }
+                    eraseSessionBefore = null
+                }
                 // Snap end point to nearest existing endpoint if snap is enabled
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
                     val pts0 = currentItem?.data?.points
@@ -8760,6 +8779,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             last.item.data.fill = last.wasFilled; last.item.data.fillColorVal = last.wasColor; last.item.paint = last.item.data.toPaint()
         } else if (last is TransformAction) {
             for (restore in last.restoreBefore) restore()
+        } else if (last is EraseAction) {
+            actions.clear(); actions.addAll(last.before)
         }
         redoStack.add(last); if (redoStack.size > 50) redoStack.removeAt(0); markSpatialDirty(); invalidate()
     }
@@ -8770,6 +8791,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             next.item.data.fill = !next.wasFilled; next.item.data.fillColorVal = next.newColor; next.item.paint = next.item.data.toPaint()
         } else if (next is TransformAction) {
             for (restore in next.restoreAfter) restore()
+        } else if (next is EraseAction) {
+            actions.clear(); actions.addAll(next.after)
         }
         actions.add(next); markSpatialDirty(); invalidate()
     }

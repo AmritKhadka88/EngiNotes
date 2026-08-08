@@ -47,6 +47,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnLayoutToggle: ImageButton
 
     private var currentFileName: String? = null
+    // Set if loading the note's existing content threw (corrupted file, still-locked encrypted
+    // note, etc.) — blocks writeCurrentFile() from running at all for this session, so a load
+    // failure can never lead to the original file being silently overwritten with blank/partial
+    // content by a later autosave or exit-save.
+    private var noteLoadFailed = false
     private var hwrAutoEnabled = false  // real-time handwriting-to-text toggle
     private var lastSavedContent: String = ""
     internal val PT_TO_PX = 1.333f
@@ -720,7 +725,22 @@ class MainActivity : AppCompatActivity() {
         if (fileName != null) {
             currentFileName = fileName; tvTitle.text = fileName
             val file = File(getDrawingsFolder(),"$fileName.eng")
-            if (file.exists()) drawingView.loadFromString(security.readNoteFile(file))
+            if (file.exists()) {
+                try {
+                    drawingView.loadFromString(security.readNoteFile(file))
+                } catch (t: Throwable) {
+                    // Deliberately fails loud (a visible message) and safe (blocks saving)
+                    // instead of silently opening as if this were a blank new note — the file on
+                    // disk is untouched either way, but letting the app treat a load failure as
+                    // "empty note" would risk a later autosave overwriting perfectly good content
+                    // with nothing, which is a strictly worse outcome than just not opening.
+                    noteLoadFailed = true
+                    val msg = if (t.message?.contains("encrypted", ignoreCase = true) == true)
+                        "This note is encrypted and couldn't be unlocked — try again from the notes list."
+                    else "Couldn't open this note (it may be corrupted). Nothing has been changed on disk."
+                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                }
+            }
         } else { tvTitle.text = "New Note" }
 
         drawingView.migrateOldNotes(filesDir)
@@ -1130,6 +1150,7 @@ class MainActivity : AppCompatActivity() {
     private fun applyConvenientLayout() {
         isConvenientLayout = true
         drawingView.canvasMode = CanvasMode.CONVENIENT
+        drawingView.paperSizeExplicit = false
         drawingView.recomputeConvenientPageSize()
         drawingView.clampTranslation()
         drawingView.invalidate()
@@ -6504,6 +6525,7 @@ class MainActivity : AppCompatActivity() {
     // executor, same durability guarantee as before, just funneled through the same queue so it
     // can never interleave with a background tick and corrupt the file.
     private fun writeCurrentFile(blocking: Boolean = false): Boolean {
+        if (noteLoadFailed) return false
         val name = currentFileName ?: return false
         val content = drawingView.serialize()
         val folder = getDrawingsFolder()
