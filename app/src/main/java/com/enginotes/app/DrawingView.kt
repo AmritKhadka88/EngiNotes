@@ -7265,7 +7265,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         var ii = 0; while (ii < src.size - 1) { if ((ii/2) % skip == 0 || ii >= src.size - 2) { keep.add(src[ii]); keep.add(src[ii+1]) }; ii += 2 }
                         src.clear(); src.addAll(keep); item.path = item.data.buildPath(); item.invalidateCache()
                     }
-                    actions.add(item); item.layerId = currentLayerId; redoStack.clear(); markSpatialDirty()
+                    actions.add(item); item.layerId = currentLayerId; redoStack.clear(); addToSpatialIndex(item); snapMarkersActionCount = -1
                     // For shape tools: notify MainActivity to show select handles temporarily
                     if (isShapeTool) {
                         selectedItem = item
@@ -7996,7 +7996,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return StrokeItem(d, d.buildPath(), d.toPaint())
     }
     fun applyDuplicateResult(copy: StrokeItem) {
-        actions.add(copy); redoStack.clear(); markSpatialDirty(); invalidate()
+        actions.add(copy); redoStack.clear(); addToSpatialIndex(copy); invalidate()
         selectedItem = copy
     }
 
@@ -8019,7 +8019,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
     fun applyDuplicateAnyResult(copy: Any) {
-        actions.add(copy); redoStack.clear(); markSpatialDirty(); invalidate()
+        actions.add(copy); redoStack.clear(); addToSpatialIndex(copy); invalidate()
         selectedItem = copy
     }
     fun deleteAnyItem(item: Any) {
@@ -8591,7 +8591,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (text.isBlank()) return null
         val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPageForText(x, y, text, size, fontFamily) else Pair(x, y)
         val item = TextItem(text, cx, cy, color, size, rotation); item.spans = spans; item.fontFamily = fontFamily; item.opacity = opacity; item.layerId = currentLayerId
-        actions.add(item); redoStack.clear(); markSpatialDirty(); invalidate()
+        actions.add(item); redoStack.clear(); addToSpatialIndex(item); invalidate()
         return item
     }
 
@@ -8601,7 +8601,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (item.text.isBlank()) return
         val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPageForText(item.x, item.y, item.text, item.size, item.fontFamily) else Pair(item.x, item.y)
         item.x = cx; item.y = cy
-        actions.add(item); redoStack.clear(); markSpatialDirty(); invalidate()
+        actions.add(item); redoStack.clear(); addToSpatialIndex(item); invalidate()
     }
 
     fun removeTextItem(item: TextItem) { actions.remove(item); markSpatialDirty(); invalidate() }
@@ -9130,8 +9130,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             } catch (e: Exception) { i++ }
         }
         invalidate()
+        post { if (spatialDirty) rebuildSpatialIndex() }
     }
-
     // Used by BooksActivity to render an off-screen thumbnail of this note's content.
     // scaleFactor/translateX/translateY are private, so this is the one narrow door in — pans so
     // that world position (worldX, worldY) lands at the top-left of the rendered bitmap, at

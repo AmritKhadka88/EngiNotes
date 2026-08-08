@@ -2205,7 +2205,7 @@ class MainActivity : AppCompatActivity() {
                 eightColors(drawingView.currentColor) { c -> drawingView.currentColor = c }
             }
         }
-        repositionOpenBottomPanels()
+        contextBar.post { repositionOpenBottomPanels() }
     }
 
     // Re-measures the bottom toolbar dock's CURRENT height and re-applies it to any bottom-docked
