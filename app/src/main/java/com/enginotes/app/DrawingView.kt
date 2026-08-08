@@ -7039,14 +7039,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         if (eraserLastX.isNaN()) { eraseAt(nx, ny); eraserLastX = nx; eraserLastY = ny; return }
                         val d = distance(nx, ny, eraserLastX, eraserLastY)
                         if (d < spacing) return  // too close — skip to avoid redundant work on slow movement
-                        val steps = (d / spacing).toInt().coerceAtLeast(1)
+                        // Capped — uncapped, a fast swipe over dense/heavily-overlapping content
+                        // could turn into dozens of expensive eraseAt() calls (each one splitting
+                        // however many overlapping strokes it touches) all happening synchronously
+                        // before this function even returns to let a redraw happen. That backlog
+                        // is what showed up as "erasing doesn't appear in real time" — the data
+                        // was correct, the screen just couldn't keep up rendering it. A capped
+                        // step count trades slightly coarser interpolation on a very fast swipe
+                        // for a bounded worst-case cost per touch event, which is what actually
+                        // keeps the visual in sync with the touch instead of trailing behind it.
+                        val steps = (d / spacing).toInt().coerceIn(1, 8)
                         for (s in 1..steps) {
                             val frac = s.toFloat() / steps
                             eraseAt(eraserLastX + (nx - eraserLastX) * frac, eraserLastY + (ny - eraserLastY) * frac)
                         }
                         eraserLastX = nx; eraserLastY = ny
                     }
-                    for (h in 0 until event.historySize) {
+                    val histStart = (event.historySize - 4).coerceAtLeast(0)
+                    for (h in histStart until event.historySize) {
                         eraseTo(screenToWorldX(event.getHistoricalX(h)), screenToWorldY(event.getHistoricalY(h)))
                     }
                     eraseTo(wx, wy)
