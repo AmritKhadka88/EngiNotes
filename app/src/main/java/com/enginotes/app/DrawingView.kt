@@ -2268,6 +2268,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 canvas.drawBitmap(bmp, null, RectF(action.x, action.y, action.x + action.w, action.y + action.h), null)
             }
             is StrokeItem -> {
+                // Area Eraser freezes a long Pen/Highlighter/Brush stroke into
+                // action.eraseSessionBitmap and punches erase-holes directly into it on every
+                // touch-move (see eraseFromSessionBitmap) — that bitmap is updated live and
+                // correctly the whole drag. But every renderer below this point (drawWithBitmapCache,
+                // the calligraphy/fountain/pencil branches, the raw drawPath fallback) only ever
+                // reads action.cachedBitmap / rebuilds action.path — none of them know
+                // eraseSessionBitmap exists. So a live area-erase on a normal Pen/Highlighter
+                // stroke was computing the correct result every frame but never actually showing
+                // it: onDraw kept blitting the untouched old cachedBitmap until ACTION_UP baked
+                // eraseSessionBitmap into a replacement ImageItem, at which point the fully-erased
+                // result would suddenly "snap in" all at once. Checking it first here, uniformly
+                // for every stroke type, makes the live preview match what's actually being erased.
+                if (action.eraseSessionBitmap != null) {
+                    val bmp = action.eraseSessionBitmap!!
+                    val dst = android.graphics.RectF(action.eraseSessionLeft, action.eraseSessionTop, action.eraseSessionRight, action.eraseSessionBottom)
+                    canvas.drawBitmap(bmp, null, dst, _bitmapFilterPaint)
+                    return
+                }
                 // All brush strokes go through the dedicated brush renderer (with caching for expensive styles)
                 if (action.data.type == Tool.BRUSH) {
                     drawBrushStrokeWithCache(canvas, action); return
