@@ -3063,7 +3063,8 @@ class MainActivity : AppCompatActivity() {
         items.addAll(listOf("Save","Save As","Export","Export Window","Clear Canvas"))
         if (currentFileName != null) items.add("Delete This Note")
         items.addAll(listOf("Add to Book","Layers","Back Up to Drive","Open PDF","Chart Builder",
-            "Text Recognition (printed letters)","Handwriting Recognition (cursive)","Ask Gemini about Drawing","Settings","Exit"))
+            "Text Recognition (printed letters)","Handwriting Recognition (cursive)","Ask Gemini about Drawing","Settings",
+            "🔧 DIAG: multi-page text","Exit"))
 
         val bg = currentThemeBackgroundColor()
         val isDark = Color.red(bg) * 0.299 + Color.green(bg) * 0.587 + Color.blue(bg) * 0.114 < 140
@@ -3112,6 +3113,7 @@ class MainActivity : AppCompatActivity() {
                 setActiveTool(null, Tool.OCR_SNIP)
             }
             title == "Settings" -> showSettingsDialog()
+            title == "🔧 DIAG: multi-page text" -> drawingView.showMultiPageTextDiagnostic()
             title == "Exit" -> confirmThenExit()
             title == "Back Up to Drive" -> {
                 if (!driveManager.isSignedIn()) {

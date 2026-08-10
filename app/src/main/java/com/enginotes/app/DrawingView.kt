@@ -1742,6 +1742,52 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return kotlin.math.ceil(maxY / pageH).toInt().coerceAtLeast(1)
     }
 
+    /** TEMPORARY diagnostic for the "long pasted text disappears when scrolling to the next page"
+     * bug — trigger AFTER reproducing it (scroll to where the content should be but isn't visible,
+     * then tap this from the menu) so the numbers reflect the actual broken moment, not a fresh
+     * reload. Remove once the real cause is found. */
+    fun showMultiPageTextDiagnostic() {
+        val tallItem = actions.filterIsInstance<TextItem>().maxByOrNull {
+            val b = getBounds(it); if (b != null) b[3] - b[1] else 0f
+        }
+        val sb = StringBuilder()
+        sb.append("canvasMode=$canvasMode\n")
+        sb.append("estimatePageCount=${estimatePageCount()}\n")
+        sb.append("pageHeightPx=${pageHeightPx()}\n")
+        sb.append("translateY=$translateY  scaleFactor=$scaleFactor\n")
+        sb.append("view width=$width height=$height\n")
+        sb.append("topChromeHeightPx=$topChromeHeightPx\n")
+        sb.append("total actions=${actions.size}, TextItems=${actions.filterIsInstance<TextItem>().size}\n")
+        sb.append("spatialDirty=$spatialDirty\n\n")
+        if (tallItem == null) {
+            sb.append("No TextItem found at all.")
+        } else {
+            val b = getBounds(tallItem)
+            val layout = getOrBuildLayout(tallItem)
+            val vh = textItemVisualHeight(tallItem, layout)
+            sb.append("Tallest TextItem:\n")
+            sb.append("  text.length=${tallItem.text.length}\n")
+            sb.append("  item.x=${tallItem.x}  item.y=${tallItem.y}  rotation=${tallItem.rotation}\n")
+            sb.append("  bounds=${b?.joinToString(", ") { "%.1f".format(it) }}\n")
+            sb.append("  bounds height=${if (b != null) b[3] - b[1] else -1f}\n")
+            sb.append("  layout.height=${layout.height}  lineCount=${layout.lineCount}\n")
+            sb.append("  textItemVisualHeight=$vh\n")
+            sb.append("  is in itemsInViewport() right now = ${itemsInViewport().contains(tallItem)}\n")
+            sb.append("  is in actions list = ${actions.contains(tallItem)}\n")
+            // Where getBounds() says this item's bottom edge is, relative to the current screen —
+            // negative means it's above the visible area, > height means below it, in between
+            // means it SHOULD be on-screen right now.
+            val screenBottomOfItem = (b?.get(3) ?: 0f) * scaleFactor + translateY
+            val screenTopOfItem = (b?.get(1) ?: 0f) * scaleFactor + translateY
+            sb.append("  item's screen-Y span right now: top=$screenTopOfItem bottom=$screenBottomOfItem (view height=$height)\n")
+        }
+        android.app.AlertDialog.Builder(context)
+            .setTitle("DIAG: multi-page text")
+            .setMessage(sb.toString())
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
     /** Public wrapper for [estimatePageCount] — how many "pages" Read Mode has to page through. */
     fun readModePageCount(): Int = estimatePageCount().coerceAtLeast(1)
 
