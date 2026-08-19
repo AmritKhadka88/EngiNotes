@@ -175,25 +175,41 @@ data class TextEquationData(val start: Int, val end: Int, val latex: String)
 // swapping for a differently-licensed engine, this is the one place that needs to change —
 // everything else here (measurement, drawing, caching) is written against a plain
 // android.graphics.drawable.Drawable, not against this specific library's types.
-class LaTeXSpan(var latexSource: String, private val textSizePx: Float, private val color: Int) : android.text.style.ReplacementSpan() {
+class LaTeXSpan(var latexSource: String, var textSizePx: Float, private val color: Int) : android.text.style.ReplacementSpan() {
     private var drawable: android.graphics.drawable.Drawable? = null
+    // Cache validity now checks BOTH source and size — textSizePx used to be a val, frozen at
+    // whatever size was current when the equation was first inserted, so changing the item's
+    // font size afterward (the toolbar's font-size slider) never touched already-inserted
+    // equations at all. It's mutable now specifically so the size-change callback (MainActivity)
+    // can update it directly; caching on source alone would still have kept showing the OLD size
+    // even after that field changed, since renderDrawable() would see "same source, cached
+    // drawable already exists" and never rebuild.
     private var drawableForSource: String? = null
+    private var drawableForSize: Float = -1f
 
     private fun renderDrawable(): android.graphics.drawable.Drawable? {
-        if (drawable != null && drawableForSource == latexSource) return drawable
+        if (drawable != null && drawableForSource == latexSource && drawableForSize == textSizePx) return drawable
         return try {
             val d = ru.noties.jlatexmath.JLatexMathDrawable.builder(latexSource)
                 .textSize(textSizePx)
                 .color(color)
                 .build()
-            drawable = d; drawableForSource = latexSource
+            drawable = d; drawableForSource = latexSource; drawableForSize = textSizePx
             d
-        } catch (e: Exception) {
-            // Malformed LaTeX (unbalanced braces, unknown command, etc.) — fall back to null
-            // rather than crashing the whole note's rendering over one bad equation; getSize()/
-            // draw() below both already handle a null drawable by falling back to a plain-text
-            // placeholder showing the raw source, so the user can still see something's there
-            // and tap it to fix the syntax.
+        } catch (t: Throwable) {
+            // Deliberately catching Throwable, not just Exception — this dependency's own
+            // initialization (font/resource loading the first time it's used) is exactly the
+            // kind of thing that can throw an Error subtype (NoClassDefFoundError,
+            // ExceptionInInitializerError) rather than a plain Exception if something about its
+            // packaging isn't quite right, and a plain `catch (e: Exception)` here would let
+            // that escape uncaught during StaticLayout's own measurement pass instead of falling
+            // back gracefully the way this is actually meant to.
+            //
+            // Malformed LaTeX (unbalanced braces, unknown command, etc.) is the much more common
+            // case this also covers — falls back to null rather than crashing the whole note's
+            // rendering over one bad equation; getSize()/draw() below both already handle a null
+            // drawable by falling back to a plain-text placeholder showing the raw source, so the
+            // user can still see something's there and tap it to fix the syntax.
             null
         }
     }

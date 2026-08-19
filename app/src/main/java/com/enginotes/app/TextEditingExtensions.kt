@@ -1061,6 +1061,25 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                 et.text.insert(start, "\uFFFC")
                 et.text.setSpan(LaTeXSpan(latex, editSize, editColor), start, start + 1, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                 et.setSelection(start + 1)
+                // TEMPORARY diagnostic for "renders as the system [OBJ] placeholder glyph instead
+                // of the equation" — checked the whole live-editor pipeline (TextWatchers,
+                // setText calls, span-stripping passes) by reading and found nothing that should
+                // be removing this span, so this checks directly instead of guessing further:
+                // whether the span survives immediately, one frame later, and whether
+                // renderDrawable() itself is throwing. Remove once the real cause is confirmed.
+                val immediateCheck = et.text.getSpans(start, start + 1, LaTeXSpan::class.java).isNotEmpty()
+                var renderError: String? = null
+                try {
+                    ru.noties.jlatexmath.JLatexMathDrawable.builder(latex).textSize(editSize).color(editColor).build()
+                } catch (t: Throwable) { renderError = "${t.javaClass.name}: ${t.message}" }
+                et.post {
+                    val laterCheck = et.text.getSpans(start, start + 1, LaTeXSpan::class.java).isNotEmpty()
+                    val charIsFFFC = et.text.getOrNull(start) == '\uFFFC'
+                    android.app.AlertDialog.Builder(this)
+                        .setTitle("DIAG equation span")
+                        .setMessage("Span present right after setSpan: $immediateCheck\nSpan present one frame later: $laterCheck\nCharacter at position is U+FFFC: $charIsFFFC\nJLatexMathDrawable.build() threw: ${renderError ?: "(nothing — built fine)"}")
+                        .setPositiveButton("OK", null).show()
+                }
             })
         }
 
@@ -1292,6 +1311,16 @@ internal fun MainActivity.showEquationEditorDialog(initialLatex: String, allowDe
         setSingleLine(false); maxLines = 4
     }
     root.addView(input)
+    // The single most common LaTeX mistake for someone typing it manually rather than using the
+    // chips below: ^ and _ only apply to the ONE character right after them — parentheses don't
+    // group anything (y^(99) superscripts just the "(", then "99)" continues as normal-size
+    // text). Only { } groups multiple characters into one script. Surfacing this directly under
+    // the input, rather than leaving it as a thing you discover by getting a wrong-looking
+    // preview, is the actual fix here — the behavior itself is correct/standard LaTeX, not a bug.
+    root.addView(TextView(this).apply {
+        text = "Tip: { } groups characters for ^ and _ — write x^{99}, not x^(99) or x^99"
+        textSize = 11f; setTextColor(Color.parseColor("#A08050")); setPadding(0, dp(4), 0, 0)
+    })
 
     root.addView(TextView(this).apply { text = "Preview"; textSize = 12f; setTextColor(Color.parseColor("#8A8A8A")); setPadding(0, dp(12), 0, 0) })
     val previewImage = ImageView(this)

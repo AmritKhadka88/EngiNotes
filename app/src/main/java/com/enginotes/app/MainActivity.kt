@@ -2081,7 +2081,19 @@ class MainActivity : AppCompatActivity() {
                     }
                 })
                 divider()
-                textSizeButton(editSize) { v -> editSize = v; activeEditText?.textSize = v / resources.displayMetrics.density; textSelectionItem?.let { it.size = v; drawingView.invalidate() } }
+                textSizeButton(editSize) { v ->
+                    editSize = v
+                    activeEditText?.let { et ->
+                        et.textSize = v / resources.displayMetrics.density
+                        // The size slider above only ever resized the EditText's own base text
+                        // size — any already-inserted equation kept rendering at whatever size it
+                        // was first inserted at, completely independent of this control, since
+                        // LaTeXSpan captured its size once and nothing updated it afterward.
+                        et.text.getSpans(0, et.text.length, LaTeXSpan::class.java).forEach { it.textSizePx = v }
+                        et.invalidate()
+                    }
+                    textSelectionItem?.let { it.size = v; drawingView.invalidate() }
+                }
                 opacityButton(editOpacity) { v -> editOpacity = v; activeEditText?.alpha = v / 255f; textSelectionItem?.let { it.opacity = v; drawingView.invalidate() } }
                 divider()
                 eightColors(editColor) { c -> editColor = c; activeEditText?.setTextColor(c); textSelectionItem?.let { it.color = c; drawingView.invalidate() } }
