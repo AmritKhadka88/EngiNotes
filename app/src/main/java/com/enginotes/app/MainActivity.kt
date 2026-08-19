@@ -765,6 +765,24 @@ class MainActivity : AppCompatActivity() {
         drawingView.onTextEditRequest       = { item, sx, sy, wx, wy -> showInlineTextEditor(item,sx,sy,wx,wy) }
         drawingView.onTextSelectRequest     = { item, sx, sy, rawX, rawY -> showTextSelectionBox(item, sx, sy, rawX, rawY) }
         drawingView.onTextDeselectRequest   = { dismissTextSelectionBox() }
+        // Tapping an equation glyph on a COMMITTED (not currently being edited) TextItem reopens
+        // the same dialog the ∫x toolbar button uses, pre-filled with that equation's current
+        // source — "Update" replaces it in place, "Remove" deletes just that equation (leaving
+        // its \uFFFC placeholder character behind in the text, same as it would if you manually
+        // deleted a checkbox's marker but not the line — a deliberate, minor rough edge rather
+        // than also splicing the placeholder out of item.text here, which risks shifting every
+        // other span/equation's start/end offsets after it and needing to re-validate all of
+        // them in the same pass).
+        drawingView.onEquationTap = { item, eq, _, _ ->
+            showEquationEditorDialog(eq.latex, true, onConfirm = { newLatex ->
+                val idx = item.equations.indexOf(eq)
+                if (idx >= 0) item.equations[idx] = eq.copy(latex = newLatex)
+                drawingView.invalidate()
+            }, onDelete = {
+                item.equations.remove(eq)
+                drawingView.invalidate()
+            })
+        }
         drawingView.onEmptyAreaTap          = {
             // Tapping genuinely empty canvas is the "I'm done" signal: commit and close whatever
             // editor is open (text or table cell), and bring the bottom toolbar back if a table
