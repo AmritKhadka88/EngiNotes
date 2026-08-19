@@ -1081,6 +1081,14 @@ class FillToggleAction(val item: StrokeItem, val wasFilled: Boolean, val wasColo
 // reverse, which would need to duplicate every drag path's exact math (move/resize/rotate,
 // single-item or group) instead of just replaying a snapshot.
 class TransformAction(val restoreBefore: List<() -> Unit>, val restoreAfter: List<() -> Unit>)
+// Records an entire erase gesture (Object or Area eraser, from finger/stylus down to up) as one
+// undo step — before/after are full snapshots of the actions list's CONTENT (item references),
+// not deep copies of each item, since erasing removes items and/or replaces them with fragments
+// (never mutates an existing item's own fields in place for the vector paths this covers), so a
+// list-level snapshot is enough to fully restore either state. One continuous erase drag can call
+// eraseAt() dozens of times as the finger moves — this collapses all of that into a single undo
+// step for the whole gesture, not one tiny step per touch-move sample.
+class EraseAction(val before: List<Any>, val after: List<Any>)
 
 class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
 
@@ -1494,6 +1502,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val dirtyFillItems = mutableSetOf<FillItem>()
     private val dirtyImageItems = mutableSetOf<ImageItem>()
     private var eraserLastX = Float.NaN; private var eraserLastY = Float.NaN  // persists ACROSS ACTION_MOVE calls for gap-free interpolation
+    // Snapshot of actions' content at the start of the current erase gesture (finger/stylus down),
+    // committed as a single EraseAction covering the whole gesture at finger-up — see EraseAction's
+    // own doc comment for why undo needs this at all.
+    private var eraseSessionBefore: List<Any>? = null
     var eraserShape: EraserShape = EraserShape.ROUND
     var inputMode: InputMode = InputMode.AUTO  // AUTO = existing palm-rejection-while-stylus-down behavior
     var fillShapes: Boolean = false
@@ -1514,6 +1526,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
     var canvasMode: CanvasMode = CanvasMode.CONVENIENT
     var paperSize: PaperSizeOption = PaperSizeOption.A4
+    // False by default: Convenient mode's page just matches the screen size until the user
+    // explicitly picks a size from the Paper Size menu, at which point changePaperSize() sets
+    // this true and the page switches to that size's real mm dimensions instead.
+    var paperSizeExplicit: Boolean = false
 
     // ── Real-world scale system ───────────────────────────────────────────────
     var paperScale: Float = 1f        // denominator: 100 = 1:100
@@ -1726,6 +1742,52 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return kotlin.math.ceil(maxY / pageH).toInt().coerceAtLeast(1)
     }
 
+    /** TEMPORARY diagnostic for the "long pasted text disappears when scrolling to the next page"
+     * bug — trigger AFTER reproducing it (scroll to where the content should be but isn't visible,
+     * then tap this from the menu) so the numbers reflect the actual broken moment, not a fresh
+     * reload. Remove once the real cause is found. */
+    fun showMultiPageTextDiagnostic() {
+        val tallItem = actions.filterIsInstance<TextItem>().maxByOrNull {
+            val b = getBounds(it); if (b != null) b[3] - b[1] else 0f
+        }
+        val sb = StringBuilder()
+        sb.append("canvasMode=$canvasMode\n")
+        sb.append("estimatePageCount=${estimatePageCount()}\n")
+        sb.append("pageHeightPx=${pageHeightPx()}\n")
+        sb.append("translateY=$translateY  scaleFactor=$scaleFactor\n")
+        sb.append("view width=$width height=$height\n")
+        sb.append("topChromeHeightPx=$topChromeHeightPx\n")
+        sb.append("total actions=${actions.size}, TextItems=${actions.filterIsInstance<TextItem>().size}\n")
+        sb.append("spatialDirty=$spatialDirty\n\n")
+        if (tallItem == null) {
+            sb.append("No TextItem found at all.")
+        } else {
+            val b = getBounds(tallItem)
+            val layout = getOrBuildLayout(tallItem)
+            val vh = textItemVisualHeight(tallItem, layout)
+            sb.append("Tallest TextItem:\n")
+            sb.append("  text.length=${tallItem.text.length}\n")
+            sb.append("  item.x=${tallItem.x}  item.y=${tallItem.y}  rotation=${tallItem.rotation}\n")
+            sb.append("  bounds=${b?.joinToString(", ") { "%.1f".format(it) }}\n")
+            sb.append("  bounds height=${if (b != null) b[3] - b[1] else -1f}\n")
+            sb.append("  layout.height=${layout.height}  lineCount=${layout.lineCount}\n")
+            sb.append("  textItemVisualHeight=$vh\n")
+            sb.append("  is in itemsInViewport() right now = ${itemsInViewport().contains(tallItem)}\n")
+            sb.append("  is in actions list = ${actions.contains(tallItem)}\n")
+            // Where getBounds() says this item's bottom edge is, relative to the current screen —
+            // negative means it's above the visible area, > height means below it, in between
+            // means it SHOULD be on-screen right now.
+            val screenBottomOfItem = (b?.get(3) ?: 0f) * scaleFactor + translateY
+            val screenTopOfItem = (b?.get(1) ?: 0f) * scaleFactor + translateY
+            sb.append("  item's screen-Y span right now: top=$screenTopOfItem bottom=$screenBottomOfItem (view height=$height)\n")
+        }
+        android.app.AlertDialog.Builder(context)
+            .setTitle("DIAG: multi-page text")
+            .setMessage(sb.toString())
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
     /** Public wrapper for [estimatePageCount] — how many "pages" Read Mode has to page through. */
     fun readModePageCount(): Int = estimatePageCount().coerceAtLeast(1)
 
@@ -1740,12 +1802,20 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (pageIdx < 0 || pageIdx >= pageCount) return null
         val bw = w.coerceAtLeast(1); val bh = h.coerceAtLeast(1)
         return try {
-            val fitScale = kotlin.math.max(bw / pageWidthPx(), bh / pageHeightPx())
+            val pw = pageWidthPx(); val ph = pageHeightPx()
+            // "Contain" fit (min), not "cover" (max) — the whole page is always fully visible,
+            // with a gap in whichever dimension has room to spare, instead of cropping off
+            // whichever dimension overflows when the screen and page aspect ratios don't match.
+            val fitScale = kotlin.math.min(bw / pw, bh / ph)
+            // Centers the page within the bitmap — an equal gap on both edges of whichever
+            // dimension doesn't exactly fill, rather than pinned to one corner.
+            val offsetX = (bw - pw * fitScale) / 2f
+            val offsetY = (bh - ph * fitScale) / 2f
             val bmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
             val bmpCanvas = Canvas(bmp)
             bmpCanvas.drawColor(Color.parseColor("#F6F3E9"))
             val savedTX = translateX; val savedTY = translateY; val savedScale = scaleFactor
-            translateX = 0f; translateY = -pageIdx * (pageHeightPx() + 40f) * fitScale
+            translateX = offsetX; translateY = offsetY - pageIdx * (ph + 40f) * fitScale
             scaleFactor = fitScale
             drawCanvasContent(bmpCanvas)
             translateX = savedTX; translateY = savedTY; scaleFactor = savedScale
@@ -2070,7 +2140,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     })
 
-    fun clampTranslation() {
+    fun clampTranslation(adjustScale: Boolean = true) {
         if (canvasMode == CanvasMode.INFINITE) return
         val pw = pageWidthPx() * scaleFactor; val ph = pageHeightPx() * scaleFactor
         val margin = 16f
@@ -2082,7 +2152,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             CanvasMode.CONVENIENT, CanvasMode.PAGINATED -> minScaleW.coerceAtLeast(0.3f)
             else -> 0.3f
         }
-        if (scaleFactor < minScale) {
+        if (adjustScale && scaleFactor < minScale) {
             scaleFactor = minScale
             translateX = (width - pageWidthPx() * scaleFactor) / 2f
             if (canvasMode == CanvasMode.FIXED) translateY = (height - pageHeightPx() * scaleFactor) / 2f
@@ -2244,6 +2314,24 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 canvas.drawBitmap(bmp, null, RectF(action.x, action.y, action.x + action.w, action.y + action.h), null)
             }
             is StrokeItem -> {
+                // Area Eraser freezes a long Pen/Highlighter/Brush stroke into
+                // action.eraseSessionBitmap and punches erase-holes directly into it on every
+                // touch-move (see eraseFromSessionBitmap) — that bitmap is updated live and
+                // correctly the whole drag. But every renderer below this point (drawWithBitmapCache,
+                // the calligraphy/fountain/pencil branches, the raw drawPath fallback) only ever
+                // reads action.cachedBitmap / rebuilds action.path — none of them know
+                // eraseSessionBitmap exists. So a live area-erase on a normal Pen/Highlighter
+                // stroke was computing the correct result every frame but never actually showing
+                // it: onDraw kept blitting the untouched old cachedBitmap until ACTION_UP baked
+                // eraseSessionBitmap into a replacement ImageItem, at which point the fully-erased
+                // result would suddenly "snap in" all at once. Checking it first here, uniformly
+                // for every stroke type, makes the live preview match what's actually being erased.
+                if (action.eraseSessionBitmap != null) {
+                    val bmp = action.eraseSessionBitmap!!
+                    val dst = android.graphics.RectF(action.eraseSessionLeft, action.eraseSessionTop, action.eraseSessionRight, action.eraseSessionBottom)
+                    canvas.drawBitmap(bmp, null, dst, _bitmapFilterPaint)
+                    return
+                }
                 // All brush strokes go through the dedicated brush renderer (with caching for expensive styles)
                 if (action.data.type == Tool.BRUSH) {
                     drawBrushStrokeWithCache(canvas, action); return
@@ -3775,6 +3863,52 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     private var hasInitialLayout = false
+    // Convenient mode's page defaults to A4's real width, with height set from the DEVICE'S OWN
+    // screen aspect ratio (screen height / screen width) applied to that width — so the page's
+    // shape always matches the device's screen shape exactly (no letterboxing, no auto-zoom
+    // needed to fit), while width stays anchored to true A4 size regardless of device. This is
+    // recalculated per-device since width/height here are this view's own measured pixel
+    // dimensions — pulled out of onLayout() so it can also be called directly whenever needed
+    // outside of an actual layout pass (e.g. when explicit paper size changes below).
+    fun recomputeConvenientPageSize() {
+        if (paperSizeExplicit) {
+            val m = 3.7795f
+            convenientPageW = if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
+            convenientPageH = if (pageOrientation == Orientation.PORTRAIT) paperSize.heightMM * m else paperSize.widthMM * m
+        } else {
+            val m = 3.7795f
+            val screenW = width.toFloat().coerceAtLeast(1f)
+            val screenH = height.toFloat().coerceAtLeast(1f)
+            convenientPageW = 210f * m
+            convenientPageH = (screenH / screenW) * convenientPageW
+        }
+    }
+
+    // Changes paper size (or orientation) while explicitly preserving the user's current zoom
+    // level. clampTranslation()'s "page must fill at least the screen width" floor means
+    // shrinking the page (e.g. switching to a narrower paper size) could force scaleFactor up to
+    // compensate — and since that's a floor, not a target, switching back to a wider size never
+    // reversed it: the canvas stayed zoomed in from then on. Paper size is meant to just change
+    // the page's boundary/ratio, not silently re-zoom the drawing — clampTranslation(adjustScale
+    // = false) still clamps translateX/Y for the new bounds, it just never touches scaleFactor.
+    fun changePaperSize(newSize: PaperSizeOption) {
+        paperSize = newSize
+        paperSizeExplicit = true
+        recomputeConvenientPageSize()
+        rewrapTextToPage()
+        clampTranslation(adjustScale = false)
+        invalidate()
+    }
+
+    fun changePageOrientation(newOrientation: Orientation) {
+        pageOrientation = newOrientation
+        paperSizeExplicit = true
+        recomputeConvenientPageSize()
+        rewrapTextToPage()
+        clampTranslation(adjustScale = false)
+        invalidate()
+    }
+
     private var lastLayoutWidth = 0
     private var stableLayoutHeight = 0  // frozen height used for page-size math, ignores keyboard resize
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
@@ -3793,9 +3927,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             // no relationship to any real paper size. Now driven by the same selectable paperSize
             // every other mode uses (same mm-to-px conversion), so Convenient mode's page size
             // actually changes when the user picks a different paper size.
-            val m = 3.7795f
-            convenientPageW = if (pageOrientation == Orientation.PORTRAIT) paperSize.widthMM * m else paperSize.heightMM * m
-            convenientPageH = if (pageOrientation == Orientation.PORTRAIT) paperSize.heightMM * m else paperSize.widthMM * m
+            recomputeConvenientPageSize()
             if (isFirstLayout) {
                 hasInitialLayout = true
                 when (canvasMode) {
@@ -6939,7 +7071,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val pressure = if (isStylusInput) event.pressure.coerceIn(0.3f, 1.5f) else 1f
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (currentTool == Tool.ERASER) { eraserLastX = wx; eraserLastY = wy; eraseAt(wx, wy); invalidate(); return }
+                if (currentTool == Tool.ERASER) { eraseSessionBefore = actions.toList(); eraserLastX = wx; eraserLastY = wy; eraseAt(wx, wy); invalidate(); return }
                 // Snap start point to nearest existing endpoint if snap is enabled
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
                     val snap = findSnapTarget(wx, wy)
@@ -7135,7 +7267,14 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             MotionEvent.ACTION_UP -> {
                 resetLiveFlush()
-                if (currentTool == Tool.ERASER) { flushDirtyFillItems(); flushDirtyImageItems(); flushEraseSessionBitmaps(); eraserLastX = Float.NaN; eraserLastY = Float.NaN }
+                if (currentTool == Tool.ERASER) {
+                    flushDirtyFillItems(); flushDirtyImageItems(); flushEraseSessionBitmaps(); eraserLastX = Float.NaN; eraserLastY = Float.NaN
+                    val before = eraseSessionBefore
+                    if (before != null && before != actions) {
+                        actions.add(EraseAction(before, actions.toList())); redoStack.clear()
+                    }
+                    eraseSessionBefore = null
+                }
                 // Snap end point to nearest existing endpoint if snap is enabled
                 if (snapEnabled && (currentTool == Tool.PEN || SHAPE_TOOLS.contains(currentTool))) {
                     val pts0 = currentItem?.data?.points
@@ -7190,7 +7329,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         var ii = 0; while (ii < src.size - 1) { if ((ii/2) % skip == 0 || ii >= src.size - 2) { keep.add(src[ii]); keep.add(src[ii+1]) }; ii += 2 }
                         src.clear(); src.addAll(keep); item.path = item.data.buildPath(); item.invalidateCache()
                     }
-                    actions.add(item); item.layerId = currentLayerId; redoStack.clear(); markSpatialDirty()
+                    actions.add(item); item.layerId = currentLayerId; redoStack.clear(); addToSpatialIndex(item); snapMarkersActionCount = -1
                     // For shape tools: notify MainActivity to show select handles temporarily
                     if (isShapeTool) {
                         selectedItem = item
@@ -7921,7 +8060,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return StrokeItem(d, d.buildPath(), d.toPaint())
     }
     fun applyDuplicateResult(copy: StrokeItem) {
-        actions.add(copy); redoStack.clear(); markSpatialDirty(); invalidate()
+        actions.add(copy); redoStack.clear(); addToSpatialIndex(copy); invalidate()
         selectedItem = copy
     }
 
@@ -7944,7 +8083,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         }
     }
     fun applyDuplicateAnyResult(copy: Any) {
-        actions.add(copy); redoStack.clear(); markSpatialDirty(); invalidate()
+        actions.add(copy); redoStack.clear(); addToSpatialIndex(copy); invalidate()
         selectedItem = copy
     }
     fun deleteAnyItem(item: Any) {
@@ -8516,7 +8655,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (text.isBlank()) return null
         val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPageForText(x, y, text, size, fontFamily) else Pair(x, y)
         val item = TextItem(text, cx, cy, color, size, rotation); item.spans = spans; item.fontFamily = fontFamily; item.opacity = opacity; item.layerId = currentLayerId
-        actions.add(item); redoStack.clear(); markSpatialDirty(); invalidate()
+        actions.add(item); redoStack.clear(); addToSpatialIndex(item); invalidate()
         return item
     }
 
@@ -8526,7 +8665,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         if (item.text.isBlank()) return
         val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPageForText(item.x, item.y, item.text, item.size, item.fontFamily) else Pair(item.x, item.y)
         item.x = cx; item.y = cy
-        actions.add(item); redoStack.clear(); markSpatialDirty(); invalidate()
+        actions.add(item); redoStack.clear(); addToSpatialIndex(item); invalidate()
     }
 
     fun removeTextItem(item: TextItem) { actions.remove(item); markSpatialDirty(); invalidate() }
@@ -8704,6 +8843,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             last.item.data.fill = last.wasFilled; last.item.data.fillColorVal = last.wasColor; last.item.paint = last.item.data.toPaint()
         } else if (last is TransformAction) {
             for (restore in last.restoreBefore) restore()
+        } else if (last is EraseAction) {
+            actions.clear(); actions.addAll(last.before)
         }
         redoStack.add(last); if (redoStack.size > 50) redoStack.removeAt(0); markSpatialDirty(); invalidate()
     }
@@ -8714,6 +8855,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             next.item.data.fill = !next.wasFilled; next.item.data.fillColorVal = next.newColor; next.item.paint = next.item.data.toPaint()
         } else if (next is TransformAction) {
             for (restore in next.restoreAfter) restore()
+        } else if (next is EraseAction) {
+            actions.clear(); actions.addAll(next.after)
         }
         actions.add(next); markSpatialDirty(); invalidate()
     }
@@ -9051,8 +9194,8 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             } catch (e: Exception) { i++ }
         }
         invalidate()
+        post { if (spatialDirty) rebuildSpatialIndex() }
     }
-
     // Used by BooksActivity to render an off-screen thumbnail of this note's content.
     // scaleFactor/translateX/translateY are private, so this is the one narrow door in — pans so
     // that world position (worldX, worldY) lands at the top-left of the rendered bitmap, at

@@ -282,11 +282,38 @@ class SecurityManager(private val context: Context) {
      *  turning security on start protecting new writes immediately, without needing to touch
      *  every existing plaintext note first — they get encrypted the next time they're saved. */
     fun writeNoteFile(file: File, content: String) {
-        if (isSecurityEnabled() && isUnlockedThisSession()) {
+        val bytes = if (isSecurityEnabled() && isUnlockedThisSession()) {
             val enc = encryptNoteBytes(content.toByteArray(Charsets.UTF_8))
-            if (enc != null) { file.writeBytes(byteArrayOf(0x45, 0x4E, 0x47, 0x01) + enc); return }
+            if (enc != null) byteArrayOf(0x45, 0x4E, 0x47, 0x01) + enc else content.toByteArray(Charsets.UTF_8)
+        } else {
+            content.toByteArray(Charsets.UTF_8)
         }
-        file.writeText(content)
+        writeAtomically(file, bytes)
+    }
+
+    /** Writes [bytes] to [file] atomically: to a temp file first, fsync'd, then renamed into
+     *  place — a same-filesystem rename is atomic at the OS level (it either fully lands or
+     *  doesn't happen at all), so [file] can never end up left half-written if the process dies
+     *  mid-write. A direct write to the real file overwrites its existing content in place as it
+     *  goes; if that gets interrupted, both the old AND new content can be lost — this is what
+     *  actually determines whether a crash/kill mid-autosave can destroy a note. */
+    private fun writeAtomically(file: File, bytes: ByteArray) {
+        val tmp = File(file.parentFile, "${file.name}.tmp")
+        java.io.FileOutputStream(tmp).use { out ->
+            out.write(bytes)
+            out.flush()
+            // Forces the write to actual storage before the rename below — without this, the OS
+            // could still be holding it in a page cache buffer when the rename happens, which
+            // would defeat the whole point if power is lost in that window.
+            try { out.fd.sync() } catch (e: Exception) { }
+        }
+        if (!tmp.renameTo(file)) {
+            // Rename can fail across filesystem boundaries on some devices/storage setups — fall
+            // back to a copy rather than silently leaving the new content stranded in the temp
+            // file with the real file never updated.
+            tmp.copyTo(file, overwrite = true)
+            tmp.delete()
+        }
     }
 
     // ─────────────────────────────── Recovery code / QR unlock path ───────────────────────────────
