@@ -1052,6 +1052,17 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                 runGeminiQuery(query, null, qx, qy + 30f)
             }
         }
+        tbtnText("∫x"){ _ ->
+            showEquationEditorDialog("", false, onConfirm = { latex ->
+                // \uFFFC (Object Replacement Character) is the placeholder LaTeXSpan attaches
+                // to — same convention closeInlineEditor's harvesting loop below expects when it
+                // reads this back out into a TextEquationData.
+                val start = et.selectionStart.coerceAtLeast(0)
+                et.text.insert(start, "\uFFFC")
+                et.text.setSpan(LaTeXSpan(latex, editSize, editColor), start, start + 1, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                et.setSelection(start + 1)
+            })
+        }
 
         // Positioned dynamically near the text box by layoutEditorHandles() above — prefers just
         // above the box, falls back below (clamped above the keyboard) if that's occluded by the
@@ -1184,7 +1195,7 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
 internal fun MainActivity.closeInlineEditor(commit:Boolean, delete:Boolean=false) {
         val et=activeEditText?:return; val tb=activeToolbar; val box=activeEditBox
         val imm=getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager; imm.hideSoftInputFromWindow(et.windowToken,0)
-        val text=et.text.toString(); val spans=mutableListOf<TextSpanData>(); val ed=et.text
+        val text=et.text.toString(); val spans=mutableListOf<TextSpanData>(); val equations=mutableListOf<TextEquationData>(); val ed=et.text
         for(span in ed.getSpans(0,ed.length,Any::class.java)){ val s=ed.getSpanStart(span);var e=ed.getSpanEnd(span)
             // List spans (bullet/number/checklist) mark a LINE. They start out zero-length with
             // SPAN_INCLUSIVE_INCLUSIVE (needed so a freshly-created one doesn't get silently
@@ -1211,6 +1222,7 @@ internal fun MainActivity.closeInlineEditor(commit:Boolean, delete:Boolean=false
             is BulletMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_BULLET,encodeListValue(span.styleIndex,false,span.indentLevel)))
             is NumberMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_NUMBER,encodeListValue(span.styleIndex,false,span.indentLevel)))
             is ChecklistMarginSpan->spans.add(TextSpanData(s,e,LIST_SPAN_TYPE_CHECK,encodeListValue(span.styleIndex,span.checked,span.indentLevel)))
+            is LaTeXSpan -> equations.add(TextEquationData(s,e,span.latexSource))
         } }
         if(box!=null) canvasContainer.removeView(box) else canvasContainer.removeView(et)
         if(tb!=null) canvasContainer.removeView(tb)
@@ -1236,12 +1248,12 @@ internal fun MainActivity.closeInlineEditor(commit:Boolean, delete:Boolean=false
             // for both ends means they can never disagree, no matter how Android's own layout
             // timing behaves.
             if(item!=null){
-                item.text=text;item.color=editColor;item.size=editSize;item.rotation=editRotation;item.spans=spans;item.isEditing=false;item.fontFamily=pendingFontFamily;item.opacity=editOpacity; item.x=editWorldX
+                item.text=text;item.color=editColor;item.size=editSize;item.rotation=editRotation;item.spans=spans;item.equations=equations;item.isEditing=false;item.fontFamily=pendingFontFamily;item.opacity=editOpacity; item.x=editWorldX
                 editMaxWidth?.let { item.maxWidth = it; item.widthExplicitlySet = true }
                 item.y = editTopAnchorY + drawingView.textItemHeight(item)
                 drawingView.clampTextItemToPage(item)
             } else {
-                val newItem = drawingView.addText(text,editWorldX,editTopAnchorY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity)
+                val newItem = drawingView.addText(text,editWorldX,editTopAnchorY,editSize,editRotation,editColor,spans,pendingFontFamily,editOpacity,equations)
                 if (newItem != null) {
                     editMaxWidth?.let { newItem.maxWidth = it; newItem.widthExplicitlySet = true }
                     newItem.y = editTopAnchorY + drawingView.textItemHeight(newItem)
@@ -1261,3 +1273,120 @@ internal fun MainActivity.closeInlineEditor(commit:Boolean, delete:Boolean=false
         drawingView.onScaleChanged=null;drawingView.onCanvasTransformed=null; activeEditText=null;activeToolbar=null;activeEditBox=null;editingItem=null
         if (!isSwitchingTextEditor) drawingView.isTextEditorOpen = false
     }
+
+// ── Equation editor (LaTeX) ─────────────────────────────────────────────────────────────
+// One shared dialog for both inserting a brand-new equation (from the live editor's ∫x toolbar
+// button, initialLatex="") and editing an already-committed one (from DrawingView.onEquationTap,
+// initialLatex=its current source) — same UI either way, just a different label and whether
+// "Remove" is offered. Split out from the toolbar-button wiring below it so the two call sites
+// (TextEditingExtensions' own toolbar, MainActivity's onEquationTap wiring) don't duplicate the
+// dialog-building code.
+internal fun MainActivity.showEquationEditorDialog(initialLatex: String, allowDelete: Boolean, onConfirm: (String) -> Unit, onDelete: (() -> Unit)? = null) {
+    val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(16), dp(20), dp(4)) }
+
+    root.addView(TextView(this).apply { text = "LaTeX source"; textSize = 12f; setTextColor(Color.parseColor("#8A8A8A")) })
+    val input = EditText(this).apply {
+        setText(initialLatex)
+        hint = "e.g. \\frac{a}{b}  or  \\sqrt{x^2+y^2}"
+        typeface = Typeface.MONOSPACE
+        setSingleLine(false); maxLines = 4
+    }
+    root.addView(input)
+    // The single most common LaTeX mistake for someone typing it manually rather than using the
+    // chips below: ^ and _ only apply to the ONE character right after them — parentheses don't
+    // group anything (y^(99) superscripts just the "(", then "99)" continues as normal-size
+    // text). Only { } groups multiple characters into one script. Surfacing this directly under
+    // the input, rather than leaving it as a thing you discover by getting a wrong-looking
+    // preview, is the actual fix here — the behavior itself is correct/standard LaTeX, not a bug.
+    root.addView(TextView(this).apply {
+        text = "Tip: { } groups characters for ^ and _ — write x^{99}, not x^(99) or x^99"
+        textSize = 11f; setTextColor(Color.parseColor("#A08050")); setPadding(0, dp(4), 0, 0)
+    })
+
+    root.addView(TextView(this).apply { text = "Preview"; textSize = 12f; setTextColor(Color.parseColor("#8A8A8A")); setPadding(0, dp(12), 0, 0) })
+    val previewImage = ImageView(this)
+    val previewFrame = FrameLayout(this).apply {
+        setBackgroundColor(Color.parseColor("#F5F0E8"))
+        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(70)).apply { topMargin = dp(4) }
+        addView(previewImage, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply { gravity = Gravity.CENTER })
+    }
+    root.addView(previewFrame)
+
+    fun updatePreview() {
+        val src = input.text.toString().trim()
+        if (src.isEmpty()) { previewImage.setImageDrawable(null); return }
+        // Bad/incomplete LaTeX (very common mid-typing — e.g. an unclosed \frac{) just clears the
+        // preview instead of showing an error, since this re-runs on every debounced keystroke.
+        try {
+            val d = ru.noties.jlatexmath.JLatexMathDrawable.builder(src).textSize(dp(20).toFloat()).color(Color.parseColor("#1C1C1E")).build()
+            d.setBounds(0, 0, d.intrinsicWidth, d.intrinsicHeight)
+            previewImage.setImageDrawable(d)
+        } catch (e: Exception) { previewImage.setImageDrawable(null) }
+    }
+    // Debounced (250ms after the last keystroke, not on every single one) — re-parsing and
+    // re-laying-out a LaTeX formula on every keystroke of a longer expression is real work,
+    // enough to make typing itself feel laggy if it ran synchronously per character.
+    val previewHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    var previewRunnable: Runnable? = null
+    input.addTextChangedListener(object : TextWatcher {
+        override fun afterTextChanged(s: Editable?) {
+            previewRunnable?.let { previewHandler.removeCallbacks(it) }
+            val r = Runnable { updatePreview() }; previewRunnable = r
+            previewHandler.postDelayed(r, 250)
+        }
+        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+    })
+
+    // Quick-insert chips for the LaTeX commands most likely to actually come up in engineering
+    // notes — wraps the current selection into the template where that makes sense (selecting
+    // "x+1" then tapping √ gives \sqrt{x+1}), same "wrap the selection" convention Bold/Italic
+    // already use elsewhere in this editor. Doesn't remove the need to know any LaTeX at all,
+    // but covers enough of the common cases that most equations shouldn't need typing backslash-
+    // commands from memory.
+    val chips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+    fun chip(label: String, before: String, after: String = "") {
+        val b = TextView(this).apply {
+            text = label; textSize = 14f; gravity = Gravity.CENTER
+            setPadding(dp(10), dp(6), dp(10), dp(6)); setBackgroundColor(Color.parseColor("#F0EBE0"))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(3), dp(4), dp(3), dp(4)) }
+        }
+        b.setOnClickListener {
+            val s = input.selectionStart.coerceAtLeast(0); val e = input.selectionEnd.coerceAtLeast(s)
+            val selected = input.text.subSequence(s, e)
+            input.text.replace(s, e, "$before$selected$after")
+            input.setSelection(s + before.length + selected.length)
+        }
+        chips.addView(b)
+    }
+    chip("√", "\\sqrt{", "}"); chip("x²", "{", "}^2"); chip("xⁿ", "{", "}^{n}"); chip("x₁", "{", "}_{1}")
+    chip("a/b", "\\frac{", "}{}"); chip("∫", "\\int_{", "}^{}"); chip("Σ", "\\sum_{", "}^{}")
+    chip("π", "\\pi "); chip("θ", "\\theta "); chip("Δ", "\\Delta "); chip("Ω", "\\Omega ")
+    chip("≤", "\\leq "); chip("≥", "\\geq "); chip("≠", "\\neq "); chip("±", "\\pm ")
+    chip("×", "\\times "); chip("÷", "\\div "); chip("°", "^{\\circ}")
+    root.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(chips) })
+
+    updatePreview()
+
+    // Guards onConfirm/onDelete so they can fire at most once per dialog, no matter how many
+    // times the underlying button click actually gets dispatched — turned out to be the real
+    // cause of the "shows as the raw [OBJ] glyph" bug: a double-fire on Insert ran the insertion
+    // logic twice, which inserted two \uFFFC characters but only correctly re-spanned one of
+    // them (the second insert shifts the first character rightward, out from under its own
+    // span), leaving the other with no span attached and nothing to render it. This doesn't
+    // depend on pinning down exactly what caused the double click to reach here in the first
+    // place — making the handler idempotent fixes it regardless of the specific cause.
+    var handled = false
+    val builder = AlertDialog.Builder(this)
+        .setTitle(if (initialLatex.isBlank()) "Insert Equation" else "Edit Equation")
+        .setView(root)
+        .setPositiveButton(if (initialLatex.isBlank()) "Insert" else "Update") { _, _ ->
+            if (handled) return@setPositiveButton
+            val latex = input.text.toString().trim()
+            if (latex.isNotBlank()) { handled = true; onConfirm(latex) }
+        }
+        .setNegativeButton("Cancel", null)
+    if (allowDelete) builder.setNeutralButton("Remove") { _, _ -> if (!handled) { handled = true; onDelete?.invoke() } }
+    builder.show()
+}
+
