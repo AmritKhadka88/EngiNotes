@@ -600,6 +600,17 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
             LIST_SPAN_TYPE_NUMBER->spannable.setSpan(NumberMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value)),s,e,Spannable.SPAN_INCLUSIVE_INCLUSIVE)
             LIST_SPAN_TYPE_CHECK->spannable.setSpan(ChecklistMarginSpan(decodeListStyleIndex(sp.value),itemTextSizePx,decodeListIndent(sp.value),decodeListChecked(sp.value)),s,e,Spannable.SPAN_INCLUSIVE_INCLUSIVE)
         } }
+        // Was missing entirely — reopening an EXISTING item for editing rebuilt style spans
+        // (bold/italic/lists/etc.) from item.spans above, but never reconstructed item.equations
+        // into LaTeXSpans at all, so any \uFFFC placeholder in the live editor had nothing
+        // rendering it and fell back to the system's raw placeholder glyph. Sized via
+        // screenSizePx (the zoom-adjusted value, already computed above), matching how the ∫x
+        // insert button and updateET() size a live equation — not itemTextSizePx, which is the
+        // unscaled logical size used for the committed (non-editing) rendering.
+        item?.equations?.forEach { eq ->
+            val s = eq.start.coerceIn(0, spannable.length); val e = eq.end.coerceIn(s, spannable.length)
+            if (s < e) spannable.setSpan(LaTeXSpan(eq.latex, screenSizePx, item.color), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
         renumberLists(spannable)
         // Ceiling is the actual remaining PAGE width from this item's world x-position, converted
         // to screen pixels the same way et's own text size is derived from editSize — not the

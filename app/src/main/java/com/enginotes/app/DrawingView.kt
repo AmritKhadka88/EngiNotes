@@ -4254,13 +4254,18 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val localY = worldY - topY
         if (localY < 0f || localY > layout.height) return null
         val line = layout.getLineForVertical(localY.toInt())
-        if (localX < layout.getLineLeft(line) || localX > layout.getLineRight(line)) return null
+        // A small padding here, rather than the exact line bounds — a double-tap's second finger-
+        // down naturally lands a few px off from the first, and with no padding that was enough
+        // to occasionally fall just outside getLineLeft/getLineRight and miss the equation
+        // entirely, falling through to opening the normal text editor instead.
+        val pad = dp(6)
+        if (localX < layout.getLineLeft(line) - pad || localX > layout.getLineRight(line) + pad) return null
         val offset = layout.getOffsetForHorizontal(line, localX)
         // getOffsetForHorizontal can land one character either side of where the LaTeXSpan
         // actually sits depending on which half of the glyph's width was tapped — checking a
         // small window around it instead of the exact offset alone is what makes tapping
         // anywhere on the (often fairly wide) rendered equation actually register.
-        for (o in (offset - 1).coerceAtLeast(0)..(offset + 1).coerceAtMost(item.text.length)) {
+        for (o in (offset - 2).coerceAtLeast(0)..(offset + 2).coerceAtMost(item.text.length)) {
             val match = item.equations.firstOrNull { o in it.start until it.end }
             if (match != null) return match
         }
