@@ -58,6 +58,21 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
 
+    // LaTeX equation rendering (√, fractions, superscript/subscript, integrals, etc.) inside
+    // TextItem — see LaTeXSpan in DrawingView.kt. Note this specific artifact is GPL 2.0
+    // licensed (unlike everything else in this dependency list) — a deliberate, known tradeoff:
+    // it's the one LaTeX-rendering library confirmed to actually resolve from Maven Central
+    // right now. The Apache-licensed alternative (NanoMichael/AndroidLaTeXMath) was only ever
+    // published to JCenter, which has been permanently shut down since 2022, so it can't be
+    // pulled in as a normal Gradle dependency without independently confirming it resolves via
+    // JitPack first. The actual "render this LaTeX string" call is isolated to one function
+    // (LaTeXSpan.renderDrawable()) specifically so swapping the underlying engine later, if the
+    // GPL licensing turns out to matter, doesn't require touching anything else in this feature.
+    implementation("ru.noties:jlatexmath-android:0.2.0")
+    // Greek letters (θ, α, β, Δ, Σ, ...) show up constantly in engineering formulas — without
+    // this font pack they'd render as tofu/missing-glyph boxes instead of the actual symbol.
+    implementation("ru.noties:jlatexmath-android-font-greek:0.2.0")
+
     implementation("org.apache.poi:poi-ooxml:5.2.3")
     implementation("com.google.mlkit:digital-ink-recognition:18.1.0")
     implementation("com.google.mlkit:text-recognition:16.0.0")
