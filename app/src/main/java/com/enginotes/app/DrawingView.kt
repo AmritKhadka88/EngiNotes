@@ -157,6 +157,97 @@ val STROKE_SCALE_SHAPES = setOf(Tool.PEN)
 
 data class TextSpanData(val start: Int, val end: Int, val type: Char, val value: Int)
 
+// A LaTeX equation embedded in a TextItem's text at a single \uFFFC (Object Replacement
+// Character) placeholder position — parallel to TextSpanData/spans but carrying a String
+// payload (the raw LaTeX source), which doesn't fit TextSpanData's single-Int value field.
+// Kept as its own list on TextItem rather than trying to shoehorn a string into TextSpanData's
+// existing (start,end,type,value) shape.
+data class TextEquationData(val start: Int, val end: Int, val latex: String)
+
+// Renders one TextEquationData's LaTeX source inline wherever its \uFFFC placeholder sits in a
+// Spannable — the actual bridge between this app's Spannable/StaticLayout-based text rendering
+// and the JLaTeXMath engine. A ReplacementSpan intercepts StaticLayout's own measurement/draw
+// calls for its placeholder character, so from StaticLayout's perspective this is just an
+// unusually-shaped "character" — the same mechanism ImageSpan uses for inline images.
+//
+// The actual "call into the LaTeX library" is isolated to renderDrawable() below on purpose: if
+// the GPL-licensed ru.noties:jlatexmath-android dependency (see build.gradle.kts) ever needs
+// swapping for a differently-licensed engine, this is the one place that needs to change —
+// everything else here (measurement, drawing, caching) is written against a plain
+// android.graphics.drawable.Drawable, not against this specific library's types.
+class LaTeXSpan(var latexSource: String, var textSizePx: Float, private val color: Int) : android.text.style.ReplacementSpan() {
+    private var drawable: android.graphics.drawable.Drawable? = null
+    // Cache validity now checks BOTH source and size — textSizePx used to be a val, frozen at
+    // whatever size was current when the equation was first inserted, so changing the item's
+    // font size afterward (the toolbar's font-size slider) never touched already-inserted
+    // equations at all. It's mutable now specifically so the size-change callback (MainActivity)
+    // can update it directly; caching on source alone would still have kept showing the OLD size
+    // even after that field changed, since renderDrawable() would see "same source, cached
+    // drawable already exists" and never rebuild.
+    private var drawableForSource: String? = null
+    private var drawableForSize: Float = -1f
+
+    private fun renderDrawable(): android.graphics.drawable.Drawable? {
+        if (drawable != null && drawableForSource == latexSource && drawableForSize == textSizePx) return drawable
+        return try {
+            val d = ru.noties.jlatexmath.JLatexMathDrawable.builder(latexSource)
+                .textSize(textSizePx)
+                .color(color)
+                .build()
+            drawable = d; drawableForSource = latexSource; drawableForSize = textSizePx
+            d
+        } catch (t: Throwable) {
+            // Deliberately catching Throwable, not just Exception — this dependency's own
+            // initialization (font/resource loading the first time it's used) is exactly the
+            // kind of thing that can throw an Error subtype (NoClassDefFoundError,
+            // ExceptionInInitializerError) rather than a plain Exception if something about its
+            // packaging isn't quite right, and a plain `catch (e: Exception)` here would let
+            // that escape uncaught during StaticLayout's own measurement pass instead of falling
+            // back gracefully the way this is actually meant to.
+            //
+            // Malformed LaTeX (unbalanced braces, unknown command, etc.) is the much more common
+            // case this also covers — falls back to null rather than crashing the whole note's
+            // rendering over one bad equation; getSize()/draw() below both already handle a null
+            // drawable by falling back to a plain-text placeholder showing the raw source, so the
+            // user can still see something's there and tap it to fix the syntax.
+            null
+        }
+    }
+
+    override fun getSize(paint: Paint, text: CharSequence, start: Int, end: Int, fm: Paint.FontMetricsInt?): Int {
+        val d = renderDrawable()
+        val w: Int; val h: Int
+        if (d != null) {
+            w = d.intrinsicWidth.coerceAtLeast(1); h = d.intrinsicHeight.coerceAtLeast(1)
+        } else {
+            w = paint.measureText("[eqn]").toInt().coerceAtLeast(1); h = (textSizePx * 1.2f).toInt().coerceAtLeast(1)
+        }
+        if (fm != null) {
+            // Tells StaticLayout how much vertical room this "character" actually needs — without
+            // this, a tall equation (a fraction, a tall root) would get clipped to a normal
+            // single text line's height instead of the line growing to fit it.
+            fm.ascent = -h; fm.top = fm.ascent; fm.descent = 0; fm.bottom = 0
+        }
+        return w
+    }
+
+    override fun draw(canvas: Canvas, text: CharSequence, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, paint: Paint) {
+        val d = renderDrawable()
+        if (d == null) {
+            canvas.drawText("[eqn]", x, y.toFloat(), paint)
+            return
+        }
+        canvas.save()
+        // Aligns the equation's own bottom with the text line's baseline (y) — same convention
+        // getSize() above reserved space under via fm.descent = 0.
+        canvas.translate(x, y.toFloat() - d.intrinsicHeight)
+        d.setBounds(0, 0, d.intrinsicWidth, d.intrinsicHeight)
+        d.draw(canvas)
+        canvas.restore()
+    }
+}
+
+
 private val imageLoadExecutor = ThreadPoolExecutor(2, 3, 60L, TimeUnit.SECONDS, LinkedBlockingQueue())
 
 private val PAPER_BASE_COLOR = Color.parseColor("#FFFDF6")
@@ -985,6 +1076,9 @@ class StrokeItem(val data: StrokeData, var path: Path, var paint: Paint) {
 class TextItem(var text: String, var x: Float, var y: Float, var color: Int, var size: Float, var rotation: Float) {
     var layerId: Int = 0
     var spans: MutableList<TextSpanData> = mutableListOf()
+    // Parallel to spans (see TextEquationData's own doc comment for why it's separate) — one
+    // entry per \uFFFC placeholder character actually present in text.
+    var equations: MutableList<TextEquationData> = mutableListOf()
     var isEditing: Boolean = false
     var maxWidth: Float = 0f  // 0 = unbounded (legacy); >0 = wrap to this width
     // True once maxWidth has been deliberately set (a manual resize-handle drag, or an app
@@ -2059,6 +2153,15 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     onTextEditOptions?.invoke(hit)
                     return true
                 }
+                // Double-tap landing on an equation glyph specifically opens the equation editor
+                // instead of the normal text cursor editor — checked here (double-tap) rather
+                // than on single-tap the way it briefly was: a single tap on an equation should
+                // behave exactly like tapping any other part of the text (select the item, show
+                // the move/rotate handles), not immediately jump into editing it. Double-tap is
+                // the "go deeper" gesture everywhere else in this editor (double-tap opens text
+                // editing itself), so an equation reusing that same convention for "edit its
+                // source" is consistent with the rest of the app rather than a special case.
+                findEquationAt(hit, wx, wy)?.let { eq -> onEquationTap?.invoke(hit, eq, e.rawX, e.rawY); return true }
                 // Normal text: open inline editor
                 selectedItem = null
                 hit.isEditing = true; invalidate()
@@ -4025,7 +4128,11 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val ww = textWrapWidth(item)
         val isLink = item.linkTarget != null
         val spansKey = if (isLink) "LINK" else item.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }
-        val key = "${item.text.length}:${item.text.hashCode()}:${item.size}:${item.fontFamily}:$ww:$spansKey:${item.color}:${item.opacity}"
+        // Equations included separately in the cache key (not folded into spansKey) since they
+        // carry a String payload rather than spansKey's compact (start,end,type,Int) shape —
+        // their own latex source is exactly what needs to invalidate the cache on an edit.
+        val eqKey = if (isLink) "" else item.equations.joinToString(";") { "${it.start},${it.end},${it.latex.hashCode()}" }
+        val key = "${item.text.length}:${item.text.hashCode()}:${item.size}:${item.fontFamily}:$ww:$spansKey:$eqKey:${item.color}:${item.opacity}"
         item.cachedLayout?.let { if (item.cachedLayoutKey == key) return it }
         val tp = TextPaint(); tp.color = if (isLink) Color.parseColor("#1565C0") else item.color; tp.alpha = item.opacity; tp.textSize = item.size; tp.isAntiAlias = true
         try { tp.typeface = typefaceFromFamily(item.fontFamily) } catch (e: Exception) {}
@@ -4047,6 +4154,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     LIST_SPAN_TYPE_NUMBER -> spannable.setSpan(NumberMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value)), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                     LIST_SPAN_TYPE_CHECK -> spannable.setSpan(ChecklistMarginSpan(decodeListStyleIndex(sp.value), item.size, decodeListIndent(sp.value), decodeListChecked(sp.value)), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
+            }
+            for (eq in item.equations) {
+                val s = eq.start.coerceIn(0, item.text.length); val e = eq.end.coerceIn(s, item.text.length)
+                if (s < e) spannable.setSpan(LaTeXSpan(eq.latex, item.size, item.color), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
             renumberLists(spannable)
         }
@@ -4123,6 +4234,37 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         val toggled = toggleChecklistAt(spanned, localX, localY)
         if (toggled) { syncTextItemSpansFromSpanned(item, spanned); invalidate() }
         return toggled
+    }
+
+    // Fired when a tap on a COMMITTED (not currently being edited) TextItem lands on an
+    // equation's rendered glyph — the host (MainActivity) uses this to reopen the equation
+    // editor dialog pre-filled with that equation's LaTeX source, same idea as
+    // toggleChecklistInItem's tap-to-toggle but opening an editor instead of an immediate toggle
+    // (there's no sensible "instant tap action" for an equation the way there is for a checkbox).
+    var onEquationTap: ((TextItem, TextEquationData, Float, Float) -> Unit)? = null
+
+    /** Returns the equation at this world position within [item], if any — same coordinate
+     * conversion as toggleChecklistInItem above (world → item-local → StaticLayout offset), just
+     * checking for a LaTeXSpan at that offset instead of toggleChecklistAt's checkbox hit-test. */
+    fun findEquationAt(item: TextItem, worldX: Float, worldY: Float): TextEquationData? {
+        if (item.rotation != 0f || item.linkTarget != null || item.equations.isEmpty()) return null
+        val layout = getOrBuildLayout(item)
+        val topY = item.y - layout.height.toFloat()
+        val localX = worldX - item.x
+        val localY = worldY - topY
+        if (localY < 0f || localY > layout.height) return null
+        val line = layout.getLineForVertical(localY.toInt())
+        if (localX < layout.getLineLeft(line) || localX > layout.getLineRight(line)) return null
+        val offset = layout.getOffsetForHorizontal(line, localX)
+        // getOffsetForHorizontal can land one character either side of where the LaTeXSpan
+        // actually sits depending on which half of the glyph's width was tapped — checking a
+        // small window around it instead of the exact offset alone is what makes tapping
+        // anywhere on the (often fairly wide) rendered equation actually register.
+        for (o in (offset - 1).coerceAtLeast(0)..(offset + 1).coerceAtMost(item.text.length)) {
+            val match = item.equations.firstOrNull { o in it.start until it.end }
+            if (match != null) return match
+        }
+        return null
     }
 
     private fun drawTextItem(canvas: Canvas, item: TextItem) {
@@ -8077,6 +8219,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             }
             is TextItem -> TextItem(item.text, item.x + 30f, item.y + 30f, item.color, item.size, item.rotation).also {
                 it.layerId = item.layerId; it.spans = item.spans.map { s -> s.copy() }.toMutableList()
+                it.equations = item.equations.map { eq -> eq.copy() }.toMutableList()
                 it.maxWidth = item.maxWidth; it.fontFamily = item.fontFamily; it.opacity = item.opacity
             }
             else -> null
@@ -8651,10 +8794,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         return distance(px, py, x1 + t * dx, y1 + t * dy)
     }
 
-    fun addText(text: String, x: Float, y: Float, size: Float, rotation: Float, color: Int, spans: MutableList<TextSpanData> = mutableListOf(), fontFamily: String = "sans-serif", opacity: Int = 255): TextItem? {
+    fun addText(text: String, x: Float, y: Float, size: Float, rotation: Float, color: Int, spans: MutableList<TextSpanData> = mutableListOf(), fontFamily: String = "sans-serif", opacity: Int = 255, equations: MutableList<TextEquationData> = mutableListOf()): TextItem? {
         if (text.isBlank()) return null
         val (cx, cy) = if (canvasMode != CanvasMode.INFINITE) clampToPageForText(x, y, text, size, fontFamily) else Pair(x, y)
-        val item = TextItem(text, cx, cy, color, size, rotation); item.spans = spans; item.fontFamily = fontFamily; item.opacity = opacity; item.layerId = currentLayerId
+        val item = TextItem(text, cx, cy, color, size, rotation); item.spans = spans; item.equations = equations; item.fontFamily = fontFamily; item.opacity = opacity; item.layerId = currentLayerId
         actions.add(item); redoStack.clear(); addToSpatialIndex(item); invalidate()
         return item
     }
@@ -9051,7 +9194,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
         for (a in actions) when (a) {
             is TableItem -> sb.append(a.serialize())
             is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}\n")
-            is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\u0001${a.layerId}\n")
+            is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\u0001${a.layerId}\u0001${a.equations.joinToString(";") { "${it.start},${it.end},${android.util.Base64.encodeToString(it.latex.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)}" }}\n")
             is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\u0001${a.layerId}\u0001${a.flippedH}\u0001${a.flippedV}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.customHatchPath ?: ""}\u0001${a.hatchPattern?.name ?: ""}\u0001${a.hatchColor}\u0001${a.hatchScale}\u0001${a.layerId}\n")
             is AudioItem -> sb.append("AUDIO\u0001${a.filePath}\u0001${a.title.replace("\u0001","_")}\u0001${a.x}\u0001${a.y}\u0001${a.durationMs}\u0001${a.radius}\n")
@@ -9133,6 +9276,16 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             if (p.size >= 11) item.opacity   = p[10].toIntOrNull() ?: 255
                             if (p.size >= 12 && p[11].isNotBlank()) item.linkTarget = p[11]
                             if (p.size >= 13) item.layerId = p[12].toIntOrNull() ?: 0
+                            if (p.size >= 14 && p[13].isNotBlank()) for (t in p[13].split(";")) {
+                                val eq = t.split(",")
+                                if (eq.size == 3) {
+                                    val s = eq[0].toIntOrNull(); val e = eq[1].toIntOrNull()
+                                    if (s != null && e != null) try {
+                                        val latex = String(android.util.Base64.decode(eq[2], android.util.Base64.NO_WRAP), Charsets.UTF_8)
+                                        item.equations.add(TextEquationData(s, e, latex))
+                                    } catch (ex: Exception) { /* malformed base64 in an old/corrupted save — skip just this equation */ }
+                                }
+                            }
                             actions.add(item)
                         }
                         i++

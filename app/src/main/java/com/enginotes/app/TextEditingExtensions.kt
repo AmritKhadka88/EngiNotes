@@ -1059,7 +1059,19 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
                 // reads this back out into a TextEquationData.
                 val start = et.selectionStart.coerceAtLeast(0)
                 et.text.insert(start, "\uFFFC")
-                et.text.setSpan(LaTeXSpan(latex, editSize, editColor), start, start + 1, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                // Sized to match the live editor's CURRENT on-screen scale (same formula
+                // updateET() below uses for the surrounding text), not the raw logical editSize
+                // — using editSize directly here was the actual cause of "size looks different
+                // while still typing vs. after tapping out": the live editor's regular text is
+                // deliberately pre-scaled by the canvas's current zoom level so it visually
+                // matches the zoomed canvas underneath (et is a real overlaid View, not drawn
+                // through the canvas's own scale transform the way committed text is), but the
+                // equation was rendering at its unscaled logical size the whole time it stayed
+                // in the editor — only matching once committed, where getOrBuildLayout uses
+                // item.size directly and the WHOLE canvas (uniformly) gets scaled by the draw
+                // transform instead.
+                val liveSize = editSize * drawingView.getScaleFactor() * convenientBoost
+                et.text.setSpan(LaTeXSpan(latex, liveSize, editColor), start, start + 1, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                 et.setSelection(start + 1)
             })
         }
@@ -1123,6 +1135,10 @@ internal fun MainActivity.showInlineTextEditor(item: TextItem?, screenX: Float, 
         fun updateET(){
             val scale=drawingView.getScaleFactor();val nsp=editSize*scale*convenientBoost
             et.textSize=(nsp/density).coerceAtLeast(8f)
+            // Same reasoning as the ∫x insert button above — any equation already in the editor
+            // needs to track this same zoom-adjusted size too, or it'll drift out of sync with
+            // the surrounding text the moment you pinch-zoom the canvas while still editing.
+            et.text.getSpans(0, et.text.length, LaTeXSpan::class.java).forEach { it.textSizePx = nsp }
             // EditText keeps its OWN internal scroll position (separate from boxContainer's
             // on-screen margins) so it can auto-follow the cursor. Right after a paste, the
             // cursor jumps to the end of the inserted text, and — for a moment before the box
