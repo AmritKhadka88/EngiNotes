@@ -1109,6 +1109,11 @@ class ImageItem(var path: String, var x: Float, var y: Float, var w: Float, var 
     var layerId: Int = 0
     var flippedH: Boolean = false
     var flippedV: Boolean = false
+    // Same meaning as StrokeItem's PathData.isLocked (can't be moved/resized/rotated/erased) —
+    // added separately here rather than sharing a common interface because retrofitting a shared
+    // "Lockable" type across every existing item class would be a much larger, riskier change
+    // than the actual bug (images having no lock support at all) called for.
+    var isLocked: Boolean = false
     @Volatile var bitmap: Bitmap? = null
     @Volatile var loading: Boolean = false
 }
@@ -1388,20 +1393,39 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     private val _msRedFill = Paint().apply { color = android.graphics.Color.parseColor("#FF3B30"); style = Paint.Style.FILL; isAntiAlias = true }
     private val _msBlueFill = Paint().apply { color = android.graphics.Color.parseColor("#2196F3"); style = Paint.Style.FILL; isAntiAlias = true }
 
+    // Whether [item] is currently locked, regardless of item type — StrokeItem and ImageItem
+    // store their own isLocked flag differently (StrokeItem's lives on its nested .data, a
+    // PathData shared with other stroke bookkeeping; ImageItem's is a direct field), so this
+    // exists to give every other lock-related check one place to ask instead of each needing its
+    // own `is StrokeItem && ... || is ImageItem && ...` chain repeated at every call site.
+    private fun isItemLocked(item: Any): Boolean = when (item) {
+        is StrokeItem -> item.data.isLocked
+        is ImageItem -> item.isLocked
+        else -> false
+    }
+    private fun setItemLocked(item: Any, locked: Boolean) {
+        when (item) {
+            is StrokeItem -> item.data.isLocked = locked
+            is ImageItem -> item.isLocked = locked
+            else -> {}
+        }
+    }
+
     // Lock/unlock — called from MainActivity lock button
     fun lockSelectedItems() {
-        for (item in selectedItems) if (item is StrokeItem) item.data.isLocked = true
-        if (selectedItem is StrokeItem) (selectedItem as StrokeItem).data.isLocked = true
+        for (item in selectedItems) setItemLocked(item, true)
+        selectedItem?.let { setItemLocked(it, true) }
         invalidate()
     }
     fun unlockSelectedItems() {
-        for (item in selectedItems) if (item is StrokeItem) item.data.isLocked = false
-        if (selectedItem is StrokeItem) (selectedItem as StrokeItem).data.isLocked = false
+        for (item in selectedItems) setItemLocked(item, false)
+        selectedItem?.let { setItemLocked(it, false) }
         invalidate()
     }
     fun isSelectionLocked(): Boolean {
-        val items = (selectedItems + setOfNotNull(selectedItem)).filterIsInstance<StrokeItem>()
-        return items.isNotEmpty() && items.all { it.data.isLocked }
+        val items = selectedItems + setOfNotNull(selectedItem)
+        val lockable = items.filter { it is StrokeItem || it is ImageItem }
+        return lockable.isNotEmpty() && lockable.all { isItemLocked(it) }
     }
 
     private fun itemsNear(x: Float, y: Float, r: Float): List<Any> {
@@ -5355,7 +5379,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     val rotY = gb[1] - 90f/scaleFactor
                     val delX = gb[2]+hr*4f; val delY = gb[1]-hr*4f
                     if (distance(wx,wy,delX,delY) <= hr*2.5f) {
-                        for (it in allSel) { if (!(it is StrokeItem && it.data.isLocked)) actions.remove(it) }
+                        for (it in allSel) { if (!isItemLocked(it)) actions.remove(it) }
                         selectedItems.clear(); selectedItem=null; markSpatialDirty(); onMultiSelectionChanged?.invoke(emptySet()); invalidate(); return
                     }
                     if (distance(wx,wy,gcx,rotY) <= 28f/scaleFactor) {
@@ -5436,7 +5460,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         val delX = b[2] + hr * 5f; val delY = b[1] - hr * 5f
                         if (distance(lx, ly, delX, delY) <= hit) {
                             // Don't delete locked items
-                            if (item is StrokeItem && item.data.isLocked) { handled = true; return }
+                            if (isItemLocked(item)) { handled = true; return }
                             actions.remove(item); if (item === activeTableItem) { activeTableItem = null; tableIsActive = false }; selectedItem = null; markSpatialDirty(); handled = true; invalidate(); return
                         }
                         val canRot = item is ImageItem || item is TextItem || item is AudioItem || item is StrokeItem
@@ -5543,7 +5567,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         HandleType.MOVE -> {
                             val dx = wx - groupDragStartX; val dy = wy - groupDragStartY
                             val allSel2 = (selectedItems + setOfNotNull(selectedItem)).toSet()
-                            for (it in allSel2) { if (!(it is StrokeItem && it.data.isLocked)) moveItem(it, dx, dy) }
+                            for (it in allSel2) { if (!isItemLocked(it)) moveItem(it, dx, dy) }
                             groupDragStartX = wx; groupDragStartY = wy
                         }
                         HandleType.ROTATE -> {
@@ -5553,7 +5577,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             if (multiSelectIndividual) {
                                 // Individual mode: each item rotates about its OWN center, stays in place
                                 for ((it, snap) in groupSnapshots) {
-                                    if (it is StrokeItem && it.data.isLocked) continue
+                                    if (isItemLocked(it)) continue
                                     setRotation(it, snap[2] + totalDeltaDeg)
                                     // Pink box will auto-adjust to enclose rotated items
                                 }
@@ -5562,7 +5586,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                                 val cosD = kotlin.math.cos(totalDeltaRad).toFloat()
                                 val sinD = kotlin.math.sin(totalDeltaRad).toFloat()
                                 for ((it, snap) in groupSnapshots) {
-                                    if (it is StrokeItem && it.data.isLocked) continue
+                                    if (isItemLocked(it)) continue
                                     val relX = snap[0]-groupOrigGcx; val relY = snap[1]-groupOrigGcy
                                     val targetCx = groupOrigGcx + relX*cosD - relY*sinD
                                     val targetCy = groupOrigGcy + relX*sinD + relY*cosD
@@ -5597,7 +5621,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             val scaleX = (if (gW > 0f) newW/gW else 1f).coerceIn(0.01f, 50f)
                             val scaleY = (if (gH > 0f) newH/gH else 1f).coerceIn(0.01f, 50f)
                             for ((it, snap) in groupSnapshots) {
-                                if (it !is StrokeItem || !it.data.isLocked) {
+                                if (!isItemLocked(it)) {
                                     if (it is StrokeItem) {
                                         scaleItemInGroupFromSnapshot(it, snap, ogb[0], ogb[1], scaleX, scaleY, newMinX, newMinY)
                                     } else if (it is ImageItem) {
@@ -5616,7 +5640,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
 
                 val item = selectedItem ?: return
                 // Skip all manipulation if item is locked
-                if (item is StrokeItem && item.data.isLocked) {
+                if (isItemLocked(item)) {
                     // Still allow ACTION_DOWN to detect the delete handle attempt
                     if (event.actionMasked == MotionEvent.ACTION_DOWN) return
                     return
@@ -5666,7 +5690,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                         moveItem(item, dx, dy)
                         // Move all other selected items by the same delta (group move)
                         for (other in selectedItems) {
-                            if (other !== item && !(other is StrokeItem && other.data.isLocked)) moveItem(other, dx, dy)
+                            if (other !== item && !isItemLocked(other)) moveItem(other, dx, dy)
                         }
                         dragStartWorldX = finalWx; dragStartWorldY = finalWy
                     }
@@ -7571,7 +7595,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                 }
                 if (hit) {
                     // Don't remove locked items
-                    if (a is StrokeItem && a.data.isLocked) continue
+                    if (isItemLocked(a)) continue
                     toRemove.add(a)
                 }
             }
@@ -7667,7 +7691,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             actions.removeAt(idx); removeFromSpatialIndex(a); changed = true
                         }
                     }
-                    is ImageItem -> { eraseImageItemRegion(a, x, y, r); changed = true }  // mutated in place, stays at idx
+                    is ImageItem -> { if (!a.isLocked) { eraseImageItemRegion(a, x, y, r); changed = true } }  // mutated in place, stays at idx
                     is FillItem -> {
                         if (eraserMode == EraserMode.AREA && eraserAffectsFill) {
                             // Erase only the pixels the eraser circle touches in the fill bitmap
@@ -8221,6 +8245,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is StrokeItem -> duplicateStrokeItem(item)
             is ImageItem -> ImageItem(item.path, item.x + item.w * 0.15f + 20f, item.y + item.h * 0.15f + 20f, item.w, item.h, item.rotation).also {
                 it.layerId = item.layerId; it.flippedH = item.flippedH; it.flippedV = item.flippedV; it.bitmap = item.bitmap
+                // Matches duplicateStrokeItem's own d.isLocked = false — a copy starts unlocked
+                // regardless of the original, same reasoning: it's a new, separate item the user
+                // just created and very likely wants to immediately reposition.
+                it.isLocked = false
             }
             is TextItem -> TextItem(item.text, item.x + 30f, item.y + 30f, item.color, item.size, item.rotation).also {
                 it.layerId = item.layerId; it.spans = item.spans.map { s -> s.copy() }.toMutableList()
@@ -9200,7 +9228,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
             is TableItem -> sb.append(a.serialize())
             is StrokeItem -> sb.append("${a.data.type.name}|${a.data.color}|${a.data.strokeWidth}|${a.data.fill}|${a.data.rotation}|${a.data.points.joinToString(",")}|${a.data.fillColorVal}|${a.data.penStyle.name}|${a.data.opacity}|${a.data.brushStyle.name}|${a.data.widths.joinToString(",")}|${a.data.lineType.name}|${a.data.isLocked}|${a.data.clipHoles.joinToString(";") { h -> "${h[0]},${h[1]},${h[2]}" }}|${a.data.calligraphySlantThickness}|${a.data.isPolyline}|${a.layerId}\n")
             is TextItem -> sb.append("TEXT\u0001${a.x}\u0001${a.y}\u0001${a.color}\u0001${a.size}\u0001${a.rotation}\u0001${a.spans.joinToString(";") { "${it.start},${it.end},${it.type},${it.value}" }}\u0001${a.text.replace("\n", "\u0002")}\u0001${a.maxWidth}\u0001${a.fontFamily}\u0001${a.opacity}\u0001${a.linkTarget ?: ""}\u0001${a.layerId}\u0001${a.equations.joinToString(";") { "${it.start},${it.end},${android.util.Base64.encodeToString(it.latex.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)}" }}\n")
-            is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\u0001${a.layerId}\u0001${a.flippedH}\u0001${a.flippedV}\n")
+            is ImageItem -> sb.append("IMAGE\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.rotation}\u0001${a.layerId}\u0001${a.flippedH}\u0001${a.flippedV}\u0001${a.isLocked}\n")
             is FillItem -> sb.append("FILL\u0001${a.path}\u0001${a.x}\u0001${a.y}\u0001${a.w}\u0001${a.h}\u0001${a.customHatchPath ?: ""}\u0001${a.hatchPattern?.name ?: ""}\u0001${a.hatchColor}\u0001${a.hatchScale}\u0001${a.layerId}\n")
             is AudioItem -> sb.append("AUDIO\u0001${a.filePath}\u0001${a.title.replace("\u0001","_")}\u0001${a.x}\u0001${a.y}\u0001${a.durationMs}\u0001${a.radius}\n")
         }
@@ -9302,6 +9330,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                             if (p.size >= 8) item.layerId = p[7].toIntOrNull() ?: 0
                             if (p.size >= 9) item.flippedH = p[8].toBoolean()
                             if (p.size >= 10) item.flippedV = p[9].toBoolean()
+                            if (p.size >= 11) item.isLocked = p[10].toBoolean()
                             actions.add(item); loadBitmapAsync(p[1]) { bmp -> item.bitmap = bmp; item.loading = false; invalidate() }
                         }
                         i++
