@@ -765,6 +765,24 @@ class MainActivity : AppCompatActivity() {
         drawingView.onTextEditRequest       = { item, sx, sy, wx, wy -> showInlineTextEditor(item,sx,sy,wx,wy) }
         drawingView.onTextSelectRequest     = { item, sx, sy, rawX, rawY -> showTextSelectionBox(item, sx, sy, rawX, rawY) }
         drawingView.onTextDeselectRequest   = { dismissTextSelectionBox() }
+        // Tapping an equation glyph on a COMMITTED (not currently being edited) TextItem reopens
+        // the same dialog the ∫x toolbar button uses, pre-filled with that equation's current
+        // source — "Update" replaces it in place, "Remove" deletes just that equation (leaving
+        // its \uFFFC placeholder character behind in the text, same as it would if you manually
+        // deleted a checkbox's marker but not the line — a deliberate, minor rough edge rather
+        // than also splicing the placeholder out of item.text here, which risks shifting every
+        // other span/equation's start/end offsets after it and needing to re-validate all of
+        // them in the same pass).
+        drawingView.onEquationTap = { item, eq, _, _ ->
+            showEquationEditorDialog(eq.latex, true, onConfirm = { newLatex ->
+                val idx = item.equations.indexOf(eq)
+                if (idx >= 0) item.equations[idx] = eq.copy(latex = newLatex)
+                drawingView.invalidate()
+            }, onDelete = {
+                item.equations.remove(eq)
+                drawingView.invalidate()
+            })
+        }
         drawingView.onEmptyAreaTap          = {
             // Tapping genuinely empty canvas is the "I'm done" signal: commit and close whatever
             // editor is open (text or table cell), and bring the bottom toolbar back if a table
@@ -2063,7 +2081,19 @@ class MainActivity : AppCompatActivity() {
                     }
                 })
                 divider()
-                textSizeButton(editSize) { v -> editSize = v; activeEditText?.textSize = v / resources.displayMetrics.density; textSelectionItem?.let { it.size = v; drawingView.invalidate() } }
+                textSizeButton(editSize) { v ->
+                    editSize = v
+                    activeEditText?.let { et ->
+                        et.textSize = v / resources.displayMetrics.density
+                        // The size slider above only ever resized the EditText's own base text
+                        // size — any already-inserted equation kept rendering at whatever size it
+                        // was first inserted at, completely independent of this control, since
+                        // LaTeXSpan captured its size once and nothing updated it afterward.
+                        et.text.getSpans(0, et.text.length, LaTeXSpan::class.java).forEach { it.textSizePx = v }
+                        et.invalidate()
+                    }
+                    textSelectionItem?.let { it.size = v; drawingView.invalidate() }
+                }
                 opacityButton(editOpacity) { v -> editOpacity = v; activeEditText?.alpha = v / 255f; textSelectionItem?.let { it.opacity = v; drawingView.invalidate() } }
                 divider()
                 eightColors(editColor) { c -> editColor = c; activeEditText?.setTextColor(c); textSelectionItem?.let { it.color = c; drawingView.invalidate() } }
@@ -2937,7 +2967,7 @@ class MainActivity : AppCompatActivity() {
     // FIRST — standard layer-panel convention. Reuses the existing bringToFront/bringForward/
     // sendBackward/sendToBack rather than introducing a second way to reorder items, so this
     // panel and the per-shape layer buttons (in the shape selection toolbar) always agree.
-    private fun showLayersPanel() {
+    internal fun showLayersPanel() {
         var dlg: AlertDialog? = null
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(8), dp(12), dp(8)) }
 
@@ -4502,6 +4532,17 @@ class MainActivity : AppCompatActivity() {
         container.addView(TextView(this).apply { text = "Default Arrow Size: ${dimArrowSz.toInt()}"; textSize=13f; setTextColor(Color.parseColor("#1C1C1E")); setPadding(0,dp(4),0,dp(4)) }.also { lbl ->
             container.addView(SeekBar(this).apply { max=40; progress=dimArrowSz.toInt().coerceIn(4,40)
                 setOnSeekBarChangeListener(object:SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s:SeekBar?,v:Int,f:Boolean){if(f){dimArrowSz=v.coerceAtLeast(4).toFloat();lbl.text="Default Arrow Size: ${dimArrowSz.toInt()}"}}; override fun onStartTrackingTouch(s:SeekBar?){}; override fun onStopTrackingTouch(s:SeekBar?){} }) })
+        })
+
+        div(); hdr("VOICE COMMANDS")
+        container.addView(TextView(this).apply {
+            text = "Say a word, run a tool/hatch/colour/action — no need to tap through menus. Manage your own trigger words below."
+            textSize = 11f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, 0, 0, dp(8))
+        })
+        container.addView(TextView(this).apply {
+            text = "Manage Voice Commands  ›"
+            textSize = 15f; setTextColor(accent); setPadding(0, dp(8), 0, dp(8))
+            setOnClickListener { showVoiceCommandSettings() }
         })
 
         // Consistent, more readable styling applied to every checkbox at once here, rather than
@@ -6580,7 +6621,7 @@ class MainActivity : AppCompatActivity() {
         writeCurrentFile(blocking)
     }
 
-    private fun saveCurrent() {
+    internal fun saveCurrent() {
         if(currentFileName==null){
             val input=EditText(this).apply{ setText(nextAutoName()); selectAll() }
             AlertDialog.Builder(this).setTitle("Save Note").setView(input)
