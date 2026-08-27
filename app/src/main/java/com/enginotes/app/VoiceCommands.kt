@@ -106,7 +106,17 @@ internal fun MainActivity.buildVoiceCommandRegistry(): List<VoiceCommand> {
         val label = spoken.split(' ').joinToString(" ") { it.replaceFirstChar(Char::uppercase) }
         add("hatch.${hp.name.lowercase()}", "Hatch", label, listOf(spoken)) {
             setActiveTool(null, Tool.FILL)
-            dv.hatchPattern = hp
+            // Was dv.hatchPattern — that's a per-item field on FillItem (the hatch object
+            // already placed on canvas), not a "what pattern should the FILL tool use next"
+            // setting. The actual setting is DrawingView.pendingHatchPattern, applied to whatever
+            // FillItem gets created next — confirmed by checking how the existing hatch-picker
+            // dialog (HatchExtensions.kt) itself sets it, rather than assuming from the name alone.
+            // pendingCustomHatchPath is the mutually-exclusive alternative (a user-picked custom
+            // image tiled as the hatch instead of a built-in pattern) — cleared here the same way
+            // the existing colour-swatch handler clears the OPPOSITE pairing, so a voice command
+            // can't leave a stale custom hatch path still set alongside a real pattern.
+            dv.pendingCustomHatchPath = null
+            dv.pendingHatchPattern = hp
         }
     }
 
