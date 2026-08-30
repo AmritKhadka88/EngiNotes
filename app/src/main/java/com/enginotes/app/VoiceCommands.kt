@@ -10,6 +10,7 @@ import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 
 // ── Voice command registry ──────────────────────────────────────────────────────────────
 // One flat list, not a strict tree — [category] exists purely for grouping in the settings
