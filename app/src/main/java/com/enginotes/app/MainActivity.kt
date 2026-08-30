@@ -416,6 +416,16 @@ class MainActivity : AppCompatActivity() {
         else Toast.makeText(this, "Microphone permission is required to record audio", Toast.LENGTH_LONG).show()
     }
 
+    // Separate from requestMicPermission above (rather than reusing it) since that one's callback
+    // is hardcoded to open the audio-recording dialog specifically — a voice command's grant
+    // needs to start listening for a command instead, not record a voice note.
+    internal val requestVoiceMicPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) startVoiceListening()
+        else Toast.makeText(this, "Microphone permission is required for voice commands", Toast.LENGTH_LONG).show()
+    }
+
     private val savePdfLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
         uri ?: return@registerForActivityResult
         try {
@@ -541,6 +551,7 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_main)
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+        setupVoiceCommandButton()
 
         // If a crash happened last session, reassure the person rather than showing them a raw
         // stack trace — there's nobody left to act on that information downstream, and a wall of
@@ -6735,6 +6746,7 @@ class MainActivity : AppCompatActivity() {
         pageFlipView?.releasePageFlip()
         autosaveHandler.removeCallbacks(autosaveRunnable)
         AudioHelper.releaseAll()
+        destroyVoiceRecognizer()
         // onPause() already blocked until any pending write landed, so nothing queued here is
         // lost — this just releases the background thread instead of leaking it every time a
         // note Activity is destroyed.

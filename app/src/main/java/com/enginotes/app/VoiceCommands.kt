@@ -273,3 +273,188 @@ private fun MainActivity.showVoiceCommandPicker(registry: List<VoiceCommand>, on
 
     dialog.show()
 }
+
+// ── Recognition engine ──────────────────────────────────────────────────────────────────
+// Deliberately press-to-listen-once rather than continuous open-mic: in a classroom or site
+// environment with background chatter, an always-listening mic trying to match speech against
+// commands is a real false-trigger risk (accidentally switching tools mid-conversation). One
+// press, one utterance, auto-stop — same toggle-button gesture the person asked for, just not
+// open-mic the whole time it's "on".
+
+/** Plain Levenshtein edit distance — no library needed for this, and pulling one in for a single
+ * well-known algorithm would be a strange trade for what's ~15 lines of code. */
+private fun levenshtein(a: String, b: String): Int {
+    val dp = Array(a.length + 1) { IntArray(b.length + 1) }
+    for (i in 0..a.length) dp[i][0] = i
+    for (j in 0..b.length) dp[0][j] = j
+    for (i in 1..a.length) for (j in 1..b.length) {
+        dp[i][j] = if (a[i - 1] == b[j - 1]) dp[i - 1][j - 1]
+        else 1 + minOf(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+    }
+    return dp[a.length][b.length]
+}
+
+/** How close [heard] is to [target], as a 0..1 similarity (1 = identical) — normalized by the
+ * longer string's length so short and long words are judged on a comparable scale, since a raw
+ * edit-distance count of "2" means something very different for a 3-letter word vs. a
+ * 12-letter one. */
+private fun similarity(heard: String, target: String): Float {
+    val maxLen = maxOf(heard.length, target.length)
+    if (maxLen == 0) return 1f
+    return 1f - levenshtein(heard, target).toFloat() / maxLen
+}
+
+// Threshold chosen to comfortably tolerate one or two misheard letters on a short word (which is
+// most of what these trigger words are) without accepting a genuinely different word. Worth
+// revisiting after real use if it's letting through wrong matches or rejecting good ones.
+private const val VOICE_MATCH_THRESHOLD = 0.6f
+
+/** Finds the best-matching saved binding for whatever the recognizer heard, or null if nothing
+ * clears [VOICE_MATCH_THRESHOLD] — checked against the FULL heard phrase first (in case someone
+ * says a multi-word trigger exactly), then against each individual word in it (recognizers often
+ * pick up a stray "the"/"a" or mis-split a short word), keeping whichever single comparison
+ * scored highest across all of that. */
+private fun bestVoiceMatch(heard: String, bindings: List<VoiceBinding>): VoiceBinding? {
+    val cleaned = heard.trim().lowercase()
+    if (cleaned.isEmpty() || bindings.isEmpty()) return null
+    var best: VoiceBinding? = null
+    var bestScore = 0f
+    val candidates = (listOf(cleaned) + cleaned.split(" ")).distinct()
+    for (b in bindings) {
+        for (c in candidates) {
+            val score = similarity(c, b.word)
+            if (score > bestScore) { bestScore = score; best = b }
+        }
+    }
+    return if (bestScore >= VOICE_MATCH_THRESHOLD) best else null
+}
+
+private val voiceMicPermission = "android.permission.RECORD_AUDIO"
+
+/** Call once from onCreate — adds the floating mic toggle to the activity's content root
+ * (rather than editing activity_main.xml directly) so this doesn't risk disturbing the existing
+ * toolbar's layout constraints/spacing, which weren't verified visually here. Positioned at the
+ * right edge, vertically centered, to stay clear of both the top and bottom toolbars regardless
+ * of their exact heights. */
+internal fun MainActivity.setupVoiceCommandButton() {
+    val root = findViewById<android.view.ViewGroup>(android.R.id.content)
+    val btn = TextView(this).apply {
+        text = "🎤"; textSize = 22f; gravity = Gravity.CENTER
+        setBackgroundColor(Color.parseColor("#CC2A2A2A"))
+        // Circular-ish via a GradientDrawable would need exact pixel sizing to look right;
+        // a plain rounded-corner box reads fine at this size and is far less fragile to get
+        // subtly wrong without being able to see it rendered.
+        background = android.graphics.drawable.GradientDrawable().apply {
+            setColor(Color.parseColor("#CC2A2A2A")); cornerRadius = dp(28).toFloat()
+        }
+        setTextColor(Color.WHITE)
+        elevation = dp(6).toFloat()
+    }
+    val lp = android.widget.FrameLayout.LayoutParams(dp(56), dp(56))
+    lp.gravity = Gravity.END or Gravity.CENTER_VERTICAL
+    lp.marginEnd = dp(12)
+    root.addView(btn, lp)
+    voiceMicButtonRef = btn
+    btn.setOnClickListener { onVoiceMicTapped() }
+}
+
+// Held so recognition callbacks (which fire well after the tap that started them) can update the
+// button's own appearance (listening/idle) without needing to re-find it by id each time.
+private var voiceMicButtonRef: TextView? = null
+private var voiceRecognizer: android.speech.SpeechRecognizer? = null
+private var voiceListening = false
+
+internal fun MainActivity.destroyVoiceRecognizer() {
+    voiceRecognizer?.destroy()
+    voiceRecognizer = null
+}
+
+private fun MainActivity.onVoiceMicTapped() {
+    if (voiceListening) { stopVoiceListening(); return }
+    if (checkSelfPermission(voiceMicPermission) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+        requestVoiceMicPermission.launch(voiceMicPermission)
+        return
+    }
+    startVoiceListening()
+}
+
+private fun MainActivity.stopVoiceListening() {
+    voiceRecognizer?.stopListening()
+    voiceListening = false
+    voiceMicButtonRef?.background = android.graphics.drawable.GradientDrawable().apply {
+        setColor(Color.parseColor("#CC2A2A2A")); cornerRadius = dp(28).toFloat()
+    }
+}
+
+internal fun MainActivity.startVoiceListening() {
+    if (!android.speech.SpeechRecognizer.isRecognitionAvailable(this)) {
+        Toast.makeText(this, "Speech recognition isn't available on this device", Toast.LENGTH_LONG).show()
+        return
+    }
+    val bindings = loadVoiceBindings()
+    if (bindings.isEmpty()) {
+        Toast.makeText(this, "No voice commands set up yet — add some in Settings first", Toast.LENGTH_LONG).show()
+        return
+    }
+    val registry = buildVoiceCommandRegistry()
+    val byId = registry.associateBy { it.id }
+    // Captured explicitly — inside the anonymous RecognitionListener below, a bare `this` refers
+    // to the listener object itself, not this extension function's MainActivity receiver.
+    val activity = this
+
+    voiceRecognizer?.destroy()
+    val recognizer = android.speech.SpeechRecognizer.createSpeechRecognizer(this)
+    voiceRecognizer = recognizer
+    val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+        putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        putExtra(android.speech.RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+    }
+
+    recognizer.setRecognitionListener(object : android.speech.RecognitionListener {
+        override fun onReadyForSpeech(params: android.os.Bundle?) {
+            voiceListening = true
+            voiceMicButtonRef?.background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.parseColor("#CCE53935")); cornerRadius = dp(28).toFloat()
+            }
+        }
+        override fun onResults(results: android.os.Bundle?) {
+            val heardList = results?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION) ?: arrayListOf()
+            // Every candidate transcription gets a shot at matching, not just the recognizer's
+            // top pick — its first guess is sometimes a homophone or a mis-split of the actual
+            // word, and a lower-ranked alternative can still be an exact match.
+            var matched: VoiceBinding? = null
+            for (heard in heardList) { val m = bestVoiceMatch(heard, bindings); if (m != null) { matched = m; break } }
+            if (matched != null) {
+                val cmd = byId[matched.commandId]
+                if (cmd != null) {
+                    cmd.action()
+                    Toast.makeText(activity, "✓ ${cmd.label}", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(activity, "That command no longer exists", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                val heardText = heardList.firstOrNull()
+                Toast.makeText(activity, if (heardText != null) "Didn't recognize \"$heardText\" as a command" else "Didn't catch that", Toast.LENGTH_SHORT).show()
+            }
+            activity.stopVoiceListening()
+        }
+        override fun onError(error: Int) {
+            val msg = when (error) {
+                android.speech.SpeechRecognizer.ERROR_NO_MATCH, android.speech.SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Didn't catch that"
+                android.speech.SpeechRecognizer.ERROR_NETWORK, android.speech.SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network error — speech recognition needs a connection on this device"
+                android.speech.SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission is required"
+                else -> "Voice command not recognized"
+            }
+            Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show()
+            activity.stopVoiceListening()
+        }
+        override fun onEndOfSpeech() {}
+        override fun onBeginningOfSpeech() {}
+        override fun onRmsChanged(rmsdB: Float) {}
+        override fun onBufferReceived(buffer: ByteArray?) {}
+        override fun onEvent(eventType: Int, params: android.os.Bundle?) {}
+        override fun onPartialResults(partialResults: android.os.Bundle?) {}
+    })
+    recognizer.startListening(intent)
+}
+
