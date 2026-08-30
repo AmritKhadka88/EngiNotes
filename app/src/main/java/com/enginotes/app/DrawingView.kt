@@ -1612,6 +1612,10 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
     var currentBrushStyle: BrushStyle = BrushStyle.ROUND
     var brushThickness: Float = 30f
     var brushOpacity: Int = 255
+    // Shapes had no adjustable opacity at all before this — stroke creation always passed
+    // StrokeData's own default (255, fully opaque) with no way to change it, unlike Pen/Brush/
+    // Highlighter which each have their own real opacity setting.
+    var shapeOpacity: Int = 255
     var eraserSize: Float = 40f
     var eraserMode: EraserMode = EraserMode.OBJECT
     var eraserAffectsFill: Boolean = true  // when false, eraser skips FillItems entirely (leaves colour fills untouched)
@@ -7266,7 +7270,7 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     }
                     currentTool == Tool.HIGHLIGHTER -> StrokeData(Tool.HIGHLIGHTER, mutableListOf(wx, wy), effectiveColor(), highlighterThickness, false, rotation = 0f, penStyle = PenStyle.MARKER, opacity = (highlighterOpacity * 255 / 100))
                     currentTool == Tool.BRUSH -> StrokeData(Tool.BRUSH, mutableListOf(wx, wy), effectiveColor(), brushThickness * pressure, false, rotation = 0f, brushStyle = currentBrushStyle, opacity = brushOpacity)
-                    SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), effectiveColor(), effectiveStrokeWidth(), fillShapes, lineType = effectiveLineType())
+                    SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), effectiveColor(), effectiveStrokeWidth(), fillShapes, lineType = effectiveLineType(), opacity = shapeOpacity)
                     else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), effectiveColor(), effectiveStrokeWidth() * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = currentOpacity, lineType = effectiveLineType(), calligraphySlantThickness = currentCalligraphySlant)
                 }
                 if (currentTool == Tool.BRUSH && (currentBrushStyle == BrushStyle.INK || currentBrushStyle == BrushStyle.ROUND)) data.widths.add(brushThickness * pressure)

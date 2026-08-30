@@ -2019,7 +2019,15 @@ class MainActivity : AppCompatActivity() {
                 }
                 divider()
                 sizeButton(drawingView.currentStrokeWidth, 60) { drawingView.currentStrokeWidth = it }
-                opacityButton(drawingView.brushOpacity) { drawingView.brushOpacity = it; drawingView.invalidate() }
+                // Was drawingView.brushOpacity — the Brush tool's own separate opacity setting,
+                // not Pen's. Pen stroke creation reads currentOpacity (see the fix in
+                // DrawingView.kt's touch-down handling), and showPenOptionsPanel's own opacity
+                // slider already correctly wrote currentOpacity too — this context bar was the
+                // one place still out of step, which is exactly why fixing stroke creation
+                // seemed to leave opacity "still broken": this is the control most people
+                // actually use day to day, and it was quietly writing to a variable Pen no
+                // longer reads at all.
+                opacityButton(drawingView.currentOpacity) { drawingView.currentOpacity = it; drawingView.invalidate() }
                 divider()
                 eightColors(drawingView.currentColor) { c -> drawingView.currentColor = c }
             }
@@ -2250,6 +2258,14 @@ class MainActivity : AppCompatActivity() {
                     row2.addView(TextView(this).apply { text = mode.label; textSize = 12f; gravity = Gravity.CENTER; setTextColor(if (active) Color.WHITE else Color.parseColor("#5C5856")) })
                     row.addView(row2)
                 }
+            }
+            in SHAPE_TOOLS -> {
+                // Was falling through to the generic else below, which never offered opacity at
+                // all — shapes had no way to become translucent, only Pen/Brush/Highlighter did.
+                sizeButton(drawingView.currentStrokeWidth, 60) { drawingView.currentStrokeWidth = it }
+                opacityButton(drawingView.shapeOpacity) { drawingView.shapeOpacity = it; drawingView.invalidate() }
+                divider()
+                eightColors(drawingView.currentColor) { c -> drawingView.currentColor = c }
             }
             else -> {
                 sizeButton(drawingView.currentStrokeWidth, 60) { drawingView.currentStrokeWidth = it }
@@ -5180,6 +5196,20 @@ class MainActivity : AppCompatActivity() {
             max = 60; progress = drawingView.currentStrokeWidth.toInt().coerceIn(1, 60)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { val vv = v.coerceAtLeast(1); drawingView.currentStrokeWidth = vv.toFloat(); thickLbl.text = "Thickness: $vv" }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        })
+
+        // Opacity — shapes had no way to become translucent at all before this, unlike Pen/
+        // Brush/Highlighter, which each already have their own opacity slider here and in the
+        // context bar.
+        sectionLabel("Opacity: ${(drawingView.shapeOpacity * 100 / 255)}%")
+        val shapeOpLbl = panel.getChildAt(panel.childCount - 1) as TextView
+        panel.addView(SeekBar(this).apply {
+            max = 100; progress = drawingView.shapeOpacity * 100 / 255
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, v: Int, f: Boolean) { val vv = v.coerceAtLeast(5); drawingView.shapeOpacity = (vv * 255 / 100); shapeOpLbl.text = "Opacity: $vv%" }
                 override fun onStartTrackingTouch(sb: SeekBar?) {}
                 override fun onStopTrackingTouch(sb: SeekBar?) {}
             })

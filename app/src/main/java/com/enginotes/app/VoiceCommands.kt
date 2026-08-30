@@ -48,6 +48,173 @@ internal fun MainActivity.saveVoiceBindings(bindings: List<VoiceBinding>) {
     getPrefs().edit().putString(VOICE_BINDINGS_PREF_KEY, arr.toString()).apply()
 }
 
+// ── Captured "current state" commands ───────────────────────────────────────────────────
+// A different, simpler way to add a command than picking from the registry: just use the app
+// normally, and when you land on a combination worth saving, tap the + button — it reads
+// whatever's ACTUALLY active right now (current tool, and only the settings that tool actually
+// cares about) rather than needing every property spelled out through a picker. Only the
+// properties relevant to the CURRENT tool get captured — e.g. switching to Select after having
+// picked a colour does NOT pull that colour in, since Select never reads it; but Pen, Brush,
+// Highlighter, Text, and the basic shapes all do, so their colour comes along automatically.
+// Separate from VoiceCommand/VoiceBinding above (which point at a FIXED registry entry) since
+// this carries its own inline snapshot of values rather than referencing a pre-built command id.
+data class CustomVoiceAction(
+    val word: String,
+    val tool: String,             // Tool enum name — always captured, this is the one thing every combination has
+    val color: Int? = null,       // currentColor — only for tools where it's actually meaningful
+    val opacity: Int? = null,     // whichever opacity property applies to THIS tool (Pen/Brush/Highlighter/Shapes each have their own)
+    val hatchPattern: String? = null,  // HatchPattern enum name — only when tool == FILL and a built-in pattern is set
+    val hatchColor: Int? = null,       // pendingHatchColor — only when tool == FILL
+    val hatchCustomPath: String? = null,  // pendingCustomHatchPath — the OTHER, mutually-exclusive way to fill (a user-picked tiled image instead of a built-in pattern)
+    val eraserMode: String? = null,    // EraserMode enum name — only when tool == ERASER
+    val eraserSize: Float? = null,     // only when tool == ERASER
+    val label: String              // human-readable summary shown in Settings and the save confirmation
+)
+
+private const val VOICE_CUSTOM_ACTIONS_KEY = "voice_custom_actions"
+
+internal fun MainActivity.loadCustomVoiceActions(): MutableList<CustomVoiceAction> {
+    val raw = getPrefs().getString(VOICE_CUSTOM_ACTIONS_KEY, null) ?: return mutableListOf()
+    return try {
+        val arr = org.json.JSONArray(raw)
+        (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            CustomVoiceAction(
+                word = o.getString("word"), tool = o.getString("tool"), label = o.getString("label"),
+                color = if (o.has("color")) o.getInt("color") else null,
+                opacity = if (o.has("opacity")) o.getInt("opacity") else null,
+                hatchPattern = if (o.has("hatchPattern")) o.getString("hatchPattern") else null,
+                hatchColor = if (o.has("hatchColor")) o.getInt("hatchColor") else null,
+                hatchCustomPath = if (o.has("hatchCustomPath")) o.getString("hatchCustomPath") else null,
+                eraserMode = if (o.has("eraserMode")) o.getString("eraserMode") else null,
+                eraserSize = if (o.has("eraserSize")) o.getDouble("eraserSize").toFloat() else null
+            )
+        }.toMutableList()
+    } catch (e: Exception) { mutableListOf() }
+}
+
+internal fun MainActivity.saveCustomVoiceActions(list: List<CustomVoiceAction>) {
+    val arr = org.json.JSONArray()
+    for (a in list) {
+        val o = org.json.JSONObject()
+        o.put("word", a.word); o.put("tool", a.tool); o.put("label", a.label)
+        a.color?.let { o.put("color", it) }
+        a.opacity?.let { o.put("opacity", it) }
+        a.hatchPattern?.let { o.put("hatchPattern", it) }
+        a.hatchColor?.let { o.put("hatchColor", it) }
+        a.hatchCustomPath?.let { o.put("hatchCustomPath", it) }
+        a.eraserMode?.let { o.put("eraserMode", it) }
+        a.eraserSize?.let { o.put("eraserSize", it) }
+        arr.put(o)
+    }
+    getPrefs().edit().putString(VOICE_CUSTOM_ACTIONS_KEY, arr.toString()).apply()
+}
+
+private fun niceToolName(tool: Tool): String = tool.name.lowercase().split('_').joinToString(" ") { it.replaceFirstChar(Char::uppercase) }
+
+private fun nearestPaletteColorName(color: Int): String {
+    val palette = listOf("Black" to Color.BLACK, "Red" to Color.RED, "Blue" to Color.parseColor("#03A9F4"),
+        "Green" to Color.parseColor("#4CAF50"), "Yellow" to Color.parseColor("#FFC107"),
+        "Orange" to Color.parseColor("#FF9800"), "Purple" to Color.parseColor("#9C27B0"),
+        "Navy" to Color.parseColor("#1A237E"))
+    return palette.firstOrNull { it.second == color }?.first ?: "#%06X".format(color and 0xFFFFFF)
+}
+
+/** Reads whatever's ACTUALLY active right now and turns it into a CustomVoiceAction (with an
+ * empty [CustomVoiceAction.word] — filled in afterward once the person types a trigger word).
+ * This is the whole "capture" step; everything about which properties matter for which tool
+ * lives in this one function. */
+internal fun MainActivity.captureCurrentToolState(): CustomVoiceAction {
+    val dv = drawingView
+    val tool = dv.currentTool
+    return when {
+        tool == Tool.FILL -> {
+            // Fill has two mutually-exclusive ways to be set up: a built-in pattern, or a custom
+            // tiled image — captures whichever is ACTUALLY active rather than assuming a pattern.
+            if (dv.pendingCustomHatchPath != null) {
+                CustomVoiceAction(word = "", tool = tool.name, hatchCustomPath = dv.pendingCustomHatchPath,
+                    label = "Hatch: custom image")
+            } else {
+                val patternName = dv.pendingHatchPattern?.name?.lowercase()?.replace('_', ' ')?.split(' ')?.joinToString(" ") { it.replaceFirstChar(Char::uppercase) }
+                CustomVoiceAction(word = "", tool = tool.name, hatchPattern = dv.pendingHatchPattern?.name, hatchColor = dv.pendingHatchColor,
+                    label = "Hatch" + (patternName?.let { ": $it" } ?: "") + ", ${nearestPaletteColorName(dv.pendingHatchColor)}")
+            }
+        }
+        tool == Tool.PEN -> CustomVoiceAction(word = "", tool = tool.name, color = dv.currentColor, opacity = dv.currentOpacity,
+            label = "Pen, ${nearestPaletteColorName(dv.currentColor)}")
+        tool == Tool.BRUSH -> CustomVoiceAction(word = "", tool = tool.name, color = dv.currentColor, opacity = dv.brushOpacity,
+            label = "Brush, ${nearestPaletteColorName(dv.currentColor)}")
+        tool == Tool.HIGHLIGHTER -> CustomVoiceAction(word = "", tool = tool.name, color = dv.currentColor, opacity = dv.highlighterOpacity,
+            label = "Highlighter, ${nearestPaletteColorName(dv.currentColor)}")
+        tool == Tool.ERASER -> CustomVoiceAction(word = "", tool = tool.name, eraserMode = dv.eraserMode.name, eraserSize = dv.eraserSize,
+            label = "Eraser (${dv.eraserMode.name.lowercase().replaceFirstChar(Char::uppercase)})")
+        tool == Tool.TEXT -> CustomVoiceAction(word = "", tool = tool.name, color = dv.currentColor, label = "Text, ${nearestPaletteColorName(dv.currentColor)}")
+        // Every basic and niche shape alike (~54 total, via the SAME SHAPE_TOOLS set the app's
+        // own stroke-creation code checks against) — not just the 6 in the picker's Shape
+        // category, since capturing here doesn't add to that already-long static list the way a
+        // combo entry would; it just reads whatever shape happens to be active right now.
+        tool in SHAPE_TOOLS -> CustomVoiceAction(word = "", tool = tool.name, color = dv.currentColor, opacity = dv.shapeOpacity,
+            label = "${niceToolName(tool)}, ${nearestPaletteColorName(dv.currentColor)}")
+        // Every other tool (Select, Lasso, Dimension, Polyline, etc.) doesn't read colour/opacity
+        // at all — captures just the tool itself, exactly matching "colour was set but has
+        // nothing to do with Select" from how this was actually asked for.
+        else -> CustomVoiceAction(word = "", tool = tool.name, label = niceToolName(tool))
+    }
+}
+
+/** The inverse of captureCurrentToolState — reproduces exactly the combination that was
+ * captured, and nothing else (never touches a property the action didn't record). */
+private fun MainActivity.executeCustomVoiceAction(a: CustomVoiceAction) {
+    val dv = drawingView
+    val tool = try { Tool.valueOf(a.tool) } catch (e: Exception) { return }
+    setActiveTool(null, tool)
+    a.color?.let { dv.currentColor = it }
+    a.opacity?.let { op ->
+        when {
+            tool == Tool.PEN -> dv.currentOpacity = op
+            tool == Tool.BRUSH -> dv.brushOpacity = op
+            tool == Tool.HIGHLIGHTER -> dv.highlighterOpacity = op
+            tool in SHAPE_TOOLS -> dv.shapeOpacity = op
+            else -> {}
+        }
+    }
+    a.hatchCustomPath?.let { dv.pendingCustomHatchPath = it; dv.pendingHatchPattern = null }
+    a.hatchPattern?.let { pn ->
+        try { dv.pendingHatchPattern = HatchPattern.valueOf(pn); dv.pendingCustomHatchPath = null } catch (e: Exception) {}
+    }
+    a.hatchColor?.let { dv.pendingHatchColor = it; dv.fillColor = it }
+    a.eraserMode?.let { m -> try { dv.eraserMode = EraserMode.valueOf(m) } catch (e: Exception) {} }
+    a.eraserSize?.let { dv.eraserSize = it }
+}
+
+/** Call from wherever the + button lives — reads the current combination, asks for a trigger
+ * word, and saves it. Shown before asking for the word so the person can see exactly what's
+ * about to be captured (e.g. "Hatch: Concrete, Red") rather than guessing from memory what state
+ * they're actually in. */
+internal fun MainActivity.showSaveCurrentAsVoiceCommandDialog() {
+    val captured = captureCurrentToolState()
+    val input = EditText(this).apply {
+        hint = "e.g. ${captured.label.lowercase().replace(",", "")}"
+        setPadding(dp(20), dp(16), dp(20), dp(4))
+    }
+    AlertDialog.Builder(this)
+        .setTitle("Save as Voice Command")
+        .setMessage("This will capture:\n${captured.label}\n\nWhat word should trigger it?")
+        .setView(input)
+        .setPositiveButton("Save") { _, _ ->
+            val word = input.text.toString().trim().lowercase()
+            if (word.isNotEmpty()) {
+                val list = loadCustomVoiceActions()
+                list.removeAll { it.word.equals(word, ignoreCase = true) } // one command per word, same convention as regular bindings
+                list.add(captured.copy(word = word))
+                saveCustomVoiceActions(list)
+                Toast.makeText(this, "Saved — say \"$word\" for ${captured.label}", Toast.LENGTH_LONG).show()
+            }
+        }
+        .setNegativeButton("Cancel", null)
+        .show()
+}
+
 /** Builds the full, current set of available voice commands — every tool/shape/colour/hatch/
  * action the app can currently reach through this list, freshly bound to real closures each
  * call (so it always reflects the live app instance, not a stale cached one from a previous
@@ -81,15 +248,26 @@ internal fun MainActivity.buildVoiceCommandRegistry(): List<VoiceCommand> {
     add("tool.ocrsnip", "Tool", "OCR Snip", listOf("ocr snip", "text snip")) { setActiveTool(null, Tool.OCR_SNIP) }
     add("tool.hatchsnip", "Tool", "Hatch Snip", listOf("hatch snip")) { setActiveTool(null, Tool.HATCH_SNIP) }
 
-    // Shapes — kept to a small, practical set on purpose (not all ~65 in the Tool enum, most of
-    // which are niche polygons nobody's realistically going to say out loud). More can be added
-    // to this same list later; nothing about the architecture limits it to six.
+    // Shapes — the 6 most common ones get their own explicit entry (with extra synonyms like
+    // "square" for rectangle); every other shape in SHAPE_TOOLS (~48 more — the same set the
+    // app's own stroke-creation code checks against, so this can't drift out of sync with it)
+    // gets a generated entry too now, since "include everything" supersedes the earlier decision
+    // to keep this list to just six. Colour combos are NOT generated for all of these the way
+    // they are for the six below — the + button already covers "any shape + whatever colour is
+    // active" without needing 48 more static combo entries for shapes nobody's likely to
+    // regularly say by name anyway.
     add("shape.rectangle", "Shape", "Rectangle", listOf("rectangle", "square")) { setActiveTool(null, Tool.RECTANGLE) }
     add("shape.circle", "Shape", "Circle", listOf("circle")) { setActiveTool(null, Tool.CIRCLE) }
     add("shape.triangle", "Shape", "Triangle", listOf("triangle")) { setActiveTool(null, Tool.TRIANGLE) }
     add("shape.line", "Shape", "Line", listOf("line")) { setActiveTool(null, Tool.LINE) }
     add("shape.arrow", "Shape", "Arrow", listOf("arrow")) { setActiveTool(null, Tool.ARROW) }
     add("shape.star", "Shape", "Star", listOf("star")) { setActiveTool(null, Tool.STAR) }
+    val explicitShapes = setOf(Tool.RECTANGLE, Tool.CIRCLE, Tool.TRIANGLE, Tool.LINE, Tool.ARROW, Tool.STAR)
+    for (shapeTool in SHAPE_TOOLS - explicitShapes) {
+        val spoken = shapeTool.name.lowercase().replace('_', ' ')
+        val label = spoken.split(' ').joinToString(" ") { it.replaceFirstChar(Char::uppercase) }
+        add("shape.${shapeTool.name.lowercase()}", "Shape", label, listOf(spoken)) { setActiveTool(null, shapeTool) }
+    }
 
     // Colours — reusing the app's OWN established quick-color palette (the same values used in
     // the Pen/Highlighter/Brush colour swatches elsewhere), not arbitrary new ones, so saying
@@ -177,6 +355,41 @@ internal fun MainActivity.showVoiceCommandSettings() {
     val accent = currentThemeButtonColor()
 
     val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(12), dp(20), dp(4)) }
+
+    // Every built-in tool/colour/hatch/combo already works by saying its own name — nothing here
+    // needs to be manually added first. Shown collapsed by default (registry is ~170 entries;
+    // showing them all open by default would bury the custom list below it) with a tap to expand,
+    // purely for visibility/confidence that these already work, not because they need managing.
+    var builtInExpanded = false
+    val builtInHeader = TextView(this).apply {
+        text = "▸ Built-in commands (${registry.sumOf { it.keywords.size }} phrases) — already active, say any of these"
+        textSize = 13f; setTextColor(accent); setPadding(0, 0, 0, dp(8))
+    }
+    val builtInHolder = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+    for ((category, items) in registry.groupBy { it.category }) {
+        builtInHolder.addView(TextView(this).apply {
+            text = category.uppercase(); textSize = 11f; typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#9A9A9A")); setPadding(dp(4), dp(10), 0, dp(2))
+        })
+        for (cmd in items) {
+            builtInHolder.addView(TextView(this).apply {
+                text = "\"${cmd.keywords.joinToString("\" / \"")}\"  →  ${cmd.label}"
+                textSize = 12f; setTextColor(Color.parseColor("#6A6A6A")); setPadding(dp(4), dp(2), 0, dp(2))
+            })
+        }
+    }
+    builtInHeader.setOnClickListener {
+        builtInExpanded = !builtInExpanded
+        builtInHolder.visibility = if (builtInExpanded) View.VISIBLE else View.GONE
+        builtInHeader.text = "${if (builtInExpanded) "▾" else "▸"} Built-in commands (${registry.sumOf { it.keywords.size }} phrases) — already active, say any of these"
+    }
+    container.addView(builtInHeader)
+    container.addView(builtInHolder)
+    container.addView(TextView(this).apply {
+        text = "Your own commands — for anything beyond the built-in set above"
+        textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#2A2A2A")); setPadding(0, dp(16), 0, dp(4))
+    })
+
     val listHolder = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     container.addView(listHolder)
 
@@ -184,7 +397,7 @@ internal fun MainActivity.showVoiceCommandSettings() {
         listHolder.removeAllViews()
         if (bindings.isEmpty()) {
             listHolder.addView(TextView(this).apply {
-                text = "No voice commands yet — tap \"+ Add Command\" below to create one."
+                text = "None yet — tap \"+ Add Command\" below for a combo not already covered above."
                 textSize = 13f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(8), 0, dp(12))
             })
         }
@@ -204,6 +417,40 @@ internal fun MainActivity.showVoiceCommandSettings() {
         }
     }
     refreshList()
+
+    // Combos saved via the top-bar + button — separate list from the picker-based ones above
+    // since they carry their own inline captured values rather than pointing at a fixed registry
+    // entry, but shown together here since from the user's side they're just "my commands" too.
+    container.addView(TextView(this).apply {
+        text = "Captured combos — saved with the ＋ button while using the app"
+        textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#2A2A2A")); setPadding(0, dp(16), 0, dp(4))
+    })
+    val customActions = loadCustomVoiceActions()
+    val customHolder = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    container.addView(customHolder)
+    fun refreshCustom() {
+        customHolder.removeAllViews()
+        if (customActions.isEmpty()) {
+            customHolder.addView(TextView(this).apply {
+                text = "None yet — set up a tool/colour combination normally, then tap ＋ in the top bar."
+                textSize = 13f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(8), 0, dp(12))
+            })
+        }
+        for (a in customActions) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, dp(8)) }
+            row.addView(TextView(this).apply {
+                text = "\"${a.word}\"  →  ${a.label}"
+                textSize = 14f; setTextColor(Color.parseColor("#2A2A2A"))
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            row.addView(TextView(this).apply {
+                text = "✕"; textSize = 16f; setTextColor(Color.parseColor("#C0392B")); setPadding(dp(12), 0, dp(4), 0)
+                setOnClickListener { customActions.remove(a); saveCustomVoiceActions(customActions); refreshCustom() }
+            })
+            customHolder.addView(row)
+        }
+    }
+    refreshCustom()
 
     val addBtn = TextView(this).apply {
         text = "+ Add Command"; textSize = 15f; setTextColor(accent); typeface = Typeface.DEFAULT_BOLD
@@ -343,21 +590,41 @@ private fun similarity(heard: String, target: String): Float {
 // revisiting after real use if it's letting through wrong matches or rejecting good ones.
 private const val VOICE_MATCH_THRESHOLD = 0.6f
 
-/** Finds the best-matching saved binding for whatever the recognizer heard, or null if nothing
- * clears [VOICE_MATCH_THRESHOLD] — checked against the FULL heard phrase first (in case someone
- * says a multi-word trigger exactly), then against each individual word in it (recognizers often
- * pick up a stray "the"/"a" or mis-split a short word), keeping whichever single comparison
- * scored highest across all of that. */
-private fun bestVoiceMatch(heard: String, bindings: List<VoiceBinding>): VoiceBinding? {
+/** Unifies all three sources of a speakable command into one thing matching/dispatch actually
+ * works against: a registry command's own keyword, a custom word bound to a registry command, or
+ * a captured CustomVoiceAction. Whichever it came from, by the time it's a VoiceTrigger it's just
+ * "this word runs this closure" — matching and dispatch don't need to know or care which source
+ * produced it. */
+private data class VoiceTrigger(val word: String, val label: String, val action: () -> Unit)
+
+/** Every phrase that can trigger something right now: every registry command's own keyword(s) —
+ * which work immediately, with no setup at all — plus custom words bound to a registry command
+ * (renames, or personalised words for something already built-in), plus every captured
+ * CustomVoiceAction from the + button. Nothing built-in needs to be manually re-typed just to
+ * make it speakable. */
+private fun MainActivity.buildVoiceTriggers(registry: List<VoiceCommand>): List<VoiceTrigger> {
+    val byId = registry.associateBy { it.id }
+    val builtIn = registry.flatMap { cmd -> cmd.keywords.map { kw -> VoiceTrigger(kw, cmd.label, cmd.action) } }
+    val customBound = loadVoiceBindings().mapNotNull { b -> byId[b.commandId]?.let { cmd -> VoiceTrigger(b.word, cmd.label, cmd.action) } }
+    val captured = loadCustomVoiceActions().map { a -> VoiceTrigger(a.word, a.label) { executeCustomVoiceAction(a) } }
+    return builtIn + customBound + captured
+}
+
+/** Finds the best-matching trigger for whatever the recognizer heard, or null if nothing clears
+ * [VOICE_MATCH_THRESHOLD] — checked against the FULL heard phrase first (in case someone says a
+ * multi-word trigger exactly), then against each individual word in it (recognizers often pick
+ * up a stray "the"/"a" or mis-split a short word), keeping whichever single comparison scored
+ * highest across all of that. */
+private fun bestVoiceMatch(heard: String, triggers: List<VoiceTrigger>): VoiceTrigger? {
     val cleaned = heard.trim().lowercase()
-    if (cleaned.isEmpty() || bindings.isEmpty()) return null
-    var best: VoiceBinding? = null
+    if (cleaned.isEmpty() || triggers.isEmpty()) return null
+    var best: VoiceTrigger? = null
     var bestScore = 0f
     val candidates = (listOf(cleaned) + cleaned.split(" ")).distinct()
-    for (b in bindings) {
+    for (t in triggers) {
         for (c in candidates) {
-            val score = similarity(c, b.word)
-            if (score > bestScore) { bestScore = score; best = b }
+            val score = similarity(c, t.word)
+            if (score > bestScore) { bestScore = score; best = t }
         }
     }
     return if (bestScore >= VOICE_MATCH_THRESHOLD) best else null
@@ -374,14 +641,15 @@ private val voiceMicPermission = "android.permission.RECORD_AUDIO"
 internal fun MainActivity.setupVoiceCommandButton() {
     val menuBtn = findViewById<ImageButton>(R.id.btnMenu)
     val topBar = menuBtn.parent as? android.view.ViewGroup ?: return
-    // Guards against adding a second mic button if this ever gets called more than once (e.g. a
-    // config change recreating the Activity) — without this, each extra call appended another
-    // icon into the same row rather than replacing the first.
+    // Guards against adding these twice if this ever gets called more than once (e.g. a config
+    // change recreating the Activity) — without this, each extra call appended more icons into
+    // the same row rather than replacing the first set.
     if (topBar.findViewWithTag<View>("voice_mic_btn") != null) return
     val insertIndex = topBar.indexOfChild(menuBtn)
-    val btn = TextView(this).apply {
-        text = "🎤"; textSize = 18f; gravity = Gravity.CENTER
-        tag = "voice_mic_btn"
+
+    fun iconBtn(label: String, tagName: String): TextView = TextView(this).apply {
+        text = label; textSize = 18f; gravity = Gravity.CENTER
+        tag = tagName
         setTextColor(Color.parseColor("#333333"))
         // Resolves to the exact same ripple background every other icon button in this row uses
         // in XML (?attr/selectableItemBackgroundBorderless) — there's no direct "?attr/" syntax
@@ -391,9 +659,20 @@ internal fun MainActivity.setupVoiceCommandButton() {
         setBackgroundResource(tv.resourceId)
     }
     val lp = android.view.ViewGroup.LayoutParams(dp(40), dp(40))
-    topBar.addView(btn, insertIndex.coerceAtLeast(0), lp)
-    voiceMicButtonRef = btn
-    btn.setOnClickListener { onVoiceMicTapped() }
+
+    // "+" sits right next to the mic — reads whatever tool/settings are ACTUALLY active right
+    // now and offers to save that exact combination as a voice command. Inserted first so it
+    // ends up to the LEFT of the mic (insertIndex stays the same reference point for both, and
+    // each addView at insertIndex pushes the previous one right — so add + before 🎤 to get
+    // "+ 🎤" reading left to right, not "🎤 +").
+    val plusBtn = iconBtn("＋", "voice_add_btn")
+    topBar.addView(plusBtn, insertIndex.coerceAtLeast(0), lp)
+    plusBtn.setOnClickListener { showSaveCurrentAsVoiceCommandDialog() }
+
+    val micBtn = iconBtn("🎤", "voice_mic_btn")
+    topBar.addView(micBtn, topBar.indexOfChild(plusBtn) + 1, lp)
+    voiceMicButtonRef = micBtn
+    micBtn.setOnClickListener { onVoiceMicTapped() }
 }
 
 // Held so recognition callbacks (which fire well after the tap that started them) can update the
@@ -429,13 +708,12 @@ internal fun MainActivity.startVoiceListening() {
         Toast.makeText(this, "Speech recognition isn't available on this device", Toast.LENGTH_LONG).show()
         return
     }
-    val bindings = loadVoiceBindings()
-    if (bindings.isEmpty()) {
-        Toast.makeText(this, "No voice commands set up yet — add some in Settings first", Toast.LENGTH_LONG).show()
-        return
-    }
     val registry = buildVoiceCommandRegistry()
-    val byId = registry.associateBy { it.id }
+    // Was: registry + byId + effectiveVoiceBindings, matched against VoiceBinding then looked up
+    // by commandId. Replaced with buildVoiceTriggers, which flattens all three sources (registry
+    // keywords, custom words bound to a registry command, and + button captures) into one list
+    // that already carries its own action — dispatch no longer needs a separate lookup step.
+    val triggers = buildVoiceTriggers(registry)
     // Captured explicitly — inside the anonymous RecognitionListener below, a bare `this` refers
     // to the listener object itself, not this extension function's MainActivity receiver.
     val activity = this
@@ -469,16 +747,11 @@ internal fun MainActivity.startVoiceListening() {
             // Every candidate transcription gets a shot at matching, not just the recognizer's
             // top pick — its first guess is sometimes a homophone or a mis-split of the actual
             // word, and a lower-ranked alternative can still be an exact match.
-            var matched: VoiceBinding? = null
-            for (heard in heardList) { val m = bestVoiceMatch(heard, bindings); if (m != null) { matched = m; break } }
+            var matched: VoiceTrigger? = null
+            for (heard in heardList) { val m = bestVoiceMatch(heard, triggers); if (m != null) { matched = m; break } }
             if (matched != null) {
-                val cmd = byId[matched.commandId]
-                if (cmd != null) {
-                    cmd.action()
-                    Toast.makeText(activity, "✓ ${cmd.label}", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(activity, "That command no longer exists", Toast.LENGTH_SHORT).show()
-                }
+                matched.action()
+                Toast.makeText(activity, "✓ ${matched.label}", Toast.LENGTH_SHORT).show()
             } else {
                 val heardText = heardList.firstOrNull()
                 Toast.makeText(activity, if (heardText != null) "Didn't recognize \"$heardText\" as a command" else "Didn't catch that", Toast.LENGTH_SHORT).show()
