@@ -7253,12 +7253,21 @@ class DrawingView @JvmOverloads constructor(context: Context, attrs: AttributeSe
                     currentTool == Tool.PEN -> {
                         // Ball pen is strictly uniform - no pressure or speed sensitivity, per spec.
                         val baseW = if (currentPenStyle == PenStyle.BALL) effectiveStrokeWidth() else effectiveStrokeWidth() * pressure
-                        StrokeData(Tool.PEN, mutableListOf(wx, wy), effectiveColor(), baseW, false, rotation = 0f, penStyle = currentPenStyle, opacity = if (currentPenStyle == PenStyle.BALL) 255 else brushOpacity, lineType = effectiveLineType(), calligraphySlantThickness = currentCalligraphySlant)
+                        // Was brushOpacity — that's the BRUSH tool's own opacity setting (a
+                        // separate field, controlled by the Brush options panel), not Pen's.
+                        // showPenOptionsPanel's slider actually writes to currentOpacity, so pen
+                        // strokes need to read that instead — this is why the pen opacity slider
+                        // visibly moved but never affected anything drawn. Also dropped the
+                        // BALL-specific hardcoded 255: the surrounding comment about ball pen
+                        // being "strictly uniform" is about stroke WIDTH having no pressure
+                        // sensitivity, not opacity — there's no actual reason ball pen specifically
+                        // should ignore the opacity slider while every other pen style respects it.
+                        StrokeData(Tool.PEN, mutableListOf(wx, wy), effectiveColor(), baseW, false, rotation = 0f, penStyle = currentPenStyle, opacity = currentOpacity, lineType = effectiveLineType(), calligraphySlantThickness = currentCalligraphySlant)
                     }
                     currentTool == Tool.HIGHLIGHTER -> StrokeData(Tool.HIGHLIGHTER, mutableListOf(wx, wy), effectiveColor(), highlighterThickness, false, rotation = 0f, penStyle = PenStyle.MARKER, opacity = (highlighterOpacity * 255 / 100))
                     currentTool == Tool.BRUSH -> StrokeData(Tool.BRUSH, mutableListOf(wx, wy), effectiveColor(), brushThickness * pressure, false, rotation = 0f, brushStyle = currentBrushStyle, opacity = brushOpacity)
                     SHAPE_TOOLS.contains(currentTool) -> StrokeData(currentTool, mutableListOf(wx, wy, wx, wy), effectiveColor(), effectiveStrokeWidth(), fillShapes, lineType = effectiveLineType())
-                    else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), effectiveColor(), effectiveStrokeWidth() * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = brushOpacity, lineType = effectiveLineType(), calligraphySlantThickness = currentCalligraphySlant)
+                    else -> StrokeData(Tool.PEN, mutableListOf(wx, wy), effectiveColor(), effectiveStrokeWidth() * pressure, false, rotation = 0f, penStyle = currentPenStyle, opacity = currentOpacity, lineType = effectiveLineType(), calligraphySlantThickness = currentCalligraphySlant)
                 }
                 if (currentTool == Tool.BRUSH && (currentBrushStyle == BrushStyle.INK || currentBrushStyle == BrushStyle.ROUND)) data.widths.add(brushThickness * pressure)
                 lastMoveX = wx; lastMoveY = wy; lastMoveTime = event.eventTime

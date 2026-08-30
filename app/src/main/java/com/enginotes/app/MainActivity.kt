@@ -2052,7 +2052,18 @@ class MainActivity : AppCompatActivity() {
                 sizeButton(drawingView.eraserSize, 120) { drawingView.eraserSize = it }
             }
             Tool.FILL -> {
-                eightColors(drawingView.fillColor) { c -> drawingView.fillColor = c; drawingView.pendingHatchPattern = null; drawingView.pendingCustomHatchPath = null }
+                // The Fill tool actually has two distinct modes reading two SEPARATE colour
+                // properties: tapping an enclosed area with a pattern picked (via the hatch
+                // picker) creates a hatched fill using pendingHatchColor; tapping with no pattern
+                // picked does a plain flood/bucket fill using fillColor. Since this one colour
+                // swatch can't know in advance which mode you'll actually use next, it sets both
+                // — whichever code path runs when you tap to fill, it uses the colour you just
+                // picked either way. The original code only ever set fillColor (which the hatch
+                // path never reads) and additionally wiped pendingHatchPattern/
+                // pendingCustomHatchPath to null — destroying whatever pattern you'd already
+                // picked just from tapping a colour, which is why doing so looked like the tool
+                // itself had reset rather than simply not recolouring anything.
+                eightColors(drawingView.fillColor) { c -> drawingView.fillColor = c; drawingView.pendingHatchColor = c }
             }
             Tool.TEXT -> {
                 // A specific existing item is selected (not actively being typed into) — sync the

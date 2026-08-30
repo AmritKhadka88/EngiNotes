@@ -75,6 +75,11 @@ internal fun MainActivity.buildVoiceCommandRegistry(): List<VoiceCommand> {
     add("tool.dimension", "Tool", "Dimension / Ruler", listOf("ruler", "dimension")) { setActiveTool(null, Tool.DIMENSION) }
     add("tool.polyline", "Tool", "Polyline", listOf("polyline")) { setActiveTool(null, Tool.POLYLINE) }
     add("tool.curve", "Tool", "Curve", listOf("curve")) { setActiveTool(null, Tool.CURVE) }
+    add("tool.autoselect", "Tool", "Auto Select", listOf("autoselect", "auto select")) { setActiveTool(null, Tool.AUTOSELECT) }
+    add("tool.multiselect", "Tool", "Multi Select", listOf("multiselect", "multi select")) { setActiveTool(null, Tool.MULTISELECT) }
+    add("tool.exportwindow", "Tool", "Export Window", listOf("export window", "export")) { setActiveTool(null, Tool.EXPORT_WINDOW) }
+    add("tool.ocrsnip", "Tool", "OCR Snip", listOf("ocr snip", "text snip")) { setActiveTool(null, Tool.OCR_SNIP) }
+    add("tool.hatchsnip", "Tool", "Hatch Snip", listOf("hatch snip")) { setActiveTool(null, Tool.HATCH_SNIP) }
 
     // Shapes — kept to a small, practical set on purpose (not all ~65 in the Tool enum, most of
     // which are niche polygons nobody's realistically going to say out loud). More can be added
@@ -97,6 +102,34 @@ internal fun MainActivity.buildVoiceCommandRegistry(): List<VoiceCommand> {
     )
     for ((name, value) in paletteColors) {
         add("color.${name.lowercase()}", "Colour", name, listOf(name.lowercase())) { dv.currentColor = value }
+    }
+
+    // Combos — a single spoken phrase doing "switch tool AND set its colour" in one go, e.g.
+    // "red pen" or "blue line", rather than needing two separate commands strung together.
+    // currentColor is shared across Pen/Brush/Highlighter/Text/shapes (confirmed by checking how
+    // the existing colour swatches for each of those already set the SAME property elsewhere in
+    // this codebase); Fill/Hatch is the one exception with its own separate fillColor, which is
+    // why "red fill"/"red hatch" set a different field below — using currentColor there would
+    // silently do nothing, since the Fill tool doesn't read from it at all.
+    for ((name, value) in paletteColors) {
+        val n = name.lowercase()
+        add("combo.${n}.pen", "Combo", "$name Pen", listOf("$n pen")) { setActiveTool(null, Tool.PEN); dv.currentColor = value }
+        add("combo.${n}.brush", "Combo", "$name Brush", listOf("$n brush")) { setActiveTool(null, Tool.BRUSH); dv.currentColor = value }
+        add("combo.${n}.highlighter", "Combo", "$name Highlighter", listOf("$n highlighter")) { setActiveTool(null, Tool.HIGHLIGHTER); dv.currentColor = value }
+        // Both phrasings map to the SAME action (set the Fill tool's own colour) — matches how
+        // "hatch" and "fill" are already treated as synonyms for the plain tool.hatch entry above.
+        add("combo.${n}.fill", "Combo", "$name Fill", listOf("$n fill", "$n hatch")) {
+            setActiveTool(null, Tool.FILL); dv.fillColor = value
+        }
+        add("combo.${n}.text", "Combo", "Text Box — $name Font", listOf("text box with $n font", "$n text")) {
+            setActiveTool(null, Tool.TEXT); dv.currentColor = value
+        }
+        add("combo.${n}.line", "Combo", "$name Line", listOf("$n line")) { setActiveTool(null, Tool.LINE); dv.currentColor = value }
+        add("combo.${n}.rectangle", "Combo", "$name Rectangle", listOf("$n rectangle", "$n square")) { setActiveTool(null, Tool.RECTANGLE); dv.currentColor = value }
+        add("combo.${n}.circle", "Combo", "$name Circle", listOf("$n circle")) { setActiveTool(null, Tool.CIRCLE); dv.currentColor = value }
+        add("combo.${n}.triangle", "Combo", "$name Triangle", listOf("$n triangle")) { setActiveTool(null, Tool.TRIANGLE); dv.currentColor = value }
+        add("combo.${n}.arrow", "Combo", "$name Arrow", listOf("$n arrow")) { setActiveTool(null, Tool.ARROW); dv.currentColor = value }
+        add("combo.${n}.star", "Combo", "$name Star", listOf("$n star")) { setActiveTool(null, Tool.STAR); dv.currentColor = value }
     }
 
     // Hatch patterns — the full real list, not trimmed the way Shapes was. This is the ORIGINAL
@@ -332,29 +365,33 @@ private fun bestVoiceMatch(heard: String, bindings: List<VoiceBinding>): VoiceBi
 
 private val voiceMicPermission = "android.permission.RECORD_AUDIO"
 
-/** Call once from onCreate — adds the floating mic toggle to the activity's content root
- * (rather than editing activity_main.xml directly) so this doesn't risk disturbing the existing
- * toolbar's layout constraints/spacing, which weren't verified visually here. Positioned at the
- * right edge, vertically centered, to stay clear of both the top and bottom toolbars regardless
- * of their exact heights. */
+/** Call once from onCreate — embedded directly into the SAME top toolbar row as btnMenu/
+ * btnReadMode/etc. (found at runtime via btnMenu's parent, not by editing activity_main.xml
+ * directly), sized and styled to match its siblings, rather than floating over the canvas as a
+ * separate overlay — floating there read as visual clutter sitting on top of the page itself.
+ * Inserted right before btnMenu specifically so it lands among the other utility icons rather
+ * than off at either end of the row. */
 internal fun MainActivity.setupVoiceCommandButton() {
-    val root = findViewById<android.view.ViewGroup>(android.R.id.content)
+    val menuBtn = findViewById<ImageButton>(R.id.btnMenu)
+    val topBar = menuBtn.parent as? android.view.ViewGroup ?: return
+    // Guards against adding a second mic button if this ever gets called more than once (e.g. a
+    // config change recreating the Activity) — without this, each extra call appended another
+    // icon into the same row rather than replacing the first.
+    if (topBar.findViewWithTag<View>("voice_mic_btn") != null) return
+    val insertIndex = topBar.indexOfChild(menuBtn)
     val btn = TextView(this).apply {
-        text = "🎤"; textSize = 22f; gravity = Gravity.CENTER
-        setBackgroundColor(Color.parseColor("#CC2A2A2A"))
-        // Circular-ish via a GradientDrawable would need exact pixel sizing to look right;
-        // a plain rounded-corner box reads fine at this size and is far less fragile to get
-        // subtly wrong without being able to see it rendered.
-        background = android.graphics.drawable.GradientDrawable().apply {
-            setColor(Color.parseColor("#CC2A2A2A")); cornerRadius = dp(28).toFloat()
-        }
-        setTextColor(Color.WHITE)
-        elevation = dp(6).toFloat()
+        text = "🎤"; textSize = 18f; gravity = Gravity.CENTER
+        tag = "voice_mic_btn"
+        setTextColor(Color.parseColor("#333333"))
+        // Resolves to the exact same ripple background every other icon button in this row uses
+        // in XML (?attr/selectableItemBackgroundBorderless) — there's no direct "?attr/" syntax
+        // available from code, so this is the equivalent lookup through the current theme.
+        val tv = android.util.TypedValue()
+        theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, tv, true)
+        setBackgroundResource(tv.resourceId)
     }
-    val lp = android.widget.FrameLayout.LayoutParams(dp(56), dp(56))
-    lp.gravity = Gravity.END or Gravity.CENTER_VERTICAL
-    lp.marginEnd = dp(12)
-    root.addView(btn, lp)
+    val lp = android.view.ViewGroup.LayoutParams(dp(40), dp(40))
+    topBar.addView(btn, insertIndex.coerceAtLeast(0), lp)
     voiceMicButtonRef = btn
     btn.setOnClickListener { onVoiceMicTapped() }
 }
@@ -380,7 +417,7 @@ private fun MainActivity.onVoiceMicTapped() {
 }
 
 private fun MainActivity.stopVoiceListening() {
-    voiceRecognizer?.stopListening()
+    voiceRecognizer?.cancel()
     voiceListening = false
     voiceMicButtonRef?.background = android.graphics.drawable.GradientDrawable().apply {
         setColor(Color.parseColor("#CC2A2A2A")); cornerRadius = dp(28).toFloat()
@@ -402,6 +439,13 @@ internal fun MainActivity.startVoiceListening() {
     // Captured explicitly — inside the anonymous RecognitionListener below, a bare `this` refers
     // to the listener object itself, not this extension function's MainActivity receiver.
     val activity = this
+    // Some devices' SpeechRecognizer implementations call onError (or, less commonly, onResults)
+    // more than once for the SAME listening session — a known cross-OEM speech-engine quirk, not
+    // something this app's flow triggers. Without a guard, each stray extra callback queued its
+    // own Toast, and several Toasts firing back-to-back is exactly what "the error displays
+    // continuously" looks like from the outside. This makes each session produce at most one
+    // outcome, however many times the system actually calls back.
+    var sessionHandled = false
 
     voiceRecognizer?.destroy()
     val recognizer = android.speech.SpeechRecognizer.createSpeechRecognizer(this)
@@ -419,6 +463,8 @@ internal fun MainActivity.startVoiceListening() {
             }
         }
         override fun onResults(results: android.os.Bundle?) {
+            if (sessionHandled) return
+            sessionHandled = true
             val heardList = results?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION) ?: arrayListOf()
             // Every candidate transcription gets a shot at matching, not just the recognizer's
             // top pick — its first guess is sometimes a homophone or a mis-split of the actual
@@ -440,6 +486,8 @@ internal fun MainActivity.startVoiceListening() {
             activity.stopVoiceListening()
         }
         override fun onError(error: Int) {
+            if (sessionHandled) return
+            sessionHandled = true
             val msg = when (error) {
                 android.speech.SpeechRecognizer.ERROR_NO_MATCH, android.speech.SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Didn't catch that"
                 android.speech.SpeechRecognizer.ERROR_NETWORK, android.speech.SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network error — speech recognition needs a connection on this device"
