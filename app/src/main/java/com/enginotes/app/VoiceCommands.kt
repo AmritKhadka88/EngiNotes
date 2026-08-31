@@ -422,7 +422,7 @@ internal fun MainActivity.showVoiceCommandSettings() {
     // since they carry their own inline captured values rather than pointing at a fixed registry
     // entry, but shown together here since from the user's side they're just "my commands" too.
     container.addView(TextView(this).apply {
-        text = "Captured combos — saved with the ＋ button while using the app"
+        text = "Captured combos — saved by long-pressing the mic button while using the app"
         textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#2A2A2A")); setPadding(0, dp(16), 0, dp(4))
     })
     val customActions = loadCustomVoiceActions()
@@ -432,7 +432,7 @@ internal fun MainActivity.showVoiceCommandSettings() {
         customHolder.removeAllViews()
         if (customActions.isEmpty()) {
             customHolder.addView(TextView(this).apply {
-                text = "None yet — set up a tool/colour combination normally, then tap ＋ in the top bar."
+                text = "None yet — set up a tool/colour combination normally, then long-press the mic button in the top bar."
                 textSize = 13f; setTextColor(Color.parseColor("#9A9A9A")); setPadding(0, dp(8), 0, dp(12))
             })
         }
@@ -641,15 +641,15 @@ private val voiceMicPermission = "android.permission.RECORD_AUDIO"
 internal fun MainActivity.setupVoiceCommandButton() {
     val menuBtn = findViewById<ImageButton>(R.id.btnMenu)
     val topBar = menuBtn.parent as? android.view.ViewGroup ?: return
-    // Guards against adding these twice if this ever gets called more than once (e.g. a config
-    // change recreating the Activity) — without this, each extra call appended more icons into
-    // the same row rather than replacing the first set.
+    // Guards against adding this twice if this ever gets called more than once (e.g. a config
+    // change recreating the Activity) — without this, each extra call appended another icon into
+    // the same row rather than replacing the first.
     if (topBar.findViewWithTag<View>("voice_mic_btn") != null) return
     val insertIndex = topBar.indexOfChild(menuBtn)
 
-    fun iconBtn(label: String, tagName: String): TextView = TextView(this).apply {
-        text = label; textSize = 18f; gravity = Gravity.CENTER
-        tag = tagName
+    val micBtn = TextView(this).apply {
+        text = "🎤"; textSize = 18f; gravity = Gravity.CENTER
+        tag = "voice_mic_btn"
         setTextColor(Color.parseColor("#333333"))
         // Resolves to the exact same ripple background every other icon button in this row uses
         // in XML (?attr/selectableItemBackgroundBorderless) — there's no direct "?attr/" syntax
@@ -659,20 +659,14 @@ internal fun MainActivity.setupVoiceCommandButton() {
         setBackgroundResource(tv.resourceId)
     }
     val lp = android.view.ViewGroup.LayoutParams(dp(40), dp(40))
-
-    // "+" sits right next to the mic — reads whatever tool/settings are ACTUALLY active right
-    // now and offers to save that exact combination as a voice command. Inserted first so it
-    // ends up to the LEFT of the mic (insertIndex stays the same reference point for both, and
-    // each addView at insertIndex pushes the previous one right — so add + before 🎤 to get
-    // "+ 🎤" reading left to right, not "🎤 +").
-    val plusBtn = iconBtn("＋", "voice_add_btn")
-    topBar.addView(plusBtn, insertIndex.coerceAtLeast(0), lp)
-    plusBtn.setOnClickListener { showSaveCurrentAsVoiceCommandDialog() }
-
-    val micBtn = iconBtn("🎤", "voice_mic_btn")
-    topBar.addView(micBtn, topBar.indexOfChild(plusBtn) + 1, lp)
+    topBar.addView(micBtn, insertIndex.coerceAtLeast(0), lp)
     voiceMicButtonRef = micBtn
     micBtn.setOnClickListener { onVoiceMicTapped() }
+    // Was a separate "＋" button next to the mic — dropped per feedback that it's not a
+    // frequently-used-enough action to earn its own permanent spot in the top bar. Long-press on
+    // the mic does the same "capture current state" thing instead; short tap still starts
+    // listening as before.
+    micBtn.setOnLongClickListener { showSaveCurrentAsVoiceCommandDialog(); true }
 }
 
 // Held so recognition callbacks (which fire well after the tap that started them) can update the
